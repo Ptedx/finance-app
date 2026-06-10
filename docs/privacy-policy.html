@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spendr — Privacy Policy</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #121212;
+      --surface: #1A1A1A;
+      --surface-2: #1E1E1E;
+      --border: #3e3e3e;
+      --accent: #15E8FE;
+      --accent-dim: rgba(21, 232, 254, 0.12);
+      --text: #FFFFFF;
+      --text-muted: #9CA3AF;
+      --success: #4CAF50;
+      --danger: #FF6B6B;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .header-inner {
+      max-width: 760px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      height: 64px;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+    }
+
+    .app-name {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+
+    .app-name span {
+      color: var(--accent);
+    }
+
+    .badge {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(21, 232, 254, 0.3);
+      border-radius: 999px;
+      padding: 3px 10px;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 60px 24px 40px;
+    }
+
+    .hero h1 {
+      font-size: clamp(28px, 5vw, 40px);
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1.15;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 .highlight {
+      color: var(--accent);
+    }
+
+    .hero p {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 540px;
+    }
+
+    .updated {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 14px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      flex-shrink: 0;
+    }
+
+    /* ── Card pill summary ── */
+    .summary-grid {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px 40px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .summary-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+
+    .summary-card .icon {
+      font-size: 22px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .summary-card .label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .summary-card .desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* ── Content ── */
+    .content {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .section-icon {
+      font-size: 18px;
+      width: 36px;
+      height: 36px;
+      background: var(--accent-dim);
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .section-header h2 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+
+    .section-body {
+      padding: 20px 24px;
+      color: var(--text-muted);
+      font-size: 14.5px;
+    }
+
+    .section-body p + p { margin-top: 12px; }
+
+    .section-body ul {
+      margin-top: 10px;
+      padding-left: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .section-body ul li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .section-body ul li::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+      margin-top: 7px;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      text-align: center;
+      padding: 28px 24px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-inner">
+      <img src="./icon.png" alt="Spendr icon" class="logo" />
+      <span class="app-name">Spend<span>r</span></span>
+      <span class="badge">Privacy Policy</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Your data stays<br /><span class="highlight">on your device.</span></h1>
+      <p>Spendr is built with privacy by design. We don't collect, share, or sell any personal data — ever.</p>
+      <div class="updated">
+        <span class="dot"></span>
+        Last updated: April 6, 2026
+      </div>
+    </section>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="icon">🔒</div>
+        <div>
+          <div class="label">No data collected</div>
+          <div class="desc">Zero personal data leaves your device</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">📡</div>
+        <div>
+          <div class="label">No internet required</div>
+          <div class="desc">Works fully offline, no backend server</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">🗄️</div>
+        <div>
+          <div class="label">Local storage only</div>
+          <div class="desc">All data stored in SQLite on your device</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">🚫</div>
+        <div>
+          <div class="label">No third parties</div>
+          <div class="desc">No analytics, ads, or tracking SDKs</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">📋</div>
+          <h2>Information We Collect</h2>
+        </div>
+        <div class="section-body">
+          <p>Spendr does not collect any personal information. All data you enter — transactions, categories, budgets, and settings — is stored exclusively in a local SQLite database on your device.</p>
+          <p>This data never leaves your device and is never transmitted to any server.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">📤</div>
+          <h2>Data Sharing</h2>
+        </div>
+        <div class="section-body">
+          <p>We do not share, sell, rent, or trade your data with any third party, for any purpose, at any time.</p>
+          <p>Spendr has no backend, no user accounts, and no cloud sync. There is nothing to share.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🔐</div>
+          <h2>Permissions Used</h2>
+        </div>
+        <div class="section-body">
+          <p>Spendr requests only the permissions strictly necessary to provide its features:</p>
+          <ul>
+            <li><strong>Biometric authentication</strong> — optional lock screen using Face ID or fingerprint, handled entirely by the OS. No biometric data is accessed by the app.</li>
+            <li><strong>Notifications</strong> — local-only reminders for recurring transactions. No notification data is sent externally.</li>
+            <li><strong>Storage</strong> — read/write access to export CSV/PDF reports to your local files. Files stay on your device.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">👶</div>
+          <h2>Children's Privacy</h2>
+        </div>
+        <div class="section-body">
+          <p>Spendr does not knowingly collect any information from anyone, including children under the age of 13. Since no data is collected at all, there is no risk of inadvertent data collection from minors.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🔄</div>
+          <h2>Changes to This Policy</h2>
+        </div>
+        <div class="section-body">
+          <p>If we ever change this privacy policy, the updated version will be published on this page with a new effective date. We encourage you to review this page periodically.</p>
+          <p>Any future features that involve data collection will be clearly disclosed before they are introduced.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">✉️</div>
+          <h2>Contact</h2>
+        </div>
+        <div class="section-body">
+          <p>If you have any questions about this privacy policy, you can open an issue on the project repository or reach out via GitHub.</p>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer>
+    <p>Spendr by <a href="https://github.com/okazakee" target="_blank">okazakee</a> — open source.</p>
+  </footer>
+
+</body>
+</html>
