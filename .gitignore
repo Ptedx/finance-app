@@ -38,9 +38,12 @@ ios/*.xcodeproj/xcuserdata/
 # Metro
 .metro-health-check*
 
-# Package managers — only bun.lock is used
+# Package managers — the app uses bun.lock, so npm/yarn lockfiles are noise here.
 package-lock.json
 yarn.lock
+# Exceção: o backend usa npm, e o Dockerfile roda `npm ci`, que exige o lockfile.
+# Sem esta linha o build na VM quebra em "npm ci ... requires package-lock.json".
+!backend/package-lock.json
 
 # Debug logs
 npm-debug.*
@@ -63,7 +66,6 @@ plan-*.md
 app-example
 .deletelater
 submission
-Dockerfile
 build.sh
 
 # Build outputs
