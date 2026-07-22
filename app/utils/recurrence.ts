@@ -117,6 +117,49 @@ export const occurrencesBetween = (
 };
 
 /**
+ * 32-bit FNV-1a over a string, seeded so several independent digests can be taken of
+ * the same input. Not cryptographic — it only has to be stable and well spread.
+ */
+const fnv1a = (input: string, seed: number): number => {
+	let hash = seed >>> 0;
+
+	for (let index = 0; index < input.length; index += 1) {
+		hash ^= input.charCodeAt(index);
+		// The FNV prime, 16777619, via shifts: Math.imul keeps this in 32 bits.
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+
+	return hash >>> 0;
+};
+
+/**
+ * The id a recurring rule's occurrence on `dueDate` will always have.
+ *
+ * Posting an occurrence used to mint a random UUID, which is fine on one device and
+ * wrong on two: phone and tablet both catching up on the same rent would each insert
+ * their own row, and the ledger would show it twice. Deriving the id from the rule and
+ * the due date makes the insert idempotent — both devices produce the same id, and the
+ * server's upsert collapses them into one row.
+ *
+ * Formatted as a UUID so it is indistinguishable from `generateUniqueId()` output
+ * everywhere else in the app. Version nibble 8 marks it as a custom-namespace id.
+ */
+export const occurrenceId = (recurringId: string, dueDate: string): string => {
+	const input = `${recurringId}|${dueDate}`;
+
+	// Four differently-seeded digests give the 128 bits a UUID needs.
+	const hex = [0x811c9dc5, 0x1000193, 0x9e3779b9, 0x85ebca6b]
+		.map((seed) => fnv1a(input, seed).toString(16).padStart(8, '0'))
+		.join('');
+
+	const version = `8${hex.slice(13, 16)}`;
+	// Variant bits: the first nibble must be 8, 9, a or b.
+	const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20);
+
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${version}-${variant}-${hex.slice(20, 32)}`;
+};
+
+/**
  * Describes a rule in terms of a monthly equivalent, so weekly, monthly and yearly
  * commitments can be summed into a meaningful "per month" figure.
  *
@@ -140,6 +183,7 @@ export default {
 	firstDueOnOrAfter,
 	nextDueAfter,
 	occurrencesBetween,
+	occurrenceId,
 	monthlyEquivalentCents,
 	MAX_CATCH_UP_OCCURRENCES,
 };

@@ -41,6 +41,15 @@ export const getISODate = (date: Date): string => {
 /** Today's calendar date, local. The single source of "today" across the app. */
 export const todayISO = (): string => getISODate(new Date());
 
+/**
+ * The current *instant*, as an ISO 8601 UTC timestamp.
+ *
+ * This is the one place `toISOString()` is the right answer: sync timestamps order
+ * edits made on different devices in different zones, so they must be absolute. Never
+ * use this where a calendar date is wanted — that is what `todayISO()` is for.
+ */
+export const nowTimestamp = (): string => new Date().toISOString();
+
 export const formatDate = (dateString: string): string =>
 	parseISODate(dateString).toLocaleDateString(locale, {
 		month: 'short',
@@ -120,6 +129,7 @@ export default {
 	parseISODate,
 	getISODate,
 	todayISO,
+	nowTimestamp,
 	formatDate,
 	formatFullDate,
 	lastDayOfMonth,

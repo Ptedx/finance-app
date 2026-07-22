@@ -18,7 +18,15 @@ import {
 	type PeriodSummary,
 	updateTransaction,
 } from '../database/database';
-import type { Category, Transaction } from '../database/schema';
+import type {
+	Category,
+	CategoryDraft,
+	CategoryEdit,
+	Transaction,
+	TransactionDraft,
+	TransactionEdit,
+} from '../database/schema';
+import * as syncQueue from '../sync/queue';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
 import { usePeriod } from './PeriodContext';
 
@@ -61,14 +69,14 @@ interface TransactionsContextType {
 	};
 
 	// Transaction Actions
-	addNewTransaction: (transaction: Omit<Transaction, 'id'>) => Promise<string>;
-	updateExistingTransaction: (transaction: Transaction) => Promise<void>;
+	addNewTransaction: (transaction: TransactionDraft) => Promise<string>;
+	updateExistingTransaction: (transaction: TransactionEdit) => Promise<void>;
 	removeTransaction: (id: string) => Promise<void>;
 	refreshData: () => Promise<void>;
 
 	// Category Management Actions
-	addCategory: (category: Omit<Category, 'id'>) => Promise<string>;
-	updateCategory: (category: Category) => Promise<void>;
+	addCategory: (category: CategoryDraft) => Promise<string>;
+	updateCategory: (category: CategoryEdit) => Promise<void>;
 	deleteCategory: (categoryId: string) => Promise<void>;
 }
 
@@ -178,10 +186,11 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const addNewTransaction = async (transaction: Omit<Transaction, 'id'>) => {
+	const addNewTransaction = async (transaction: TransactionDraft) => {
 		try {
 			const id = await addTransaction(transaction);
 			await refreshData();
+			syncQueue.schedule();
 			return id;
 		} catch (error) {
 			console.error('Error adding transaction:', error);
@@ -190,10 +199,11 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const updateExistingTransaction = async (transaction: Transaction) => {
+	const updateExistingTransaction = async (transaction: TransactionEdit) => {
 		try {
 			await updateTransaction(transaction);
 			await refreshData();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error updating transaction:', error);
 			Alert.alert('Error', 'Failed to update transaction. Please try again.');
@@ -205,6 +215,7 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		try {
 			await deleteTransaction(id);
 			await refreshData();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error deleting transaction:', error);
 			Alert.alert('Error', 'Failed to delete transaction. Please try again.');
@@ -212,10 +223,11 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const addCategory = async (category: Omit<Category, 'id'>): Promise<string> => {
+	const addCategory = async (category: CategoryDraft): Promise<string> => {
 		try {
 			const id = await dbAddCategory(category);
 			setCategories(await getCategories());
+			syncQueue.schedule();
 			return id;
 		} catch (error) {
 			console.error('Error adding category:', error);
@@ -224,10 +236,11 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const updateCategory = async (category: Category): Promise<void> => {
+	const updateCategory = async (category: CategoryEdit): Promise<void> => {
 		try {
 			await dbUpdateCategory(category);
 			setCategories(await getCategories());
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error updating category:', error);
 			Alert.alert('Error', 'Failed to update category. Please try again.');
@@ -238,6 +251,7 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 	const deleteCategory = async (categoryId: string): Promise<void> => {
 		try {
 			await dbDeleteCategory(categoryId);
+			syncQueue.schedule();
 			// Transactions were reassigned to "uncategorized", so totals change too.
 			await refreshData();
 		} catch (error) {

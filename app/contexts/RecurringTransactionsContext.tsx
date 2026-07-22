@@ -8,7 +8,12 @@ import {
 	processRecurringTransactions,
 	updateRecurringTransaction,
 } from '../database/database';
-import type { RecurringTransaction } from '../database/schema';
+import type {
+	RecurringTransaction,
+	RecurringTransactionDraft,
+	RecurringTransactionEdit,
+} from '../database/schema';
+import * as syncQueue from '../sync/queue';
 import { parseISODate, todayISO } from '../utils/dateUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 
@@ -16,9 +21,9 @@ interface RecurringTransactionsContextType {
 	transactions: RecurringTransaction[];
 	isLoading: boolean;
 	addTransaction: (
-		transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
+		transaction: RecurringTransactionDraft
 	) => Promise<string>;
-	updateTransaction: (transaction: RecurringTransaction) => Promise<void>;
+	updateTransaction: (transaction: RecurringTransactionEdit) => Promise<void>;
 	removeTransaction: (id: string) => Promise<void>;
 	processTransactions: () => Promise<void>;
 	refreshTransactions: () => Promise<void>;
@@ -64,9 +69,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		}
 	};
 
-	const addTransaction = async (
-		transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
-	) => {
+	const addTransaction = async (transaction: RecurringTransactionDraft) => {
 		try {
 			const id = await addRecurringTransaction(transaction);
 
@@ -89,6 +92,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 			}
 
 			await refreshTransactions();
+			syncQueue.schedule();
 			return id;
 		} catch (error) {
 			console.error('Error adding recurring transaction:', error);
@@ -97,7 +101,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		}
 	};
 
-	const updateTransaction = async (transaction: RecurringTransaction) => {
+	const updateTransaction = async (transaction: RecurringTransactionEdit) => {
 		try {
 			// The next due date is derived from the rule inside updateRecurringTransaction,
 			// so editing the day of the month takes effect immediately rather than a cycle late.
@@ -115,6 +119,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 			}
 
 			await refreshTransactions();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error updating recurring transaction:', error);
 			Alert.alert('Error', 'Failed to update recurring transaction.');
@@ -129,6 +134,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 
 			await deleteRecurringTransaction(id);
 			await refreshTransactions();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error deleting recurring transaction:', error);
 			Alert.alert('Error', 'Failed to delete recurring transaction.');
@@ -156,6 +162,9 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 			await notificationUtils.checkAndScheduleNotifications(updatedTransactions);
 
 			await refreshTransactions();
+			// As ocorrências lançadas têm id determinístico, então subir aqui é seguro
+			// mesmo que outro aparelho tenha lançado as mesmas: o upsert as funde.
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error processing recurring transactions:', error);
 			Alert.alert('Error', 'Failed to process recurring transactions.');

@@ -13,7 +13,10 @@ import {
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { RecurringTransaction } from '../database/schema';
+import type {
+	RecurringTransaction,
+	RecurringTransactionDraft,
+} from '../database/schema';
 import { centsToInputString, isValidAmountInput, parseAmountToCents } from '../utils/money';
 import HorizontalCategoryPicker from './HorizontalCategoryPicker';
 
@@ -107,7 +110,7 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 		try {
 			setIsSubmitting(true);
 
-			const transactionData: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'> = {
+			const transactionData: RecurringTransactionDraft = {
 				// biome-ignore lint/style/noNonNullAssertion: validateForm guarantees a positive amount
 				amountCents: parseAmountToCents(amount)!,
 				note,

@@ -11,12 +11,12 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
-import type { Category, CategoryType } from '../database/schema';
+import type { Category, CategoryDraft, CategoryType } from '../database/schema';
 
 interface CategoryEditorModalProps {
 	isVisible: boolean;
 	initialCategory?: Category | null;
-	onSave: (category: Omit<Category, 'id'> & { id?: string }) => void;
+	onSave: (category: CategoryDraft & { id?: string }) => void;
 	onCancel: () => void;
 }
 

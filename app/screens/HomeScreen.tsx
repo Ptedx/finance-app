@@ -11,10 +11,12 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
+import AccountReminderBanner from '../components/AccountReminderBanner';
 import IncomeSection from '../components/IncomeSection';
 import Summary from '../components/Summary';
 import TransactionItem from '../components/TransactionItem';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 
@@ -41,17 +43,21 @@ const HomeScreen = () => {
 		processRecurring();
 	}, []);
 
+	const { syncNow } = useSync();
+
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
 			await processTransactions();
 			await refreshData();
+			// Puxar para atualizar tambem alinha com o servidor, quando ha sessao.
+			syncNow();
 		} catch (error) {
 			console.error('Error during refresh:', error);
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, processTransactions]);
+	}, [refreshData, processTransactions, syncNow]);
 
 	const handleTransactionPress = (transaction: Transaction) => {
 		router.push({
@@ -95,6 +101,8 @@ const HomeScreen = () => {
 					/>
 				}
 			>
+				<AccountReminderBanner />
+
 				{/* Budget Summary */}
 				<Summary
 					expenseCents={periodTotals.expenseCents}

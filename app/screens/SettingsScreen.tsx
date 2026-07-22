@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
+import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
@@ -30,6 +31,7 @@ import { resetAsyncStorage } from '../utils/storageUtils';
 
 const SettingsScreen = () => {
 	const { t } = useTranslation();
+	const { account, isAvailable: isAuthAvailable } = useAuth();
 	const { currentCurrency } = useCurrency();
 	const { currentLanguage } = useLanguage();
 	const { transactions, categories, refreshData } = useTransactions();
@@ -291,6 +293,22 @@ const SettingsScreen = () => {
 			</View>
 
 			<ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+				{/* Account. Escondida quando a build não tem API configurada: oferecer uma
+				    tela que falharia em toda tentativa é pior do que não oferecer nada. */}
+				{isAuthAvailable && (
+					<View style={styles.section}>
+						<Text style={styles.sectionTitle}>{t('account.screenTitle')}</Text>
+						{renderSettingsItem(
+							account ? 'cloud-done-outline' : 'cloud-upload-outline',
+							account ? account.email : t('account.signUpTitle'),
+							() => router.push('/account'),
+							<Text style={styles.accountStatus}>
+								{account ? t('account.statusSynced') : ''}
+							</Text>
+						)}
+					</View>
+				)}
+
 				{/* Preferences */}
 				<View style={styles.section}>
 					<Text style={styles.sectionTitle}>{t('settings.preferences')}</Text>
@@ -421,6 +439,10 @@ const styles = StyleSheet.create({
 	},
 	section: {
 		marginBottom: 24,
+	},
+	accountStatus: {
+		color: '#8E8E93',
+		fontSize: 12,
 	},
 	sectionTitle: {
 		fontSize: 14,

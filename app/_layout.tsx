@@ -7,11 +7,13 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
+import { AuthProvider } from './contexts/AuthContext';
 import { BudgetProvider } from './contexts/BudgetContext';
 import { CurrencyProvider } from './contexts/CurrencyContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { PeriodProvider } from './contexts/PeriodContext';
 import { RecurringTransactionsProvider } from './contexts/RecurringTransactionsContext';
+import { SyncProvider } from './contexts/SyncContext';
 import { TransactionsProvider } from './contexts/TransactionsContext';
 import { initDatabase } from './database/database';
 import biometricUtils from './utils/biometricUtils';
@@ -168,7 +170,11 @@ export default function RootLayout() {
 		);
 	}
 
+	// AuthProvider fica acima de CurrencyProvider porque a moeda e o idioma passam a vir
+	// do perfil quando há sessão; SyncProvider só expõe o estado da fila, que é um módulo.
 	return (
+		<AuthProvider>
+		<SyncProvider>
 		<LanguageProvider>
 		<CurrencyProvider>
 			<PeriodProvider>
@@ -184,5 +190,7 @@ export default function RootLayout() {
 			</PeriodProvider>
 		</CurrencyProvider>
 		</LanguageProvider>
+		</SyncProvider>
+		</AuthProvider>
 	);
 }

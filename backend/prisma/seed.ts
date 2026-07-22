@@ -1,62 +1,34 @@
 import 'dotenv/config';
-import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient } from '@prisma/client';
+import { Pool } from 'pg';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-const adapter = new PrismaPg(pool)
-const prisma = new PrismaClient({ adapter })
-
-// Categoria padrao do projeto
-const DEFAULT_CATEGORIES = [
-  { id: 'food', name: 'Alimentação', color: '#EF4444', icon: 'restaurant' },
-  { id: 'transport', name: 'Transporte', color: '#3B82F6', icon: 'bus' },
-  { id: 'salary', name: 'Salário', color: '#10B981', icon: 'cash' },
-  { id: 'entertainment', name: 'Lazer', color: '#8B5CF6', icon: 'game-controller' },
-  { id: 'bills', name: 'Contas', color: '#F59E0B', icon: 'document-text' },
-  { id: 'health', name: 'Saúde', color: '#EC4899', icon: 'medkit' },
-  { id: 'education', name: 'Educação', color: '#6366F1', icon: 'book' },
-  { id: 'shopping', name: 'Compras', color: '#14B8A6', icon: 'cart' },
-  { id: 'uncategorized', name: 'Sem Categoria', color: '#9CA3AF', icon: 'help' },
-];
+/**
+ * Não há nada global para semear.
+ *
+ * As categorias padrão pertencem a cada usuário e são criadas no registro (ver
+ * `register` em src/controllers/auth.controller.ts), com os mesmos ids fixos que o app
+ * usa localmente. A versão anterior deste arquivo inventava um "system user" dono das
+ * categorias padrão — o que impediria o usuário de renomear ou apagar as suas, coisa
+ * que o app permite hoje.
+ *
+ * O arquivo continua existindo para o `prisma db seed` não falhar e para servir de
+ * ponto de entrada caso surja algum dado realmente global.
+ */
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 async function main() {
-  console.log('Seeding database...');
-  
-  // Create a default system user to own default categories
-  const systemUser = await prisma.user.upsert({
-    where: { email: 'system@spendr.app' },
-    update: {},
-    create: {
-      email: 'system@spendr.app',
-      name: 'System User',
-      passwordHash: 'none', // System user doesn't login
-    },
-  });
-
-  for (const category of DEFAULT_CATEGORIES) {
-    await prisma.category.upsert({
-      where: { id: category.id },
-      update: {},
-      create: {
-        id: category.id,
-        name: category.name,
-        color: category.color,
-        icon: category.icon,
-        isDefault: true,
-        userId: systemUser.id,
-      },
-    });
-  }
-  console.log('Database seeded successfully!');
+	const users = await prisma.user.count();
+	console.log(`Nada a semear. Usuários cadastrados: ${users}.`);
 }
 
 main()
-  .then(async () => {
-    await prisma.$disconnect()
-  })
-  .catch(async (e) => {
-    console.error(e)
-    await prisma.$disconnect()
-    process.exit(1)
-  })
+	.catch((error) => {
+		console.error(error);
+		process.exitCode = 1;
+	})
+	.finally(async () => {
+		await prisma.$disconnect();
+		await pool.end();
+	});

@@ -3,6 +3,7 @@ import {
 	MAX_CATCH_UP_OCCURRENCES,
 	monthlyEquivalentCents,
 	nextDueAfter,
+	occurrenceId,
 	occurrencesBetween,
 	type RecurrenceRule,
 	weekdayOf,
@@ -166,5 +167,43 @@ describe('monthlyEquivalentCents', () => {
 
 	it('passes monthly amounts through unchanged', () => {
 		expect(monthlyEquivalentCents(monthly(1), 150000)).toBe(150000);
+	});
+});
+
+describe('occurrenceId', () => {
+	const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+	// Regression: each device minted a random UUID when posting a due occurrence, so a
+	// phone and a tablet both catching up on the same rent created two rows for it.
+	it('gives the same id for the same rule and due date', () => {
+		expect(occurrenceId('rule-1', '2026-07-05')).toBe(occurrenceId('rule-1', '2026-07-05'));
+	});
+
+	it('gives different ids for different due dates of one rule', () => {
+		expect(occurrenceId('rule-1', '2026-07-05')).not.toBe(occurrenceId('rule-1', '2026-08-05'));
+	});
+
+	it('gives different ids for different rules on the same date', () => {
+		expect(occurrenceId('rule-1', '2026-07-05')).not.toBe(occurrenceId('rule-2', '2026-07-05'));
+	});
+
+	// The separator must not let one field bleed into the next: ('ab', 'c') and
+	// ('a', 'bc') are different occurrences and must not collide.
+	it('does not confuse a shifted boundary between its two inputs', () => {
+		expect(occurrenceId('ab', 'c')).not.toBe(occurrenceId('a', 'bc'));
+	});
+
+	it('is shaped like a UUID, so it is indistinguishable from a generated id', () => {
+		expect(occurrenceId('rule-1', '2026-07-05')).toMatch(UUID_SHAPE);
+		expect(occurrenceId('', '')).toMatch(UUID_SHAPE);
+	});
+
+	it('spreads a year of monthly occurrences over distinct ids', () => {
+		const ids = occurrencesBetween(monthly(5), '2026-01-01', '2026-12-31').map((date) =>
+			occurrenceId('rule-1', date)
+		);
+
+		expect(ids).toHaveLength(12);
+		expect(new Set(ids).size).toBe(12);
 	});
 });

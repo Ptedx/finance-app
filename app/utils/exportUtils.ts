@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -7,26 +6,33 @@ import {
 	addCategory,
 	addRecurringTransaction,
 	addTransaction,
+	getBudgets,
 	getCategories,
 	resetDatabase,
+	setBudget,
 } from '../database/database';
 import type { Category, RecurringTransaction, Transaction } from '../database/schema';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
-import { STORAGE_KEYS } from './storageUtils';
 
 /** Bumped when the backup payload changes shape. 2 = amounts in integer cents. */
 const EXPORT_FORMAT_VERSION = 2;
 
-const BUDGETS_STORAGE_KEY = STORAGE_KEYS.budgets;
+/** A budget as it travels in a backup file, in either the current or the legacy shape. */
+interface ExportedBudget {
+	year: number;
+	month: number;
+	amountCents?: number;
+	/** Backups written before budgets moved to integer cents. */
+	amount?: number;
+}
 
 export interface DatabaseExportData {
 	formatVersion?: number;
 	transactions: Transaction[];
 	categories: Category[];
 	recurringTransactions: RecurringTransaction[];
-	/** Monthly budgets, which live in AsyncStorage rather than SQLite. */
-	budgets?: unknown[];
+	budgets?: ExportedBudget[];
 	exportDate: string;
 }
 
@@ -266,14 +272,20 @@ export const exportDatabaseData = async (
 	recurringTransactions: RecurringTransaction[]
 ): Promise<void> => {
 	try {
-		const storedBudgets = await AsyncStorage.getItem(BUDGETS_STORAGE_KEY);
+		// Budgets moved from AsyncStorage into SQLite in schema v4; only the year, month
+		// and amount belong in a backup — sync bookkeeping is per-device.
+		const budgets = (await getBudgets()).map(({ year, month, amountCents }) => ({
+			year,
+			month,
+			amountCents,
+		}));
 
 		const exportData: DatabaseExportData = {
 			formatVersion: EXPORT_FORMAT_VERSION,
 			transactions,
 			categories,
 			recurringTransactions,
-			budgets: storedBudgets ? JSON.parse(storedBudgets) : [],
+			budgets,
 			exportDate: new Date().toISOString(),
 		};
 
@@ -368,7 +380,10 @@ export const importDatabaseData = async (): Promise<{
 		}
 
 		if (Array.isArray(importData.budgets)) {
-			await AsyncStorage.setItem(BUDGETS_STORAGE_KEY, JSON.stringify(importData.budgets));
+			for (const budget of importData.budgets) {
+				if (!Number.isFinite(budget?.year) || !Number.isFinite(budget?.month)) continue;
+				await setBudget(budget.year, budget.month, readAmountCents(budget));
+			}
 		}
 
 		return {

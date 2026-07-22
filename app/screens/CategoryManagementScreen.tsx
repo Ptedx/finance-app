@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import CategoryEditorModal from '../components/CategoryEditorModal';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Category } from '../database/schema';
+import type { Category, CategoryDraft } from '../database/schema';
 
 const CategoryManagementScreen = () => {
 	const { categories, addCategory, updateCategory, deleteCategory } = useTransactions();
@@ -56,7 +56,7 @@ const CategoryManagementScreen = () => {
 		);
 	};
 
-	const handleSaveCategory = async (categoryData: Omit<Category, 'id'> & { id?: string }) => {
+	const handleSaveCategory = async (categoryData: CategoryDraft & { id?: string }) => {
 		try {
 			if (categoryData.id) {
 				// Editing existing category

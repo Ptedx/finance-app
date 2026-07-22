@@ -1,30 +1,51 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
-import { addDays, todayISO } from '../utils/dateUtils';
+import { addDays, nowTimestamp, todayISO } from '../utils/dateUtils';
 import {
 	firstDueOnOrAfter,
 	nextDueAfter,
+	occurrenceId,
 	occurrencesBetween,
 	type RecurrenceRule,
 } from '../utils/recurrence';
+import { STORAGE_KEYS } from '../utils/storageUtils';
 import {
+	type Budget,
 	type Category,
+	type CategoryDraft,
+	type CategoryEdit,
 	type CategoryType,
+	CREATE_BUDGETS_TABLE,
 	CREATE_CATEGORIES_TABLE,
 	CREATE_INDEXES,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
+	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
 	DEFAULT_CATEGORIES,
 	LEGACY_INCOME_CATEGORY_IDS,
 	type RecurringTransaction,
+	type RecurringTransactionDraft,
+	type RecurringTransactionEdit,
 	SCHEMA_VERSION,
+	SYNCED_TABLES,
+	type SyncedTable,
 	type Transaction,
+	type TransactionDraft,
+	type TransactionEdit,
 } from './schema';
+import type { SyncChanges } from '../sync/types';
 
 const db = SQLite.openDatabaseSync(DATABASE_NAME);
 
-interface TransactionDB {
+interface SyncColumnsDB {
+	updatedAt: string;
+	deletedAt: string | null;
+	dirty: number;
+}
+
+interface TransactionDB extends SyncColumnsDB {
 	id: string;
 	amountCents: number;
 	category: string;
@@ -33,7 +54,7 @@ interface TransactionDB {
 	isIncome: number;
 }
 
-interface RecurringTransactionDB {
+interface RecurringTransactionDB extends SyncColumnsDB {
 	id: string;
 	amountCents: number;
 	isIncome: number;
@@ -48,9 +69,27 @@ interface RecurringTransactionDB {
 	active: number;
 }
 
+interface BudgetDB extends SyncColumnsDB {
+	id: string;
+	year: number;
+	month: number;
+	amountCents: number;
+}
+
+/** Sync bookkeeping as the app sees it: `dirty` stays on the row, `deletedAt` unwraps. */
+const convertSyncMeta = (row: SyncColumnsDB) => ({
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
 const convertTransaction = (transaction: TransactionDB): Transaction => ({
-	...transaction,
+	id: transaction.id,
+	amountCents: transaction.amountCents,
+	category: transaction.category,
+	date: transaction.date,
+	note: transaction.note,
 	isIncome: Boolean(transaction.isIncome),
+	...convertSyncMeta(transaction),
 });
 
 const convertRecurringTransaction = (
@@ -68,6 +107,15 @@ const convertRecurringTransaction = (
 	lastProcessed: transaction.lastProcessed ?? undefined,
 	nextDue: transaction.nextDue ?? undefined,
 	active: Boolean(transaction.active),
+	...convertSyncMeta(transaction),
+});
+
+const convertBudget = (budget: BudgetDB): Budget => ({
+	id: budget.id,
+	year: budget.year,
+	month: budget.month,
+	amountCents: budget.amountCents,
+	...convertSyncMeta(budget),
 });
 
 const toRule = (transaction: RecurrenceRule): RecurrenceRule => ({
@@ -175,21 +223,124 @@ const migrateCategoryTypes = async (): Promise<void> => {
 };
 
 /**
+ * v2 -> v3: every synchronisable table gains `updatedAt`, `deletedAt` and `dirty`.
+ *
+ * Pre-existing rows are stamped with the migration's own timestamp and marked dirty:
+ * they have never reached a server, so the first sync after signing in has to carry all
+ * of them up. `updatedAt` cannot be NOT NULL in the ALTER (SQLite rejects adding a
+ * NOT NULL column without a constant default), so it is added nullable and backfilled;
+ * the constraint holds on freshly created databases, where it matters.
+ */
+const migrateSyncColumns = async (): Promise<void> => {
+	const timestamp = nowTimestamp();
+
+	for (const table of ['categories', 'transactions', 'recurring_transactions']) {
+		if (!(await tableExists(table))) continue;
+		if (await tableHasColumn(table, 'updatedAt')) continue;
+
+		await db.execAsync(`
+      ALTER TABLE ${table} ADD COLUMN updatedAt TEXT;
+      ALTER TABLE ${table} ADD COLUMN deletedAt TEXT;
+      ALTER TABLE ${table} ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1;
+    `);
+		await db.runAsync(`UPDATE ${table} SET updatedAt = ?, dirty = 1`, [timestamp]);
+
+		console.log(`Migrated ${table} to synchronisable rows`);
+	}
+};
+
+/** The budget shape written to AsyncStorage before budgets became a table. */
+interface LegacyStoredBudget {
+	year: number;
+	month: number;
+	/** Present only in entries written before budgets moved to integer cents. */
+	amount?: number;
+	amountCents?: number;
+}
+
+/**
+ * v3 -> v4: budgets move out of AsyncStorage into a table, plus `sync_state` is created.
+ *
+ * The AsyncStorage key is deliberately **left in place**. Deleting it would make a
+ * downgrade — an OTA rollback, say — silently lose every budget, and an orphaned JSON
+ * blob costs nothing. The importer is idempotent on top of that: it only runs when the
+ * table is empty.
+ */
+const migrateBudgetsFromStorage = async (): Promise<void> => {
+	await db.execAsync(`${CREATE_BUDGETS_TABLE}${CREATE_SYNC_STATE_TABLE}`);
+
+	const existing = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM budgets');
+	if ((existing?.count ?? 0) > 0) return;
+
+	let stored: string | null = null;
+	try {
+		stored = await AsyncStorage.getItem(STORAGE_KEYS.budgets);
+	} catch (error) {
+		// A budget is re-enterable in seconds; a database that refuses to open is not.
+		console.warn('Could not read stored budgets, skipping import:', error);
+		return;
+	}
+
+	if (!stored) return;
+
+	let parsed: LegacyStoredBudget[];
+	try {
+		parsed = JSON.parse(stored) as LegacyStoredBudget[];
+	} catch (error) {
+		console.warn('Stored budgets were not valid JSON, skipping import:', error);
+		return;
+	}
+
+	if (!Array.isArray(parsed) || parsed.length === 0) return;
+
+	const timestamp = nowTimestamp();
+
+	await db.withTransactionAsync(async () => {
+		for (const budget of parsed) {
+			// Entries written before the move to integer cents still hold a float.
+			const amountCents =
+				budget.amountCents ?? (typeof budget.amount === 'number' ? Math.round(budget.amount * 100) : null);
+
+			if (amountCents === null || !Number.isFinite(budget.year) || !Number.isFinite(budget.month)) {
+				continue;
+			}
+
+			await db.runAsync(
+				`INSERT INTO budgets (id, year, month, amountCents, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, NULL, 1)
+         ON CONFLICT DO NOTHING`,
+				[generateUniqueId(), budget.year, budget.month, amountCents, timestamp]
+			);
+		}
+	});
+
+	console.log(`Imported ${parsed.length} budgets from storage`);
+};
+
+/**
  * Inserts any default category that is missing, without touching the user's own edits.
  * Runs on every start so seeds added in later versions still reach existing installs.
+ *
+ * Seeded rows are dirty like any other: on a device that later signs in, the server has
+ * its own copy under the same fixed id and last-write-wins settles which name survives.
  */
 const seedMissingDefaultCategories = async (): Promise<void> => {
+	// Includes tombstoned rows on purpose: a category the user deleted must not be
+	// resurrected by the next launch.
 	const existing = await db.getAllAsync<{ id: string }>('SELECT id FROM categories');
 	const existingIds = new Set(existing.map((c) => c.id));
 	const missing = DEFAULT_CATEGORIES.filter((c) => !existingIds.has(c.id));
 
 	if (missing.length === 0) return;
 
+	const timestamp = nowTimestamp();
+
 	await db.withTransactionAsync(async () => {
 		for (const category of missing) {
 			await db.runAsync(
-				'INSERT INTO categories (id, name, color, icon, type) VALUES (?, ?, ?, ?, ?)',
-				[category.id, category.name, category.color, category.icon, category.type]
+				`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, 1)`,
+				[category.id, category.name, category.color, category.icon, category.type, timestamp]
 			);
 		}
 	});
@@ -203,6 +354,8 @@ const runMigrations = async (): Promise<void> => {
 
 	if (version < 1) await migrateMoneyToCents();
 	if (version < 2) await migrateCategoryTypes();
+	if (version < 3) await migrateSyncColumns();
+	if (version < 4) await migrateBudgetsFromStorage();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -219,6 +372,8 @@ export const initDatabase = async (): Promise<void> => {
       ${CREATE_CATEGORIES_TABLE}
       ${CREATE_TRANSACTIONS_TABLE}
       ${CREATE_RECURRING_TRANSACTIONS_TABLE}
+      ${CREATE_BUDGETS_TABLE}
+      ${CREATE_SYNC_STATE_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -237,11 +392,13 @@ export const initDatabase = async (): Promise<void> => {
 
 export const getCategories = async (): Promise<Category[]> => {
 	try {
-		const categories = await db.getAllAsync<Category>('SELECT * FROM categories ORDER BY name');
+		const categories = await db.getAllAsync<Category>(
+			'SELECT * FROM categories WHERE deletedAt IS NULL ORDER BY name'
+		);
 
 		// Hide the "uncategorized" bucket until something actually lands in it.
 		const orphanCount = await db.getFirstAsync<{ count: number }>(
-			"SELECT COUNT(*) AS count FROM transactions WHERE category = 'uncategorized'"
+			"SELECT COUNT(*) AS count FROM transactions WHERE category = 'uncategorized' AND deletedAt IS NULL"
 		);
 
 		return (orphanCount?.count ?? 0) > 0
@@ -257,7 +414,9 @@ export const getCategories = async (): Promise<Category[]> => {
 export const getCategoriesByType = async (type: CategoryType): Promise<Category[]> => {
 	try {
 		return await db.getAllAsync<Category>(
-			"SELECT * FROM categories WHERE type = ? AND id != 'uncategorized' ORDER BY name",
+			`SELECT * FROM categories
+       WHERE type = ? AND id != 'uncategorized' AND deletedAt IS NULL
+       ORDER BY name`,
 			[type]
 		);
 	} catch (error) {
@@ -266,26 +425,23 @@ export const getCategoriesByType = async (type: CategoryType): Promise<Category[
 	}
 };
 
-export const addCategory = async (category: Omit<Category, 'id'>): Promise<string> => {
+export const addCategory = async (category: CategoryDraft): Promise<string> => {
 	const id = generateUniqueId();
-	await db.runAsync('INSERT INTO categories (id, name, color, icon, type) VALUES (?, ?, ?, ?, ?)', [
-		id,
-		category.name,
-		category.color,
-		category.icon,
-		category.type,
-	]);
+	await db.runAsync(
+		`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, 1)`,
+		[id, category.name, category.color, category.icon, category.type, nowTimestamp()]
+	);
 	return id;
 };
 
-export const updateCategory = async (category: Category): Promise<void> => {
-	await db.runAsync('UPDATE categories SET name = ?, color = ?, icon = ?, type = ? WHERE id = ?', [
-		category.name,
-		category.color,
-		category.icon,
-		category.type,
-		category.id,
-	]);
+export const updateCategory = async (category: CategoryEdit): Promise<void> => {
+	await db.runAsync(
+		`UPDATE categories
+     SET name = ?, color = ?, icon = ?, type = ?, updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[category.name, category.color, category.icon, category.type, nowTimestamp(), category.id]
+	);
 };
 
 export const deleteCategory = async (categoryId: string): Promise<void> => {
@@ -293,16 +449,27 @@ export const deleteCategory = async (categoryId: string): Promise<void> => {
 		throw new Error('Uncategorized category cannot be deleted');
 	}
 
+	const timestamp = nowTimestamp();
+
 	await db.withTransactionAsync(async () => {
-		// Reassign in one statement instead of a round trip per transaction.
-		await db.runAsync("UPDATE transactions SET category = 'uncategorized' WHERE category = ?", [
-			categoryId,
-		]);
+		// Reassign in one statement instead of a round trip per transaction. The moved
+		// rows are dirtied too: without that, another device would keep showing them
+		// under a category this one has already deleted.
 		await db.runAsync(
-			"UPDATE recurring_transactions SET category = 'uncategorized' WHERE category = ?",
-			[categoryId]
+			`UPDATE transactions SET category = 'uncategorized', updatedAt = ?, dirty = 1
+       WHERE category = ? AND deletedAt IS NULL`,
+			[timestamp, categoryId]
 		);
-		await db.runAsync('DELETE FROM categories WHERE id = ?', [categoryId]);
+		await db.runAsync(
+			`UPDATE recurring_transactions SET category = 'uncategorized', updatedAt = ?, dirty = 1
+       WHERE category = ? AND deletedAt IS NULL`,
+			[timestamp, categoryId]
+		);
+		// Tombstone rather than DELETE, so the removal itself can be synced.
+		await db.runAsync(
+			'UPDATE categories SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			[timestamp, timestamp, categoryId]
+		);
 	});
 };
 
@@ -310,11 +477,20 @@ export const deleteCategory = async (categoryId: string): Promise<void> => {
 // Transactions
 // ---------------------------------------------------------------------------
 
-export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Promise<string> => {
-	const id = generateUniqueId();
+export const addTransaction = async (
+	transaction: TransactionDraft,
+	/**
+	 * Supplied only by the recurrence poster, which derives a stable id per occurrence
+	 * so two devices catching up on the same bill converge on one row.
+	 */
+	explicitId?: string
+): Promise<string> => {
+	const id = explicitId ?? generateUniqueId();
 	try {
 		await db.runAsync(
-			'INSERT INTO transactions (id, amountCents, category, date, note, isIncome) VALUES (?, ?, ?, ?, ?, ?)',
+			`INSERT INTO transactions (id, amountCents, category, date, note, isIncome, updatedAt, deletedAt, dirty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)
+       ON CONFLICT (id) DO NOTHING`,
 			[
 				id,
 				transaction.amountCents,
@@ -322,6 +498,7 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
 				transaction.date,
 				transaction.note,
 				transaction.isIncome ? 1 : 0,
+				nowTimestamp(),
 			]
 		);
 		return id;
@@ -334,7 +511,7 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
 export const getTransactions = async (): Promise<Transaction[]> => {
 	try {
 		const transactions = await db.getAllAsync<TransactionDB>(
-			'SELECT * FROM transactions ORDER BY date DESC'
+			'SELECT * FROM transactions WHERE deletedAt IS NULL ORDER BY date DESC'
 		);
 		return transactions.map(convertTransaction);
 	} catch (error) {
@@ -346,7 +523,7 @@ export const getTransactions = async (): Promise<Transaction[]> => {
 export const getTransactionsByCategory = async (categoryId: string): Promise<Transaction[]> => {
 	try {
 		const transactions = await db.getAllAsync<TransactionDB>(
-			'SELECT * FROM transactions WHERE category = ? ORDER BY date DESC',
+			'SELECT * FROM transactions WHERE category = ? AND deletedAt IS NULL ORDER BY date DESC',
 			[categoryId]
 		);
 		return transactions.map(convertTransaction);
@@ -362,7 +539,7 @@ export const getTransactionsByDateRange = async (
 	transactionType?: 'income' | 'expense'
 ): Promise<Transaction[]> => {
 	try {
-		let query = 'SELECT * FROM transactions WHERE date BETWEEN ? AND ?';
+		let query = 'SELECT * FROM transactions WHERE date BETWEEN ? AND ? AND deletedAt IS NULL';
 		const params: string[] = [startDate, endDate];
 
 		if (transactionType === 'income') query += ' AND isIncome = 1';
@@ -378,16 +555,19 @@ export const getTransactionsByDateRange = async (
 	}
 };
 
-export const updateTransaction = async (transaction: Transaction): Promise<void> => {
+export const updateTransaction = async (transaction: TransactionEdit): Promise<void> => {
 	try {
 		await db.runAsync(
-			'UPDATE transactions SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ? WHERE id = ?',
+			`UPDATE transactions
+       SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ?, updatedAt = ?, dirty = 1
+       WHERE id = ?`,
 			[
 				transaction.amountCents,
 				transaction.category,
 				transaction.date,
 				transaction.note,
 				transaction.isIncome ? 1 : 0,
+				nowTimestamp(),
 				transaction.id,
 			]
 		);
@@ -398,8 +578,13 @@ export const updateTransaction = async (transaction: Transaction): Promise<void>
 };
 
 export const deleteTransaction = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
 	try {
-		await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+		// Tombstone: the row has to outlive the delete so other devices hear about it.
+		await db.runAsync(
+			'UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			[timestamp, timestamp, id]
+		);
 	} catch (error) {
 		console.error('Error deleting transaction:', error);
 		throw error;
@@ -433,7 +618,7 @@ export const getPeriodSummary = async (
          COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
          COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
        FROM transactions
-       WHERE date BETWEEN ? AND ?`,
+       WHERE date BETWEEN ? AND ? AND deletedAt IS NULL`,
 			[startDate, endDate]
 		);
 
@@ -456,7 +641,7 @@ export const getBalanceAsOf = async (asOfDate: string): Promise<number> => {
 		const row = await db.getFirstAsync<{ balance: number }>(
 			`SELECT COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE -amountCents END), 0) AS balance
        FROM transactions
-       WHERE date <= ?`,
+       WHERE date <= ? AND deletedAt IS NULL`,
 			[asOfDate]
 		);
 		return row?.balance ?? 0;
@@ -475,7 +660,7 @@ export const getTotalByCategory = async (
 		let query = `
       SELECT category AS categoryId, SUM(amountCents) AS totalCents
       FROM transactions
-      WHERE 1=1`;
+      WHERE deletedAt IS NULL`;
 
 		const params: string[] = [];
 
@@ -513,7 +698,7 @@ export const getMonthlyTransactions = async (
       SELECT CAST(strftime('%m', date) AS INTEGER) AS month,
              SUM(amountCents) AS totalCents
       FROM transactions
-      WHERE strftime('%Y', date) = ?`;
+      WHERE strftime('%Y', date) = ? AND deletedAt IS NULL`;
 
 		const params: string[] = [year.toString()];
 
@@ -540,7 +725,7 @@ export const getMonthlyTransactions = async (
 // ---------------------------------------------------------------------------
 
 export const addRecurringTransaction = async (
-	transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
+	transaction: RecurringTransactionDraft
 ): Promise<string> => {
 	const id = generateUniqueId();
 	// A new rule never backfills: its first occurrence is the first one on or after today.
@@ -549,8 +734,9 @@ export const addRecurringTransaction = async (
 	try {
 		await db.runAsync(
 			`INSERT INTO recurring_transactions
-       (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday, lastProcessed, nextDue, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday,
+        lastProcessed, nextDue, active, updatedAt, deletedAt, dirty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
 			[
 				id,
 				transaction.amountCents,
@@ -564,6 +750,7 @@ export const addRecurringTransaction = async (
 				null,
 				nextDue,
 				transaction.active ? 1 : 0,
+				nowTimestamp(),
 			]
 		);
 		return id;
@@ -576,7 +763,7 @@ export const addRecurringTransaction = async (
 export const getRecurringTransactions = async (): Promise<RecurringTransaction[]> => {
 	try {
 		const transactions = await db.getAllAsync<RecurringTransactionDB>(
-			'SELECT * FROM recurring_transactions ORDER BY nextDue ASC'
+			'SELECT * FROM recurring_transactions WHERE deletedAt IS NULL ORDER BY nextDue ASC'
 		);
 		return transactions.map(convertRecurringTransaction);
 	} catch (error) {
@@ -590,7 +777,7 @@ export const getRecurringTransactionById = async (
 ): Promise<RecurringTransaction | null> => {
 	try {
 		const transaction = await db.getFirstAsync<RecurringTransactionDB>(
-			'SELECT * FROM recurring_transactions WHERE id = ?',
+			'SELECT * FROM recurring_transactions WHERE id = ? AND deletedAt IS NULL',
 			[id]
 		);
 		return transaction ? convertRecurringTransaction(transaction) : null;
@@ -606,14 +793,14 @@ export const getRecurringTransactionById = async (
  * Always derived rather than trusted from the caller: editing a rule's day used to
  * leave the previously stored `nextDue` in place, so the change took effect a cycle late.
  */
-const resolveNextDue = (transaction: RecurringTransaction): string => {
+const resolveNextDue = (transaction: RecurringTransactionEdit): string => {
 	const rule = toRule(transaction);
 	const anchor = transaction.lastProcessed ? addDays(transaction.lastProcessed, 1) : todayISO();
 	return firstDueOnOrAfter(rule, anchor);
 };
 
 export const updateRecurringTransaction = async (
-	transaction: RecurringTransaction
+	transaction: RecurringTransactionEdit
 ): Promise<void> => {
 	const nextDue = resolveNextDue(transaction);
 
@@ -622,7 +809,7 @@ export const updateRecurringTransaction = async (
 			`UPDATE recurring_transactions
        SET amountCents = ?, isIncome = ?, note = ?, category = ?,
            recurrenceType = ?, day = ?, month = ?, weekday = ?,
-           lastProcessed = ?, nextDue = ?, active = ?
+           lastProcessed = ?, nextDue = ?, active = ?, updatedAt = ?, dirty = 1
        WHERE id = ?`,
 			[
 				transaction.amountCents,
@@ -636,6 +823,7 @@ export const updateRecurringTransaction = async (
 				transaction.lastProcessed ?? null,
 				nextDue,
 				transaction.active ? 1 : 0,
+				nowTimestamp(),
 				transaction.id,
 			]
 		);
@@ -646,8 +834,12 @@ export const updateRecurringTransaction = async (
 };
 
 export const deleteRecurringTransaction = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
 	try {
-		await db.runAsync('DELETE FROM recurring_transactions WHERE id = ?', [id]);
+		await db.runAsync(
+			'UPDATE recurring_transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			[timestamp, timestamp, id]
+		);
 	} catch (error) {
 		console.error('Error deleting recurring transaction:', error);
 		throw error;
@@ -667,7 +859,7 @@ export const processRecurringTransactions = async (): Promise<number> => {
 		const today = todayISO();
 		const dueTransactions = await db.getAllAsync<RecurringTransactionDB>(
 			`SELECT * FROM recurring_transactions
-       WHERE active = 1 AND nextDue IS NOT NULL AND nextDue <= ?
+       WHERE active = 1 AND nextDue IS NOT NULL AND nextDue <= ? AND deletedAt IS NULL
        ORDER BY nextDue ASC`,
 			[today]
 		);
@@ -690,23 +882,32 @@ export const processRecurringTransactions = async (): Promise<number> => {
 				const dueDates = occurrencesBetween(rule, windowStart, today);
 
 				for (const dueDate of dueDates) {
-					await addTransaction({
-						amountCents: transaction.amountCents,
-						category: transaction.category,
-						date: dueDate,
-						note: `[Auto] ${transaction.note}`,
-						isIncome: transaction.isIncome,
-					});
+					// The id is derived from the rule and the due date, so a second device
+					// posting the same occurrence writes the same row instead of a duplicate.
+					// `addTransaction` inserts with ON CONFLICT DO NOTHING for exactly this.
+					await addTransaction(
+						{
+							amountCents: transaction.amountCents,
+							category: transaction.category,
+							date: dueDate,
+							note: `[Auto] ${transaction.note}`,
+							isIncome: transaction.isIncome,
+						},
+						occurrenceId(transaction.id, dueDate)
+					);
 					posted += 1;
 				}
 
 				const lastPosted = dueDates.length > 0 ? dueDates[dueDates.length - 1] : undefined;
 
 				await db.runAsync(
-					'UPDATE recurring_transactions SET lastProcessed = ?, nextDue = ? WHERE id = ?',
+					`UPDATE recurring_transactions
+           SET lastProcessed = ?, nextDue = ?, updatedAt = ?, dirty = 1
+           WHERE id = ?`,
 					[
 						lastPosted ?? transaction.lastProcessed ?? null,
 						lastPosted ? nextDueAfter(rule, lastPosted) : firstDueOnOrAfter(rule, today),
+						nowTimestamp(),
 						transaction.id,
 					]
 				);
@@ -727,7 +928,8 @@ export const processRecurringTransactions = async (): Promise<number> => {
 /** Whether the ledger holds anything at all, used to decide if a switch needs converting. */
 export const hasFinancialData = async (): Promise<boolean> => {
 	const row = await db.getFirstAsync<{ count: number }>(
-		`SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM recurring_transactions) AS count`
+		`SELECT (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL)
+          + (SELECT COUNT(*) FROM recurring_transactions WHERE deletedAt IS NULL) AS count`
 	);
 	return (row?.count ?? 0) > 0;
 };
@@ -744,23 +946,387 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 		throw new Error(`Refusing to convert amounts by a non-positive rate: ${rate}`);
 	}
 
+	const timestamp = nowTimestamp();
+
 	await db.withTransactionAsync(async () => {
+		// Every rescaled row is a genuine change and has to reach the other devices,
+		// otherwise they would keep the old currency's numbers under the new symbol.
 		await db.runAsync(
-			'UPDATE transactions SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER)',
-			[rate]
+			`UPDATE transactions
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, timestamp]
 		);
 		await db.runAsync(
-			'UPDATE recurring_transactions SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER)',
-			[rate]
+			`UPDATE recurring_transactions
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, timestamp]
+		);
+		await db.runAsync(
+			`UPDATE budgets
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, timestamp]
 		);
 	});
 };
 
-export const resetDatabase = async (): Promise<void> => {
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+export const getBudgets = async (): Promise<Budget[]> => {
 	try {
+		const budgets = await db.getAllAsync<BudgetDB>(
+			'SELECT * FROM budgets WHERE deletedAt IS NULL ORDER BY year DESC, month DESC'
+		);
+		return budgets.map(convertBudget);
+	} catch (error) {
+		console.error('Error fetching budgets:', error);
+		throw error;
+	}
+};
+
+/**
+ * Sets the budget for a calendar month, replacing whatever was there.
+ *
+ * An UPSERT on the live row rather than delete-then-insert: reusing the existing id
+ * keeps the server's copy of that month as one row across its whole history, so the
+ * last-write-wins comparison has something to compare against.
+ */
+export const setBudget = async (
+	year: number,
+	month: number,
+	amountCents: number
+): Promise<string> => {
+	const timestamp = nowTimestamp();
+
+	const existing = await db.getFirstAsync<{ id: string }>(
+		'SELECT id FROM budgets WHERE year = ? AND month = ? AND deletedAt IS NULL',
+		[year, month]
+	);
+
+	if (existing) {
+		await db.runAsync('UPDATE budgets SET amountCents = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+			amountCents,
+			timestamp,
+			existing.id,
+		]);
+		return existing.id;
+	}
+
+	const id = generateUniqueId();
+	await db.runAsync(
+		`INSERT INTO budgets (id, year, month, amountCents, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, NULL, 1)`,
+		[id, year, month, amountCents, timestamp]
+	);
+	return id;
+};
+
+export const clearBudget = async (year: number, month: number): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		`UPDATE budgets SET deletedAt = ?, updatedAt = ?, dirty = 1
+     WHERE year = ? AND month = ? AND deletedAt IS NULL`,
+		[timestamp, timestamp, year, month]
+	);
+};
+
+// ---------------------------------------------------------------------------
+// Sync state
+// ---------------------------------------------------------------------------
+
+/**
+ * Linhas que ainda não chegaram ao servidor, no formato do protocolo.
+ *
+ * Inclui as lápides: apagar é uma mudança que precisa subir como qualquer outra. O
+ * limite existe porque quem usou o app meses sem conta tem milhares de linhas sujas de
+ * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
+ */
+export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
+	const [categories, transactions, recurring, budgets] = await Promise.all([
+		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
+			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
+			[limit]
+		),
+		db.getAllAsync<TransactionDB>(
+			'SELECT * FROM transactions WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
+			[limit]
+		),
+		db.getAllAsync<RecurringTransactionDB>(
+			'SELECT * FROM recurring_transactions WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
+			[limit]
+		),
+		db.getAllAsync<BudgetDB>(
+			'SELECT * FROM budgets WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
+			[limit]
+		),
+	]);
+
+	return {
+		categories: categories.map((row) => ({
+			id: row.id,
+			name: row.name,
+			color: row.color,
+			icon: row.icon,
+			type: row.type,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt ?? null,
+		})),
+		transactions: transactions.map((row) => ({
+			id: row.id,
+			amountCents: row.amountCents,
+			category: row.category,
+			date: row.date,
+			note: row.note ?? null,
+			isIncome: Boolean(row.isIncome),
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+		recurringTransactions: recurring.map((row) => ({
+			id: row.id,
+			amountCents: row.amountCents,
+			isIncome: Boolean(row.isIncome),
+			note: row.note ?? null,
+			category: row.category,
+			recurrenceType: row.recurrenceType,
+			day: row.day,
+			month: row.month,
+			weekday: row.weekday,
+			lastProcessed: row.lastProcessed,
+			nextDue: row.nextDue,
+			active: Boolean(row.active),
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+		budgets: budgets.map((row) => ({
+			id: row.id,
+			year: row.year,
+			month: row.month,
+			amountCents: row.amountCents,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+	};
+};
+
+/** Quantas linhas ainda faltam subir. Alimenta o indicador de status do sync. */
+export const countDirtyRows = async (): Promise<number> => {
+	const row = await db.getFirstAsync<{ count: number }>(
+		SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table} WHERE dirty = 1)`).join(' + ') +
+			' AS count'
+	);
+	return row?.count ?? 0;
+};
+
+/**
+ * Marca como limpas as linhas que o servidor aceitou.
+ *
+ * Compara `updatedAt` em vez de limpar pelo id sozinho: se o usuário editou a linha
+ * enquanto o push estava no ar, a versão que subiu já é antiga, e apagar a marca faria
+ * a edição mais recente nunca sair deste aparelho.
+ */
+export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
+	const byTable: Array<[SyncedTable, Array<{ id: string; updatedAt: string }>]> = [
+		['categories', changes.categories],
+		['transactions', changes.transactions],
+		['recurring_transactions', changes.recurringTransactions],
+		['budgets', changes.budgets],
+	];
+
+	await db.withTransactionAsync(async () => {
+		for (const [table, rows] of byTable) {
+			for (const row of rows) {
+				await db.runAsync(`UPDATE ${table} SET dirty = 0 WHERE id = ? AND updatedAt = ?`, [
+					row.id,
+					row.updatedAt,
+				]);
+			}
+		}
+	});
+};
+
+/**
+ * Grava as linhas vindas do servidor, resolvendo o conflito linha a linha.
+ *
+ * A versão do servidor só vence quando é estritamente mais nova; no empate o local
+ * permanece, porque ele pode ter edições que ainda não subiram. Quando o servidor vence,
+ * `dirty` volta a 0: aquela linha já está lá em cima, do jeito que acabou de chegar.
+ */
+export const applyPulledChanges = async (changes: SyncChanges): Promise<void> => {
+	const isStale = async (table: SyncedTable, id: string, updatedAt: string): Promise<boolean> => {
+		const local = await db.getFirstAsync<{ updatedAt: string }>(
+			`SELECT updatedAt FROM ${table} WHERE id = ?`,
+			[id]
+		);
+		// Sem linha local a resposta é não: é uma criação, e ela tem que entrar.
+		// Timestamps ISO 8601 UTC comparam corretamente como texto.
+		return local !== null && local.updatedAt >= updatedAt;
+	};
+
+	await db.withTransactionAsync(async () => {
+		// Categorias primeiro: um lançamento pode vir na mesma leva que a categoria dele.
+		for (const row of changes.categories) {
+			if (await isStale('categories', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           name = excluded.name, color = excluded.color, icon = excluded.icon,
+           type = excluded.type, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.name, row.color, row.icon, row.type, row.updatedAt, row.deletedAt]
+			);
+		}
+
+		for (const row of changes.transactions) {
+			if (await isStale('transactions', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO transactions (id, amountCents, category, date, note, isIncome, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           amountCents = excluded.amountCents, category = excluded.category,
+           date = excluded.date, note = excluded.note, isIncome = excluded.isIncome,
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[
+					row.id,
+					row.amountCents,
+					row.category,
+					row.date,
+					row.note ?? '',
+					row.isIncome ? 1 : 0,
+					row.updatedAt,
+					row.deletedAt,
+				]
+			);
+		}
+
+		for (const row of changes.recurringTransactions) {
+			if (await isStale('recurring_transactions', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO recurring_transactions
+           (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday,
+            lastProcessed, nextDue, active, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           amountCents = excluded.amountCents, isIncome = excluded.isIncome,
+           note = excluded.note, category = excluded.category,
+           recurrenceType = excluded.recurrenceType, day = excluded.day,
+           month = excluded.month, weekday = excluded.weekday,
+           lastProcessed = excluded.lastProcessed, nextDue = excluded.nextDue,
+           active = excluded.active, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[
+					row.id,
+					row.amountCents,
+					row.isIncome ? 1 : 0,
+					row.note ?? '',
+					row.category,
+					row.recurrenceType,
+					row.day,
+					row.month,
+					row.weekday,
+					row.lastProcessed,
+					row.nextDue,
+					row.active ? 1 : 0,
+					row.updatedAt,
+					row.deletedAt,
+				]
+			);
+		}
+
+		for (const row of changes.budgets) {
+			if (await isStale('budgets', row.id, row.updatedAt)) continue;
+
+			// O índice único cobre apenas as linhas vivas, então um orçamento do servidor
+			// para um mês que este aparelho também preencheu offline colidiria. A lápide
+			// local perde para a linha do servidor, que é a que os dois vão compartilhar.
+			if (!row.deletedAt) {
+				await db.runAsync(
+					`UPDATE budgets SET deletedAt = ?, dirty = 0
+           WHERE year = ? AND month = ? AND id != ? AND deletedAt IS NULL`,
+					[row.updatedAt, row.year, row.month, row.id]
+				);
+			}
+
+			await db.runAsync(
+				`INSERT INTO budgets (id, year, month, amountCents, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           year = excluded.year, month = excluded.month,
+           amountCents = excluded.amountCents, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.year, row.month, row.amountCents, row.updatedAt, row.deletedAt]
+			);
+		}
+	});
+};
+
+export const getSyncState = async (key: string): Promise<string | null> => {
+	const row = await db.getFirstAsync<{ value: string | null }>(
+		'SELECT value FROM sync_state WHERE key = ?',
+		[key]
+	);
+	return row?.value ?? null;
+};
+
+export const setSyncState = async (key: string, value: string | null): Promise<void> => {
+	await db.runAsync(
+		'INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+		[key, value]
+	);
+};
+
+export const clearSyncState = async (): Promise<void> => {
+	await db.runAsync('DELETE FROM sync_state');
+};
+
+/**
+ * Marks every live row as needing to be pushed.
+ *
+ * Used when claiming local data into a freshly linked account: nothing on the device has
+ * ever been to the server, so the whole ledger is pending regardless of its flags.
+ */
+export const markEverythingDirty = async (): Promise<void> => {
+	await db.withTransactionAsync(async () => {
+		for (const table of SYNCED_TABLES) {
+			await db.runAsync(`UPDATE ${table} SET dirty = 1`);
+		}
+	});
+};
+
+/**
+ * Drops all synchronisable rows outright, tombstones included.
+ *
+ * This is the "discard this device's data" branch of first sign-in, where the local
+ * ledger is meant to disappear rather than propagate — so DELETE, not tombstones.
+ */
+export const clearSyncedData = async (): Promise<void> => {
+	await db.withTransactionAsync(async () => {
+		for (const table of SYNCED_TABLES) {
+			await db.runAsync(`DELETE FROM ${table}`);
+		}
+	});
+};
+
+export const resetDatabase = async (): Promise<void> => {
+	const timestamp = nowTimestamp();
+
+	try {
+		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
+		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			await db.runAsync('DELETE FROM transactions');
-			await db.runAsync('DELETE FROM recurring_transactions');
+			for (const table of ['transactions', 'recurring_transactions', 'budgets']) {
+				await db.runAsync(
+					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
+					[timestamp, timestamp]
+				);
+			}
 		});
 
 		console.log('Database reset successfully');
@@ -793,6 +1359,18 @@ export default {
 	updateRecurringTransaction,
 	deleteRecurringTransaction,
 	processRecurringTransactions,
+	getBudgets,
+	setBudget,
+	clearBudget,
+	getDirtyChanges,
+	countDirtyRows,
+	markChangesClean,
+	applyPulledChanges,
+	getSyncState,
+	setSyncState,
+	clearSyncState,
+	markEverythingDirty,
+	clearSyncedData,
 	hasFinancialData,
 	convertAllAmounts,
 	resetDatabase,

@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getLocales } from 'expo-localization';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
+import { useAuth } from './AuthContext';
 import { configureDateLocale } from '../utils/dateUtils';
 import { configureMoney } from '../utils/money';
 import { STORAGE_KEYS } from '../utils/storageUtils';
@@ -63,6 +64,7 @@ interface CurrencyContextType {
 const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined);
 
 export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+	const { syncProfilePreferences } = useAuth();
 	const [currentCurrency, setCurrentCurrency] = useState<Currency>(detectDeviceCurrency);
 
 	const applyCurrency = (currency: Currency) => {
@@ -96,6 +98,11 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		try {
 			await AsyncStorage.setItem(STORAGE_KEYS.selectedCurrency, JSON.stringify(currency));
 			applyCurrency(currency);
+
+			// A moeda é uma preferência do perfil, não uma linha sincronizável: um único
+			// valor, sem histórico e sem conflito de linha. O AsyncStorage segue como
+			// cache local para a escolha valer antes mesmo de haver rede.
+			syncProfilePreferences({ baseCurrency: currency.code });
 		} catch (error) {
 			console.error('Failed to save currency setting:', error);
 		}
