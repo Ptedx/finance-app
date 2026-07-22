@@ -1,0 +1,4 @@
+# Scripts de shell precisam de LF, sempre. Um checkout com CRLF na VM faria o shebang
+# `#!/usr/bin/env bash\r` procurar um interpretador chamado "bash\r", que nao existe --
+# e o deploy falharia com um "no such file or directory" cabeludo.
+*.sh text eol=lf
