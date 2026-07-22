@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: spendr_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spendr_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spendr_password}
+      POSTGRES_DB: ${POSTGRES_DB:-spendr_db}
+    # Publicado apenas no localhost: na VM o Postgres não deve ser alcançável de fora,
+    # e a porta 15432 evita colidir com qualquer Postgres já instalado na máquina.
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - spendr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spendr_user} -d ${POSTGRES_DB:-spendr_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spendr-api
+    # 3012 é a porta que o nginx da VM procura (ver o server block de
+    # api-finance.valtre.com.br em imovelsearcher/nginx/nginx.conf).
+    ports:
+      - "3012:3009"
+    environment:
+      NODE_ENV: production
+      PORT: 3009
+      DATABASE_URL: postgresql://${POSTGRES_USER:-spendr_user}:${POSTGRES_PASSWORD:-spendr_password}@postgres:5432/${POSTGRES_DB:-spendr_db}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET obrigatorio}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
+      SYNC_PAGE_SIZE: ${SYNC_PAGE_SIZE:-500}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  spendr_pgdata:

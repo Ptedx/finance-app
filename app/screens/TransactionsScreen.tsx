@@ -16,7 +16,7 @@ import TransactionEditor from '../components/TransactionEditor';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { RecurringTransaction } from '../database/schema';
-import { formatCurrency } from '../utils/currencyUtils';
+import { formatCents } from '../utils/money';
 
 const TransactionsScreen = () => {
 	const _router = useRouter();
@@ -91,7 +91,20 @@ const TransactionsScreen = () => {
 		]);
 	};
 
-	const monthKeys = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'] as const;
+	const monthKeys = [
+		'jan',
+		'feb',
+		'mar',
+		'apr',
+		'may',
+		'jun',
+		'jul',
+		'aug',
+		'sep',
+		'oct',
+		'nov',
+		'dec',
+	] as const;
 	const weekdayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 
 	const renderTransactionItem = ({ item }: { item: RecurringTransaction }) => {
@@ -110,17 +123,17 @@ const TransactionsScreen = () => {
 		if (item.recurrenceType === 'monthly') {
 			recurrenceText = t('transactions.monthly', { day: item.day });
 		} else if (item.recurrenceType === 'yearly') {
-			const monthKey = item.month && item.month >= 1 && item.month <= 12
-				? monthKeys[item.month - 1]
-				: 'jan';
+			const monthKey =
+				item.month && item.month >= 1 && item.month <= 12 ? monthKeys[item.month - 1] : 'jan';
 			recurrenceText = t('transactions.yearly', {
 				month: t(`transactions.months.${monthKey}`),
 				day: item.day,
 			});
 		} else if (item.recurrenceType === 'weekly') {
-			const weekdayKey = item.weekday && item.weekday >= 1 && item.weekday <= 7
-				? weekdayKeys[item.weekday - 1]
-				: 'mon';
+			const weekdayKey =
+				item.weekday && item.weekday >= 1 && item.weekday <= 7
+					? weekdayKeys[item.weekday - 1]
+					: 'mon';
 			recurrenceText = t('transactions.weekly', {
 				weekday: t(`transactions.weekdays.${weekdayKey}`),
 			});
@@ -146,7 +159,7 @@ const TransactionsScreen = () => {
 				<View style={styles.transactionAmount}>
 					<Text style={[styles.transactionAmountText, { color: amountColor }]}>
 						{amountPrefix}
-						{formatCurrency(item.amount)}
+						{formatCents(item.amountCents)}
 					</Text>
 				</View>
 

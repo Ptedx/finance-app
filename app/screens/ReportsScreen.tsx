@@ -16,18 +16,45 @@ import {
 import { LineChart, PieChart } from 'react-native-chart-kit';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { formatCurrency } from '../utils/currencyUtils';
 import { getMonthName } from '../utils/dateUtils';
 import { exportFinancialReport } from '../utils/exportUtils';
+import { formatCents } from '../utils/money';
 
 const { width } = Dimensions.get('window');
+
+/** Fallback for a total whose category has since been deleted. */
+const UNKNOWN_CATEGORY = { name: 'Uncategorized' };
+
+/**
+ * Slice palettes for the category pies.
+ *
+ * Each side of the ledger gets its own hue family so the two charts read at a glance —
+ * red for money going out, green for money coming in. A category's own colour is not
+ * used here: those are chosen for identity in the pickers and say nothing about which
+ * side of the ledger a slice belongs to, so an expense pie could come out mostly green.
+ *
+ * Both ramps are single-hue with monotone lightness and validated against the #1E1E1E
+ * chart surface for step separation and contrast (dataviz ordinal checks).
+ */
+const EXPENSE_SLICE_COLORS = ['#FFC9C7', '#FF9C99', '#F8756F', '#E5484D', '#BC383D'];
+const INCOME_SLICE_COLORS = ['#C6F6D5', '#92E6B4', '#5FD394', '#30A46C', '#1D7A4E'];
+
+/** Aggregated tail, kept visually recessive so it never competes with a real category. */
+const OTHER_SLICE_COLOR = '#8A8A8A';
+
+/**
+ * A pie stops being readable past about six wedges, and neither ramp carries more than
+ * five distinguishable steps. Anything beyond that is summed into "Other" rather than
+ * cycling the palette, which would paint two categories the same shade.
+ */
+const MAX_SLICES = EXPENSE_SLICE_COLORS.length;
 
 const ReportsScreen = () => {
 	const {
 		categoryTotals,
 		monthlyData,
 		categories,
-		monthlyTotal,
+		periodTotals,
 		isLoading,
 		refreshData,
 		currentPeriodTransactions,
@@ -42,99 +69,110 @@ const ReportsScreen = () => {
 	const [incomeChartError, setIncomeChartError] = useState(false);
 	const [trendChartError, setTrendChartError] = useState(false);
 
-	const expensesPieChartData = useMemo(() => {
-		return categoryTotals.expenses
-			.filter(
-				(item) =>
-					item && typeof item.total === 'number' && !Number.isNaN(item.total) && item.total > 0
-			)
-			.map((item) => {
-				const category = categories.find((c) => c.id === item.categoryId) || {
-					id: 'uncategorized',
-					name: 'Uncategorized',
-					color: '#9CA3AF',
-					icon: 'help-circle',
-				};
-				return {
-					name: category.name,
-					amount: item.total,
-					color: category.color,
+	/**
+	 * Turns category totals into the two views of the same data.
+	 *
+	 * `slices` is capped and folded for the pie, which stops being readable past about
+	 * six wedges. `breakdown` keeps every category, because it is a labelled list with
+	 * no colour budget — folding it would hide detail for no benefit. Rows past the cap
+	 * carry the same neutral grey as the "Other" wedge they were folded into.
+	 */
+	const buildCategoryViews = useCallback(
+		(totals: typeof categoryTotals.expenses, palette: string[]) => {
+			const named = totals
+				.filter((item) => item && Number.isFinite(item.totalCents) && item.totalCents > 0)
+				.map((item) => ({
+					categoryId: item.categoryId,
+					name: (categories.find((c) => c.id === item.categoryId) ?? UNKNOWN_CATEGORY).name,
+					amountCents: item.totalCents,
+				}))
+				.sort((a, b) => b.amountCents - a.amountCents);
+
+			const shown = named.slice(0, MAX_SLICES);
+			const tail = named.slice(MAX_SLICES);
+
+			// Palette steps are handed out in a stable order — by category id, not by this
+			// period's ranking — so a category keeps the same shade from month to month.
+			// Colouring by rank would repaint every slice whenever the amounts shuffled.
+			const colourOrder = [...shown]
+				.sort((a, b) => a.categoryId.localeCompare(b.categoryId))
+				.map((item) => item.categoryId);
+
+			const colourOf = (categoryId: string) => {
+				const slot = colourOrder.indexOf(categoryId);
+				return slot === -1 ? OTHER_SLICE_COLOR : palette[slot % palette.length];
+			};
+
+			const breakdown = named.map((item) => ({
+				key: item.categoryId,
+				name: item.name,
+				amountCents: item.amountCents,
+				color: colourOf(item.categoryId),
+			}));
+
+			const slices = shown.map((item) => ({
+				name: item.name,
+				amountCents: item.amountCents,
+				// react-native-chart-kit sizes slices from this field; it only needs to be
+				// proportional, so major units keep the numbers readable.
+				amount: item.amountCents / 100,
+				color: colourOf(item.categoryId),
+				legendFontColor: '#FFFFFF',
+				legendFontSize: 12,
+			}));
+
+			if (tail.length > 0) {
+				const tailCents = tail.reduce((sum, item) => sum + item.amountCents, 0);
+				slices.push({
+					name: t('reports.otherCategories', { count: tail.length }),
+					amountCents: tailCents,
+					amount: tailCents / 100,
+					color: OTHER_SLICE_COLOR,
 					legendFontColor: '#FFFFFF',
 					legendFontSize: 12,
-				};
-			})
-			.sort((a, b) => b.amount - a.amount);
-	}, [categoryTotals.expenses, categories]);
+				});
+			}
 
-	const incomesPieChartData = useMemo(() => {
-		return categoryTotals.incomes
-			.filter(
-				(item) =>
-					item && typeof item.total === 'number' && !Number.isNaN(item.total) && item.total > 0
-			)
-			.map((item) => {
-				const category = categories.find((c) => c.id === item.categoryId) || {
-					id: 'uncategorized',
-					name: 'Uncategorized',
-					color: '#9CA3AF',
-					icon: 'help-circle',
-				};
-				return {
-					name: category.name,
-					amount: item.total,
-					color: category.color,
-					legendFontColor: '#FFFFFF',
-					legendFontSize: 12,
-				};
-			})
-			.sort((a, b) => b.amount - a.amount);
-	}, [categoryTotals.incomes, categories]);
+			return { slices, breakdown };
+		},
+		[categories, t]
+	);
 
+	const expenseViews = useMemo(
+		() => buildCategoryViews(categoryTotals.expenses, EXPENSE_SLICE_COLORS),
+		[categoryTotals.expenses, buildCategoryViews]
+	);
+
+	const incomeViews = useMemo(
+		() => buildCategoryViews(categoryTotals.incomes, INCOME_SLICE_COLORS),
+		[categoryTotals.incomes, buildCategoryViews]
+	);
+
+	const expensesPieChartData = expenseViews.slices;
+	const incomesPieChartData = incomeViews.slices;
+
+	/**
+	 * Both series now always carry twelve months, so point N of the income line and
+	 * point N of the expense line refer to the same month. Previously the database
+	 * returned only months that had rows, and the two lines were plotted against each
+	 * other's months whenever their activity differed.
+	 */
 	const lineChartData = useMemo(() => {
-		const validMonthlyExpenses = monthlyData.expenses
-			.filter(
-				(data) =>
-					data &&
-					typeof data.month === 'number' &&
-					typeof data.total === 'number' &&
-					!Number.isNaN(data.total)
-			)
-			.sort((a, b) => a.month - b.month);
-
-		const validMonthlyIncomes = monthlyData.incomes
-			.filter(
-				(data) =>
-					data &&
-					typeof data.month === 'number' &&
-					typeof data.total === 'number' &&
-					!Number.isNaN(data.total)
-			)
-			.sort((a, b) => a.month - b.month);
-
-		const monthLabels =
-			validMonthlyExpenses.length > 0
-				? validMonthlyExpenses.map((data) => getMonthName(data.month).substring(0, 3))
-				: validMonthlyIncomes.length > 0
-					? validMonthlyIncomes.map((data) => getMonthName(data.month).substring(0, 3))
-					: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
-
-		const expenseValues =
-			validMonthlyExpenses.length > 0 ? validMonthlyExpenses.map((data) => data.total) : [0, 0, 0];
-
-		const incomeValues =
-			validMonthlyIncomes.length > 0 ? validMonthlyIncomes.map((data) => data.total) : [0, 0, 0];
+		const byMonth = (data: typeof monthlyData.expenses) =>
+			[...data].sort((a, b) => a.month - b.month).map((entry) => entry.totalCents / 100);
 
 		return {
-			labels: monthLabels.length > 0 ? monthLabels : ['Jan', 'Feb', 'Mar'],
+			labels: Array.from({ length: 12 }, (_, i) => getMonthName(i + 1).substring(0, 3)),
 			datasets: [
 				{
-					data: expenseValues.length > 0 ? expenseValues : [0, 0, 0],
-					color: () => '#FF6B6B',
+					data: byMonth(monthlyData.expenses),
+					// Mid step of the expense ramp, so the trend lines and the pies agree.
+					color: () => EXPENSE_SLICE_COLORS[3],
 					strokeWidth: 2,
 				},
 				{
-					data: incomeValues.length > 0 ? incomeValues : [0, 0, 0],
-					color: () => '#4CAF50',
+					data: byMonth(monthlyData.incomes),
+					color: () => INCOME_SLICE_COLORS[3],
 					strokeWidth: 2,
 				},
 			],
@@ -234,8 +272,8 @@ const ReportsScreen = () => {
 		if (trendChartError) {
 			return <Text style={styles.errorText}>{t('reports.errorTrendChart')}</Text>;
 		}
-		const hasExpenses = monthlyData.expenses.some((item) => item && item.total > 0);
-		const hasIncomes = monthlyData.incomes.some((item) => item && item.total > 0);
+		const hasExpenses = monthlyData.expenses.some((item) => item && item.totalCents > 0);
+		const hasIncomes = monthlyData.incomes.some((item) => item && item.totalCents > 0);
 		if (!hasExpenses && !hasIncomes) {
 			return <Text style={styles.emptyText}>{t('reports.noTrendData')}</Text>;
 		}
@@ -258,28 +296,36 @@ const ReportsScreen = () => {
 			setTrendChartError(true);
 			return <Text style={styles.errorText}>{t('reports.renderErrorTrend')}</Text>;
 		}
-	}, [lineChartData, chartConfig, trendChartError, monthlyData.expenses, monthlyData.incomes, width, t]);
+	}, [
+		lineChartData,
+		chartConfig,
+		trendChartError,
+		monthlyData.expenses,
+		monthlyData.incomes,
+		width,
+		t,
+	]);
 
 	const renderCategoryBreakdown = useCallback(
 		(
-			data: Array<{ color: string; name: string; amount: number }>,
-			total: number,
+			data: Array<{ key: string; color: string; name: string; amountCents: number }>,
+			totalCents: number,
 			emptyMessage: string,
 			type: string
 		) => {
 			if (data.length === 0) {
 				return <Text style={styles.emptyText}>{emptyMessage}</Text>;
 			}
-			return data.map((item, index) => (
-				<View key={`${type}-${index}`} style={styles.categoryBreakdownItem}>
+			return data.map((item) => (
+				<View key={`${type}-${item.key}`} style={styles.categoryBreakdownItem}>
 					<View style={styles.categoryLabelContainer}>
 						<View style={[styles.categoryColorDot, { backgroundColor: item.color }]} />
 						<Text style={styles.categoryLabel}>{item.name}</Text>
 					</View>
 					<View style={styles.categoryAmountContainer}>
-						<Text style={styles.categoryAmount}>{formatCurrency(item.amount)}</Text>
+						<Text style={styles.categoryAmount}>{formatCents(item.amountCents)}</Text>
 						<Text style={styles.categoryPercentage}>
-							{((item.amount / (total || 1)) * 100).toFixed(1)}%
+							{((item.amountCents / (totalCents || 1)) * 100).toFixed(1)}%
 						</Text>
 					</View>
 				</View>
@@ -296,12 +342,20 @@ const ReportsScreen = () => {
 				categories,
 				monthlyData,
 				categoryTotals,
-				periodName
+				periodName,
+				selectedYear
 			);
 		} catch (error) {
 			console.error('Error exporting reports:', error);
 		}
-	}, [selectedMonthName, selectedYear, currentPeriodTransactions, categories, monthlyData, categoryTotals]);
+	}, [
+		selectedMonthName,
+		selectedYear,
+		currentPeriodTransactions,
+		categories,
+		monthlyData,
+		categoryTotals,
+	]);
 
 	const handleToggleExpenses = useCallback(() => setShowExpenses((prev) => !prev), []);
 	const handleToggleIncomes = useCallback(() => setShowIncomes((prev) => !prev), []);
@@ -366,13 +420,13 @@ const ReportsScreen = () => {
 								<View style={styles.summaryItem}>
 									<Text style={styles.summaryLabel}>{t('reports.income')}</Text>
 									<Text style={[styles.summaryValue, styles.incomeValue]}>
-										{formatCurrency(monthlyTotal.incomes)}
+										{formatCents(periodTotals.incomeCents)}
 									</Text>
 								</View>
 								<View style={styles.summaryItem}>
 									<Text style={styles.summaryLabel}>{t('reports.expenses')}</Text>
 									<Text style={[styles.summaryValue, styles.expenseValue]}>
-										{formatCurrency(monthlyTotal.expenses)}
+										{formatCents(periodTotals.expenseCents)}
 									</Text>
 								</View>
 								<View style={styles.summaryItem}>
@@ -380,10 +434,10 @@ const ReportsScreen = () => {
 									<Text
 										style={[
 											styles.summaryValue,
-											monthlyTotal.net >= 0 ? styles.incomeValue : styles.expenseValue,
+											periodTotals.netCents >= 0 ? styles.incomeValue : styles.expenseValue,
 										]}
 									>
-										{formatCurrency(monthlyTotal.net)}
+										{formatCents(periodTotals.netCents)}
 									</Text>
 								</View>
 							</View>
@@ -396,8 +450,8 @@ const ReportsScreen = () => {
 								{renderExpensePieChart()}
 								<View style={styles.categoryBreakdownContainer}>
 									{renderCategoryBreakdown(
-										expensesPieChartData,
-										monthlyTotal.expenses,
+										expenseViews.breakdown,
+										periodTotals.expenseCents,
 										t('reports.noExpenseData'),
 										'expense'
 									)}
@@ -412,8 +466,8 @@ const ReportsScreen = () => {
 								{renderIncomePieChart()}
 								<View style={styles.categoryBreakdownContainer}>
 									{renderCategoryBreakdown(
-										incomesPieChartData,
-										monthlyTotal.incomes,
+										incomeViews.breakdown,
+										periodTotals.incomeCents,
 										t('reports.noIncomeData'),
 										'income'
 									)}

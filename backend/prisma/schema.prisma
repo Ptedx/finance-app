@@ -1,0 +1,338 @@
+// Spendr — schema do servidor.
+//
+// Regra que atravessa o arquivo inteiro: os tipos aqui espelham o SQLite do app
+// (`app/database/schema.ts`) coluna a coluna. Sincronizar é copiar, não converter —
+// toda tradução na borda seria mais um lugar onde um centavo pode se perder.
+//
+// Três consequências disso:
+//
+//  1. Dinheiro é `amountCents Int`, nunca Decimal ou Float. Ver `app/utils/money.ts`.
+//  2. Datas de calendário (`date`, `nextDue`) são `VarChar(10)` no formato YYYY-MM-DD,
+//     não DateTime. O app trata essas datas como dia local; virar timestamp UTC jogaria
+//     um lançamento do dia 31 às 22h para o mês seguinte.
+//  3. `updatedAt` é escrito por quem fez a alteração — inclusive o celular — e por isso
+//     NÃO usa `@updatedAt`. É esse campo que decide o last-write-wins.
+//  4. `updatedAt` (relógio do cliente) resolve o conflito; `serverSeq` (sequência do
+//     servidor) é o cursor do pull. Separar os dois não é preciosismo: um aparelho que
+//     passou uma semana offline empurra linhas com `updatedAt` de ontem, e um cursor
+//     baseado nesse campo faria os outros aparelhos nunca mais enxergarem essas linhas.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// Perfil
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  baseCurrency String   @default("BRL")
+  language     String   @default("pt-BR")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens         RefreshToken[]
+  categories            Category[]
+  transactions          Transaction[]
+  recurringTransactions RecurringTransaction[]
+  budgets               Budget[]
+  assets                Asset[]
+  liabilities           Liability[]
+  netWorthSnapshots     NetWorthSnapshot[]
+  goals                 Goal[]
+  portfolioAllocations  PortfolioAllocation[]
+  passiveIncomes        PassiveIncome[]
+
+  @@map("users")
+}
+
+/// Refresh tokens são opacos e guardados como hash: um dump do banco não pode virar
+/// sessão em nome de ninguém. `revokedAt` marca o token já rotacionado.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ============================================
+// Coleções sincronizadas (v1)
+// ============================================
+
+enum CategoryType {
+  expense
+  income
+}
+
+/// A PK é composta `(userId, id)`, e não um uuid do servidor.
+///
+/// Isso é o que permite as categorias padrão manterem os ids fixos do app ('food',
+/// 'salary'), que ficam gravados em `Transaction.category`: o 'food' de um usuário é
+/// uma linha diferente do 'food' de outro, e cada um pode renomear ou apagar o seu sem
+/// afetar ninguém. Um id global compartilhado tiraria essa liberdade — e o app hoje
+/// deixa editar as categorias padrão.
+model Category {
+  id        String
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  color     String
+  icon      String
+  type      CategoryType
+  updatedAt DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq Int          @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("categories")
+}
+
+/// `category` guarda o id da categoria mas **não** é uma foreign key.
+///
+/// Numa arquitetura offline-first os aparelhos não sincronizam em ordem: o celular pode
+/// enviar um lançamento numa categoria que o tablet criou e ainda não subiu, e uma FK
+/// rígida rejeitaria um dado perfeitamente legítimo. O servidor resolve isso validando
+/// no push — categoria desconhecida vira 'uncategorized', exatamente como o app já faz
+/// quando uma categoria é apagada (ver `deleteCategory` em app/database/database.ts).
+model Transaction {
+  id          String
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountCents Int
+  category    String
+  /// Dia de calendário local, YYYY-MM-DD.
+  date        String    @db.VarChar(10)
+  note        String?   @db.Text
+  isIncome    Boolean   @default(false)
+  updatedAt   DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt   DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq   Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  /// O pull filtra exatamente por (dono, o que mudou depois de X).
+  @@index([userId, serverSeq])
+  @@index([userId, date])
+  @@map("transactions")
+}
+
+enum RecurrenceType {
+  weekly
+  monthly
+  yearly
+}
+
+model RecurringTransaction {
+  id             String
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountCents    Int
+  isIncome       Boolean        @default(false)
+  note           String?        @db.Text
+  category       String
+  recurrenceType RecurrenceType
+  day            Int?
+  month          Int?
+  weekday        Int?
+  lastProcessed  String?        @db.VarChar(10)
+  nextDue        String?        @db.VarChar(10)
+  active         Boolean        @default(true)
+  updatedAt      DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt      DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq      Int            @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("recurring_transactions")
+}
+
+/// Orçamento mensal. Único por mês **entre as linhas vivas**: um orçamento apagado
+/// mantém a lápide, e definir outro para o mesmo mês não pode esbarrar nela — daí o
+/// índice parcial, criado à mão na migration (Prisma não modela `WHERE` em @@unique).
+model Budget {
+  id          String
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountCents Int
+  year        Int
+  month       Int
+  updatedAt   DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt   DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq   Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("budgets")
+}
+
+// ============================================
+// Pilar 1: Gestão de Patrimônio (Net Worth)
+//
+// Os modelos abaixo vêm do ROADMAP_INVESTIMENTOS.md e ainda não têm tela no app nem
+// endpoint na API. Ficam no schema para que a primeira migration já reserve o espaço.
+// ============================================
+
+model Asset {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  type         AssetType
+  balanceCents BigInt
+  lastUpdated  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("assets")
+}
+
+enum AssetType {
+  checking
+  savings
+  brokerage
+  real_estate
+  vehicle
+  other
+}
+
+model Liability {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  type         LiabilityType
+  balanceCents BigInt
+  dueDate      String?       @db.VarChar(10)
+  lastUpdated  DateTime      @default(now())
+
+  @@index([userId])
+  @@map("liabilities")
+}
+
+enum LiabilityType {
+  credit_card
+  loan
+  mortgage
+  other
+}
+
+model NetWorthSnapshot {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date                  String   @db.VarChar(10)
+  totalAssetsCents      BigInt
+  totalLiabilitiesCents BigInt
+  netWorthCents         BigInt
+  createdAt             DateTime @default(now())
+
+  @@unique([userId, date])
+  @@map("net_worth_snapshots")
+}
+
+// ============================================
+// Pilar 2: Metas Inteligentes (Sinking Funds)
+// ============================================
+
+model Goal {
+  id                 String     @id @default(uuid())
+  userId             String
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  targetAmountCents  BigInt
+  currentAmountCents BigInt     @default(0)
+  targetDate         String?    @db.VarChar(10)
+  icon               String
+  color              String
+  status             GoalStatus @default(active)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@index([userId])
+  @@map("goals")
+}
+
+enum GoalStatus {
+  active
+  completed
+  paused
+}
+
+// ============================================
+// Pilar 4: Alocação de Portfólio
+// ============================================
+
+model PortfolioAllocation {
+  id                String     @id @default(uuid())
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetClass        AssetClass
+  /// Pontos-base (1% = 100), pelo mesmo motivo de amountCents: nada de float.
+  targetBasisPoints Int
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@unique([userId, assetClass])
+  @@map("portfolio_allocations")
+}
+
+enum AssetClass {
+  renda_fixa
+  acoes_br
+  fiis
+  exterior
+  cripto
+}
+
+// ============================================
+// Pilar 5: Rastreador de Dividendos
+// ============================================
+
+model PassiveIncome {
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetName   String
+  type        PassiveIncomeType
+  amountCents Int
+  date        String            @db.VarChar(10)
+  createdAt   DateTime          @default(now())
+
+  @@index([userId, date])
+  @@map("passive_incomes")
+}
+
+enum PassiveIncomeType {
+  dividend
+  interest
+  rent
+}

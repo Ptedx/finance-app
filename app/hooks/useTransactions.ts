@@ -98,7 +98,7 @@ export const useCategoryStats = (categoryId: string) => {
 	);
 	const category = categories.find((c) => c.id === categoryId);
 
-	const total = categoryTransactions.reduce((sum, transaction) => sum + transaction.amount, 0);
+	const total = categoryTransactions.reduce((sum, transaction) => sum + transaction.amountCents, 0);
 	const count = categoryTransactions.length;
 	const averageAmount = count > 0 ? total / count : 0;
 

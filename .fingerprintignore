@@ -1,0 +1,9 @@
+# Build outputs generated inside node_modules by local `expo run:android` /
+# `gradlew`. They never exist on a fresh EAS install, so leaving them in the
+# fingerprint makes the locally-computed runtimeVersion diverge from the one
+# computed during the EAS build, which aborts the build.
+node_modules/**/android/build/
+node_modules/**/android/.cxx/
+node_modules/**/android/.gradle/
+node_modules/**/ios/build/
+node_modules/**/ios/Pods/

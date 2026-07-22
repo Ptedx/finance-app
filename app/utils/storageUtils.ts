@@ -1,6 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
+ * AsyncStorage keys, declared here so the modules that read and write each one cannot
+ * drift apart on a string literal.
+ */
+export const STORAGE_KEYS = {
+	budgets: 'monthlyBudgets',
+	selectedCurrency: 'selectedCurrency',
+} as const;
+
+/**
  * Reset AsyncStorage data while preserving specified keys
  * @param keysToPreserve Array of keys to preserve in AsyncStorage
  */
@@ -25,5 +34,6 @@ export const resetAsyncStorage = async (keysToPreserve: string[] = []): Promise<
 };
 
 export default {
+	STORAGE_KEYS,
 	resetAsyncStorage,
 };

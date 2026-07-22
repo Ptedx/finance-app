@@ -3,162 +3,207 @@ import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 import {
+	addCategory,
 	addRecurringTransaction,
 	addTransaction,
+	getBudgets,
 	getCategories,
 	resetDatabase,
+	setBudget,
 } from '../database/database';
 import type { Category, RecurringTransaction, Transaction } from '../database/schema';
-import { formatFullDate } from './dateUtils';
+import { getMonthName, todayISO } from './dateUtils';
+import { centsToMajorUnits, majorUnitsToCents } from './money';
+
+/** Bumped when the backup payload changes shape. 2 = amounts in integer cents. */
+const EXPORT_FORMAT_VERSION = 2;
+
+/** A budget as it travels in a backup file, in either the current or the legacy shape. */
+interface ExportedBudget {
+	year: number;
+	month: number;
+	amountCents?: number;
+	/** Backups written before budgets moved to integer cents. */
+	amount?: number;
+}
 
 export interface DatabaseExportData {
+	formatVersion?: number;
 	transactions: Transaction[];
 	categories: Category[];
 	recurringTransactions: RecurringTransaction[];
+	budgets?: ExportedBudget[];
 	exportDate: string;
 }
 
-// Function to convert transactions data to CSV format
-export const transactionsToCSV = (transactions: Transaction[], categories: Category[]): string => {
-	// Create CSV header
-	const header = 'Date,Type,Category,Amount,Note\n';
+// ---------------------------------------------------------------------------
+// CSV helpers
+// ---------------------------------------------------------------------------
 
-	// Create CSV rows
-	const rows = transactions
-		.map((transaction) => {
-			// Find category name
-			const category = categories.find((c) => c.id === transaction.category);
-			const categoryName = category ? category.name : 'Unknown';
-
-			// Format transaction data
-			const date = formatFullDate(transaction.date);
-			const type = transaction.isIncome ? 'Income' : 'Expense';
-			const amount = transaction.amount.toFixed(2);
-			// Make sure notes with commas are properly quoted
-			const note = transaction.note ? `"${transaction.note.replace(/"/g, '""')}"` : '';
-
-			return `${date},${type},${categoryName},${amount},${note}`;
-		})
-		.join('\n');
-
-	return header + rows;
+/**
+ * Quotes a CSV field whenever it could otherwise break the row.
+ *
+ * The previous exporter interpolated values raw, and wrote dates as "July 22, 2026" —
+ * a value containing a comma. Every row shifted a column when opened in a spreadsheet.
+ */
+const csvField = (value: string | number): string => {
+	const text = String(value ?? '');
+	return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-// Function to export data to a CSV file and share it
-// Generate a full financial report as CSV
-export const generateFinancialReport = async (
-	transactions: Transaction[],
-	categories: Category[],
-	monthlyData: {
-		expenses: { month: number; total: number }[];
-		incomes: { month: number; total: number }[];
-	},
-	categoryTotals: {
-		expenses: { categoryId: string; total: number }[];
-		incomes: { categoryId: string; total: number }[];
+const csvRow = (fields: Array<string | number>): string => fields.map(csvField).join(',');
+
+/** Amounts are written as plain decimals so spreadsheets can compute on them. */
+const csvAmount = (amountCents: number): string => centsToMajorUnits(amountCents).toFixed(2);
+
+const categoryNameOf = (categories: Category[], id: string): string =>
+	categories.find((c) => c.id === id)?.name ?? 'Unknown';
+
+export const transactionsToCSV = (transactions: Transaction[], categories: Category[]): string => {
+	const lines = [csvRow(['Date', 'Type', 'Category', 'Amount', 'Note'])];
+
+	for (const transaction of transactions) {
+		lines.push(
+			csvRow([
+				// ISO dates sort correctly and never contain a separator.
+				transaction.date,
+				transaction.isIncome ? 'Income' : 'Expense',
+				categoryNameOf(categories, transaction.category),
+				csvAmount(transaction.amountCents),
+				transaction.note ?? '',
+			])
+		);
 	}
-): Promise<string> => {
-	const lines: string[] = [];
-
-	// Add header
-	lines.push('SPENDR FINANCIAL REPORT');
-	lines.push(`Generated on: ${formatFullDate(new Date().toISOString())}`);
-	lines.push('');
-
-	// Add monthly summary
-	lines.push('MONTHLY SUMMARY');
-	lines.push('Month,Income,Expense,Net');
-
-	// Combine income and expense data by month
-	const allMonths = new Set<number>();
-	monthlyData.expenses.forEach((item) => {
-		allMonths.add(item.month);
-	});
-	monthlyData.incomes.forEach((item) => {
-		allMonths.add(item.month);
-	});
-
-	const sortedMonths = Array.from(allMonths).sort((a, b) => a - b);
-
-	sortedMonths.forEach((month) => {
-		const income = monthlyData.incomes.find((i) => i.month === month)?.total || 0;
-		const expense = monthlyData.expenses.find((e) => e.month === month)?.total || 0;
-		const net = income - expense;
-
-		const monthName = new Date(2000, month - 1, 1).toLocaleString('en-US', { month: 'long' });
-		lines.push(`${monthName},${income.toFixed(2)},${expense.toFixed(2)},${net.toFixed(2)}`);
-	});
-
-	lines.push('');
-
-	// Add category breakdown
-	lines.push('EXPENSE CATEGORIES');
-	lines.push('Category,Amount,Percentage');
-
-	const totalExpenses = categoryTotals.expenses.reduce((sum, item) => sum + item.total, 0);
-
-	categoryTotals.expenses.forEach((item) => {
-		const category = categories.find((c) => c.id === item.categoryId);
-		const categoryName = category ? category.name : 'Unknown';
-		const percentage = totalExpenses > 0 ? (item.total / totalExpenses) * 100 : 0;
-
-		lines.push(`${categoryName},${item.total.toFixed(2)},${percentage.toFixed(2)}%`);
-	});
-
-	lines.push('');
-
-	lines.push('INCOME CATEGORIES');
-	lines.push('Category,Amount,Percentage');
-
-	const totalIncomes = categoryTotals.incomes.reduce((sum, item) => sum + item.total, 0);
-
-	categoryTotals.incomes.forEach((item) => {
-		const category = categories.find((c) => c.id === item.categoryId);
-		const categoryName = category ? category.name : 'Unknown';
-		const percentage = totalIncomes > 0 ? (item.total / totalIncomes) * 100 : 0;
-
-		lines.push(`${categoryName},${item.total.toFixed(2)},${percentage.toFixed(2)}%`);
-	});
-
-	lines.push('');
-
-	// Add transaction list
-	lines.push('TRANSACTIONS');
-	lines.push('Date,Type,Category,Amount,Note');
-
-	transactions
-		.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-		.forEach((transaction) => {
-			const category = categories.find((c) => c.id === transaction.category);
-			const categoryName = category ? category.name : 'Unknown';
-
-			const date = formatFullDate(transaction.date);
-			const type = transaction.isIncome ? 'Income' : 'Expense';
-			const amount = transaction.amount.toFixed(2);
-			const note = transaction.note ? `"${transaction.note.replace(/"/g, '""')}"` : '';
-
-			lines.push(`${date},${type},${categoryName},${amount},${note}`);
-		});
 
 	return lines.join('\n');
 };
 
+/**
+ * Builds the full report.
+ *
+ * Each section states its own scope. The monthly summary covers the whole year while
+ * the category and transaction sections cover the selected period — the previous
+ * version mixed the two under one period-named file with no indication of which was which.
+ */
+export const generateFinancialReport = async (
+	transactions: Transaction[],
+	categories: Category[],
+	monthlyData: {
+		expenses: { month: number; totalCents: number }[];
+		incomes: { month: number; totalCents: number }[];
+	},
+	categoryTotals: {
+		expenses: { categoryId: string; totalCents: number }[];
+		incomes: { categoryId: string; totalCents: number }[];
+	},
+	periodName: string,
+	year: number
+): Promise<string> => {
+	const lines: string[] = [];
+
+	lines.push('SPENDR FINANCIAL REPORT');
+	lines.push(csvRow(['Generated on', todayISO()]));
+	lines.push(csvRow(['Period', periodName]));
+	lines.push('');
+
+	lines.push(`MONTHLY SUMMARY — full year ${year}`);
+	lines.push(csvRow(['Month', 'Income', 'Expense', 'Net']));
+
+	const months = new Set<number>([
+		...monthlyData.expenses.map((e) => e.month),
+		...monthlyData.incomes.map((i) => i.month),
+	]);
+
+	for (const month of Array.from(months).sort((a, b) => a - b)) {
+		const income = monthlyData.incomes.find((i) => i.month === month)?.totalCents ?? 0;
+		const expense = monthlyData.expenses.find((e) => e.month === month)?.totalCents ?? 0;
+
+		lines.push(
+			csvRow([
+				getMonthName(month),
+				csvAmount(income),
+				csvAmount(expense),
+				csvAmount(income - expense),
+			])
+		);
+	}
+
+	lines.push('');
+
+	const appendCategorySection = (
+		heading: string,
+		totals: { categoryId: string; totalCents: number }[]
+	) => {
+		lines.push(`${heading} — ${periodName}`);
+		lines.push(csvRow(['Category', 'Amount', 'Percentage']));
+
+		const sectionTotal = totals.reduce((sum, item) => sum + item.totalCents, 0);
+
+		for (const item of totals) {
+			const percentage = sectionTotal > 0 ? (item.totalCents / sectionTotal) * 100 : 0;
+			lines.push(
+				csvRow([
+					categoryNameOf(categories, item.categoryId),
+					csvAmount(item.totalCents),
+					`${percentage.toFixed(2)}%`,
+				])
+			);
+		}
+
+		lines.push('');
+	};
+
+	appendCategorySection('EXPENSE CATEGORIES', categoryTotals.expenses);
+	appendCategorySection('INCOME CATEGORIES', categoryTotals.incomes);
+
+	lines.push(`TRANSACTIONS — ${periodName}`);
+	lines.push(csvRow(['Date', 'Type', 'Category', 'Amount', 'Note']));
+
+	for (const transaction of [...transactions].sort((a, b) => a.date.localeCompare(b.date))) {
+		lines.push(
+			csvRow([
+				transaction.date,
+				transaction.isIncome ? 'Income' : 'Expense',
+				categoryNameOf(categories, transaction.category),
+				csvAmount(transaction.amountCents),
+				transaction.note ?? '',
+			])
+		);
+	}
+
+	return lines.join('\n');
+};
+
+// ---------------------------------------------------------------------------
+// File output
+// ---------------------------------------------------------------------------
+
+const shareFile = async (fileName: string, content: string, mimeType: string, title: string) => {
+	const file = new File(Paths.document, fileName);
+	file.write(content);
+
+	await Sharing.shareAsync(file.uri, {
+		mimeType,
+		dialogTitle: title,
+		UTI: mimeType === 'application/json' ? 'public.json' : 'public.comma-separated-values-text',
+	});
+};
+
+const timestamp = (): string => todayISO().replace(/-/g, '');
+
 export const exportToCSV = async (
 	transactions: Transaction[],
 	categories: Category[],
-	fileName = 'spendr_export' as string // Type assertion for default value
+	fileName = 'spendr_export'
 ): Promise<void> => {
 	try {
-		const csvContent = transactionsToCSV(transactions, categories);
 		const finalFileName = fileName.endsWith('.csv') ? fileName : `${fileName}.csv`;
-		const file = new File(Paths.document, finalFileName);
-		file.write(csvContent);
-
-		await Sharing.shareAsync(file.uri, {
-			mimeType: 'text/csv',
-			dialogTitle: 'Export Transactions',
-			UTI: 'public.comma-separated-values-text',
-		});
+		await shareFile(
+			finalFileName,
+			transactionsToCSV(transactions, categories),
+			'text/csv',
+			'Export Transactions'
+		);
 	} catch (error) {
 		console.error('Error exporting to CSV:', error);
 		Alert.alert('Export Failed', 'There was an error exporting your data. Please try again.');
@@ -166,67 +211,41 @@ export const exportToCSV = async (
 	}
 };
 
-// Function to export specific period data
 export const exportPeriodData = async (
 	transactions: Transaction[],
 	categories: Category[],
 	periodName: string
 ): Promise<void> => {
-	try {
-		const date = new Date();
-		const timestamp = `${date.getFullYear()}${(date.getMonth() + 1)
-			.toString()
-			.padStart(2, '0')}${date.getDate().toString().padStart(2, '0')}`;
-
-		const fileName = `spendr_${periodName.toLowerCase().replace(/\s+/g, '_')}_${timestamp}.csv`;
-
-		await exportToCSV(transactions, categories, fileName);
-	} catch (error) {
-		console.error('Error exporting period data:', error);
-		Alert.alert('Export Failed', 'There was an error exporting your data. Please try again.');
-		throw error;
-	}
+	const fileName = `spendr_${periodName.toLowerCase().replace(/\s+/g, '_')}_${timestamp()}.csv`;
+	await exportToCSV(transactions, categories, fileName);
 };
 
-// Export comprehensive financial report
 export const exportFinancialReport = async (
 	transactions: Transaction[],
 	categories: Category[],
 	monthlyData: {
-		expenses: { month: number; total: number }[];
-		incomes: { month: number; total: number }[];
+		expenses: { month: number; totalCents: number }[];
+		incomes: { month: number; totalCents: number }[];
 	},
 	categoryTotals: {
-		expenses: { categoryId: string; total: number }[];
-		incomes: { categoryId: string; total: number }[];
+		expenses: { categoryId: string; totalCents: number }[];
+		incomes: { categoryId: string; totalCents: number }[];
 	},
-	periodName: string
+	periodName: string,
+	year: number
 ): Promise<void> => {
 	try {
-		const date = new Date();
-		const timestamp = `${date.getFullYear()}${(date.getMonth() + 1).toString().padStart(2, '0')}${date.getDate().toString().padStart(2, '0')}`;
-		const fileName = `spendr_report_${periodName.toLowerCase().replace(/\s+/g, '_')}_${timestamp}.csv`;
-
-		// Generate report content
+		const fileName = `spendr_report_${periodName.toLowerCase().replace(/\s+/g, '_')}_${timestamp()}.csv`;
 		const reportContent = await generateFinancialReport(
 			transactions,
 			categories,
 			monthlyData,
-			categoryTotals
+			categoryTotals,
+			periodName,
+			year
 		);
 
-		// Create file in app's document directory
-		const file = new File(Paths.document, fileName);
-		file.write(reportContent);
-
-		// Share the file
-		await Sharing.shareAsync(file.uri, {
-			mimeType: 'text/csv',
-			dialogTitle: 'Share Financial Report',
-			UTI: 'public.comma-separated-values-text',
-		});
-
-		return;
+		await shareFile(fileName, reportContent, 'text/csv', 'Share Financial Report');
 	} catch (error) {
 		console.error('Error exporting financial report:', error);
 		Alert.alert(
@@ -237,8 +256,15 @@ export const exportFinancialReport = async (
 	}
 };
 
+// ---------------------------------------------------------------------------
+// Backup and restore
+// ---------------------------------------------------------------------------
+
 /**
- * Export complete database data to a JSON file
+ * Writes a complete backup.
+ *
+ * Budgets are included: they live in AsyncStorage rather than SQLite, and were
+ * previously left out entirely — restoring a backup silently discarded them.
  */
 export const exportDatabaseData = async (
 	transactions: Transaction[],
@@ -246,38 +272,35 @@ export const exportDatabaseData = async (
 	recurringTransactions: RecurringTransaction[]
 ): Promise<void> => {
 	try {
-		// Create the export data structure
+		// Budgets moved from AsyncStorage into SQLite in schema v4; only the year, month
+		// and amount belong in a backup — sync bookkeeping is per-device.
+		const budgets = (await getBudgets()).map(({ year, month, amountCents }) => ({
+			year,
+			month,
+			amountCents,
+		}));
+
 		const exportData: DatabaseExportData = {
+			formatVersion: EXPORT_FORMAT_VERSION,
 			transactions,
 			categories,
 			recurringTransactions,
+			budgets,
 			exportDate: new Date().toISOString(),
 		};
 
-		// Convert to JSON string
-		const jsonData = JSON.stringify(exportData, null, 2);
-
-		// Generate a filename with timestamp
-		const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-		const fileName = `spendr_backup_${timestamp}.json`;
-
-		// Create the file in app's document directory
-		const file = new File(Paths.document, fileName);
-		file.write(jsonData);
-
-		// Share the file
-		await Sharing.shareAsync(file.uri, {
-			mimeType: 'application/json',
-			dialogTitle: 'Share app data backup',
-			UTI: 'public.json',
-		});
+		const fileName = `spendr_backup_${timestamp()}.json`;
+		await shareFile(
+			fileName,
+			JSON.stringify(exportData, null, 2),
+			'application/json',
+			'Share app data backup'
+		);
 
 		Alert.alert(
 			'Export Successful',
 			'Your data has been exported successfully. You can save this file for backup purposes.'
 		);
-
-		return;
 	} catch (error) {
 		console.error('Error exporting database data:', error);
 		Alert.alert('Export Failed', 'There was an error exporting your data. Please try again.');
@@ -285,9 +308,13 @@ export const exportDatabaseData = async (
 	}
 };
 
-/**
- * Import database data from a JSON file
- */
+/** Reads an amount from a backup entry, accepting both cents and legacy float formats. */
+const readAmountCents = (entry: { amountCents?: number; amount?: number }): number => {
+	if (typeof entry.amountCents === 'number') return entry.amountCents;
+	if (typeof entry.amount === 'number') return majorUnitsToCents(entry.amount);
+	return 0;
+};
+
 export const importDatabaseData = async (): Promise<{
 	success: boolean;
 	message: string;
@@ -298,36 +325,22 @@ export const importDatabaseData = async (): Promise<{
 	};
 }> => {
 	try {
-		// Use document picker to select a file
 		const result = await DocumentPicker.getDocumentAsync({
 			type: 'application/json',
 			copyToCacheDirectory: true,
 		});
 
 		if (result.canceled) {
-			return {
-				success: false,
-				message: 'Import canceled.',
-			};
+			return { success: false, message: 'Import canceled.' };
 		}
 
-		// Check if we have the file URI
-		if (!result.assets || !result.assets[0] || !result.assets[0].uri) {
-			return {
-				success: false,
-				message: 'Could not access the selected file.',
-			};
+		const fileUri = result.assets?.[0]?.uri;
+		if (!fileUri) {
+			return { success: false, message: 'Could not access the selected file.' };
 		}
 
-		const fileUri = result.assets[0].uri;
+		const importData = JSON.parse(await new File(fileUri).text()) as DatabaseExportData;
 
-		// Read the file content
-		const fileContent = await new File(fileUri).text();
-
-		// Parse the JSON data
-		const importData = JSON.parse(fileContent) as DatabaseExportData;
-
-		// Validate the data structure
 		if (!validateImportData(importData)) {
 			return {
 				success: false,
@@ -335,29 +348,42 @@ export const importDatabaseData = async (): Promise<{
 			};
 		}
 
-		// Get existing categories to check if we need to add them
-		const existingCategories = await getCategories();
-		const existingCategoryIds = new Set(existingCategories.map((c) => c.id));
-
-		// Reset the database first
 		await resetDatabase();
 
-		// Import transactions
+		// Categories first: transactions reference them, and a restore that skipped them
+		// left every imported transaction pointing at an id that no longer existed.
+		const existingIds = new Set((await getCategories()).map((c) => c.id));
+
+		for (const category of importData.categories) {
+			if (existingIds.has(category.id)) continue;
+			await addCategory(category);
+			existingIds.add(category.id);
+		}
+
 		for (const transaction of importData.transactions) {
 			await addTransaction({
-				amount: transaction.amount,
-				category: transaction.category,
+				amountCents: readAmountCents(transaction),
+				category: existingIds.has(transaction.category) ? transaction.category : 'uncategorized',
 				date: transaction.date,
 				note: transaction.note,
 				isIncome: transaction.isIncome,
 			});
 		}
 
-		// Import recurring transactions
-		for (const recurringTx of importData.recurringTransactions) {
-			// We need to format the data to match what addRecurringTransaction expects
-			const { id, lastProcessed, nextDue, ...txData } = recurringTx;
-			await addRecurringTransaction(txData);
+		for (const recurring of importData.recurringTransactions) {
+			const { id: _id, lastProcessed: _lp, nextDue: _nd, ...rule } = recurring;
+			await addRecurringTransaction({
+				...rule,
+				amountCents: readAmountCents(recurring),
+				category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
+			});
+		}
+
+		if (Array.isArray(importData.budgets)) {
+			for (const budget of importData.budgets) {
+				if (!Number.isFinite(budget?.year) || !Number.isFinite(budget?.month)) continue;
+				await setBudget(budget.year, budget.month, readAmountCents(budget));
+			}
 		}
 
 		return {
@@ -378,16 +404,10 @@ export const importDatabaseData = async (): Promise<{
 	}
 };
 
-/**
- * Validate the imported data structure
- */
-
-// biome-ignore lint/suspicious/noExplicitAny: <explanation>
+// biome-ignore lint/suspicious/noExplicitAny: validating untrusted JSON from disk
 const validateImportData = (data: any): data is DatabaseExportData => {
-	// Basic structure validation
 	if (!data || typeof data !== 'object') return false;
 
-	// Check required properties
 	if (
 		!Array.isArray(data.transactions) ||
 		!Array.isArray(data.categories) ||
@@ -397,15 +417,16 @@ const validateImportData = (data: any): data is DatabaseExportData => {
 		return false;
 	}
 
-	// Check a sample transaction for structure
 	if (data.transactions.length > 0) {
-		const sampleTx = data.transactions[0];
+		const sample = data.transactions[0];
+		const hasAmount = typeof sample.amountCents === 'number' || typeof sample.amount === 'number';
+
 		if (
-			typeof sampleTx.id !== 'string' ||
-			typeof sampleTx.amount !== 'number' ||
-			typeof sampleTx.category !== 'string' ||
-			typeof sampleTx.date !== 'string' ||
-			typeof sampleTx.isIncome !== 'boolean'
+			typeof sample.id !== 'string' ||
+			!hasAmount ||
+			typeof sample.category !== 'string' ||
+			typeof sample.date !== 'string' ||
+			typeof sample.isIncome !== 'boolean'
 		) {
 			return false;
 		}

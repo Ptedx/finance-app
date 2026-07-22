@@ -3,22 +3,27 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
 import {
 	addRecurringTransaction,
-	calculateNextDueDate,
 	deleteRecurringTransaction,
 	getRecurringTransactions,
 	processRecurringTransactions,
 	updateRecurringTransaction,
 } from '../database/database';
-import type { RecurringTransaction } from '../database/schema';
+import type {
+	RecurringTransaction,
+	RecurringTransactionDraft,
+	RecurringTransactionEdit,
+} from '../database/schema';
+import * as syncQueue from '../sync/queue';
+import { parseISODate, todayISO } from '../utils/dateUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 
 interface RecurringTransactionsContextType {
 	transactions: RecurringTransaction[];
 	isLoading: boolean;
 	addTransaction: (
-		transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
+		transaction: RecurringTransactionDraft
 	) => Promise<string>;
-	updateTransaction: (transaction: RecurringTransaction) => Promise<void>;
+	updateTransaction: (transaction: RecurringTransactionEdit) => Promise<void>;
 	removeTransaction: (id: string) => Promise<void>;
 	processTransactions: () => Promise<void>;
 	refreshTransactions: () => Promise<void>;
@@ -64,36 +69,30 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		}
 	};
 
-	const addTransaction = async (
-		transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
-	) => {
+	const addTransaction = async (transaction: RecurringTransactionDraft) => {
 		try {
 			const id = await addRecurringTransaction(transaction);
 
 			// Get the complete transaction with the calculated nextDue date
 			const addedTransaction = (await getRecurringTransactions()).find((t) => t.id === id);
 
-			// Only schedule notification if the transaction's due date is not today and within 30 days
-			// biome-ignore lint/complexity/useOptionalChain: both checks are needed to narrow the type and avoid optional chaining on a possibly-undefined object
-			if (addedTransaction && addedTransaction.nextDue) {
-				const dueDate = new Date(addedTransaction.nextDue);
-				const now = new Date();
-				now.setHours(0, 0, 0, 0); // Reset time to beginning of day for comparison
+			// Notify a day ahead, but only for due dates that are actually in the future
+			// and near enough to be worth a reminder. Comparisons are on calendar dates,
+			// parsed locally — `new Date('2026-07-22')` would be a UTC instant.
+			if (addedTransaction?.nextDue) {
+				const today = todayISO();
+				const dueDate = parseISODate(addedTransaction.nextDue);
+				const daysUntilDue = Math.round(
+					(dueDate.getTime() - parseISODate(today).getTime()) / 86_400_000
+				);
 
-				const thirtyDaysFromNow = new Date();
-				thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-
-				// Calculate notification date (1 day before due date)
-				const notificationDate = new Date(dueDate);
-				notificationDate.setDate(notificationDate.getDate() - 1);
-
-				// Only schedule if notification should happen in the future
-				if (dueDate > now && dueDate <= thirtyDaysFromNow && notificationDate > now) {
+				if (daysUntilDue >= 2 && daysUntilDue <= 30) {
 					await notificationUtils.scheduleTransactionNotification(addedTransaction, dueDate);
 				}
 			}
 
 			await refreshTransactions();
+			syncQueue.schedule();
 			return id;
 		} catch (error) {
 			console.error('Error adding recurring transaction:', error);
@@ -102,27 +101,25 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		}
 	};
 
-	const updateTransaction = async (transaction: RecurringTransaction) => {
+	const updateTransaction = async (transaction: RecurringTransactionEdit) => {
 		try {
-			// Calculate the next due date if it's not provided
-			if (!transaction.nextDue) {
-				transaction.nextDue = calculateNextDueDate(transaction);
-			}
-
+			// The next due date is derived from the rule inside updateRecurringTransaction,
+			// so editing the day of the month takes effect immediately rather than a cycle late.
 			await updateRecurringTransaction(transaction);
 
-			// Cancel any existing notification
 			await notificationUtils.cancelTransactionNotification(transaction.id);
 
-			// Schedule a new notification if the transaction is active
-			if (transaction.active && transaction.nextDue) {
+			const stored = (await getRecurringTransactions()).find((t) => t.id === transaction.id);
+
+			if (stored?.active && stored.nextDue) {
 				await notificationUtils.scheduleTransactionNotification(
-					transaction,
-					new Date(transaction.nextDue)
+					stored,
+					parseISODate(stored.nextDue)
 				);
 			}
 
 			await refreshTransactions();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error updating recurring transaction:', error);
 			Alert.alert('Error', 'Failed to update recurring transaction.');
@@ -137,6 +134,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 
 			await deleteRecurringTransaction(id);
 			await refreshTransactions();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error deleting recurring transaction:', error);
 			Alert.alert('Error', 'Failed to delete recurring transaction.');
@@ -153,7 +151,7 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 
 			// Clear notification markers for processed transactions
 			// (we can identify them by having a lastProcessed date that's the current date)
-			const today = new Date().toISOString().split('T')[0];
+			const today = todayISO();
 			for (const transaction of updatedTransactions) {
 				if (transaction.lastProcessed === today) {
 					await notificationUtils.cancelTransactionNotification(transaction.id);
@@ -164,6 +162,9 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 			await notificationUtils.checkAndScheduleNotifications(updatedTransactions);
 
 			await refreshTransactions();
+			// As ocorrências lançadas têm id determinístico, então subir aqui é seguro
+			// mesmo que outro aparelho tenha lançado as mesmas: o upsert as funde.
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Error processing recurring transactions:', error);
 			Alert.alert('Error', 'Failed to process recurring transactions.');

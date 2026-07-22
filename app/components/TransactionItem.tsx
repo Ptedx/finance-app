@@ -4,8 +4,8 @@ import { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
-import { formatCurrency } from '../utils/currencyUtils';
 import { formatDate } from '../utils/dateUtils';
+import { formatCents } from '../utils/money';
 
 interface TransactionItemProps {
 	transaction: Transaction;
@@ -45,7 +45,7 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress 
 				<Text
 					style={[styles.amount, transaction.isIncome ? styles.incomeAmount : styles.expenseAmount]}
 				>
-					{transaction.isIncome ? '+' : '-'} {formatCurrency(transaction.amount)}
+					{transaction.isIncome ? '+' : '-'} {formatCents(transaction.amountCents)}
 				</Text>
 				<Text style={styles.date}>{formatDate(transaction.date)}</Text>
 			</View>
@@ -107,7 +107,7 @@ export default memo(TransactionItem, (prevProps, nextProps) => {
 	// Custom comparison function for deeper comparison
 	return (
 		prevProps.transaction.id === nextProps.transaction.id &&
-		prevProps.transaction.amount === nextProps.transaction.amount &&
+		prevProps.transaction.amountCents === nextProps.transaction.amountCents &&
 		prevProps.transaction.category === nextProps.transaction.category &&
 		prevProps.transaction.date === nextProps.transaction.date &&
 		prevProps.transaction.note === nextProps.transaction.note &&

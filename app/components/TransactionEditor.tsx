@@ -13,8 +13,11 @@ import {
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { RecurringTransaction } from '../database/schema';
-import { parseAmount } from '../utils/currencyUtils';
+import type {
+	RecurringTransaction,
+	RecurringTransactionDraft,
+} from '../database/schema';
+import { centsToInputString, isValidAmountInput, parseAmountToCents } from '../utils/money';
 import HorizontalCategoryPicker from './HorizontalCategoryPicker';
 
 // Transaction recurrence types
@@ -57,7 +60,7 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
 	useEffect(() => {
 		if (initialTransaction) {
-			setAmount(initialTransaction.amount.toString());
+			setAmount(centsToInputString(initialTransaction.amountCents));
 			setNote(initialTransaction.note || '');
 			setRecurrenceType(initialTransaction.recurrenceType || 'monthly');
 			setSelectedCategory(initialTransaction.category || null);
@@ -88,7 +91,7 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 	}, [initialTransaction, isVisible]);
 
 	const validateForm = (): boolean => {
-		if (!amount || parseAmount(amount) <= 0) {
+		if (!isValidAmountInput(amount)) {
 			Alert.alert('Invalid Amount', 'Please enter a valid amount greater than zero.');
 			return false;
 		}
@@ -107,11 +110,9 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 		try {
 			setIsSubmitting(true);
 
-			// Prepare transaction data based on recurrence type
-			const parsedAmount = parseAmount(amount);
-
-			const transactionData: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'> = {
-				amount: parsedAmount,
+			const transactionData: RecurringTransactionDraft = {
+				// biome-ignore lint/style/noNonNullAssertion: validateForm guarantees a positive amount
+				amountCents: parseAmountToCents(amount)!,
 				note,
 				recurrenceType,
 				isIncome,
@@ -351,6 +352,7 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 									categories={categories}
 									selectedCategoryId={selectedCategory}
 									onSelectCategory={handleSelectCategory}
+									isIncome={isIncome}
 								/>
 							</View>
 

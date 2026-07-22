@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import type { RecurringTransaction } from '../database/schema';
-import { formatCurrency } from './currencyUtils';
+import { formatCents } from './money';
 
 // Keys for storing notification settings
 const NOTIFICATIONS_ENABLED_KEY = '@spendr_notifications_enabled';
@@ -88,7 +88,10 @@ export const registerForPushNotificationsAsync = async (): Promise<string | null
 
 		return token;
 	} catch (error) {
-		console.error('Error in registerForPushNotificationsAsync:', error);
+		console.warn(
+			'Error in registerForPushNotificationsAsync (Firebase likely not configured):',
+			error
+		);
 		return null;
 	}
 };
@@ -144,7 +147,7 @@ export const scheduleTransactionNotification = async (
 
 		if (notificationDate < new Date()) return null;
 
-		const amount = formatCurrency(transaction.amount);
+		const amount = formatCents(transaction.amountCents);
 
 		const content = {
 			title: transaction.isIncome ? 'Upcoming Income' : 'Upcoming Expense',

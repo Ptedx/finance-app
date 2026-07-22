@@ -1,93 +1,81 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
+import { clearBudget, getBudgets, setBudget } from '../database/database';
+import type { Budget } from '../database/schema';
+import * as syncQueue from '../sync/queue';
 import { usePeriod } from './PeriodContext';
 
-interface MonthlyBudget {
-	year: number;
-	month: number; // 1-12
-	amount: number;
-}
-
 interface BudgetContextType {
-	currentBudget: number | null;
-	setBudgetForCurrentPeriod: (amount: number) => Promise<void>;
+	/** Budget for the selected period, in cents, or null when none is set. */
+	currentBudgetCents: number | null;
+	setBudgetForCurrentPeriod: (amountCents: number) => Promise<void>;
 	clearBudgetForCurrentPeriod: () => Promise<void>;
+	/**
+	 * Rescales every stored budget when the ledger's currency changes.
+	 *
+	 * The rescaling itself now happens in SQL, alongside the transactions', so the two
+	 * cannot end up converted at different rates. This only refreshes what is on screen.
+	 */
+	convertBudgets: (rate: number) => Promise<void>;
 }
 
 const BudgetContext = createContext<BudgetContextType | undefined>(undefined);
 
 export const BudgetProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 	const { selectedMonth, selectedYear } = usePeriod();
-	const [budgets, setBudgets] = useState<MonthlyBudget[]>([]);
-	const [currentBudget, setCurrentBudget] = useState<number | null>(null);
+	const [budgets, setBudgets] = useState<Budget[]>([]);
+	const [currentBudgetCents, setCurrentBudgetCents] = useState<number | null>(null);
 
-	// Load all budgets from storage on initial render
+	const reload = async () => {
+		try {
+			setBudgets(await getBudgets());
+		} catch (error) {
+			console.error('Failed to load budgets:', error);
+		}
+	};
+
+	// Budgets live in SQLite from schema v4 on; the migration imports whatever was in
+	// AsyncStorage, so an upgrading install finds its months already here.
 	useEffect(() => {
-		const loadBudgets = async () => {
-			try {
-				const storedBudgets = await AsyncStorage.getItem('monthlyBudgets');
-				if (storedBudgets) {
-					setBudgets(JSON.parse(storedBudgets));
-				}
-			} catch (error) {
-				console.error('Failed to load budgets:', error);
-			}
-		};
-
-		loadBudgets();
+		reload();
 	}, []);
 
 	// Update current budget when period or budgets change
 	useEffect(() => {
 		const budget = budgets.find((b) => b.year === selectedYear && b.month === selectedMonth);
 
-		setCurrentBudget(budget ? budget.amount : null);
+		setCurrentBudgetCents(budget ? budget.amountCents : null);
 	}, [selectedMonth, selectedYear, budgets]);
 
-	// Save budget for current period
-	const setBudgetForCurrentPeriod = async (amount: number) => {
+	const setBudgetForCurrentPeriod = async (amountCents: number) => {
 		try {
-			// Remove existing budget for this period if any
-			const filteredBudgets = budgets.filter(
-				(b) => !(b.year === selectedYear && b.month === selectedMonth)
-			);
-
-			// Add new budget
-			const newBudgets = [...filteredBudgets, { year: selectedYear, month: selectedMonth, amount }];
-
-			// Save to storage
-			await AsyncStorage.setItem('monthlyBudgets', JSON.stringify(newBudgets));
-
-			// Update state
-			setBudgets(newBudgets);
+			await setBudget(selectedYear, selectedMonth, amountCents);
+			await reload();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Failed to save budget:', error);
 		}
 	};
 
-	// Clear budget for current period
+	const convertBudgets = async (_rate: number) => {
+		await reload();
+	};
+
 	const clearBudgetForCurrentPeriod = async () => {
 		try {
-			// Remove budget for this period
-			const newBudgets = budgets.filter(
-				(b) => !(b.year === selectedYear && b.month === selectedMonth)
-			);
-
-			// Save to storage
-			await AsyncStorage.setItem('monthlyBudgets', JSON.stringify(newBudgets));
-
-			// Update state
-			setBudgets(newBudgets);
+			await clearBudget(selectedYear, selectedMonth);
+			await reload();
+			syncQueue.schedule();
 		} catch (error) {
 			console.error('Failed to clear budget:', error);
 		}
 	};
 
 	const value = {
-		currentBudget,
+		currentBudgetCents,
 		setBudgetForCurrentPeriod,
 		clearBudgetForCurrentPeriod,
+		convertBudgets,
 	};
 
 	return <BudgetContext.Provider value={value}>{children}</BudgetContext.Provider>;

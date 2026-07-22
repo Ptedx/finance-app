@@ -3,41 +3,55 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useBudget } from '../contexts/BudgetContext';
-import { formatCurrency } from '../utils/currencyUtils';
+import { formatCents } from '../utils/money';
 import BudgetEditor from './BudgetEditor';
 import PeriodSelector from './PeriodSelector';
 
 interface SummaryProps {
-	spent: number;
-	income: number;
-	net: number;
+	/** Expenses in the selected period, in cents. */
+	expenseCents: number;
+	/** Income in the selected period, in cents. */
+	incomeCents: number;
+	/** Income minus expenses for the selected period, in cents. */
+	netCents: number;
+	/** All-time balance up to today, in cents. Not scoped to the period. */
+	balanceCents: number;
 	title?: string;
 	showPercentage?: boolean;
 }
 
 const Summary: React.FC<SummaryProps> = ({
-	spent,
-	income: _income,
-	net,
+	expenseCents,
+	incomeCents,
+	netCents,
+	balanceCents,
 	title,
 	showPercentage = true,
 }) => {
 	const { t } = useTranslation();
 	const [showBudgetEditor, setShowBudgetEditor] = useState(false);
-	const { currentBudget } = useBudget();
+	const { currentBudgetCents } = useBudget();
 
 	const displayTitle = title ?? t('summary.monthlySummary');
 
-	const budget = currentBudget !== null ? currentBudget : 0;
-	const isBudgetSet = currentBudget !== null;
+	const isBudgetSet = currentBudgetCents !== null;
+	const budgetCents = currentBudgetCents ?? 0;
 
-	const percentUsed = isBudgetSet && budget > 0 ? (spent / budget) * 100 : 0;
-	const remaining = isBudgetSet ? budget - spent : 0;
-	const isOverBudget = isBudgetSet && spent > budget;
+	// Integer cents throughout, so the over-budget comparison is exact at the boundary.
+	const percentUsed = isBudgetSet && budgetCents > 0 ? (expenseCents / budgetCents) * 100 : 0;
+	const remainingCents = isBudgetSet ? budgetCents - expenseCents : 0;
+	const isOverBudget = isBudgetSet && expenseCents > budgetCents;
 
 	const handleEditBudget = () => {
 		setShowBudgetEditor(true);
 	};
+
+	const amountTone = (cents: number) =>
+		cents === 0
+			? styles.neutralValue
+			: cents > 0
+				? styles.positiveNetValue
+				: styles.negativeNetValue;
 
 	return (
 		<View style={styles.container}>
@@ -48,20 +62,35 @@ const Summary: React.FC<SummaryProps> = ({
 				</View>
 			</View>
 
-			{/* Net Value */}
+			{/* Result for the selected period */}
 			<View style={styles.netContainer}>
-				<Text style={styles.netLabel}>{t('summary.balance')}</Text>
-				<Text
-					style={[
-						styles.netValue,
-						net === 0
-							? styles.neutralValue
-							: net > 0
-								? styles.positiveNetValue
-								: styles.negativeNetValue,
-					]}
-				>
-					{formatCurrency(net)}
+				<Text style={styles.netLabel}>{t('summary.monthResult')}</Text>
+				<Text style={[styles.netValue, amountTone(netCents)]}>{formatCents(netCents)}</Text>
+			</View>
+
+			{/* The two components of that result, so the figures visibly add up */}
+			<View style={styles.breakdownRow}>
+				<View style={styles.breakdownItem}>
+					<Text style={styles.breakdownLabel}>{t('summary.income')}</Text>
+					<Text style={[styles.breakdownValue, styles.positiveNetValue]}>
+						{formatCents(incomeCents)}
+					</Text>
+				</View>
+				<View style={[styles.breakdownItem, styles.breakdownItemRight]}>
+					<Text style={styles.breakdownLabel}>{t('summary.expenses')}</Text>
+					<Text style={[styles.breakdownValue, styles.negativeNetValue]}>
+						{formatCents(expenseCents)}
+					</Text>
+				</View>
+			</View>
+
+			<View style={styles.divider} />
+
+			{/* All-time balance, kept visually separate from the period figures above */}
+			<View style={styles.balanceRow}>
+				<Text style={styles.balanceLabel}>{t('summary.accumulatedBalance')}</Text>
+				<Text style={[styles.balanceValue, amountTone(balanceCents)]}>
+					{formatCents(balanceCents)}
 				</Text>
 			</View>
 
@@ -73,7 +102,7 @@ const Summary: React.FC<SummaryProps> = ({
 					<View style={styles.budgetRow}>
 						<Text style={styles.budgetLabel}>{t('summary.budget')}</Text>
 						<View style={styles.budgetValueContainer}>
-							<Text style={styles.budgetValue}>{formatCurrency(budget)}</Text>
+							<Text style={styles.budgetValue}>{formatCents(budgetCents)}</Text>
 							<TouchableOpacity onPress={handleEditBudget} style={styles.editButton}>
 								<Text style={styles.editButtonText}>{t('summary.edit')}</Text>
 							</TouchableOpacity>
@@ -95,8 +124,7 @@ const Summary: React.FC<SummaryProps> = ({
 						<Text style={[styles.progressText, isOverBudget && styles.overBudgetText]}>
 							{t('summary.percentUsed', { percent: percentUsed.toFixed(0) })} •{' '}
 							{isOverBudget ? `${t('summary.overBudgetBy')} ` : ''}
-							{formatCurrency(Math.abs(remaining))}{' '}
-							{!isOverBudget ? t('summary.remaining') : ''}
+							{formatCents(Math.abs(remainingCents))} {!isOverBudget ? t('summary.remaining') : ''}
 						</Text>
 					)}
 				</>
@@ -166,6 +194,39 @@ const styles = StyleSheet.create({
 	},
 	netValue: {
 		fontSize: 36,
+		fontWeight: '700',
+	},
+	breakdownRow: {
+		flexDirection: 'row',
+		justifyContent: 'space-between',
+		paddingTop: 4,
+	},
+	breakdownItem: {
+		flex: 1,
+	},
+	breakdownItemRight: {
+		alignItems: 'flex-end',
+	},
+	breakdownLabel: {
+		fontSize: 12,
+		color: '#888888',
+		marginBottom: 2,
+	},
+	breakdownValue: {
+		fontSize: 15,
+		fontWeight: '600',
+	},
+	balanceRow: {
+		flexDirection: 'row',
+		justifyContent: 'space-between',
+		alignItems: 'center',
+	},
+	balanceLabel: {
+		fontSize: 14,
+		color: '#888888',
+	},
+	balanceValue: {
+		fontSize: 18,
 		fontWeight: '700',
 	},
 	neutralValue: {

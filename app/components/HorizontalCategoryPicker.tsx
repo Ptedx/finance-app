@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { router } from 'expo-router';
 import type React from 'react';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { Category } from '../database/schema';
 
@@ -10,24 +10,24 @@ interface HorizontalCategoryPickerProps {
 	categories: Category[];
 	selectedCategoryId: string | null;
 	onSelectCategory: (categoryId: string) => void;
+	isIncome?: boolean;
 }
 
 const HorizontalCategoryPicker: React.FC<HorizontalCategoryPickerProps> = ({
 	categories,
 	selectedCategoryId,
 	onSelectCategory,
+	isIncome = false,
 }) => {
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
 	const handleEditCategories = useCallback(() => {
 		router.push('/screens/CategoryManagementScreen');
-	}, [router]);
+	}, []);
 
-	// Debugging to check if categories are being passed correctly
-	console.log(
-		'Categories in HorizontalCategoryPicker:',
-		categories.map((c) => c.name)
-	);
-	console.log('Selected category ID:', selectedCategoryId);
+	// Match the side of the ledger being recorded, as the full picker does.
+	const visibleCategories = useMemo(() => {
+		const wanted = isIncome ? 'income' : 'expense';
+		return categories.filter((c) => c.id !== 'uncategorized' && c.type === wanted);
+	}, [categories, isIncome]);
 
 	return (
 		<View style={styles.container}>
@@ -37,7 +37,7 @@ const HorizontalCategoryPicker: React.FC<HorizontalCategoryPickerProps> = ({
 					<Text style={styles.editButtonText}>Edit Categories</Text>
 				</TouchableOpacity>
 			</View>
-			{categories.length === 0 ? (
+			{visibleCategories.length === 0 ? (
 				<Text style={styles.emptyText}>No categories available</Text>
 			) : (
 				<ScrollView
@@ -45,7 +45,7 @@ const HorizontalCategoryPicker: React.FC<HorizontalCategoryPickerProps> = ({
 					showsHorizontalScrollIndicator={false}
 					contentContainerStyle={styles.categoriesContainer}
 				>
-					{categories.map((category) => (
+					{visibleCategories.map((category) => (
 						<TouchableOpacity
 							key={category.id}
 							style={[

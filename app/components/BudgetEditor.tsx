@@ -6,7 +6,7 @@ import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } fro
 import { useBudget } from '../contexts/BudgetContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { usePeriod } from '../contexts/PeriodContext';
-import { formatCurrency, parseAmount } from '../utils/currencyUtils';
+import { centsToInputString, formatCents, parseAmountToCents } from '../utils/money';
 
 interface BudgetEditorProps {
 	isVisible: boolean;
@@ -15,24 +15,25 @@ interface BudgetEditorProps {
 
 const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 	const { t } = useTranslation();
-	const { currentBudget, setBudgetForCurrentPeriod, clearBudgetForCurrentPeriod } = useBudget();
+	const { currentBudgetCents, setBudgetForCurrentPeriod, clearBudgetForCurrentPeriod } =
+		useBudget();
 	const { selectedMonthName, selectedYear } = usePeriod();
 	const { currentCurrency } = useCurrency();
 
 	const [budgetInput, setBudgetInput] = useState(
-		currentBudget !== null ? currentBudget.toString() : ''
+		currentBudgetCents !== null ? centsToInputString(currentBudgetCents) : ''
 	);
 
 	const handleSave = async () => {
 		try {
-			const amount = parseAmount(budgetInput);
+			const amountCents = parseAmountToCents(budgetInput);
 
-			if (Number.isNaN(amount) || amount <= 0) {
+			if (amountCents === null || amountCents <= 0) {
 				Alert.alert(t('budgetEditor.invalidBudget'), t('budgetEditor.invalidBudgetMsg'));
 				return;
 			}
 
-			await setBudgetForCurrentPeriod(amount);
+			await setBudgetForCurrentPeriod(amountCents);
 			onClose();
 		} catch (error) {
 			console.error('Failed to save budget:', error);
@@ -75,7 +76,9 @@ const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 					<View style={styles.currentBudgetContainer}>
 						<Text style={styles.currentBudgetLabel}>{t('budgetEditor.currentBudget')}</Text>
 						<Text style={styles.currentBudgetValue}>
-							{currentBudget !== null ? formatCurrency(currentBudget) : t('budgetEditor.notSet')}
+							{currentBudgetCents !== null
+								? formatCents(currentBudgetCents)
+								: t('budgetEditor.notSet')}
 						</Text>
 					</View>
 

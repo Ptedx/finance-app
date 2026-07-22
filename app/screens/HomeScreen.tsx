@@ -11,17 +11,20 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
+import AccountReminderBanner from '../components/AccountReminderBanner';
 import IncomeSection from '../components/IncomeSection';
 import Summary from '../components/Summary';
 import TransactionItem from '../components/TransactionItem';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 
 const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
-	const { currentPeriodTransactions, monthlyTotal, isLoading, refreshData } = useTransactions();
+	const { currentPeriodTransactions, periodTotals, balanceCents, isLoading, refreshData } =
+		useTransactions();
 
 	const { processTransactions } = useRecurringTransactions();
 	const [refreshing, setRefreshing] = React.useState(false);
@@ -40,17 +43,21 @@ const HomeScreen = () => {
 		processRecurring();
 	}, []);
 
+	const { syncNow } = useSync();
+
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
 			await processTransactions();
 			await refreshData();
+			// Puxar para atualizar tambem alinha com o servidor, quando ha sessao.
+			syncNow();
 		} catch (error) {
 			console.error('Error during refresh:', error);
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, processTransactions]);
+	}, [refreshData, processTransactions, syncNow]);
 
 	const handleTransactionPress = (transaction: Transaction) => {
 		router.push({
@@ -94,11 +101,14 @@ const HomeScreen = () => {
 					/>
 				}
 			>
+				<AccountReminderBanner />
+
 				{/* Budget Summary */}
 				<Summary
-					spent={monthlyTotal.expenses}
-					income={monthlyTotal.incomes}
-					net={monthlyTotal.net}
+					expenseCents={periodTotals.expenseCents}
+					incomeCents={periodTotals.incomeCents}
+					netCents={periodTotals.netCents}
+					balanceCents={balanceCents}
 				/>
 				<IncomeSection />
 

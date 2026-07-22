@@ -4,6 +4,8 @@ import i18next from 'i18next';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 
+import { useAuth } from './AuthContext';
+
 export interface Language {
 	code: string;
 	name: string;
@@ -27,6 +29,7 @@ interface LanguageContextType {
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+	const { syncProfilePreferences } = useAuth();
 	const [currentLanguage, setCurrentLanguage] = useState<Language>(DEFAULT_LANGUAGE);
 
 	useEffect(() => {
@@ -56,6 +59,9 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await AsyncStorage.setItem(LANGUAGE_STORAGE_KEY, JSON.stringify(lang));
 			await i18next.changeLanguage(lang.code);
 			setCurrentLanguage(lang);
+
+			// Idioma é preferência de perfil, como a moeda: um valor só, sem conflito.
+			syncProfilePreferences({ language: lang.code });
 		} catch (error) {
 			console.error('Failed to save language setting:', error);
 		}
