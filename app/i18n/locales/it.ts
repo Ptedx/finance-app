@@ -9,6 +9,10 @@ const it = {
 
 	summary: {
 		monthlySummary: 'Riepilogo Mensile',
+		monthResult: 'Risultato del mese',
+		income: 'Entrate',
+		expenses: 'Uscite',
+		accumulatedBalance: 'Saldo accumulato',
 		balance: 'Saldo',
 		budget: 'Budget',
 		edit: 'Modifica',
@@ -99,6 +103,7 @@ const it = {
 		monthlyTrends: 'Tendenze Mensili',
 		expensesByCategory: 'Spese per Categoria',
 		incomeByCategory: 'Entrate per Categoria',
+		otherCategories: 'Altre ({{count}})',
 		exportReports: 'Esporta Report',
 		loading: 'Caricamento report...',
 		noExpenseData: 'Nessun dato di spesa disponibile',
@@ -160,8 +165,7 @@ const it = {
 			'Tutte le transazioni, i budget e le impostazioni sono stati reimpostati con successo.',
 		resetFailed: 'Reimpostazione Fallita',
 		resetError: 'Si è verificato un errore durante la reimpostazione dei dati. Riprova.',
-		resetAuthFailed:
-			'Per la tua sicurezza, la reimpostazione dei dati richiede l\'autenticazione.',
+		resetAuthFailed: "Per la tua sicurezza, la reimpostazione dei dati richiede l'autenticazione.",
 		aboutMsg:
 			"Spendr è un'app di finanza personale che ti aiuta a gestire le spese, impostare budget e monitorare le transazioni ricorrenti. Tutti i tuoi dati finanziari sono archiviati in modo sicuro sul tuo dispositivo.",
 		ok: 'OK',
@@ -211,8 +215,7 @@ const it = {
 		notificationsDesc: 'Ricevi promemoria per le prossime transazioni ricorrenti',
 		biometricAuth: 'Autenticazione {{biometricType}}',
 		biometricAuthDesc: "Richiedi l'autenticazione {{biometricType}} per accedere all'app",
-		biometricUnavailableDesc:
-			"L'autenticazione biometrica non è disponibile su questo dispositivo",
+		biometricUnavailableDesc: "L'autenticazione biometrica non è disponibile su questo dispositivo",
 		completeSetup: 'Completa Configurazione',
 		settingUp: 'Configurazione in corso...',
 		selectCurrency: 'Seleziona Valuta',

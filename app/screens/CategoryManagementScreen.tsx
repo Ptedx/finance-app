@@ -60,12 +60,8 @@ const CategoryManagementScreen = () => {
 		try {
 			if (categoryData.id) {
 				// Editing existing category
-				await updateCategory({
-					id: categoryData.id,
-					name: categoryData.name,
-					color: categoryData.color,
-					icon: categoryData.icon,
-				});
+				const { id, ...fields } = categoryData;
+				await updateCategory({ id, ...fields });
 			} else {
 				// Adding new category
 				await addCategory(categoryData);
@@ -88,6 +84,11 @@ const CategoryManagementScreen = () => {
 			</View>
 			<View style={styles.categoryDetails}>
 				<Text style={styles.categoryName}>{item.name}</Text>
+				{/* Two categories can share a name across sides of the ledger, so the type
+				    has to be visible here to tell them apart. */}
+				<Text style={item.type === 'income' ? styles.incomeBadge : styles.expenseBadge}>
+					{item.type === 'income' ? 'Income' : 'Expense'}
+				</Text>
 			</View>
 			<View style={styles.categoryActions}>
 				<TouchableOpacity style={styles.actionButton} onPress={() => handleEditCategory(item)}>
@@ -150,6 +151,16 @@ const CategoryManagementScreen = () => {
 };
 
 const styles = StyleSheet.create({
+	incomeBadge: {
+		fontSize: 11,
+		color: '#4CAF50',
+		marginTop: 2,
+	},
+	expenseBadge: {
+		fontSize: 11,
+		color: '#FF6B6B',
+		marginTop: 2,
+	},
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',

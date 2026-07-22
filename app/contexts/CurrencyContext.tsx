@@ -1,7 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getLocales } from 'expo-localization';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
-import { setCurrencyForFormatting } from '../utils/currencyUtils';
+import { configureDateLocale } from '../utils/dateUtils';
+import { configureMoney } from '../utils/money';
+import { STORAGE_KEYS } from '../utils/storageUtils';
 
 // Define currency interface
 export interface Currency {
@@ -25,8 +28,31 @@ export const AVAILABLE_CURRENCIES: Currency[] = [
 	{ code: 'BRL', symbol: 'R$', name: 'Brazilian Real' },
 ];
 
-// Default to BTC
-const DEFAULT_CURRENCY = AVAILABLE_CURRENCIES[0];
+const FALLBACK_CURRENCY: Currency = { code: 'USD', symbol: '$', name: 'US Dollar' };
+
+/**
+ * The device's own currency, when the app knows it.
+ *
+ * The previous default was `AVAILABLE_CURRENCIES[0]` — which is Bitcoin, an accident of
+ * array order rather than a decision. A Brazilian phone should open the app in reais.
+ */
+const detectDeviceCurrency = (): Currency => {
+	try {
+		const deviceCode = getLocales()[0]?.currencyCode;
+		return AVAILABLE_CURRENCIES.find((c) => c.code === deviceCode) ?? FALLBACK_CURRENCY;
+	} catch {
+		return FALLBACK_CURRENCY;
+	}
+};
+
+/** The device's language tag, which drives number and date formatting. */
+const detectDeviceLocale = (): string => {
+	try {
+		return getLocales()[0]?.languageTag ?? 'en-US';
+	} catch {
+		return 'en-US';
+	}
+};
 
 interface CurrencyContextType {
 	currentCurrency: Currency;
@@ -37,24 +63,29 @@ interface CurrencyContextType {
 const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined);
 
 export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-	const [currentCurrency, setCurrentCurrency] = useState<Currency>(DEFAULT_CURRENCY);
+	const [currentCurrency, setCurrentCurrency] = useState<Currency>(detectDeviceCurrency);
+
+	const applyCurrency = (currency: Currency) => {
+		setCurrentCurrency(currency);
+		configureMoney({ currencyCode: currency.code, currencySymbol: currency.symbol });
+	};
 
 	// Load saved currency setting
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once to seed formatting config
 	useEffect(() => {
 		const loadCurrency = async () => {
+			// Number and date formatting follow the device, so a Brazilian phone sees
+			// "R$ 1.234,50" and "22 de julho" rather than the hardcoded en-US shapes.
+			const deviceLocale = detectDeviceLocale();
+			configureMoney({ locale: deviceLocale });
+			configureDateLocale(deviceLocale);
+
 			try {
-				const savedCurrency = await AsyncStorage.getItem('selectedCurrency');
-				if (savedCurrency) {
-					const currency = JSON.parse(savedCurrency);
-					setCurrentCurrency(currency);
-					// Update currency utils
-					setCurrencyForFormatting(currency.code, currency.symbol);
-				} else {
-					// Set default currency in utils
-					setCurrencyForFormatting(DEFAULT_CURRENCY.code, DEFAULT_CURRENCY.symbol);
-				}
+				const savedCurrency = await AsyncStorage.getItem(STORAGE_KEYS.selectedCurrency);
+				applyCurrency(savedCurrency ? (JSON.parse(savedCurrency) as Currency) : currentCurrency);
 			} catch (error) {
 				console.error('Failed to load currency setting:', error);
+				applyCurrency(FALLBACK_CURRENCY);
 			}
 		};
 
@@ -63,10 +94,8 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const setCurrency = async (currency: Currency) => {
 		try {
-			await AsyncStorage.setItem('selectedCurrency', JSON.stringify(currency));
-			setCurrentCurrency(currency);
-			// Update currency utils when currency changes
-			setCurrencyForFormatting(currency.code, currency.symbol);
+			await AsyncStorage.setItem(STORAGE_KEYS.selectedCurrency, JSON.stringify(currency));
+			applyCurrency(currency);
 		} catch (error) {
 			console.error('Failed to save currency setting:', error);
 		}

@@ -5,6 +5,12 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 module.exports = function withAndroidSigning(config) {
+  // On EAS the keystore is managed remotely and injected by the build service —
+  // .env and prod.keystore are gitignored and never uploaded, so skip entirely.
+  if (process.env.EAS_BUILD === 'true') {
+    return config;
+  }
+
   return withAppBuildGradle(config, (config) => {
     config.modResults.contents = applySigningConfig(config.modResults.contents);
     return config;

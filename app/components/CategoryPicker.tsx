@@ -20,13 +20,18 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({
 	categories,
 	selectedCategoryId,
 	onSelectCategory,
+	isIncome = false,
 }) => {
 	const router = useRouter();
 
-	// Memoize filtered categories to prevent recalculation on every render
+	// Only offer categories belonging to the side of the ledger being recorded, so an
+	// expense cannot be filed under "Salary".
 	const filteredCategories = useMemo(() => {
-		return categories.filter((category) => category.id !== 'uncategorized');
-	}, [categories]);
+		const wanted = isIncome ? 'income' : 'expense';
+		return categories.filter(
+			(category) => category.id !== 'uncategorized' && category.type === wanted
+		);
+	}, [categories, isIncome]);
 
 	// Handle category selection with useCallback
 	const handleSelectCategory = useCallback(
@@ -164,27 +169,37 @@ const styles = StyleSheet.create({
 	},
 });
 
-// Memoize the entire component to prevent unnecessary re-renders
-export default memo(CategoryPicker, (prevProps, nextProps) => {
-	// Only re-render if these props change
-	if (prevProps.selectedCategoryId !== nextProps.selectedCategoryId) {
-		return false;
-	}
+/**
+ * Decides when the picker may skip a re-render.
+ *
+ * Every prop that affects what is drawn has to be compared here. `isIncome` was missing:
+ * flipping the transaction type changed which categories should be listed, the
+ * comparator reported "no change", and the previous type's categories stayed on screen.
+ * Category fields are compared too, so renaming or recolouring one is reflected.
+ *
+ * `onSelectCategory` is deliberately not compared — it is a fresh closure on every
+ * render of the parent, which would defeat the memo entirely. That is only safe because
+ * the callback is wrapped in `useCallback` with no captured state; if it ever closes
+ * over changing values again, this comparator will serve it stale.
+ */
+export const categoryPickerPropsAreEqual = (
+	prevProps: CategoryPickerProps,
+	nextProps: CategoryPickerProps
+): boolean => {
+	if (prevProps.selectedCategoryId !== nextProps.selectedCategoryId) return false;
+	if (prevProps.isIncome !== nextProps.isIncome) return false;
+	if (prevProps.categories.length !== nextProps.categories.length) return false;
 
-	// Check if categories array has changed
-	if (prevProps.categories.length !== nextProps.categories.length) {
-		return false;
-	}
+	return prevProps.categories.every((category, index) => {
+		const other = nextProps.categories[index];
+		return (
+			category.id === other.id &&
+			category.name === other.name &&
+			category.color === other.color &&
+			category.icon === other.icon &&
+			category.type === other.type
+		);
+	});
+};
 
-	// Check category ids (deep comparison)
-	const prevIds = prevProps.categories
-		.map((c) => c.id)
-		.sort()
-		.join(',');
-	const nextIds = nextProps.categories
-		.map((c) => c.id)
-		.sort()
-		.join(',');
-
-	return prevIds === nextIds;
-});
+export default memo(CategoryPicker, categoryPickerPropsAreEqual);

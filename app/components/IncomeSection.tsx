@@ -5,7 +5,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
-import { formatCurrency } from '../utils/currencyUtils';
+import { formatCents } from '../utils/money';
+import { monthlyEquivalentCents } from '../utils/recurrence';
 import TransactionEditor from './TransactionEditor';
 
 interface IncomeSectionProps {
@@ -20,13 +21,15 @@ const IncomeSection: React.FC<IncomeSectionProps> = () => {
 	const [showIncomeEditor, setShowIncomeEditor] = useState(false);
 	const [showExpenseEditor, setShowExpenseEditor] = useState(false);
 
+	// Normalised to a monthly equivalent before summing: adding a weekly, a monthly and a
+	// yearly amount together produces a "monthly" figure that means nothing.
 	const recurringIncome = transactions
 		.filter((tx) => tx.isIncome && tx.active)
-		.reduce((sum, tx) => sum + tx.amount, 0);
+		.reduce((sum, tx) => sum + monthlyEquivalentCents(tx, tx.amountCents), 0);
 
 	const recurringExpenses = transactions
 		.filter((tx) => !tx.isIncome && tx.active)
-		.reduce((sum, tx) => sum + tx.amount, 0);
+		.reduce((sum, tx) => sum + monthlyEquivalentCents(tx, tx.amountCents), 0);
 
 	const handleIncomePress = () => {
 		setShowIncomeEditor(true);
@@ -56,7 +59,7 @@ const IncomeSection: React.FC<IncomeSectionProps> = () => {
 						<View style={styles.summaryItem}>
 							<Text style={styles.summaryLabel}>{t('incomeSection.monthlyIncome')}</Text>
 							<Text style={[styles.summaryValue, styles.incomeValue]}>
-								+{formatCurrency(recurringIncome)}
+								+{formatCents(recurringIncome)}
 							</Text>
 						</View>
 					)}
@@ -65,7 +68,7 @@ const IncomeSection: React.FC<IncomeSectionProps> = () => {
 						<View style={styles.summaryItem}>
 							<Text style={styles.summaryLabel2}>{t('incomeSection.monthlyExpenses')}</Text>
 							<Text style={[styles.summaryValue2, styles.expenseValue]}>
-								-{formatCurrency(recurringExpenses)}
+								-{formatCents(recurringExpenses)}
 							</Text>
 						</View>
 					)}

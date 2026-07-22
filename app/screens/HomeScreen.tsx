@@ -21,7 +21,8 @@ import type { Transaction } from '../database/schema';
 const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
-	const { currentPeriodTransactions, monthlyTotal, isLoading, refreshData } = useTransactions();
+	const { currentPeriodTransactions, periodTotals, balanceCents, isLoading, refreshData } =
+		useTransactions();
 
 	const { processTransactions } = useRecurringTransactions();
 	const [refreshing, setRefreshing] = React.useState(false);
@@ -96,9 +97,10 @@ const HomeScreen = () => {
 			>
 				{/* Budget Summary */}
 				<Summary
-					spent={monthlyTotal.expenses}
-					income={monthlyTotal.incomes}
-					net={monthlyTotal.net}
+					expenseCents={periodTotals.expenseCents}
+					incomeCents={periodTotals.incomeCents}
+					netCents={periodTotals.netCents}
+					balanceCents={balanceCents}
 				/>
 				<IncomeSection />
 

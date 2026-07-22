@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
 	KeyboardAvoidingView,
 	Modal,
@@ -16,8 +16,8 @@ import {
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
-import { parseAmount, validateAmount } from '../utils/currencyUtils';
 import { formatFullDate, getISODate } from '../utils/dateUtils';
+import { centsToInputString, isValidAmountInput, parseAmountToCents } from '../utils/money';
 import CategoryPicker from './CategoryPicker';
 
 interface TransactionFormProps {
@@ -37,7 +37,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const { currentCurrency } = useCurrency();
 
 	const [amount, setAmount] = useState(
-		initialTransaction ? initialTransaction.amount.toString() : ''
+		initialTransaction ? centsToInputString(initialTransaction.amountCents) : ''
 	);
 	const [category, setCategory] = useState<string | null>(
 		initialTransaction ? initialTransaction.category : null
@@ -73,7 +73,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const validateForm = (): boolean => {
 		const newErrors: { amount?: string; category?: string } = {};
 
-		if (!validateAmount(amount)) {
+		if (!isValidAmountInput(amount)) {
 			newErrors.amount = 'Please enter a valid amount greater than 0';
 		}
 
@@ -94,7 +94,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 			setIsSubmitting(true);
 
 			const transactionData = {
-				amount: parseAmount(amount),
+				// biome-ignore lint/style/noNonNullAssertion: validateForm guarantees a positive amount
+				amountCents: parseAmountToCents(amount)!,
 				// biome-ignore lint/style/noNonNullAssertion: category is guaranteed non-null here because submit is only called after validation
 				category: category!,
 				date: getISODate(date),
@@ -127,12 +128,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 		}
 	};
 
-	const handleSelectCategory = (categoryId: string) => {
+	/**
+	 * Stable across renders, and updates errors functionally rather than from a captured
+	 * value. CategoryPicker is memoized and cannot compare this callback, so a closure
+	 * over `errors` would go stale there: selecting a category after a failed submit
+	 * would set the category but never clear the "select a category" message.
+	 */
+	const handleSelectCategory = useCallback((categoryId: string) => {
 		setCategory(categoryId);
-		if (errors.category) {
-			setErrors({ ...errors, category: undefined });
-		}
-	};
+		setErrors((previous) => (previous.category ? { ...previous, category: undefined } : previous));
+	}, []);
 
 	const handleShowDatePicker = () => {
 		setTempDate(date);
@@ -145,31 +150,17 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	};
 
 	const toggleTransactionType = () => {
-		// Reset category when switching transaction types
-		if (category) {
-			const currentCat = categories.find((c) => c.id === category);
-			if (currentCat) {
-				const incomeCategories = [
-					'salary',
-					'freelance',
-					'investment',
-					'gift',
-					'refund',
-					'other_income',
-				];
-				const isCategoryIncome = incomeCategories.includes(currentCat.id);
+		const newIsIncome = !isIncome;
 
-				// The new isIncome value will be the opposite of current isIncome
-				const newIsIncome = !isIncome;
-
-				// If category type doesn't match the NEW transaction type, reset it
-				if (isCategoryIncome !== newIsIncome) {
-					setCategory(null);
-				}
-			}
+		// Drop the selection if it belongs to the other side of the ledger. The category's
+		// own `type` decides this now — it used to be a hardcoded list of ids, so every
+		// category the user created counted as an expense and was cleared on every toggle.
+		const selected = categories.find((c) => c.id === category);
+		if (selected && (selected.type === 'income') !== newIsIncome) {
+			setCategory(null);
 		}
 
-		setIsIncome(!isIncome);
+		setIsIncome(newIsIncome);
 	};
 
 	// Simple date picker UI
@@ -357,6 +348,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					categories={categories}
 					selectedCategoryId={category}
 					onSelectCategory={handleSelectCategory}
+					isIncome={isIncome}
 				/>
 				{errors.category ? <Text style={styles.errorText}>{errors.category}</Text> : null}
 

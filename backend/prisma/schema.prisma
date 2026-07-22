@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                    String                 @id @default(uuid())
+  email                 String                 @unique
+  passwordHash          String
+  name                  String
+  baseCurrency          String                 @default("BRL")
+  language              String                 @default("pt-BR")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  categories            Category[]
+  transactions          Transaction[]
+  recurringTransactions RecurringTransaction[]
+  budgets               Budget[]
+  assets                Asset[]
+  liabilities           Liability[]
+  netWorthSnapshots     NetWorthSnapshot[]
+  goals                 Goal[]
+  portfolioAllocations  PortfolioAllocation[]
+  passiveIncomes        PassiveIncome[]
+
+  @@map("users")
+}
+
+model Category {
+  id                    String                 @id @default(uuid())
+  userId                String
+  user                  User                   @relation(fields: [userId], references: [id])
+  name                  String
+  color                 String
+  icon                  String
+  isDefault             Boolean                @default(false)
+  transactions          Transaction[]
+  recurringTransactions RecurringTransaction[]
+
+  @@map("categories")
+}
+
+model Transaction {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  amount     Decimal  @db.Decimal(10, 2)
+  date       DateTime @db.Date
+  note       String?  @db.Text
+  isIncome   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("transactions")
+}
+
+model RecurringTransaction {
+  id             String         @id @default(uuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+  categoryId     String
+  category       Category       @relation(fields: [categoryId], references: [id])
+  amount         Decimal        @db.Decimal(10, 2)
+  isIncome       Boolean        @default(false)
+  note           String?        @db.Text
+  recurrenceType RecurrenceType
+  day            Int?
+  month          Int?
+  weekday        Int?
+  lastProcessed  DateTime?      @db.Date
+  nextDue        DateTime       @db.Date
+  active         Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@map("recurring_transactions")
+}
+
+enum RecurrenceType {
+  weekly
+  monthly
+  yearly
+}
+
+// ============================================
+// Pilar 1: Gestão de Patrimônio (Net Worth)
+// ============================================
+
+model Asset {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  name        String
+  type        AssetType
+  balance     Decimal   @db.Decimal(15, 2)
+  lastUpdated DateTime  @default(now())
+
+  @@map("assets")
+}
+
+enum AssetType {
+  checking
+  savings
+  brokerage
+  real_estate
+  vehicle
+  other
+}
+
+model Liability {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  name        String
+  type        LiabilityType
+  balance     Decimal       @db.Decimal(15, 2)
+  dueDate     DateTime?     @db.Date
+  lastUpdated DateTime      @default(now())
+
+  @@map("liabilities")
+}
+
+enum LiabilityType {
+  credit_card
+  loan
+  mortgage
+  other
+}
+
+model NetWorthSnapshot {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  date             DateTime @db.Date
+  totalAssets      Decimal  @db.Decimal(15, 2)
+  totalLiabilities Decimal  @db.Decimal(15, 2)
+  netWorth         Decimal  @db.Decimal(15, 2)
+  createdAt        DateTime @default(now())
+
+  @@map("net_worth_snapshots")
+}
+
+// ============================================
+// Pilar 2: Metas Inteligentes (Sinking Funds)
+// ============================================
+
+model Goal {
+  id            String     @id @default(uuid())
+  userId        String
+  user          User       @relation(fields: [userId], references: [id])
+  name          String
+  targetAmount  Decimal    @db.Decimal(15, 2)
+  currentAmount Decimal    @default(0) @db.Decimal(15, 2)
+  targetDate    DateTime?  @db.Date
+  icon          String
+  color         String
+  status        GoalStatus @default(active)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@map("goals")
+}
+
+enum GoalStatus {
+  active
+  completed
+  paused
+}
+
+// ============================================
+// Pilar 4: Alocação de Portfólio
+// ============================================
+
+model PortfolioAllocation {
+  id               String     @id @default(uuid())
+  userId           String
+  user             User       @relation(fields: [userId], references: [id])
+  assetClass       AssetClass
+  targetPercentage Decimal    @db.Decimal(5, 2)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@map("portfolio_allocations")
+}
+
+enum AssetClass {
+  renda_fixa
+  acoes_br
+  fiis
+  exterior
+  cripto
+}
+
+// ============================================
+// Pilar 5: Rastreador de Dividendos
+// ============================================
+
+model PassiveIncome {
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id])
+  assetName String
+  type      PassiveIncomeType
+  amount    Decimal           @db.Decimal(15, 2)
+  date      DateTime          @db.Date
+  createdAt DateTime          @default(now())
+
+  @@map("passive_incomes")
+}
+
+enum PassiveIncomeType {
+  dividend
+  interest
+  rent
+}
+
+// ============================================
+// Pilar 6: Orçamentos (Budgets)
+// ============================================
+
+model Budget {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  amount      Decimal  @db.Decimal(15, 2)
+  year        Int
+  month       Int
+  isRecurring Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, year, month])
+  @@map("budgets")
+}

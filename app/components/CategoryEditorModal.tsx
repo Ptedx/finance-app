@@ -11,7 +11,7 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
-import type { Category } from '../database/schema';
+import type { Category, CategoryType } from '../database/schema';
 
 interface CategoryEditorModalProps {
 	isVisible: boolean;
@@ -68,6 +68,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 	const [name, setName] = useState('');
 	const [color, setColor] = useState(COLOR_OPTIONS[0]);
 	const [icon, setIcon] = useState(ICON_OPTIONS[0]);
+	const [type, setType] = useState<CategoryType>('expense');
 
 	// Reset form when modal opens or closes
 	useEffect(() => {
@@ -75,11 +76,13 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 			setName(initialCategory.name);
 			setColor(initialCategory.color);
 			setIcon(initialCategory.icon);
+			setType(initialCategory.type);
 		} else if (isVisible && !initialCategory) {
 			// Reset to defaults when adding a new category
 			setName('');
 			setColor(COLOR_OPTIONS[0]);
 			setIcon(ICON_OPTIONS[0]);
+			setType('expense');
 		}
 	}, [isVisible, initialCategory]);
 
@@ -96,6 +99,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 			name: trimmedName,
 			color,
 			icon,
+			type,
 			...(initialCategory && { id: initialCategory.id }), // Include ID if editing
 		};
 
@@ -120,6 +124,30 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 							placeholder="Enter category name"
 							placeholderTextColor="rgba(255, 255, 255, 0.3)"
 						/>
+					</View>
+
+					{/* Type selection. Decides which picker the category appears in; without it
+					    every user-created category was silently treated as an expense. */}
+					<View style={styles.sectionContainer}>
+						<Text style={styles.label}>Type</Text>
+						<View style={styles.typeRow}>
+							{(['expense', 'income'] as CategoryType[]).map((option) => (
+								<TouchableOpacity
+									key={option}
+									style={[styles.typeOption, type === option && styles.selectedTypeOption]}
+									onPress={() => setType(option)}
+								>
+									<Text
+										style={[
+											styles.typeOptionText,
+											type === option && styles.selectedTypeOptionText,
+										]}
+									>
+										{option === 'expense' ? 'Expense' : 'Income'}
+									</Text>
+								</TouchableOpacity>
+							))}
+						</View>
 					</View>
 
 					{/* Color Selection */}
@@ -188,6 +216,30 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 };
 
 const styles = StyleSheet.create({
+	typeRow: {
+		flexDirection: 'row',
+	},
+	typeOption: {
+		flex: 1,
+		paddingVertical: 10,
+		alignItems: 'center',
+		borderRadius: 8,
+		backgroundColor: 'rgba(255, 255, 255, 0.1)',
+		marginRight: 8,
+	},
+	selectedTypeOption: {
+		backgroundColor: 'rgba(21, 232, 254, 0.2)',
+		borderColor: '#15E8FE',
+		borderWidth: 1,
+	},
+	typeOptionText: {
+		color: '#FFFFFF',
+		fontWeight: '500',
+	},
+	selectedTypeOptionText: {
+		color: '#15E8FE',
+		fontWeight: '600',
+	},
 	modalContainer: {
 		flex: 1,
 		backgroundColor: 'rgba(0, 0, 0, 0.5)',

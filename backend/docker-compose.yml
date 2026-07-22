@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: spendr_postgres
+    environment:
+      POSTGRES_USER: spendr_user
+      POSTGRES_PASSWORD: spendr_password
+      POSTGRES_DB: spendr_db
+    ports:
+      - "15432:5432"
+    volumes:
+      - spendr_pgdata:/var/lib/postgresql/data
+
+volumes:
+  spendr_pgdata:

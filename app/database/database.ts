@@ -1,13 +1,24 @@
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
+import { addDays, todayISO } from '../utils/dateUtils';
+import {
+	firstDueOnOrAfter,
+	nextDueAfter,
+	occurrencesBetween,
+	type RecurrenceRule,
+} from '../utils/recurrence';
 import {
 	type Category,
+	type CategoryType,
 	CREATE_CATEGORIES_TABLE,
+	CREATE_INDEXES,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
 	DEFAULT_CATEGORIES,
+	LEGACY_INCOME_CATEGORY_IDS,
 	type RecurringTransaction,
+	SCHEMA_VERSION,
 	type Transaction,
 } from './schema';
 
@@ -15,7 +26,7 @@ const db = SQLite.openDatabaseSync(DATABASE_NAME);
 
 interface TransactionDB {
 	id: string;
-	amount: number;
+	amountCents: number;
 	category: string;
 	date: string;
 	note: string;
@@ -24,7 +35,7 @@ interface TransactionDB {
 
 interface RecurringTransactionDB {
 	id: string;
-	amount: number;
+	amountCents: number;
 	isIncome: number;
 	note: string;
 	category: string;
@@ -37,11 +48,16 @@ interface RecurringTransactionDB {
 	active: number;
 }
 
+const convertTransaction = (transaction: TransactionDB): Transaction => ({
+	...transaction,
+	isIncome: Boolean(transaction.isIncome),
+});
+
 const convertRecurringTransaction = (
 	transaction: RecurringTransactionDB
 ): RecurringTransaction => ({
 	id: transaction.id,
-	amount: transaction.amount,
+	amountCents: transaction.amountCents,
 	isIncome: Boolean(transaction.isIncome),
 	note: transaction.note,
 	category: transaction.category,
@@ -54,31 +70,159 @@ const convertRecurringTransaction = (
 	active: Boolean(transaction.active),
 });
 
+const toRule = (transaction: RecurrenceRule): RecurrenceRule => ({
+	recurrenceType: transaction.recurrenceType,
+	day: transaction.day,
+	month: transaction.month,
+	weekday: transaction.weekday,
+});
+
+// ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+const tableHasColumn = async (table: string, column: string): Promise<boolean> => {
+	const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+	return columns.some((c) => c.name === column);
+};
+
+const tableExists = async (table: string): Promise<boolean> => {
+	const row = await db.getFirstAsync<{ name: string }>(
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+		[table]
+	);
+	return Boolean(row);
+};
+
+/**
+ * v0 -> v1: money moves from `amount REAL` to `amountCents INTEGER`.
+ *
+ * Rebuilds each table rather than using ALTER, so the result is identical to a fresh
+ * install. `ROUND(amount * 100)` is done by SQLite in C doubles, which is exact for any
+ * amount a user could have entered.
+ */
+const migrateMoneyToCents = async (): Promise<void> => {
+	for (const table of ['transactions', 'recurring_transactions']) {
+		if (!(await tableExists(table))) continue;
+		if (!(await tableHasColumn(table, 'amount'))) continue;
+
+		if (table === 'transactions') {
+			await db.execAsync(`
+        CREATE TABLE transactions_migrated (
+          id TEXT PRIMARY KEY NOT NULL,
+          amountCents INTEGER NOT NULL,
+          category TEXT NOT NULL,
+          date TEXT NOT NULL,
+          note TEXT,
+          isIncome INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO transactions_migrated (id, amountCents, category, date, note, isIncome)
+          SELECT id, CAST(ROUND(amount * 100) AS INTEGER), category, date, note, isIncome
+          FROM transactions;
+        DROP TABLE transactions;
+        ALTER TABLE transactions_migrated RENAME TO transactions;
+      `);
+		} else {
+			await db.execAsync(`
+        CREATE TABLE recurring_migrated (
+          id TEXT PRIMARY KEY NOT NULL,
+          amountCents INTEGER NOT NULL,
+          isIncome INTEGER NOT NULL,
+          note TEXT,
+          category TEXT,
+          recurrenceType TEXT NOT NULL,
+          day INTEGER,
+          month INTEGER,
+          weekday INTEGER,
+          lastProcessed TEXT,
+          nextDue TEXT,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO recurring_migrated
+          (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday, lastProcessed, nextDue, active)
+          SELECT id, CAST(ROUND(amount * 100) AS INTEGER), isIncome, note, category, recurrenceType,
+                 day, month, weekday, lastProcessed, nextDue, active
+          FROM recurring_transactions;
+        DROP TABLE recurring_transactions;
+        ALTER TABLE recurring_migrated RENAME TO recurring_transactions;
+      `);
+		}
+
+		console.log(`Migrated ${table} to integer cents`);
+	}
+};
+
+/**
+ * v1 -> v2: categories gain an explicit `type`.
+ *
+ * Existing rows are classified by the id list the app used to hardcode, so a database
+ * created before this change keeps behaving the same. Anything unrecognised stays an
+ * expense, which is what the old inference did anyway.
+ */
+const migrateCategoryTypes = async (): Promise<void> => {
+	if (!(await tableExists('categories'))) return;
+	if (await tableHasColumn('categories', 'type')) return;
+
+	await db.execAsync("ALTER TABLE categories ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'");
+
+	const placeholders = LEGACY_INCOME_CATEGORY_IDS.map(() => '?').join(',');
+	await db.runAsync(
+		`UPDATE categories SET type = 'income' WHERE id IN (${placeholders})`,
+		LEGACY_INCOME_CATEGORY_IDS
+	);
+
+	console.log('Migrated categories to typed rows');
+};
+
+/**
+ * Inserts any default category that is missing, without touching the user's own edits.
+ * Runs on every start so seeds added in later versions still reach existing installs.
+ */
+const seedMissingDefaultCategories = async (): Promise<void> => {
+	const existing = await db.getAllAsync<{ id: string }>('SELECT id FROM categories');
+	const existingIds = new Set(existing.map((c) => c.id));
+	const missing = DEFAULT_CATEGORIES.filter((c) => !existingIds.has(c.id));
+
+	if (missing.length === 0) return;
+
+	await db.withTransactionAsync(async () => {
+		for (const category of missing) {
+			await db.runAsync(
+				'INSERT INTO categories (id, name, color, icon, type) VALUES (?, ?, ?, ?, ?)',
+				[category.id, category.name, category.color, category.icon, category.type]
+			);
+		}
+	});
+};
+
+const runMigrations = async (): Promise<void> => {
+	const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+	const version = row?.user_version ?? 0;
+
+	if (version >= SCHEMA_VERSION) return;
+
+	if (version < 1) await migrateMoneyToCents();
+	if (version < 2) await migrateCategoryTypes();
+
+	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+};
+
 export const initDatabase = async (): Promise<void> => {
 	try {
+		await db.execAsync('PRAGMA journal_mode = WAL;');
+
+		// Migrations run first so that CREATE TABLE IF NOT EXISTS below is a no-op for
+		// already-migrated tables and only ever creates the current shape.
+		await runMigrations();
+
 		await db.execAsync(`
-      PRAGMA journal_mode = WAL;
       ${CREATE_CATEGORIES_TABLE}
       ${CREATE_TRANSACTIONS_TABLE}
       ${CREATE_RECURRING_TRANSACTIONS_TABLE}
+      ${CREATE_INDEXES}
     `);
 
-		const result = await db.getFirstAsync<{ count: number }>(
-			'SELECT COUNT(*) AS count FROM categories'
-		);
-
-		if (result?.count === 0) {
-			await db.withTransactionAsync(async () => {
-				for (const category of DEFAULT_CATEGORIES) {
-					await db.runAsync('INSERT INTO categories (id, name, color, icon) VALUES (?, ?, ?, ?)', [
-						category.id,
-						category.name,
-						category.color,
-						category.icon,
-					]);
-				}
-			});
-		}
+		await seedMissingDefaultCategories();
 
 		console.log('Database initialized successfully');
 	} catch (error) {
@@ -87,15 +231,20 @@ export const initDatabase = async (): Promise<void> => {
 	}
 };
 
+// ---------------------------------------------------------------------------
+// Categories
+// ---------------------------------------------------------------------------
+
 export const getCategories = async (): Promise<Category[]> => {
 	try {
 		const categories = await db.getAllAsync<Category>('SELECT * FROM categories ORDER BY name');
 
-		// Check if uncategorized has any transactions
-		const uncategorizedTransactions = await getTransactionsByCategory('uncategorized');
+		// Hide the "uncategorized" bucket until something actually lands in it.
+		const orphanCount = await db.getFirstAsync<{ count: number }>(
+			"SELECT COUNT(*) AS count FROM transactions WHERE category = 'uncategorized'"
+		);
 
-		// If no uncategorized transactions, filter out uncategorized category
-		return uncategorizedTransactions.length > 0
+		return (orphanCount?.count ?? 0) > 0
 			? categories
 			: categories.filter((c) => c.id !== 'uncategorized');
 	} catch (error) {
@@ -104,30 +253,71 @@ export const getCategories = async (): Promise<Category[]> => {
 	}
 };
 
-export const getCategoriesByType = async (isIncome: boolean): Promise<Category[]> => {
-	const incomeCategories = ['salary', 'freelance', 'investment', 'gift', 'refund', 'other_income'];
-	const placeholders = incomeCategories.map(() => '?').join(',');
-
+/** Categories of one side of the ledger, for the pickers in the transaction forms. */
+export const getCategoriesByType = async (type: CategoryType): Promise<Category[]> => {
 	try {
-		const query = isIncome
-			? `SELECT * FROM categories WHERE id IN (${placeholders}) ORDER BY name`
-			: `SELECT * FROM categories WHERE id NOT IN (${placeholders}) ORDER BY name`;
-
-		return await db.getAllAsync<Category>(query, incomeCategories);
+		return await db.getAllAsync<Category>(
+			"SELECT * FROM categories WHERE type = ? AND id != 'uncategorized' ORDER BY name",
+			[type]
+		);
 	} catch (error) {
 		console.error('Error fetching categories by type:', error);
 		throw error;
 	}
 };
 
+export const addCategory = async (category: Omit<Category, 'id'>): Promise<string> => {
+	const id = generateUniqueId();
+	await db.runAsync('INSERT INTO categories (id, name, color, icon, type) VALUES (?, ?, ?, ?, ?)', [
+		id,
+		category.name,
+		category.color,
+		category.icon,
+		category.type,
+	]);
+	return id;
+};
+
+export const updateCategory = async (category: Category): Promise<void> => {
+	await db.runAsync('UPDATE categories SET name = ?, color = ?, icon = ?, type = ? WHERE id = ?', [
+		category.name,
+		category.color,
+		category.icon,
+		category.type,
+		category.id,
+	]);
+};
+
+export const deleteCategory = async (categoryId: string): Promise<void> => {
+	if (categoryId === 'uncategorized') {
+		throw new Error('Uncategorized category cannot be deleted');
+	}
+
+	await db.withTransactionAsync(async () => {
+		// Reassign in one statement instead of a round trip per transaction.
+		await db.runAsync("UPDATE transactions SET category = 'uncategorized' WHERE category = ?", [
+			categoryId,
+		]);
+		await db.runAsync(
+			"UPDATE recurring_transactions SET category = 'uncategorized' WHERE category = ?",
+			[categoryId]
+		);
+		await db.runAsync('DELETE FROM categories WHERE id = ?', [categoryId]);
+	});
+};
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
 export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Promise<string> => {
 	const id = generateUniqueId();
 	try {
 		await db.runAsync(
-			'INSERT INTO transactions (id, amount, category, date, note, isIncome) VALUES (?, ?, ?, ?, ?, ?)',
+			'INSERT INTO transactions (id, amountCents, category, date, note, isIncome) VALUES (?, ?, ?, ?, ?, ?)',
 			[
 				id,
-				transaction.amount,
+				transaction.amountCents,
 				transaction.category,
 				transaction.date,
 				transaction.note,
@@ -141,11 +331,6 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
 	}
 };
 
-const convertTransaction = (transaction: TransactionDB): Transaction => ({
-	...transaction,
-	isIncome: Boolean(transaction.isIncome),
-});
-
 export const getTransactions = async (): Promise<Transaction[]> => {
 	try {
 		const transactions = await db.getAllAsync<TransactionDB>(
@@ -154,19 +339,6 @@ export const getTransactions = async (): Promise<Transaction[]> => {
 		return transactions.map(convertTransaction);
 	} catch (error) {
 		console.error('Error fetching transactions:', error);
-		throw error;
-	}
-};
-
-export const getTransactionsByType = async (isIncome: boolean): Promise<Transaction[]> => {
-	try {
-		const transactions = await db.getAllAsync<TransactionDB>(
-			'SELECT * FROM transactions WHERE isIncome = ? ORDER BY date DESC',
-			[isIncome ? 1 : 0]
-		);
-		return transactions.map(convertTransaction);
-	} catch (error) {
-		console.error('Error fetching transactions by type:', error);
 		throw error;
 	}
 };
@@ -193,11 +365,8 @@ export const getTransactionsByDateRange = async (
 		let query = 'SELECT * FROM transactions WHERE date BETWEEN ? AND ?';
 		const params: string[] = [startDate, endDate];
 
-		if (transactionType === 'income') {
-			query += ' AND isIncome = 1';
-		} else if (transactionType === 'expense') {
-			query += ' AND isIncome = 0';
-		}
+		if (transactionType === 'income') query += ' AND isIncome = 1';
+		else if (transactionType === 'expense') query += ' AND isIncome = 0';
 
 		query += ' ORDER BY date DESC';
 
@@ -212,9 +381,9 @@ export const getTransactionsByDateRange = async (
 export const updateTransaction = async (transaction: Transaction): Promise<void> => {
 	try {
 		await db.runAsync(
-			'UPDATE transactions SET amount = ?, category = ?, date = ?, note = ?, isIncome = ? WHERE id = ?',
+			'UPDATE transactions SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ? WHERE id = ?',
 			[
-				transaction.amount,
+				transaction.amountCents,
 				transaction.category,
 				transaction.date,
 				transaction.note,
@@ -237,14 +406,74 @@ export const deleteTransaction = async (id: string): Promise<void> => {
 	}
 };
 
+// ---------------------------------------------------------------------------
+// Aggregates
+// ---------------------------------------------------------------------------
+
+export interface PeriodSummary {
+	incomeCents: number;
+	expenseCents: number;
+	/** Income minus expenses **within the period**. */
+	netCents: number;
+}
+
+/**
+ * Income, expenses and result for a single period.
+ *
+ * Aggregated in SQL rather than by pulling rows into JS — the previous implementation
+ * loaded every transaction since 1970 on each period change just to compute a total.
+ */
+export const getPeriodSummary = async (
+	startDate: string,
+	endDate: string
+): Promise<PeriodSummary> => {
+	try {
+		const row = await db.getFirstAsync<{ income: number; expense: number }>(
+			`SELECT
+         COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
+         COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
+       FROM transactions
+       WHERE date BETWEEN ? AND ?`,
+			[startDate, endDate]
+		);
+
+		const incomeCents = row?.income ?? 0;
+		const expenseCents = row?.expense ?? 0;
+
+		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+	} catch (error) {
+		console.error('Error computing period summary:', error);
+		throw error;
+	}
+};
+
+/**
+ * Cumulative balance across every transaction dated on or before `asOfDate`.
+ * This is net worth to date, deliberately distinct from a period's result.
+ */
+export const getBalanceAsOf = async (asOfDate: string): Promise<number> => {
+	try {
+		const row = await db.getFirstAsync<{ balance: number }>(
+			`SELECT COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE -amountCents END), 0) AS balance
+       FROM transactions
+       WHERE date <= ?`,
+			[asOfDate]
+		);
+		return row?.balance ?? 0;
+	} catch (error) {
+		console.error('Error computing balance:', error);
+		throw error;
+	}
+};
+
 export const getTotalByCategory = async (
 	startDate?: string,
 	endDate?: string,
 	transactionType?: 'income' | 'expense'
-): Promise<{ categoryId: string; total: number }[]> => {
+): Promise<{ categoryId: string; totalCents: number }[]> => {
 	try {
 		let query = `
-      SELECT category AS categoryId, SUM(amount) AS total
+      SELECT category AS categoryId, SUM(amountCents) AS totalCents
       FROM transactions
       WHERE 1=1`;
 
@@ -255,171 +484,76 @@ export const getTotalByCategory = async (
 			params.push(startDate, endDate);
 		}
 
-		if (transactionType === 'income') {
-			query += ' AND isIncome = 1';
-		} else if (transactionType === 'expense') {
-			query += ' AND isIncome = 0';
-		}
+		if (transactionType === 'income') query += ' AND isIncome = 1';
+		else if (transactionType === 'expense') query += ' AND isIncome = 0';
 
 		query += ' GROUP BY category';
 
-		return await db.getAllAsync<{ categoryId: string; total: number }>(query, params);
+		return await db.getAllAsync<{ categoryId: string; totalCents: number }>(query, params);
 	} catch (error) {
 		console.error('Error fetching total by category:', error);
 		throw error;
 	}
 };
 
+/**
+ * Monthly totals for a year, always twelve entries.
+ *
+ * Months with no activity are returned as zero rather than omitted. The previous
+ * version returned only months that had rows, so the reports chart paired the Nth
+ * income point with the Nth expense point regardless of which months those were —
+ * February's income could be drawn above January's expenses.
+ */
 export const getMonthlyTransactions = async (
 	year: number,
 	transactionType?: 'income' | 'expense'
-): Promise<{ month: number; total: number }[]> => {
+): Promise<{ month: number; totalCents: number }[]> => {
 	try {
 		let query = `
       SELECT CAST(strftime('%m', date) AS INTEGER) AS month,
-             SUM(amount) AS total
+             SUM(amountCents) AS totalCents
       FROM transactions
       WHERE strftime('%Y', date) = ?`;
 
 		const params: string[] = [year.toString()];
 
-		if (transactionType === 'income') {
-			query += ' AND isIncome = 1';
-		} else if (transactionType === 'expense') {
-			query += ' AND isIncome = 0';
-		}
+		if (transactionType === 'income') query += ' AND isIncome = 1';
+		else if (transactionType === 'expense') query += ' AND isIncome = 0';
 
-		query += ' GROUP BY month ORDER BY month';
+		query += ' GROUP BY month';
 
-		return await db.getAllAsync<{ month: number; total: number }>(query, params);
+		const rows = await db.getAllAsync<{ month: number; totalCents: number }>(query, params);
+		const byMonth = new Map(rows.map((r) => [r.month, r.totalCents]));
+
+		return Array.from({ length: 12 }, (_, index) => ({
+			month: index + 1,
+			totalCents: byMonth.get(index + 1) ?? 0,
+		}));
 	} catch (error) {
 		console.error('Error fetching monthly transactions:', error);
 		throw error;
 	}
 };
 
-export const getIncomeSummary = async (startDate?: string, endDate?: string): Promise<number> => {
-	try {
-		let query = 'SELECT SUM(amount) as total FROM transactions WHERE isIncome = 1';
-		const params: string[] = [];
-
-		if (startDate && endDate) {
-			query += ' AND date BETWEEN ? AND ?';
-			params.push(startDate, endDate);
-		}
-
-		const result = await db.getFirstAsync<{ total: number }>(query, params);
-		return result?.total || 0;
-	} catch (error) {
-		console.error('Error fetching income summary:', error);
-		throw error;
-	}
-};
-
-export const getExpenseSummary = async (startDate?: string, endDate?: string): Promise<number> => {
-	try {
-		let query = 'SELECT SUM(amount) as total FROM transactions WHERE isIncome = 0';
-		const params: string[] = [];
-
-		if (startDate && endDate) {
-			query += ' AND date BETWEEN ? AND ?';
-			params.push(startDate, endDate);
-		}
-
-		const result = await db.getFirstAsync<{ total: number }>(query, params);
-		return result?.total || 0;
-	} catch (error) {
-		console.error('Error fetching expense summary:', error);
-		throw error;
-	}
-};
-
-export const getNetIncome = async (startDate?: string, endDate?: string): Promise<number> => {
-	try {
-		let query = `
-      SELECT
-        COALESCE(SUM(CASE WHEN isIncome = 1 THEN amount ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN isIncome = 0 THEN amount ELSE 0 END), 0) as netIncome
-      FROM transactions`;
-
-		const params: string[] = [];
-
-		if (startDate && endDate) {
-			query += ' WHERE date BETWEEN ? AND ?';
-			params.push(startDate, endDate);
-		}
-
-		const result = await db.getFirstAsync<{ netIncome: number }>(query, params);
-		return result?.netIncome || 0;
-	} catch (error) {
-		console.error('Error calculating net income:', error);
-		throw error;
-	}
-};
-
-export const calculateNextDueDate = (
-	transaction: Pick<RecurringTransaction, 'recurrenceType'> & Partial<RecurringTransaction>
-): string => {
-	const today = new Date();
-	// Make a copy of today's date to avoid modifying it
-	const nextDue = new Date(today);
-
-	// Reset time components to ensure consistent date comparisons
-	nextDue.setHours(0, 0, 0, 0);
-
-	if (transaction.recurrenceType === 'monthly') {
-		// Set to the specified day of current month
-		nextDue.setDate(transaction.day || 1);
-
-		// If the calculated date is in the past, move to next month
-		if (nextDue < today) {
-			nextDue.setMonth(nextDue.getMonth() + 1);
-		}
-	} else if (transaction.recurrenceType === 'yearly') {
-		// Set to the specified month and day
-		nextDue.setMonth((transaction.month || 1) - 1);
-		nextDue.setDate(transaction.day || 1);
-
-		// If the calculated date is in the past, move to next year
-		if (nextDue < today) {
-			nextDue.setFullYear(nextDue.getFullYear() + 1);
-		}
-	} else if (transaction.recurrenceType === 'weekly') {
-		// Handle weekly recurrence
-		// In JavaScript: 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-		// But in our app: 1 = Monday, ..., 7 = Sunday
-		// So we need to convert our weekday to JavaScript's weekday
-		const jsWeekday = transaction.weekday === 7 ? 0 : transaction.weekday || 1;
-		const currentJsWeekday = today.getDay(); // 0-6 where 0 is Sunday
-
-		let daysToAdd = jsWeekday - currentJsWeekday;
-
-		// If the calculated day is today or in the past, move to next week
-		if (daysToAdd <= 0) {
-			daysToAdd += 7;
-		}
-
-		nextDue.setDate(today.getDate() + daysToAdd);
-	}
-
-	// Return ISO format date string (YYYY-MM-DD)
-	return nextDue.toISOString().split('T')[0];
-};
+// ---------------------------------------------------------------------------
+// Recurring transactions
+// ---------------------------------------------------------------------------
 
 export const addRecurringTransaction = async (
 	transaction: Omit<RecurringTransaction, 'id' | 'lastProcessed' | 'nextDue'>
 ): Promise<string> => {
 	const id = generateUniqueId();
-	const nextDue = calculateNextDueDate(transaction);
+	// A new rule never backfills: its first occurrence is the first one on or after today.
+	const nextDue = firstDueOnOrAfter(toRule(transaction), todayISO());
 
 	try {
 		await db.runAsync(
 			`INSERT INTO recurring_transactions
-       (id, amount, isIncome, note, category, recurrenceType, day, month, weekday, lastProcessed, nextDue, active)
+       (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday, lastProcessed, nextDue, active)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				id,
-				transaction.amount,
+				transaction.amountCents,
 				transaction.isIncome ? 1 : 0,
 				transaction.note,
 				transaction.category,
@@ -466,20 +600,32 @@ export const getRecurringTransactionById = async (
 	}
 };
 
+/**
+ * Computes where a rule stands next, from its own definition.
+ *
+ * Always derived rather than trusted from the caller: editing a rule's day used to
+ * leave the previously stored `nextDue` in place, so the change took effect a cycle late.
+ */
+const resolveNextDue = (transaction: RecurringTransaction): string => {
+	const rule = toRule(transaction);
+	const anchor = transaction.lastProcessed ? addDays(transaction.lastProcessed, 1) : todayISO();
+	return firstDueOnOrAfter(rule, anchor);
+};
+
 export const updateRecurringTransaction = async (
 	transaction: RecurringTransaction
 ): Promise<void> => {
-	const nextDue = transaction.nextDue ?? calculateNextDueDate(transaction);
+	const nextDue = resolveNextDue(transaction);
 
 	try {
 		await db.runAsync(
 			`UPDATE recurring_transactions
-       SET amount = ?, isIncome = ?, note = ?, category = ?,
+       SET amountCents = ?, isIncome = ?, note = ?, category = ?,
            recurrenceType = ?, day = ?, month = ?, weekday = ?,
            lastProcessed = ?, nextDue = ?, active = ?
        WHERE id = ?`,
 			[
-				transaction.amount,
+				transaction.amountCents,
 				transaction.isIncome ? 1 : 0,
 				transaction.note,
 				transaction.category,
@@ -508,56 +654,113 @@ export const deleteRecurringTransaction = async (id: string): Promise<void> => {
 	}
 };
 
-export const processRecurringTransactions = async (): Promise<void> => {
+/**
+ * Posts every occurrence that has come due, one transaction per occurrence, each dated
+ * on its own due date.
+ *
+ * Two fixes over the previous behaviour: a three-month absence now produces three
+ * months of rent instead of one, and a bill due 30 June opened on 2 July is booked in
+ * June where it belongs rather than distorting both months.
+ */
+export const processRecurringTransactions = async (): Promise<number> => {
 	try {
-		const today = new Date().toISOString().split('T')[0];
+		const today = todayISO();
 		const dueTransactions = await db.getAllAsync<RecurringTransactionDB>(
 			`SELECT * FROM recurring_transactions
-       WHERE active = 1 AND nextDue <= ?
+       WHERE active = 1 AND nextDue IS NOT NULL AND nextDue <= ?
        ORDER BY nextDue ASC`,
 			[today]
 		);
 
-		if (dueTransactions.length === 0) return;
+		if (dueTransactions.length === 0) return 0;
+
+		let posted = 0;
 
 		await db.withTransactionAsync(async () => {
 			for (const dbTransaction of dueTransactions) {
 				const transaction = convertRecurringTransaction(dbTransaction);
+				const rule = toRule(transaction);
 
-				await addTransaction({
-					amount: transaction.amount,
-					category: transaction.category,
-					date: today,
-					note: `[Auto] ${transaction.note}`,
-					isIncome: transaction.isIncome,
-				});
+				// Resume from the day after the last posting; a rule that has never run
+				// starts at its scheduled first occurrence.
+				const windowStart = transaction.lastProcessed
+					? addDays(transaction.lastProcessed, 1)
+					: (transaction.nextDue ?? today);
 
-				await updateRecurringTransaction({
-					...transaction,
-					lastProcessed: today,
-					nextDue: calculateNextDueDate(transaction),
-				});
+				const dueDates = occurrencesBetween(rule, windowStart, today);
+
+				for (const dueDate of dueDates) {
+					await addTransaction({
+						amountCents: transaction.amountCents,
+						category: transaction.category,
+						date: dueDate,
+						note: `[Auto] ${transaction.note}`,
+						isIncome: transaction.isIncome,
+					});
+					posted += 1;
+				}
+
+				const lastPosted = dueDates.length > 0 ? dueDates[dueDates.length - 1] : undefined;
+
+				await db.runAsync(
+					'UPDATE recurring_transactions SET lastProcessed = ?, nextDue = ? WHERE id = ?',
+					[
+						lastPosted ?? transaction.lastProcessed ?? null,
+						lastPosted ? nextDueAfter(rule, lastPosted) : firstDueOnOrAfter(rule, today),
+						transaction.id,
+					]
+				);
 			}
 		});
+
+		return posted;
 	} catch (error) {
 		console.error('Error processing recurring transactions:', error);
 		throw error;
 	}
 };
 
+// ---------------------------------------------------------------------------
+// Currency conversion
+// ---------------------------------------------------------------------------
+
+/** Whether the ledger holds anything at all, used to decide if a switch needs converting. */
+export const hasFinancialData = async (): Promise<boolean> => {
+	const row = await db.getFirstAsync<{ count: number }>(
+		`SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM recurring_transactions) AS count`
+	);
+	return (row?.count ?? 0) > 0;
+};
+
+/**
+ * Rescales every stored amount by an exchange rate.
+ *
+ * Rounding happens once per row, in SQLite, so the result is the same integer cents
+ * the app would have computed itself. Wrapped in a transaction: a half-converted
+ * ledger would be worse than either currency.
+ */
+export const convertAllAmounts = async (rate: number): Promise<void> => {
+	if (!Number.isFinite(rate) || rate <= 0) {
+		throw new Error(`Refusing to convert amounts by a non-positive rate: ${rate}`);
+	}
+
+	await db.withTransactionAsync(async () => {
+		await db.runAsync(
+			'UPDATE transactions SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER)',
+			[rate]
+		);
+		await db.runAsync(
+			'UPDATE recurring_transactions SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER)',
+			[rate]
+		);
+	});
+};
+
 export const resetDatabase = async (): Promise<void> => {
 	try {
 		await db.withTransactionAsync(async () => {
-			// Delete all transactions
 			await db.runAsync('DELETE FROM transactions');
-
-			// Delete all recurring transactions
 			await db.runAsync('DELETE FROM recurring_transactions');
-
-			// Keep default categories, but we could reset them here if needed
-			// To reset categories to defaults:
-			// await db.runAsync('DELETE FROM categories');
-			// For now we'll keep the categories
 		});
 
 		console.log('Database reset successfully');
@@ -567,75 +770,30 @@ export const resetDatabase = async (): Promise<void> => {
 	}
 };
 
-export const addCategory = async (category: Omit<Category, 'id'>): Promise<string> => {
-	const id = generateUniqueId();
-	await db.runAsync('INSERT INTO categories (id, name, color, icon) VALUES (?, ?, ?, ?)', [
-		id,
-		category.name,
-		category.color,
-		category.icon,
-	]);
-	return id;
-};
-
-export const updateCategory = async (category: Category): Promise<void> => {
-	await db.runAsync('UPDATE categories SET name = ?, color = ?, icon = ? WHERE id = ?', [
-		category.name,
-		category.color,
-		category.icon,
-		category.id,
-	]);
-};
-
-export const deleteCategory = async (categoryId: string): Promise<void> => {
-	// Prevent deletion of uncategorized category
-	if (categoryId === 'uncategorized') {
-		throw new Error('Uncategorized category cannot be deleted');
-	}
-
-	// Get transactions in this category
-	const transactions = await getTransactionsByCategory(categoryId);
-
-	// If transactions exist, move them to uncategorized
-	if (transactions.length > 0) {
-		await db.withTransactionAsync(async () => {
-			for (const transaction of transactions) {
-				await updateTransaction({
-					...transaction,
-					category: 'uncategorized',
-				});
-			}
-		});
-	}
-
-	// Delete the category
-	await db.runAsync('DELETE FROM categories WHERE id = ?', [categoryId]);
-};
-
 export default {
 	initDatabase,
 	getCategories,
 	getCategoriesByType,
+	addCategory,
+	updateCategory,
+	deleteCategory,
 	addTransaction,
 	getTransactions,
-	getTransactionsByType,
 	getTransactionsByCategory,
 	getTransactionsByDateRange,
 	updateTransaction,
 	deleteTransaction,
+	getPeriodSummary,
+	getBalanceAsOf,
 	getTotalByCategory,
 	getMonthlyTransactions,
-	getIncomeSummary,
-	getExpenseSummary,
-	getNetIncome,
 	addRecurringTransaction,
 	getRecurringTransactions,
 	getRecurringTransactionById,
 	updateRecurringTransaction,
 	deleteRecurringTransaction,
 	processRecurringTransactions,
+	hasFinancialData,
+	convertAllAmounts,
 	resetDatabase,
-	addCategory,
-	updateCategory,
-	deleteCategory,
 };

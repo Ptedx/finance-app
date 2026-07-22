@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
-import { formatCurrency } from '../utils/currencyUtils';
+import { formatCents } from '../utils/money';
 import { formatFullDate } from '../utils/dateUtils';
 
 export default function TransactionDetailScreen() {
@@ -124,7 +124,7 @@ export default function TransactionDetailScreen() {
 							transaction.isIncome ? styles.incomeAmount : styles.expenseAmount,
 						]}
 					>
-						{transaction.isIncome ? '+' : '-'} {formatCurrency(transaction.amount)}
+						{transaction.isIncome ? '+' : '-'} {formatCents(transaction.amountCents)}
 					</Text>
 				</View>
 

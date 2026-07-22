@@ -9,6 +9,10 @@ const en = {
 
 	summary: {
 		monthlySummary: 'Monthly Summary',
+		monthResult: 'Month result',
+		income: 'Income',
+		expenses: 'Expenses',
+		accumulatedBalance: 'Accumulated balance',
 		balance: 'Balance',
 		budget: 'Budget',
 		edit: 'Edit',
@@ -98,6 +102,7 @@ const en = {
 		monthlyTrends: 'Monthly Trends',
 		expensesByCategory: 'Expenses by Category',
 		incomeByCategory: 'Income by Category',
+		otherCategories: 'Other ({{count}})',
 		exportReports: 'Export Reports',
 		loading: 'Loading reports...',
 		noExpenseData: 'No expense data available',
