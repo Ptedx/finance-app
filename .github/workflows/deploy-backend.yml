@@ -4,26 +4,26 @@ on:
   push:
     branches:
       - main
-    # Este repositório guarda o app e o backend juntos. Sem o filtro, um commit que só
-    # mexe numa tela do React Native reconstruiria e reiniciaria a API em produção —
-    # downtime por uma mudança que nem chega perto do servidor.
+    # Este repositorio guarda o app e o backend juntos. Sem o filtro, um commit que so
+    # mexe numa tela do React Native reconstruiria e reiniciaria a API em producao --
+    # downtime por uma mudanca que nem chega perto do servidor.
     paths:
       - 'backend/**'
       - '.github/workflows/deploy-backend.yml'
   # Permite disparar pela aba Actions, para redeploy sem precisar de um commit vazio.
   workflow_dispatch:
 
-# Dois deploys simultâneos brigariam pelo mesmo diretório e pelas mesmas portas na VM.
-# O segundo espera o primeiro terminar em vez de atropelá-lo.
+# Dois deploys simultaneos brigariam pelo mesmo diretorio e pelas mesmas portas na VM.
+# O segundo espera o primeiro terminar em vez de atropela-lo.
 concurrency:
   group: deploy-spendr-api
   cancel-in-progress: false
 
-# Configuração que não é segredo mora aqui, e não nos secrets: fica versionada, revisável
-# num diff e editável sem sair do editor. Só o que vaza valor se exposto vira secret.
+# Config que nao e segredo mora aqui, e nao nos secrets: fica versionada, revisavel num
+# diff e editavel sem sair do editor. So o que vaza valor se exposto vira secret.
 env:
-  # Relativo ao home do usuário `ubuntu`: guardar "~/spendr" aqui não funcionaria, porque
-  # o til não é expandido quando a variável é usada entre aspas no shell remoto.
+  # Relativo ao home do usuario `ubuntu`: guardar "~/spendr" nao funcionaria, porque o
+  # til nao e expandido quando a variavel e usada entre aspas no shell remoto.
   DEPLOY_DIR: spendr
   POSTGRES_USER: spendr_user
   POSTGRES_DB: spendr_db
@@ -32,8 +32,8 @@ env:
   ACCESS_TOKEN_TTL: 15m
   REFRESH_TOKEN_DAYS: 30
   SYNC_PAGE_SIZE: 500
-  # Vazio = qualquer origem, que é o correto para um app nativo: o React Native não
-  # manda header Origin e não há navegador para proteger. Preencher só se houver front web.
+  # Vazio = qualquer origem, que e o correto para um app nativo: o React Native nao
+  # manda header Origin e nao ha navegador para proteger. Preencher so se houver front web.
   CORS_ORIGINS: ''
   PUBLIC_URL: https://api-finance.valtre.com.br
 
@@ -47,46 +47,50 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ubuntu
           key: ${{ secrets.SSH_KEY }}
-          # `script_stop` faz o shell abortar no primeiro comando que falhar. Sem isso,
-          # um `git reset` com problema seguiria adiante e o job terminaria verde tendo
-          # publicado o código antigo.
+          # script_stop faz o shell abortar no primeiro comando que falhar. Sem isso, um
+          # git reset com problema seguiria adiante e o job terminaria verde tendo
+          # publicado o codigo antigo.
           script_stop: true
-          # Os valores chegam como variáveis de ambiente da sessão SSH, em vez de serem
-          # interpolados no texto do script. Assim uma senha com aspas ou cifrão não vira
-          # comando: o shell recebe o valor pronto, sem reinterpretá-lo.
+          # Os valores chegam como variaveis de ambiente da sessao SSH, em vez de serem
+          # interpolados no texto do script. Assim uma senha com aspas ou cifrao nao vira
+          # comando: o shell recebe o valor pronto, sem reinterpreta-lo.
+          #
+          # O script abaixo e ASCII puro de proposito: o ssh-action transporta o texto
+          # por um canal que corrompe multibyte, e um acento antes de um ';' vira erro de
+          # sintaxe no shell remoto. Nao reintroduza acentos aqui.
           envs: DEPLOY_DIR,POSTGRES_USER,POSTGRES_DB,API_PORT,HOST_PORT,ACCESS_TOKEN_TTL,REFRESH_TOKEN_DAYS,SYNC_PAGE_SIZE,CORS_ORIGINS,JWT_SECRET,POSTGRES_PASSWORD
           script: |
             set -euo pipefail
 
             echo "==> Conferindo os segredos"
-            [ -n "${JWT_SECRET:-}" ]       || { echo "ERRO: secret JWT_SECRET nao esta definido"; exit 1; }
-            [ -n "${POSTGRES_PASSWORD:-}" ] || { echo "ERRO: secret POSTGRES_PASSWORD nao esta definido"; exit 1; }
+            [ -n "${JWT_SECRET:-}" ]        || { echo "ERRO: secret JWT_SECRET nao definido"; exit 1; }
+            [ -n "${POSTGRES_PASSWORD:-}" ] || { echo "ERRO: secret POSTGRES_PASSWORD nao definido"; exit 1; }
 
-            # Lista de permitidos, não de proibidos.
-            #
-            # Estes dois valores atravessam três parsers com regras diferentes: o do
-            # .env, o de interpolação do docker compose (que expande $VAR) e o de URL
-            # do Postgres (onde @ : / ? # têm significado). Enumerar tudo que quebra em
-            # algum deles é como errar; aceitar só o que é seguro nos três, não.
-            # `A-Za-z0-9_.~-` são exatamente os caracteres "unreserved" de URI.
+            # Lista de permitidos, nao de proibidos. Estes dois valores atravessam tres
+            # parsers com regras diferentes: o do .env, o do docker compose (que expande
+            # $VAR) e o de URL do Postgres (onde @ : / ? # tem significado). Enumerar
+            # tudo que quebra em algum deles e como errar; aceitar so o seguro nos tres,
+            # nao. [A-Za-z0-9_.~-] sao os caracteres "unreserved" de URI.
             validar_segredo() {
-              local nome="$1" valor="$2"
+              nome="$1"
+              valor="$2"
               case "$valor" in
                 *[!A-Za-z0-9_.~-]*)
-                  echo "ERRO: $nome contem caractere fora de [A-Za-z0-9_.~-]."
-                  echo "      Esses caracteres quebram a URL do Postgres ou a"
-                  echo "      interpolacao do docker compose. Gere assim:"
-                  echo "      openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | head -c 48"
+                  echo "ERRO: $nome tem caractere fora de [A-Za-z0-9_.~-]."
+                  echo "      Gere assim: node -e \"console.log(require('crypto').randomBytes(64).toString('base64').replace(/[^A-Za-z0-9]/g,'').slice(0,48))\""
                   exit 1
                   ;;
               esac
-              [ ${#valor} -ge 16 ] || { echo "ERRO: $nome tem menos de 16 caracteres"; exit 1; }
+              if [ "${#valor}" -lt 16 ]; then
+                echo "ERRO: $nome tem menos de 16 caracteres"
+                exit 1
+              fi
             }
 
             validar_segredo POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
-            validar_segredo JWT_SECRET        "$JWT_SECRET"
+            validar_segredo JWT_SECRET "$JWT_SECRET"
 
-            echo "==> Atualizando o código"
+            echo "==> Atualizando o codigo"
             cd "$HOME/$DEPLOY_DIR"
             git fetch origin main
             git reset --hard origin/main
@@ -94,38 +98,34 @@ jobs:
             cd backend
 
             echo "==> Escrevendo o .env"
-            # umask antes de criar: o arquivo nasce 600, sem uma janela em que outro
-            # usuário da VM pudesse lê-lo.
+            # umask antes de criar: o arquivo nasce 600, sem janela em que outro usuario
+            # da VM pudesse le-lo. O chmod cobre o caso de o arquivo ja existir.
             umask 077
-            # Cada valor é escrito com printf a partir de uma variável de ambiente, nunca
-            # interpolado no texto do script: uma senha com $, aspas ou crase entra
-            # literal em vez de ser reinterpretada pelo shell.
+            # Cada valor vem de uma variavel de ambiente via printf, nunca interpolado no
+            # texto do script: uma senha com $, aspas ou crase entra literal.
             {
               printf 'NODE_ENV=production\n'
-              printf 'PORT=%s\n'                "$API_PORT"
-              printf 'POSTGRES_USER=%s\n'       "$POSTGRES_USER"
-              printf 'POSTGRES_PASSWORD=%s\n'   "$POSTGRES_PASSWORD"
-              printf 'POSTGRES_DB=%s\n'         "$POSTGRES_DB"
-              # Derivado das partes acima, em vez de ser um segredo próprio: assim é
-              # impossível trocar a senha num lugar e esquecer no outro. O host é
-              # `postgres`, o nome do serviço no compose — não 127.0.0.1.
+              printf 'PORT=%s\n'               "$API_PORT"
+              printf 'POSTGRES_USER=%s\n'      "$POSTGRES_USER"
+              printf 'POSTGRES_PASSWORD=%s\n'  "$POSTGRES_PASSWORD"
+              printf 'POSTGRES_DB=%s\n'        "$POSTGRES_DB"
+              # Derivado das partes acima, e nao um segredo proprio: impossivel trocar a
+              # senha num lugar e esquecer no outro. Host `postgres`, o nome do servico no
+              # compose -- nao 127.0.0.1.
               printf 'DATABASE_URL=postgresql://%s:%s@postgres:5432/%s?schema=public\n' \
                 "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB"
-              printf 'JWT_SECRET=%s\n'          "$JWT_SECRET"
-              printf 'ACCESS_TOKEN_TTL=%s\n'    "$ACCESS_TOKEN_TTL"
-              printf 'REFRESH_TOKEN_DAYS=%s\n'  "$REFRESH_TOKEN_DAYS"
-              printf 'SYNC_PAGE_SIZE=%s\n'      "$SYNC_PAGE_SIZE"
-              printf 'CORS_ORIGINS=%s\n'        "$CORS_ORIGINS"
+              printf 'JWT_SECRET=%s\n'         "$JWT_SECRET"
+              printf 'ACCESS_TOKEN_TTL=%s\n'   "$ACCESS_TOKEN_TTL"
+              printf 'REFRESH_TOKEN_DAYS=%s\n' "$REFRESH_TOKEN_DAYS"
+              printf 'SYNC_PAGE_SIZE=%s\n'     "$SYNC_PAGE_SIZE"
+              printf 'CORS_ORIGINS=%s\n'       "$CORS_ORIGINS"
             } > .env
-
-            # Explícito além do umask: se o arquivo já existia de um deploy anterior, a
-            # redireção reaproveita a permissão antiga e o umask não corrige nada.
             chmod 600 .env
 
             echo "==> Subindo os containers"
-            # Sem `down`: o compose recria apenas os serviços cujo build mudou, então o
-            # Postgres não é derrubado a cada deploy. As migrations rodam sozinhas na
-            # subida da API (`prisma migrate deploy` no CMD do Dockerfile).
+            # Sem `down`: o compose recria so os servicos cujo build mudou, entao o
+            # Postgres nao cai a cada deploy. As migrations rodam sozinhas na subida da
+            # API (prisma migrate deploy no CMD do Dockerfile).
             docker compose up -d --build
 
             echo "==> Aguardando a API responder"
@@ -140,8 +140,8 @@ jobs:
               sleep 2
             done
 
-            # Chegar aqui significa que o container subiu mas a API não respondeu em 60s.
-            # Os logs vão para o output do job, que é onde alguém vai procurar.
+            # Container subiu mas a API nao respondeu em 60s. Os logs vao para o output do
+            # job, que e onde alguem vai procurar.
             echo "ERRO: /health nao respondeu em 60s"
             docker compose ps
             docker compose logs --tail 80 api
@@ -150,9 +150,9 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
 
-      - name: Verificar pelo domínio público
-        # Confirma o caminho inteiro — DNS, nginx, TLS e a API —, e não apenas o
-        # localhost da VM. Um deploy que só funciona por dentro não serve para o app.
+      - name: Verificar pelo dominio publico
+        # Confirma o caminho inteiro -- DNS, nginx, TLS e API --, e nao so o localhost da
+        # VM. Um deploy que so funciona por dentro nao serve para o app.
         run: |
           for tentativa in $(seq 1 10); do
             if curl -fsS "${PUBLIC_URL}/health"; then
