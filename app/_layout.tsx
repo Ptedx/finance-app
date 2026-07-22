@@ -126,7 +126,17 @@ export default function RootLayout() {
 				setIsDbInitialized(true);
 			} catch (error) {
 				console.error('Error initializing the app:', error);
-				setInitError('Failed to initialize database');
+
+				// A mensagem real vai para a tela, não só um "falhou" genérico: numa build
+				// release não há redbox nem console, e esta é a única pista que o usuário
+				// (ou quem for depurar) tem sobre o que aconteceu.
+				setInitError(
+					`Failed to initialize database: ${error instanceof Error ? error.message : String(error)}`
+				);
+
+				// Sem isto a splash screen fica por cima da mensagem de erro, e o app
+				// continua parecendo travado em vez de explicado.
+				SplashScreen.hideAsync().catch(() => {});
 			}
 		};
 
@@ -151,10 +161,12 @@ export default function RootLayout() {
 		biometricCheckComplete,
 	]);
 
-	if (!fontsLoaded || !isDbInitialized || !onboardingChecked) {
-		return null;
-	}
-
+	// O erro vem ANTES da tela de carregamento, e não depois.
+	//
+	// Na ordem inversa este branch era inalcançável: uma falha em `initDatabase` deixa
+	// `isDbInitialized` em false, o `return null` abaixo assumia, e o app ficava parado
+	// na splash screen — sem crash, sem log, sem nada na tela. Um app que não abre e não
+	// diz por quê é indistinguível de um app travado.
 	if (initError) {
 		return (
 			<View
@@ -163,11 +175,18 @@ export default function RootLayout() {
 					justifyContent: 'center',
 					alignItems: 'center',
 					backgroundColor: '#121212',
+					padding: 24,
 				}}
 			>
-				<Text style={{ color: '#ffffff', fontSize: 16 }}>{initError}. Please restart the app.</Text>
+				<Text style={{ color: '#ffffff', fontSize: 16, textAlign: 'center' }}>
+					{initError}. Please restart the app.
+				</Text>
 			</View>
 		);
+	}
+
+	if (!fontsLoaded || !isDbInitialized || !onboardingChecked) {
+		return null;
 	}
 
 	// AuthProvider fica acima de CurrencyProvider porque a moeda e o idioma passam a vir

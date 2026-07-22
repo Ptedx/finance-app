@@ -1114,10 +1114,11 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 
 /** Quantas linhas ainda faltam subir. Alimenta o indicador de status do sync. */
 export const countDirtyRows = async (): Promise<number> => {
-	const row = await db.getFirstAsync<{ count: number }>(
-		SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table} WHERE dirty = 1)`).join(' + ') +
-			' AS count'
-	);
+	const subqueries = SYNCED_TABLES.map(
+		(table) => `(SELECT COUNT(*) FROM ${table} WHERE dirty = 1)`
+	).join(' + ');
+
+	const row = await db.getFirstAsync<{ count: number }>(`SELECT ${subqueries} AS count`);
 	return row?.count ?? 0;
 };
 

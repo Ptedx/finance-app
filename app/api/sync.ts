@@ -22,3 +22,11 @@ export const push = (changes: SyncChanges): Promise<PushResponse> =>
 		body: { changes },
 		authenticated: true,
 	});
+
+/**
+ * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
+ * default e um modulo quebrado do ponto de vista dele. Este export existe so para
+ * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
+ * money.ts e dos demais utilitarios do projeto.
+ */
+export default { pull, push, fetchSyncStatus };

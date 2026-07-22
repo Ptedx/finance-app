@@ -8,7 +8,6 @@ import {
 	Alert,
 	KeyboardAvoidingView,
 	Platform,
-	SafeAreaView,
 	ScrollView,
 	StyleSheet,
 	Text,
@@ -16,6 +15,10 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
+// O `SafeAreaView` do react-native não faz nada no Android (é iOS-only, e está
+// depreciado), e por isso a tela encostava na barra de status. Todas as demais telas
+// deste app já usam o do safe-area-context, que respeita os insets nas duas plataformas.
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';

@@ -6,7 +6,13 @@ import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } fro
 import { useBudget } from '../contexts/BudgetContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { usePeriod } from '../contexts/PeriodContext';
-import { centsToInputString, formatCents, parseAmountToCents } from '../utils/money';
+import {
+	centsToDisplayInput,
+	finaliseAmountInput,
+	formatAmountInput,
+	formatCents,
+	parseAmountToCents,
+} from '../utils/money';
 
 interface BudgetEditorProps {
 	isVisible: boolean;
@@ -21,7 +27,7 @@ const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 	const { currentCurrency } = useCurrency();
 
 	const [budgetInput, setBudgetInput] = useState(
-		currentBudgetCents !== null ? centsToInputString(currentBudgetCents) : ''
+		currentBudgetCents !== null ? centsToDisplayInput(currentBudgetCents) : ''
 	);
 
 	const handleSave = async () => {
@@ -65,7 +71,8 @@ const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 						<TextInput
 							style={styles.input}
 							value={budgetInput}
-							onChangeText={setBudgetInput}
+							onChangeText={(text) => setBudgetInput(formatAmountInput(text))}
+							onBlur={() => setBudgetInput(finaliseAmountInput(budgetInput))}
 							placeholder={t('budgetEditor.placeholder')}
 							placeholderTextColor="rgba(255, 255, 255, 0.3)"
 							keyboardType="decimal-pad"

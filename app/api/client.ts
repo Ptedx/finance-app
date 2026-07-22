@@ -19,6 +19,15 @@ const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '') ?? '';
  */
 const TIMEOUT_MS = 20_000;
 
+/**
+ * Respostas de um intermediário — ngrok, nginx — que não conseguiu falar com a API.
+ *
+ * Do ponto de vista do app são idênticas a estar sem rede: a requisição nunca chegou,
+ * nada foi processado, e tentar de novo mais tarde é a reação certa. O que não pode
+ * acontecer é o usuário ver "Erro 502", que não significa nada para ele.
+ */
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
@@ -29,9 +38,12 @@ export class ApiError extends Error {
 		this.name = 'ApiError';
 	}
 
-	/** Sem resposta do servidor: dá para tentar de novo mais tarde. */
+	/**
+	 * A requisição não chegou ao servidor: sem rede, timeout, ou um gateway que não
+	 * alcançou a API. Dá para tentar de novo — e a fila de sync faz exatamente isso.
+	 */
 	get isOffline(): boolean {
-		return this.status === 0;
+		return this.status === 0 || GATEWAY_STATUSES.has(this.status);
 	}
 
 	/** A sessão morreu de vez; renovar não adianta e o app precisa deslogar. */
@@ -66,16 +78,35 @@ export const setSessionLostHandler = (handler: (() => void) | null): void => {
 	onSessionLost = handler;
 };
 
+/**
+ * Mensagem legível para quem não faz ideia do que é um código HTTP.
+ *
+ * Um gateway fora do ar responde HTML, não JSON, então não há mensagem da API para
+ * mostrar — e "Erro 502" na tela não ajuda ninguém a decidir o que fazer.
+ */
+const fallbackMessage = (status: number): string => {
+	if (GATEWAY_STATUSES.has(status)) return 'O servidor não está respondendo. Tente novamente em instantes.';
+	if (status === 429) return 'Muitas tentativas. Aguarde alguns minutos.';
+	if (status >= 500) return 'Erro no servidor. Tente novamente em instantes.';
+	return 'Não foi possível completar a operação.';
+};
+
 const parseError = async (response: Response): Promise<ApiError> => {
+	const fallback = () =>
+		new ApiError(
+			response.status,
+			fallbackMessage(response.status),
+			GATEWAY_STATUSES.has(response.status) ? 'gateway_unreachable' : 'error'
+		);
+
 	try {
 		const body = (await response.json()) as { error?: string; code?: string };
-		return new ApiError(
-			response.status,
-			body.error ?? `Erro ${response.status}`,
-			body.code ?? 'error'
-		);
+		return body.error
+			? new ApiError(response.status, body.error, body.code ?? 'error')
+			: fallback();
 	} catch {
-		return new ApiError(response.status, `Erro ${response.status}`, 'error');
+		// Corpo não era JSON: veio de um proxy, não da API.
+		return fallback();
 	}
 };
 
@@ -170,3 +201,11 @@ export const apiRequest = async <T>(path: string, options: RequestOptions = {}):
 
 	return (await response.json()) as T;
 };
+
+/**
+ * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
+ * default e um modulo quebrado do ponto de vista dele. Este export existe so para
+ * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
+ * money.ts e dos demais utilitarios do projeto.
+ */
+export default { apiRequest, isApiConfigured, setSessionLostHandler, ApiError };

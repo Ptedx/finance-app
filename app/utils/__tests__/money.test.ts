@@ -2,6 +2,8 @@ import {
 	centsToInputString,
 	configureMoney,
 	convertCents,
+	finaliseAmountInput,
+	formatAmountInput,
 	formatCents,
 	isValidAmountInput,
 	isValidRate,
@@ -228,5 +230,103 @@ describe('integer cents arithmetic', () => {
 	it('converts legacy float amounts without drift', () => {
 		expect(majorUnitsToCents(1234.56)).toBe(123456);
 		expect(majorUnitsToCents(0.1 + 0.2)).toBe(30);
+	});
+});
+describe('formatAmountInput', () => {
+	// A formatação é puramente visual: os dígitos mantêm o significado que tinham ao
+	// serem digitados, e o valor gravado continua saindo de parseAmountToCents.
+	describe('pt-BR', () => {
+		beforeEach(() => {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+		});
+
+		it('agrupa milhares enquanto se digita', () => {
+			expect(formatAmountInput('1')).toBe('1');
+			expect(formatAmountInput('15')).toBe('15');
+			expect(formatAmountInput('1500')).toBe('1.500');
+			expect(formatAmountInput('15006')).toBe('15.006');
+			expect(formatAmountInput('1234567')).toBe('1.234.567');
+		});
+
+		it('não reescreve a fração enquanto ela está sendo digitada', () => {
+			expect(formatAmountInput('12,')).toBe('12,');
+			expect(formatAmountInput('12,5')).toBe('12,5');
+			expect(formatAmountInput('12,50')).toBe('12,50');
+		});
+
+		it('descarta casas além de dois centavos', () => {
+			expect(formatAmountInput('12,5678')).toBe('12,56');
+		});
+
+		it('é idempotente: reaplicar sobre o próprio resultado não muda nada', () => {
+			const once = formatAmountInput('1234567,89');
+			expect(formatAmountInput(once)).toBe(once);
+			expect(once).toBe('1.234.567,89');
+		});
+
+		it('ignora o que não é dígito nem separador', () => {
+			expect(formatAmountInput('R$ 1500')).toBe('1.500');
+			expect(formatAmountInput('abc')).toBe('');
+			expect(formatAmountInput('')).toBe('');
+		});
+	});
+
+	describe('en-US', () => {
+		beforeEach(() => {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		});
+
+		it('usa os separadores do locale', () => {
+			expect(formatAmountInput('15006')).toBe('15,006');
+			expect(formatAmountInput('15006.5')).toBe('15,006.5');
+		});
+	});
+});
+
+describe('finaliseAmountInput', () => {
+	beforeEach(() => {
+		configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+	});
+
+	it('completa os centavos ao sair do campo', () => {
+		expect(finaliseAmountInput('15006')).toBe('15.006,00');
+		expect(finaliseAmountInput('12,5')).toBe('12,50');
+		expect(finaliseAmountInput('12,50')).toBe('12,50');
+	});
+
+	it('deixa um campo vazio vazio, em vez de inventar 0,00', () => {
+		expect(finaliseAmountInput('')).toBe('');
+		expect(finaliseAmountInput('   ')).toBe('');
+	});
+
+	it('devolve texto inválido intacto, para a validação do formulário reclamar', () => {
+		expect(finaliseAmountInput('abc')).toBe('abc');
+	});
+});
+
+describe('formatação de entrada x valor gravado', () => {
+	// O ponto central do pedido: a formatação não pode alterar o que vai para o banco.
+	// Cada valor passa pelo formatador e volta por parseAmountToCents com o mesmo total.
+	const casos: Array<[string, string, number]> = [
+		['pt-BR', '15006', 1500600],
+		['pt-BR', '1500,5', 150050],
+		['pt-BR', '1234567,89', 123456789],
+		['pt-BR', '0,01', 1],
+		['pt-BR', '999', 99900],
+		['en-US', '15006', 1500600],
+		['en-US', '1500.5', 150050],
+		['en-US', '1234567.89', 123456789],
+	];
+
+	it.each(casos)('%s: "%s" continua valendo %i centavos depois de formatado', (loc, digitado, esperado) => {
+		configureMoney(
+			loc === 'pt-BR'
+				? { locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' }
+				: { locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' }
+		);
+
+		expect(parseAmountToCents(digitado)).toBe(esperado);
+		expect(parseAmountToCents(formatAmountInput(digitado))).toBe(esperado);
+		expect(parseAmountToCents(finaliseAmountInput(digitado))).toBe(esperado);
 	});
 });
