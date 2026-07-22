@@ -80,3 +80,11 @@ export const logout = async (): Promise<void> => {
 		await clearTokens();
 	}
 };
+
+/**
+ * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
+ * default e um modulo quebrado do ponto de vista dele. Este export existe so para
+ * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
+ * money.ts e dos demais utilitarios do projeto.
+ */
+export default { register, login, logout, fetchProfile, updateProfile };

@@ -17,7 +17,13 @@ import type {
 	RecurringTransaction,
 	RecurringTransactionDraft,
 } from '../database/schema';
-import { centsToInputString, isValidAmountInput, parseAmountToCents } from '../utils/money';
+import {
+	centsToDisplayInput,
+	finaliseAmountInput,
+	formatAmountInput,
+	isValidAmountInput,
+	parseAmountToCents,
+} from '../utils/money';
 import HorizontalCategoryPicker from './HorizontalCategoryPicker';
 
 // Transaction recurrence types
@@ -60,7 +66,7 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
 	useEffect(() => {
 		if (initialTransaction) {
-			setAmount(centsToInputString(initialTransaction.amountCents));
+			setAmount(centsToDisplayInput(initialTransaction.amountCents));
 			setNote(initialTransaction.note || '');
 			setRecurrenceType(initialTransaction.recurrenceType || 'monthly');
 			setSelectedCategory(initialTransaction.category || null);
@@ -326,7 +332,9 @@ const TransactionEditor: React.FC<TransactionEditorProps> = ({
 								<TextInput
 									style={styles.input}
 									value={amount}
-									onChangeText={setAmount}
+									// Formatacao puramente visual; o valor gravado sai de parseAmountToCents.
+									onChangeText={(text) => setAmount(formatAmountInput(text))}
+									onBlur={() => setAmount(finaliseAmountInput(amount))}
 									placeholder="Enter amount"
 									placeholderTextColor="rgba(255, 255, 255, 0.3)"
 									keyboardType="decimal-pad"

@@ -229,6 +229,95 @@ export const centsToInputString = (cents: Cents): string => {
 	}).format(value);
 };
 
+/**
+ * The active locale's grouping and decimal characters.
+ *
+ * Read from Intl rather than hardcoded: the app follows the device locale, so the same
+ * build shows `1.234,56` on a Brazilian phone and `1,234.56` on an American one.
+ */
+const localeSeparators = (): { group: string; decimal: string } => {
+	try {
+		const parts = new Intl.NumberFormat(locale).formatToParts(12345.6);
+		return {
+			group: parts.find((part) => part.type === 'group')?.value ?? ',',
+			decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
+		};
+	} catch {
+		return { group: ',', decimal: '.' };
+	}
+};
+
+/**
+ * Formats what the user is typing into an amount field, as they type.
+ *
+ * Purely cosmetic: it groups thousands and nothing else. The digits keep the meaning
+ * they had when typed — `15006` stays fifteen thousand and six, it does not become
+ * 150,06 — and the result is still readable by `parseAmountToCents`, which remains the
+ * only path from text to stored cents. Nothing about the database or the API changes.
+ *
+ * The fraction is left exactly as typed while the field has focus, so that a half-typed
+ * `12,` or `12,5` is not rewritten under the user's cursor. `finaliseAmountInput`
+ * squares it up on blur.
+ */
+export const formatAmountInput = (input: string): string => {
+	if (typeof input !== 'string' || input === '') return '';
+
+	const { group, decimal } = localeSeparators();
+
+	// Drop the grouping we added on the previous keystroke, then split on the first
+	// decimal separator — anything after it is fraction, however the user typed it.
+	const ungrouped = input.split(group).join('');
+	const [head, ...tail] = ungrouped.split(decimal);
+
+	const integerDigits = (head ?? '').replace(/\D/g, '');
+	const hasDecimal = tail.length > 0;
+	const fractionDigits = hasDecimal ? tail.join('').replace(/\D/g, '').slice(0, 2) : '';
+
+	if (integerDigits === '' && !hasDecimal) return '';
+
+	let grouped: string;
+	try {
+		// BigInt keeps this exact for any length: Number would start rounding past 2^53,
+		// and an amount field is exactly where a user pastes something absurd.
+		grouped = new Intl.NumberFormat(locale, { useGrouping: true }).format(
+			BigInt(integerDigits === '' ? '0' : integerDigits)
+		);
+	} catch {
+		grouped = integerDigits === '' ? '0' : integerDigits;
+	}
+
+	return hasDecimal ? `${grouped}${decimal}${fractionDigits}` : grouped;
+};
+
+/**
+ * Squares up an amount field when it loses focus: `12` becomes `12,00` and `12,5`
+ * becomes `12,50`, so what is shown matches what was stored down to the cent.
+ *
+ * Empty input stays empty — an untouched field must not turn into `0,00`.
+ */
+export const finaliseAmountInput = (input: string): string => {
+	const cents = parseAmountToCents(input);
+
+	// Unparseable text is handed back untouched: silently blanking what someone typed
+	// is worse than showing it as-is and letting the form's validation complain.
+	if (cents === null) return input.trim() === '' ? '' : input;
+
+	// `centsToInputString` renders the locale's decimal separator with exactly two
+	// places and no grouping; `formatAmountInput` then adds the grouping.
+	return formatAmountInput(centsToInputString(cents));
+};
+
+/**
+ * Cents como texto agrupado e editável: o que um campo de valor mostra quando já vem
+ * preenchido, na edição de um lançamento.
+ *
+ * `centsToInputString` sozinho devolve `15006,00`; aqui o resultado é `15.006,00`, que
+ * é o que o usuário espera ver — e continua sendo lido de volta por `parseAmountToCents`
+ * no mesmo valor.
+ */
+export const centsToDisplayInput = (cents: Cents): string =>
+	formatAmountInput(centsToInputString(cents));
+
 /** Sums cents. Trivial by construction — which is the whole point of integer cents. */
 export const sumCents = (values: Cents[]): Cents => values.reduce((total, v) => total + v, 0);
 
@@ -254,6 +343,9 @@ export default {
 	isValidRate,
 	formatCents,
 	centsToInputString,
+	centsToDisplayInput,
+	formatAmountInput,
+	finaliseAmountInput,
 	sumCents,
 	majorUnitsToCents,
 	centsToMajorUnits,

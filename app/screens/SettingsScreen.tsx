@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
 	Alert,
-	SafeAreaView,
 	ScrollView,
 	StyleSheet,
 	Switch,
@@ -14,6 +13,9 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
+// iOS-only e depreciado no react-native; o do safe-area-context respeita os insets
+// no Android tambem, que e o que o resto do app ja usa.
+import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import { useAuth } from '../contexts/AuthContext';

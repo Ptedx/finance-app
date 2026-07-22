@@ -226,6 +226,11 @@ const ReportsScreen = () => {
 						accessor="amount"
 						backgroundColor="transparent"
 						paddingLeft="15"
+						// A legenda embutida do chart-kit imprime o numero cru do acessor
+						// ("1500.5 Education"). O detalhamento logo abaixo ja lista as mesmas
+						// categorias com o valor formatado e a porcentagem, entao ela so
+						// duplicava a informacao em formato pior.
+						hasLegend={false}
 						absolute
 					/>
 				</View>
@@ -256,6 +261,11 @@ const ReportsScreen = () => {
 						accessor="amount"
 						backgroundColor="transparent"
 						paddingLeft="15"
+						// A legenda embutida do chart-kit imprime o numero cru do acessor
+						// ("1500.5 Education"). O detalhamento logo abaixo ja lista as mesmas
+						// categorias com o valor formatado e a porcentagem, entao ela so
+						// duplicava a informacao em formato pior.
+						hasLegend={false}
 						absolute
 					/>
 				</View>

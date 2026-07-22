@@ -111,6 +111,7 @@
       ],
       "expo-font",
       "expo-sharing",
+      "expo-secure-store",
       "expo-sqlite",
       "expo-web-browser"
     ],

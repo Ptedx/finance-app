@@ -17,7 +17,13 @@ import { useCurrency } from '../contexts/CurrencyContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 import { formatFullDate, getISODate } from '../utils/dateUtils';
-import { centsToInputString, isValidAmountInput, parseAmountToCents } from '../utils/money';
+import {
+	centsToDisplayInput,
+	finaliseAmountInput,
+	formatAmountInput,
+	isValidAmountInput,
+	parseAmountToCents,
+} from '../utils/money';
 import CategoryPicker from './CategoryPicker';
 
 interface TransactionFormProps {
@@ -37,7 +43,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const { currentCurrency } = useCurrency();
 
 	const [amount, setAmount] = useState(
-		initialTransaction ? centsToInputString(initialTransaction.amountCents) : ''
+		initialTransaction ? centsToDisplayInput(initialTransaction.amountCents) : ''
 	);
 	const [category, setCategory] = useState<string | null>(
 		initialTransaction ? initialTransaction.category : null
@@ -330,12 +336,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 							style={styles.amountInput}
 							value={amount}
 							onChangeText={(text) => {
-								setAmount(text);
+								// Agrupa os milhares enquanto digita. É só aparência: o valor
+								// gravado continua saindo de `parseAmountToCents` no submit.
+								setAmount(formatAmountInput(text));
 								if (errors.amount) {
 									setErrors({ ...errors, amount: undefined });
 								}
 							}}
-							placeholder="0.00"
+							// Ao sair do campo, completa os centavos: 15.006 vira 15.006,00.
+							onBlur={() => setAmount(finaliseAmountInput(amount))}
+							placeholder={centsToDisplayInput(0)}
 							placeholderTextColor="rgba(255, 255, 255, 0.3)"
 							keyboardType="decimal-pad"
 							autoFocus
