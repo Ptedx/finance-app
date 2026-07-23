@@ -9,6 +9,9 @@ RUN apk add --no-cache openssl
 # Dependências primeiro, para o cache do Docker sobreviver a mudanças no código.
 COPY package*.json ./
 COPY prisma ./prisma/
+# No Prisma 7 a URL de conexão do Migrate mora no prisma.config.ts, não no schema. O
+# `prisma generate` e o `migrate deploy` precisam dele — daí ele entrar na imagem.
+COPY prisma.config.ts ./
 
 RUN npm ci
 RUN npx prisma generate
@@ -29,6 +32,9 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+# Sem isto, `prisma migrate deploy` no CMD nao encontra a datasource.url e a API entra
+# em crash-loop na subida (Prisma 7 le a URL do config, nao do schema).
+COPY --from=builder /app/prisma.config.ts ./
 
 # Não roda como root: um comprometimento da API não vira controle do container.
 USER node

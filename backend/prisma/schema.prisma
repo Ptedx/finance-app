@@ -23,6 +23,10 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // A URL fica no prisma.config.ts (datasource.url = process.env.DATABASE_URL): o
+  // Prisma 7 nao aceita mais `url` aqui no schema. Por isso o Dockerfile precisa copiar
+  // o prisma.config.ts para a imagem — senao `prisma migrate deploy` nao acha a
+  // datasource.url e a API entra em crash-loop na subida.
 }
 
 // ============================================

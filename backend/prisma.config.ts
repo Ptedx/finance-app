@@ -3,6 +3,10 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+// No Prisma 7 a URL de conexao para o Migrate vive aqui, e nao no schema.prisma.
+// Consequencia: este arquivo PRECISA ser copiado para a imagem Docker, senao o
+// `prisma migrate deploy` que roda na subida do container nao encontra a datasource.url.
+// Ver o COPY em backend/Dockerfile.
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
