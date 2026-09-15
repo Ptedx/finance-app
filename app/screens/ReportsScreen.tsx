@@ -16,8 +16,11 @@ import {
 import { LineChart, PieChart } from 'react-native-chart-kit';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { useWealthMetrics } from '../hooks/useWealthMetrics';
 import { getMonthName } from '../utils/dateUtils';
 import { exportFinancialReport } from '../utils/exportUtils';
+import type { Insight, InsightSeverity } from '../utils/insights';
+import { NEEDS_WANTS_SAVINGS_TARGET } from '../utils/metrics';
 import { formatCents } from '../utils/money';
 
 const { width } = Dimensions.get('window');
@@ -43,6 +46,26 @@ const INCOME_SLICE_COLORS = ['#C6F6D5', '#92E6B4', '#5FD394', '#30A46C', '#1D7A4
 const OTHER_SLICE_COLOR = '#8A8A8A';
 
 /**
+ * As três fatias do 50/30/20.
+ *
+ * Necessidades em azul frio (custo de existir, nem bom nem ruim), desejos em âmbar
+ * (escolha, o lugar onde há margem de manobra) e poupança em verde, que é a mesma cor com
+ * que o app já marca dinheiro que entra. As três se distinguem em monocromia e no tema
+ * escuro do app — a barra empilhada não tem legenda embutida.
+ */
+const NEEDS_COLOR = '#4DACF7';
+const WANTS_COLOR = '#FFCC5C';
+const SAVINGS_COLOR = '#4CAF50';
+
+/** Cor do marcador de cada insight, por urgência. */
+const SEVERITY_COLOR: Record<InsightSeverity, string> = {
+	critical: '#FF6B6B',
+	attention: '#FFCC5C',
+	positive: '#4CAF50',
+	neutral: '#8A8A8A',
+};
+
+/**
  * A pie stops being readable past about six wedges, and neither ramp carries more than
  * five distinguishable steps. Anything beyond that is summed into "Other" rather than
  * cycling the palette, which would paint two categories the same shade.
@@ -60,6 +83,7 @@ const ReportsScreen = () => {
 		currentPeriodTransactions,
 	} = useTransactions();
 	const { selectedMonthName, selectedYear } = usePeriod();
+	const { metrics, insights } = useWealthMetrics();
 	const { t } = useTranslation();
 
 	const [refreshing, setRefreshing] = useState(false);
@@ -68,6 +92,7 @@ const ReportsScreen = () => {
 	const [expenseChartError, setExpenseChartError] = useState(false);
 	const [incomeChartError, setIncomeChartError] = useState(false);
 	const [trendChartError, setTrendChartError] = useState(false);
+	const [savingsChartError, setSavingsChartError] = useState(false);
 
 	/**
 	 * Turns category totals into the two views of the same data.
@@ -180,6 +205,33 @@ const ReportsScreen = () => {
 		};
 	}, [monthlyData.expenses, monthlyData.incomes, t]);
 
+	/**
+	 * A taxa de poupança mês a mês, em porcentagem.
+	 *
+	 * `savingsRateTrend` já devolve doze entradas, então o ponto N desta linha e o ponto N
+	 * das linhas de receita/despesa acima falam do mesmo mês. Meses sem renda não têm taxa
+	 * e entram como zero — é o que o chart-kit aceita desenhar —, e a legenda embaixo do
+	 * gráfico diz isso em vez de deixar o zero passar por "não poupou nada".
+	 */
+	const savingsTrendData = useMemo(
+		() => ({
+			labels: Array.from({ length: 12 }, (_, i) => getMonthName(i + 1).substring(0, 3)),
+			datasets: [
+				{
+					data: metrics.trend.map((entry) => (entry.rate.basisPoints ?? 0) / 100),
+					color: () => '#15E8FE',
+					strokeWidth: 2,
+				},
+			],
+		}),
+		[metrics.trend]
+	);
+
+	const hasSavingsTrend = useMemo(
+		() => metrics.trend.some((entry) => entry.rate.basisPoints !== null),
+		[metrics.trend]
+	);
+
 	const chartConfig = useMemo(
 		() => ({
 			backgroundGradientFrom: '#1E1E1E',
@@ -200,6 +252,7 @@ const ReportsScreen = () => {
 			setExpenseChartError(false);
 			setIncomeChartError(false);
 			setTrendChartError(false);
+			setSavingsChartError(false);
 		} catch (error) {
 			console.error('Refresh error:', error);
 		} finally {
@@ -315,6 +368,139 @@ const ReportsScreen = () => {
 		width,
 		t,
 	]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
+	const renderSavingsTrendChart = useCallback(() => {
+		if (savingsChartError) {
+			return <Text style={styles.errorText}>{t('wealth.errorSavingsChart')}</Text>;
+		}
+		if (!hasSavingsTrend) {
+			return <Text style={styles.emptyText}>{t('wealth.noSavingsTrendData')}</Text>;
+		}
+		try {
+			return (
+				<View style={styles.chartContainer}>
+					<LineChart
+						data={savingsTrendData}
+						width={width - 32}
+						height={200}
+						chartConfig={chartConfig}
+						bezier
+						style={{ marginVertical: 8, borderRadius: 16 }}
+						yAxisSuffix="%"
+					/>
+					<Text style={styles.chartCaption}>{t('wealth.savingsTrendCaption')}</Text>
+				</View>
+			);
+		} catch (error) {
+			console.error('Error rendering savings rate chart:', error);
+			setSavingsChartError(true);
+			return <Text style={styles.errorText}>{t('wealth.renderErrorSavings')}</Text>;
+		}
+	}, [savingsTrendData, hasSavingsTrend, chartConfig, savingsChartError, width, t]);
+
+	/**
+	 * A barra empilhada do 50/30/20.
+	 *
+	 * Desenhada com Views em vez de um gráfico: são três fatias que somam exatamente 100%
+	 * por construção (ver `needsWantsSavingsSplit`), e uma barra de proporções não precisa
+	 * de eixo nem de biblioteca. Poupança negativa não tem largura — um mês no vermelho
+	 * mostra necessidades e desejos ocupando a barra inteira, que é a leitura correta.
+	 */
+	const renderNeedsWantsSavings = useCallback(() => {
+		const { split } = metrics;
+
+		if (split.needsBasisPoints === null) {
+			return <Text style={styles.emptyText}>{t('wealth.noSplitData')}</Text>;
+		}
+
+		const rows = [
+			{
+				key: 'needs',
+				label: t('wealth.needs'),
+				color: NEEDS_COLOR,
+				cents: split.needsCents,
+				basisPoints: split.needsBasisPoints ?? 0,
+				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.needsBasisPoints,
+			},
+			{
+				key: 'wants',
+				label: t('wealth.wants'),
+				color: WANTS_COLOR,
+				cents: split.wantsCents,
+				basisPoints: split.wantsBasisPoints ?? 0,
+				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.wantsBasisPoints,
+			},
+			{
+				key: 'savings',
+				label: t('wealth.savings'),
+				color: SAVINGS_COLOR,
+				cents: split.savingsCents,
+				basisPoints: split.savingsBasisPoints ?? 0,
+				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.savingsBasisPoints,
+			},
+		];
+
+		return (
+			<>
+				<View style={styles.splitBar}>
+					{rows.map((row) => (
+						<View
+							key={row.key}
+							style={{
+								width: `${Math.max(row.basisPoints, 0) / 100}%`,
+								backgroundColor: row.color,
+							}}
+						/>
+					))}
+				</View>
+
+				{rows.map((row) => (
+					<View key={row.key} style={styles.categoryBreakdownItem}>
+						<View style={styles.categoryLabelContainer}>
+							<View style={[styles.categoryColorDot, { backgroundColor: row.color }]} />
+							<Text style={styles.categoryLabel}>{row.label}</Text>
+						</View>
+						<View style={styles.categoryAmountContainer}>
+							<Text style={styles.categoryAmount}>{formatCents(row.cents)}</Text>
+							<Text style={styles.categoryPercentage}>
+								{Math.round(row.basisPoints / 100)}% ·{' '}
+								{t('wealth.target', { percent: row.targetBasisPoints / 100 })}
+							</Text>
+						</View>
+					</View>
+				))}
+			</>
+		);
+	}, [metrics, t]);
+
+	/**
+	 * Os mesmos objetos que o chatbot vai consumir, renderizados como cartões discretos.
+	 * A frase preferida é a tradução por `id`; `title` é o texto que o próprio módulo
+	 * montou e serve de fallback quando não há chave para aquele insight.
+	 */
+	const renderInsights = useCallback(
+		(items: Insight[]) => {
+			if (items.length === 0) {
+				return <Text style={styles.emptyText}>{t('wealth.noInsights')}</Text>;
+			}
+
+			return items.map((insight) => (
+				<View key={insight.id} style={styles.insightRow}>
+					<View
+						style={[styles.insightDot, { backgroundColor: SEVERITY_COLOR[insight.severity] }]}
+					/>
+					<Text style={styles.insightText}>
+						{t(`wealth.insights.${insight.id}`, {
+							...insight.params,
+							defaultValue: insight.title,
+						})}
+					</Text>
+				</View>
+			));
+		},
+		[t]
+	);
 
 	const renderCategoryBreakdown = useCallback(
 		(
@@ -453,6 +639,24 @@ const ReportsScreen = () => {
 							</View>
 						</View>
 
+						{/* Savings rate over the year */}
+						<View style={styles.sectionContainer}>
+							<Text style={styles.sectionTitle}>{t('wealth.savingsTrendTitle')}</Text>
+							{renderSavingsTrendChart()}
+						</View>
+
+						{/* Needs / wants / savings */}
+						<View style={styles.sectionContainer}>
+							<Text style={styles.sectionTitle}>{t('wealth.splitTitle')}</Text>
+							{renderNeedsWantsSavings()}
+						</View>
+
+						{/* What the numbers are saying. Mesmo read-model do futuro chatbot. */}
+						<View style={styles.sectionContainer}>
+							<Text style={styles.sectionTitle}>{t('wealth.insightsTitle')}</Text>
+							{renderInsights(insights)}
+						</View>
+
 						{/* Expenses by Category */}
 						{showExpenses && (
 							<View style={styles.sectionContainer}>
@@ -587,6 +791,40 @@ const styles = StyleSheet.create({
 	chartContainer: {
 		alignItems: 'center',
 		marginBottom: 16,
+	},
+	chartCaption: {
+		fontSize: 11,
+		color: 'rgba(255, 255, 255, 0.45)',
+		textAlign: 'center',
+		paddingHorizontal: 8,
+	},
+	splitBar: {
+		flexDirection: 'row',
+		height: 10,
+		borderRadius: 5,
+		overflow: 'hidden',
+		backgroundColor: 'rgba(255, 255, 255, 0.08)',
+		marginBottom: 12,
+	},
+	insightRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		paddingVertical: 8,
+		borderBottomWidth: 1,
+		borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+	},
+	insightDot: {
+		width: 8,
+		height: 8,
+		borderRadius: 4,
+		marginTop: 5,
+		marginRight: 10,
+	},
+	insightText: {
+		flex: 1,
+		fontSize: 14,
+		color: '#FFFFFF',
+		lineHeight: 20,
 	},
 	categoryBreakdownContainer: {
 		marginTop: 8,

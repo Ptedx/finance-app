@@ -1,6 +1,20 @@
 export type CategoryType = 'expense' | 'income';
 
 /**
+ * Se a despesa é um custo de viver ou uma escolha.
+ *
+ * É a única informação que o livro-caixa não consegue derivar sozinho, e é o que separa
+ * "gastei R$ 4.000" de "R$ 2.500 eu tinha que gastar e R$ 1.500 eu escolhi" — a base do
+ * 50/30/20 (`needsWantsSavingsSplit` em `app/utils/metrics.ts`).
+ *
+ * Só faz sentido em categorias de despesa; nas de receita a coluna existe por uniformidade
+ * e nunca é lida. O padrão é `discretionary` de propósito: classificar um gasto como
+ * essencial é uma afirmação do usuário, e assumi-la por ele inflaria as "necessidades" de
+ * quem nunca abriu a tela.
+ */
+export type CategoryNature = 'essential' | 'discretionary';
+
+/**
  * Bookkeeping every synchronisable row carries.
  *
  * `updatedAt` is an ISO 8601 **instant** (unlike `Transaction.date`, which is a calendar
@@ -34,6 +48,8 @@ export interface Category extends SyncMeta {
 	 * it worked before: any category the user created was silently treated as an expense.
 	 */
 	type: CategoryType;
+	/** Necessidade ou desejo. Lida apenas quando `type` é `expense`. */
+	nature: CategoryNature;
 }
 
 export interface Transaction extends SyncMeta {
@@ -89,8 +105,9 @@ export const DATABASE_NAME = 'spendr.db';
  * 2 — categories gain an explicit `type` column, and income categories are seeded.
  * 3 — every table gains `updatedAt` / `deletedAt` / `dirty`, so rows can be synced.
  * 4 — budgets move out of AsyncStorage into a table, and `sync_state` is created.
+ * 5 — categories gain `nature`, so expenses split into needs and wants.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -121,6 +138,7 @@ export const CREATE_CATEGORIES_TABLE = `
     color TEXT NOT NULL,
     icon TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'expense',
+    nature TEXT NOT NULL DEFAULT 'discretionary',
 ${SYNC_COLUMNS_SQL}
   );
 `;
@@ -136,6 +154,22 @@ export const LEGACY_INCOME_CATEGORY_IDS = [
 	'gift',
 	'refund',
 	'other_income',
+];
+
+/**
+ * Which default expense categories start out as `essential`.
+ *
+ * These are the buckets nobody opts into — you eat, you get to work, you keep the lights
+ * on, you treat what hurts, you pay the school. Everything else starts discretionary and
+ * the user promotes it by hand. The list is read both when seeding a fresh install and by
+ * the v4 -> v5 migration, so an existing database and a new one classify identically.
+ */
+export const ESSENTIAL_DEFAULT_CATEGORY_IDS = [
+	'food',
+	'transport',
+	'utilities',
+	'health',
+	'education',
 ];
 
 export const CREATE_TRANSACTIONS_TABLE = `
@@ -246,44 +280,133 @@ export type RecurringTransactionEdit = RecurringTransactionDraft & {
 export type CategorySeed = Omit<Category, keyof SyncMeta>;
 
 export const DEFAULT_CATEGORIES: CategorySeed[] = [
-	// Expense categories
-	{ id: 'food', name: 'Food', color: '#50E3C2', icon: 'fast-food', type: 'expense' },
-	{ id: 'transport', name: 'Transportation', color: '#5E5CE6', icon: 'car', type: 'expense' },
-	{ id: 'entertainment', name: 'Entertainment', color: '#FF6B6B', icon: 'film', type: 'expense' },
-	{ id: 'shopping', name: 'Shopping', color: '#FFCC5C', icon: 'cart', type: 'expense' },
-	{ id: 'utilities', name: 'Utilities', color: '#4DACF7', icon: 'flash', type: 'expense' },
-	{ id: 'health', name: 'Health', color: '#FF9FB1', icon: 'medical', type: 'expense' },
-	{ id: 'education', name: 'Education', color: '#A78BFA', icon: 'school', type: 'expense' },
+	// Expense categories. `nature` follows ESSENTIAL_DEFAULT_CATEGORY_IDS above.
+	{
+		id: 'food',
+		name: 'Food',
+		color: '#50E3C2',
+		icon: 'fast-food',
+		type: 'expense',
+		nature: 'essential',
+	},
+	{
+		id: 'transport',
+		name: 'Transportation',
+		color: '#5E5CE6',
+		icon: 'car',
+		type: 'expense',
+		nature: 'essential',
+	},
+	{
+		id: 'entertainment',
+		name: 'Entertainment',
+		color: '#FF6B6B',
+		icon: 'film',
+		type: 'expense',
+		nature: 'discretionary',
+	},
+	{
+		id: 'shopping',
+		name: 'Shopping',
+		color: '#FFCC5C',
+		icon: 'cart',
+		type: 'expense',
+		nature: 'discretionary',
+	},
+	{
+		id: 'utilities',
+		name: 'Utilities',
+		color: '#4DACF7',
+		icon: 'flash',
+		type: 'expense',
+		nature: 'essential',
+	},
+	{
+		id: 'health',
+		name: 'Health',
+		color: '#FF9FB1',
+		icon: 'medical',
+		type: 'expense',
+		nature: 'essential',
+	},
+	{
+		id: 'education',
+		name: 'Education',
+		color: '#A78BFA',
+		icon: 'school',
+		type: 'expense',
+		nature: 'essential',
+	},
 	{
 		id: 'other_expense',
 		name: 'Other Expense',
 		color: '#9CA3AF',
 		icon: 'ellipsis-horizontal',
 		type: 'expense',
+		nature: 'discretionary',
 	},
 
 	// Income categories. These ids were referenced throughout the app but had never
-	// actually been seeded, so the income category list was always empty.
-	{ id: 'salary', name: 'Salary', color: '#4CAF50', icon: 'wallet', type: 'income' },
-	{ id: 'freelance', name: 'Freelance', color: '#15E8FE', icon: 'briefcase', type: 'income' },
-	{ id: 'investment', name: 'Investment', color: '#FFD166', icon: 'trending-up', type: 'income' },
-	{ id: 'gift', name: 'Gift', color: '#F78FB3', icon: 'gift', type: 'income' },
-	{ id: 'refund', name: 'Refund', color: '#7BDFF2', icon: 'return-down-back', type: 'income' },
+	// actually been seeded, so the income category list was always empty. `nature` is
+	// carried for uniformity and never read on this side of the ledger.
+	{
+		id: 'salary',
+		name: 'Salary',
+		color: '#4CAF50',
+		icon: 'wallet',
+		type: 'income',
+		nature: 'discretionary',
+	},
+	{
+		id: 'freelance',
+		name: 'Freelance',
+		color: '#15E8FE',
+		icon: 'briefcase',
+		type: 'income',
+		nature: 'discretionary',
+	},
+	{
+		id: 'investment',
+		name: 'Investment',
+		color: '#FFD166',
+		icon: 'trending-up',
+		type: 'income',
+		nature: 'discretionary',
+	},
+	{
+		id: 'gift',
+		name: 'Gift',
+		color: '#F78FB3',
+		icon: 'gift',
+		type: 'income',
+		nature: 'discretionary',
+	},
+	{
+		id: 'refund',
+		name: 'Refund',
+		color: '#7BDFF2',
+		icon: 'return-down-back',
+		type: 'income',
+		nature: 'discretionary',
+	},
 	{
 		id: 'other_income',
 		name: 'Other Income',
 		color: '#A0E7A0',
 		icon: 'ellipsis-horizontal',
 		type: 'income',
+		nature: 'discretionary',
 	},
 
-	// Fallback bucket for transactions whose category was deleted.
+	// Fallback bucket for transactions whose category was deleted. Discretionary because
+	// an unclassified expense must not quietly count as a need.
 	{
 		id: 'uncategorized',
 		name: 'Uncategorized',
 		color: '#9CA3AF',
 		icon: 'help-circle',
 		type: 'expense',
+		nature: 'discretionary',
 	},
 ];
 
@@ -292,6 +415,7 @@ export default {
 	SCHEMA_VERSION,
 	SYNCED_TABLES,
 	LEGACY_INCOME_CATEGORY_IDS,
+	ESSENTIAL_DEFAULT_CATEGORY_IDS,
 	CREATE_CATEGORIES_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,

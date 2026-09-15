@@ -90,6 +90,50 @@ const en = {
 		},
 	},
 
+	/**
+	 * Wealth metrics: the savings rate, the runway and the insights built on top of them.
+	 * The `insights.*` keys are named after the `InsightId` values in `utils/insights.ts`
+	 * — the screen looks them up dynamically, so a missing one falls back to the English
+	 * sentence the module itself composed.
+	 */
+	wealth: {
+		savingsRate: 'Savings rate',
+		ofIncome: 'of {{amount}} earned',
+		noIncome: 'No income recorded this month',
+		deltaPoints: '{{points}} pts vs. last month',
+		savingsRateHint: '{{amount}} kept this month',
+		runway: 'Runway',
+		runwayMonths: '{{months}} months',
+		runwayUnknown: 'No fixed costs yet',
+		runwayExplanation:
+			'How long your balance would cover your fixed costs with no income at all.\n\nFixed cost is the monthly equivalent of your recurring expenses — {{amount}} a month. Weekly and yearly rules are normalised before being added up.\n\nThis uses your cash balance as the reserve, which is an approximation until the app tracks assets.',
+		savingsTrendTitle: 'Savings rate trend',
+		savingsTrendCaption: 'Months with no income are shown as 0%.',
+		noSavingsTrendData: 'No savings rate data available',
+		errorSavingsChart: 'Unable to display the savings rate chart',
+		renderErrorSavings: 'Error rendering the savings rate chart',
+		splitTitle: 'Needs, wants and savings',
+		needs: 'Needs',
+		wants: 'Wants',
+		savings: 'Savings',
+		target: 'target {{percent}}%',
+		noSplitData: 'No income or spending to split this month',
+		insightsTitle: 'What the numbers say',
+		noInsights: 'Nothing worth flagging this month.',
+		insights: {
+			'savings-rate-negative': 'You spent {{amount}} more than you earned this month.',
+			'savings-rate-low': 'Only {{percent}} of your income became savings this month.',
+			'savings-rate-healthy': 'You turned {{percent}} of your income into savings.',
+			'savings-rate-falling': 'Your savings rate has fallen {{months}} months in a row.',
+			'fixed-cost-heavy':
+				'{{percent}} of your income ({{amount}}) is committed to fixed costs before you choose anything.',
+			'runway-thin': 'Your balance covers about {{months}} months of fixed costs.',
+			'runway-solid': 'Your balance covers about {{months}} months of fixed costs.',
+			'needs-over-target': 'Essentials took {{percent}} of the month, above the 50% reference.',
+			'category-jump': 'You spent {{percent}} more on {{category}} than last month ({{amount}}).',
+		},
+	},
+
 	reports: {
 		screenTitle: 'Reports & Analytics',
 		headerTitle: 'Financial Analytics',

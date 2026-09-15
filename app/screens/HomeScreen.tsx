@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import AccountReminderBanner from '../components/AccountReminderBanner';
 import IncomeSection from '../components/IncomeSection';
+import SavingsRateCard from '../components/SavingsRateCard';
 import Summary from '../components/Summary';
 import TransactionItem from '../components/TransactionItem';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
@@ -102,6 +103,10 @@ const HomeScreen = () => {
 				}
 			>
 				<AccountReminderBanner />
+
+				{/* O KPI que define trajetória vem antes do resumo do mês: "converti 20% do
+				    que ganhei" diz mais sobre o futuro do que "sobrou R$ 800". */}
+				<SavingsRateCard />
 
 				{/* Budget Summary */}
 				<Summary

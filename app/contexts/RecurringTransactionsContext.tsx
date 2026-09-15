@@ -5,6 +5,7 @@ import {
 	addRecurringTransaction,
 	deleteRecurringTransaction,
 	getRecurringTransactions,
+	initDatabase,
 	processRecurringTransactions,
 	updateRecurringTransaction,
 } from '../database/database';
@@ -59,6 +60,11 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 	const refreshTransactions = async () => {
 		try {
 			setIsLoading(true);
+			// Este provider é filho do `TransactionsProvider`, e efeitos de filho rodam
+			// antes dos do pai — então esta é uma das primeiras consultas do app, podendo
+			// cair no meio de uma migração. `initDatabase` é single-flight: aqui ela só
+			// espera a inicialização que já está em curso.
+			await initDatabase();
 			const allTransactions = await getRecurringTransactions();
 			setTransactions(allTransactions);
 		} catch (error) {

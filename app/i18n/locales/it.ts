@@ -91,6 +91,51 @@ const it = {
 		},
 	},
 
+	/**
+	 * Metriche di ricchezza: tasso di risparmio, autonomia e gli insight costruiti su di
+	 * essi. Le chiavi `insights.*` hanno lo stesso nome dei valori di `InsightId` in
+	 * `utils/insights.ts` — la schermata le cerca dinamicamente.
+	 */
+	wealth: {
+		savingsRate: 'Tasso di risparmio',
+		ofIncome: 'di {{amount}} guadagnati',
+		noIncome: 'Nessuna entrata registrata questo mese',
+		deltaPoints: '{{points}} punti rispetto al mese scorso',
+		savingsRateHint: '{{amount}} messi da parte questo mese',
+		runway: 'Autonomia',
+		runwayMonths: '{{months}} mesi',
+		runwayUnknown: 'Nessun costo fisso',
+		runwayExplanation:
+			'Per quanto tempo il tuo saldo coprirebbe i costi fissi senza alcuna entrata.\n\nIl costo fisso è l\'equivalente mensile delle tue spese ricorrenti — {{amount}} al mese. Le regole settimanali e annuali vengono normalizzate prima di essere sommate.\n\nCome riserva viene usato il saldo di cassa: è un\'approssimazione finché l\'app non traccia il patrimonio.',
+		savingsTrendTitle: 'Andamento del tasso di risparmio',
+		savingsTrendCaption: 'I mesi senza entrate sono mostrati come 0%.',
+		noSavingsTrendData: 'Nessun dato sul tasso di risparmio',
+		errorSavingsChart: 'Impossibile mostrare il grafico del tasso di risparmio',
+		renderErrorSavings: 'Errore nel disegnare il grafico del tasso di risparmio',
+		splitTitle: 'Necessità, desideri e risparmio',
+		needs: 'Necessità',
+		wants: 'Desideri',
+		savings: 'Risparmio',
+		target: 'obiettivo {{percent}}%',
+		noSplitData: 'Nessuna entrata o spesa da ripartire questo mese',
+		insightsTitle: 'Cosa dicono i numeri',
+		noInsights: 'Niente di rilevante da segnalare questo mese.',
+		insights: {
+			'savings-rate-negative': 'Hai speso {{amount}} più di quanto hai guadagnato questo mese.',
+			'savings-rate-low': 'Solo il {{percent}} delle tue entrate è diventato risparmio.',
+			'savings-rate-healthy': 'Hai trasformato il {{percent}} delle tue entrate in risparmio.',
+			'savings-rate-falling': 'Il tuo tasso di risparmio cala da {{months}} mesi consecutivi.',
+			'fixed-cost-heavy':
+				'Il {{percent}} delle tue entrate ({{amount}}) è impegnato in costi fissi prima di qualsiasi scelta.',
+			'runway-thin': 'Il tuo saldo copre circa {{months}} mesi di costi fissi.',
+			'runway-solid': 'Il tuo saldo copre circa {{months}} mesi di costi fissi.',
+			'needs-over-target':
+				'Le necessità hanno assorbito il {{percent}} del mese, sopra il riferimento del 50%.',
+			'category-jump':
+				'Hai speso il {{percent}} in più in {{category}} rispetto al mese scorso ({{amount}}).',
+		},
+	},
+
 	reports: {
 		screenTitle: 'Report e Analisi',
 		headerTitle: 'Analisi Finanziaria',

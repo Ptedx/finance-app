@@ -4,10 +4,13 @@ import {
 	countDirtyRows,
 	getDirtyChanges,
 	getSyncState,
+	hasCategory,
+	markCategoryDirty,
 	markChangesClean,
+	reassignToUncategorized,
 	setSyncState,
 } from '../database/database';
-import { countChanges, EMPTY_CURSOR, type SyncCursor } from './types';
+import { countChanges, EMPTY_CURSOR, type RejectedRow, type SyncCursor } from './types';
 
 /**
  * Motor de sincronização.
@@ -84,14 +87,75 @@ export const pullAll = async (): Promise<number> => {
 };
 
 /**
+ * Conserta localmente o que o servidor devolveu por `unknown_category`, e diz quantas
+ * linhas ficaram prontas para uma nova tentativa.
+ *
+ * O servidor não conhece a categoria de um lançamento daqui. Dois caminhos:
+ *
+ * - A categoria existe neste aparelho (é o caso normal: ela simplesmente ainda não
+ *   subiu, ou o servidor a perdeu). Ela volta a ficar suja e vai na próxima página,
+ *   antes dos lançamentos, e o servidor então aceita os dois.
+ * - Ela não existe nem aqui, ou já foi reenviada nesta rodada e o servidor continua
+ *   sem conhecê-la. Reenviar de novo não vai resolver; o lançamento é movido para
+ *   'uncategorized' — o mesmo que o app faz ao apagar uma categoria — e sobe assim.
+ *
+ * Nos dois casos a decisão é tomada no aparelho dono do dado, então as cópias
+ * convergem, em vez de o servidor reancorar sozinho e as duas versões divergirem
+ * para sempre no empate do last-write-wins.
+ */
+const repairUnknownCategories = async (
+	rejected: RejectedRow[],
+	resentCategories: Set<string>
+): Promise<number> => {
+	const unknown = rejected.filter((row) => row.reason === 'unknown_category');
+	if (unknown.length === 0) return 0;
+
+	// Primeiro decide por categoria, depois por linha: várias linhas rejeitadas pela
+	// mesma categoria na mesma página contam como um único reenvio dela.
+	const resendingNow = new Set<string>();
+	for (const row of unknown) {
+		const categoryId = row.category;
+		if (!categoryId || resentCategories.has(categoryId) || resendingNow.has(categoryId)) continue;
+		if (await hasCategory(categoryId)) {
+			await markCategoryDirty(categoryId);
+			resentCategories.add(categoryId);
+			resendingNow.add(categoryId);
+		}
+	}
+
+	let repaired = 0;
+	for (const row of unknown) {
+		if (row.category && resendingNow.has(row.category)) {
+			repaired += 1;
+			continue;
+		}
+		if (row.collection === 'transactions' || row.collection === 'recurringTransactions') {
+			await reassignToUncategorized(
+				row.collection === 'transactions' ? 'transactions' : 'recurring_transactions',
+				row.id
+			);
+			repaired += 1;
+		}
+	}
+
+	return repaired;
+};
+
+/**
  * Sobe as linhas pendentes, em páginas.
  *
- * As `rejected` voltam por serem mais antigas que a versão do servidor. Elas não são
+ * As `rejected` por `stale` são mais antigas que a versão do servidor. Elas não são
  * reenviadas: continuam sujas de propósito, e o `pullAll` seguinte traz a versão que
- * venceu — momento em que `applyPulledChanges` limpa a marca.
+ * venceu — momento em que `applyPulledChanges` limpa a marca. As `unknown_category`
+ * são consertadas aqui e tentadas de novo na página seguinte. As `invalid` ficam
+ * sujas e visíveis no contador de pendências: o servidor não tem como aceitá-las como
+ * estão, e escondê-las seria pior do que mostrá-las.
  */
 export const pushAll = async (): Promise<number> => {
 	let sent = 0;
+	// Categorias já reenviadas nesta rodada. Uma segunda rejeição da mesma categoria
+	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
+	const resentCategories = new Set<string>();
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const changes = await getDirtyChanges(PAGE_SIZE);
@@ -113,6 +177,20 @@ export const pushAll = async (): Promise<number> => {
 		});
 
 		sent += response.applied;
+
+		for (const row of response.rejected) {
+			if (row.reason === 'invalid') {
+				console.warn(
+					`Sync: servidor recusou ${row.collection}/${row.id}: ${row.message ?? 'linha inválida'}`
+				);
+			}
+		}
+
+		const repaired = await repairUnknownCategories(response.rejected, resentCategories);
+
+		// Algo foi consertado: a próxima página leva a categoria (ou o lançamento já
+		// reancorado), então vale tentar de novo mesmo que esta página fosse a última.
+		if (repaired > 0) continue;
 
 		// Nada foi aceito e nada ficou limpo: insistir repetiria a mesma página para
 		// sempre. O pull seguinte resolve trazendo as versões vencedoras.

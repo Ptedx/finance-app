@@ -11,7 +11,12 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
-import type { Category, CategoryDraft, CategoryType } from '../database/schema';
+import type {
+	Category,
+	CategoryDraft,
+	CategoryNature,
+	CategoryType,
+} from '../database/schema';
 
 interface CategoryEditorModalProps {
 	isVisible: boolean;
@@ -69,6 +74,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 	const [color, setColor] = useState(COLOR_OPTIONS[0]);
 	const [icon, setIcon] = useState(ICON_OPTIONS[0]);
 	const [type, setType] = useState<CategoryType>('expense');
+	const [nature, setNature] = useState<CategoryNature>('discretionary');
 
 	// Reset form when modal opens or closes
 	useEffect(() => {
@@ -77,12 +83,16 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 			setColor(initialCategory.color);
 			setIcon(initialCategory.icon);
 			setType(initialCategory.type);
+			setNature(initialCategory.nature);
 		} else if (isVisible && !initialCategory) {
 			// Reset to defaults when adding a new category
 			setName('');
 			setColor(COLOR_OPTIONS[0]);
 			setIcon(ICON_OPTIONS[0]);
 			setType('expense');
+			// A new category is a want until its owner says otherwise: guessing "need" on
+			// their behalf would quietly inflate the needs share of the 50/30/20 view.
+			setNature('discretionary');
 		}
 	}, [isVisible, initialCategory]);
 
@@ -100,6 +110,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 			color,
 			icon,
 			type,
+			nature,
 			...(initialCategory && { id: initialCategory.id }), // Include ID if editing
 		};
 
@@ -149,6 +160,36 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 							))}
 						</View>
 					</View>
+
+					{/* Needs vs wants. Only meaningful on the expense side — income is neither a
+					    need nor a want — so the control is hidden rather than shown disabled. */}
+					{type === 'expense' && (
+						<View style={styles.sectionContainer}>
+							<Text style={styles.label}>Nature</Text>
+							<View style={styles.typeRow}>
+								{(['essential', 'discretionary'] as CategoryNature[]).map((option) => (
+									<TouchableOpacity
+										key={option}
+										style={[styles.typeOption, nature === option && styles.selectedTypeOption]}
+										onPress={() => setNature(option)}
+									>
+										<Text
+											style={[
+												styles.typeOptionText,
+												nature === option && styles.selectedTypeOptionText,
+											]}
+										>
+											{option === 'essential' ? 'Essential' : 'Discretionary'}
+										</Text>
+									</TouchableOpacity>
+								))}
+							</View>
+							<Text style={styles.helperText}>
+								Essentials are what you have to pay to live; the rest is a choice. This is what
+								splits your spending into needs and wants.
+							</Text>
+						</View>
+					)}
 
 					{/* Color Selection */}
 					<View style={styles.sectionContainer}>
@@ -274,6 +315,12 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 		color: '#FFFFFF',
 		marginBottom: 8,
+	},
+	helperText: {
+		fontSize: 12,
+		color: 'rgba(255, 255, 255, 0.5)',
+		marginTop: 8,
+		lineHeight: 16,
 	},
 	sectionContainer: {
 		marginBottom: 20,

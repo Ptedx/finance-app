@@ -1,6 +1,6 @@
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
-import { clearBudget, getBudgets, setBudget } from '../database/database';
+import { clearBudget, getBudgets, initDatabase, setBudget } from '../database/database';
 import type { Budget } from '../database/schema';
 import * as syncQueue from '../sync/queue';
 import { usePeriod } from './PeriodContext';
@@ -28,6 +28,9 @@ export const BudgetProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
 	const reload = async () => {
 		try {
+			// Mesma razão do `RecurringTransactionsContext`: este provider lê o banco no
+			// mount, antes do efeito do pai. `initDatabase` é single-flight.
+			await initDatabase();
 			setBudgets(await getBudgets());
 		} catch (error) {
 			console.error('Failed to load budgets:', error);

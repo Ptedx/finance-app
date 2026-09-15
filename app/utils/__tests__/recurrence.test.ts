@@ -1,8 +1,11 @@
+import { addDays } from '../dateUtils';
 import {
 	firstDueOnOrAfter,
 	MAX_CATCH_UP_OCCURRENCES,
 	monthlyEquivalentCents,
+	nextCycleStart,
 	nextDueAfter,
+	nextDueAfterEdit,
 	occurrenceId,
 	occurrencesBetween,
 	type RecurrenceRule,
@@ -205,5 +208,76 @@ describe('occurrenceId', () => {
 
 		expect(ids).toHaveLength(12);
 		expect(new Set(ids).size).toBe(12);
+	});
+});
+
+describe('nextCycleStart', () => {
+	it('monthly: the first day of the following month', () => {
+		expect(nextCycleStart(monthly(10), '2026-09-10')).toBe('2026-10-01');
+		expect(nextCycleStart(monthly(31), '2026-01-31')).toBe('2026-02-01');
+	});
+
+	it('monthly: December rolls into January of the next year', () => {
+		expect(nextCycleStart(monthly(10), '2026-12-10')).toBe('2027-01-01');
+	});
+
+	it('yearly: 1 January of the next year', () => {
+		expect(nextCycleStart(yearly(3, 15), '2026-03-15')).toBe('2027-01-01');
+		expect(nextCycleStart(yearly(12, 31), '2026-12-31')).toBe('2027-01-01');
+	});
+
+	it('weekly: the Monday after the week containing lastProcessed', () => {
+		expect(nextCycleStart(weekly(3), '2026-07-22')).toBe('2026-07-27'); // Wednesday
+		expect(nextCycleStart(weekly(1), '2026-07-20')).toBe('2026-07-27'); // Monday
+		expect(nextCycleStart(weekly(7), '2026-07-26')).toBe('2026-07-27'); // Sunday
+	});
+});
+
+describe('nextDueAfterEdit — a rule already charged this cycle only charges again next cycle', () => {
+	const TODAY = '2026-09-14';
+
+	// Regression (auditoria, rodada 2): a gym fee charged on the 10th and moved to the
+	// 20th on the 14th used to post again on the 20th of the same month.
+	it('moving the day later in a charged month does not charge that month twice', () => {
+		expect(nextDueAfterEdit(monthly(20), '2026-09-10', TODAY)).toBe('2026-10-20');
+	});
+
+	it('moving the day earlier lands on the new day next month, skipping nothing', () => {
+		expect(nextDueAfterEdit(monthly(5), '2026-09-25', '2026-09-26')).toBe('2026-10-05');
+	});
+
+	it('keeping the same day simply schedules next month', () => {
+		expect(nextDueAfterEdit(monthly(10), '2026-09-10', TODAY)).toBe('2026-10-10');
+	});
+
+	it('crosses the year boundary from December into January', () => {
+		expect(nextDueAfterEdit(monthly(20), '2026-12-10', '2026-12-14')).toBe('2027-01-20');
+	});
+
+	it('a rule that never ran starts at its first occurrence from today', () => {
+		expect(nextDueAfterEdit(monthly(20), null, TODAY)).toBe('2026-09-20');
+		expect(nextDueAfterEdit(monthly(10), undefined, TODAY)).toBe('2026-10-10');
+	});
+
+	it('yearly: charged this year and moved to another month, it waits for next year', () => {
+		expect(nextDueAfterEdit(yearly(11, 1), '2026-03-15', TODAY)).toBe('2027-11-01');
+	});
+
+	it('weekly: charged this week and moved to a later weekday, it waits for next week', () => {
+		// Charged Tuesday 2026-09-08, moved to Friday, edited on Wednesday 2026-09-09.
+		expect(nextDueAfterEdit(weekly(5), '2026-09-08', '2026-09-09')).toBe('2026-09-18');
+	});
+
+	// Mirrors the posting window in `processRecurringTransactions`: resume from the day
+	// after `lastProcessed`, but never before `nextDue`. Locks the two halves together.
+	it('the posting window then yields nothing this cycle and exactly one next cycle', () => {
+		const rule = monthly(20);
+		const lastProcessed = '2026-09-10';
+		const nextDue = nextDueAfterEdit(rule, lastProcessed, TODAY);
+		const resumeFrom = addDays(lastProcessed, 1);
+		const windowStart = nextDue > resumeFrom ? nextDue : resumeFrom;
+
+		expect(occurrencesBetween(rule, windowStart, '2026-09-30')).toEqual([]);
+		expect(occurrencesBetween(rule, windowStart, '2026-10-31')).toEqual(['2026-10-20']);
 	});
 });

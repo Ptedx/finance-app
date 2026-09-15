@@ -18,12 +18,18 @@ const calendarDate = z
 const timestamp = z.iso.datetime({ offset: true });
 
 /**
- * Dinheiro em centavos inteiros, do lado do app até a coluna do Postgres.
+ * Teto de um valor em centavos: 10¹⁵, cerca de 10 trilhões de unidades.
  *
- * O limite não é burocracia: `amountCents` é `Int` no Postgres, e um valor acima de
- * 2^31 seria recusado pelo banco no meio de uma transação de sync já em andamento.
+ * É o mesmo `MAX_CENTS` de `app/utils/money.ts`, e isso é o que importa: o app não
+ * deixa digitar acima dele, então o servidor nunca recusa um valor que o app aceitou.
+ * Antes a coluna era `Int` e o teto daqui (21 milhões) ficava abaixo do teto do app —
+ * um valor entre os dois era gravado no aparelho e recusado no sync, sem aviso.
+ * A coluna hoje é `BigInt` justamente para caber. Mudou lá, muda aqui.
  */
-const amountCents = z.number().int().min(-2_147_483_648).max(2_147_483_647);
+export const MAX_AMOUNT_CENTS = 1_000_000_000_000_000;
+
+/** Dinheiro em centavos inteiros, do lado do app até a coluna do Postgres. */
+const amountCents = z.number().int().min(-MAX_AMOUNT_CENTS).max(MAX_AMOUNT_CENTS);
 
 const syncMeta = {
 	updatedAt: timestamp,
@@ -36,6 +42,15 @@ export const categorySchema = z.object({
 	color: z.string().min(1).max(32),
 	icon: z.string().min(1).max(64),
 	type: z.enum(['expense', 'income']),
+	/**
+	 * Necessidade ou desejo — a base do 50/30/20 no app.
+	 *
+	 * Opcional de propósito: um aparelho numa versão anterior à coluna continua
+	 * sincronizando normalmente, e o controller resolve a ausência para 'discretionary'.
+	 * Recusar a remessa inteira por um campo que o servidor sabe preencher deixaria esse
+	 * aparelho preso, sem caminho de saída a não ser atualizar o app.
+	 */
+	nature: z.enum(['essential', 'discretionary']).nullish(),
 	...syncMeta,
 });
 
@@ -74,22 +89,28 @@ export const budgetSchema = z.object({
 });
 
 /**
- * Corpo do push.
+ * Corpo do push — só o envelope.
+ *
+ * As linhas chegam como `unknown` de propósito: cada uma é validada sozinha no
+ * controller, com o schema da sua coleção, e a que falha volta em `rejected` com o
+ * motivo enquanto as outras seguem. Validar a remessa inteira aqui, como era feito,
+ * fazia um único valor fora do teto responder 400 para a página toda — e como a linha
+ * ruim continuava suja no aparelho, ela entrava em toda página seguinte e o sync
+ * daquele aparelho parava para sempre, sem que nada mais dele subisse.
  *
  * Toda coleção é opcional: um aparelho que só mexeu em orçamentos manda apenas eles.
  * O teto por coleção é o mesmo `SYNC_PAGE_SIZE` do pull, então o cliente pode reenviar
  * uma página recebida sem risco de ela ser grande demais na volta.
  */
+const rows = () => z.array(z.unknown()).max(env.syncPageSize).default([]);
+
 export const pushBodySchema = z.object({
 	changes: z
 		.object({
-			categories: z.array(categorySchema).max(env.syncPageSize).default([]),
-			transactions: z.array(transactionSchema).max(env.syncPageSize).default([]),
-			recurringTransactions: z
-				.array(recurringTransactionSchema)
-				.max(env.syncPageSize)
-				.default([]),
-			budgets: z.array(budgetSchema).max(env.syncPageSize).default([]),
+			categories: rows(),
+			transactions: rows(),
+			recurringTransactions: rows(),
+			budgets: rows(),
 		})
 		.default({ categories: [], transactions: [], recurringTransactions: [], budgets: [] }),
 });

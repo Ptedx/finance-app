@@ -92,6 +92,58 @@ export const nextDueAfter = (rule: RecurrenceRule, afterDate: string): string =>
 	firstDueOnOrAfter(rule, addDays(afterDate, 1));
 
 /**
+ * O primeiro dia do ciclo seguinte ao que contém `lastProcessed`.
+ *
+ * É a âncora usada quando uma regra é **editada** depois de já ter sido cobrada: a
+ * academia paga no dia 10 e movida para o dia 20 não cobra de novo no dia 20 do mesmo
+ * mês — a nova data vale a partir do mês que vem. Sem esta âncora, a edição gerava uma
+ * segunda cobrança no mesmo período.
+ *
+ * Ciclo mensal = mês civil; anual = ano civil; semanal = semana de segunda a domingo.
+ */
+export const nextCycleStart = (rule: RecurrenceRule, lastProcessed: string): string => {
+	const date = parseISODate(lastProcessed);
+
+	switch (rule.recurrenceType) {
+		case 'monthly': {
+			const month = date.getMonth() + 2; // 1-12 do mês seguinte, ou 13 na virada
+			return month > 12
+				? buildClampedDate(date.getFullYear() + 1, 1, 1)
+				: buildClampedDate(date.getFullYear(), month, 1);
+		}
+		case 'yearly':
+			return buildClampedDate(date.getFullYear() + 1, 1, 1);
+		case 'weekly':
+			return addDays(lastProcessed, 8 - weekdayOf(lastProcessed));
+		default:
+			return addDays(lastProcessed, 1);
+	}
+};
+
+/**
+ * Onde uma regra passa a vencer depois de ser **editada**.
+ *
+ * É a única fonte de `nextDue` em `updateRecurringTransaction`, e a resposta à pergunta
+ * "mudei a academia do dia 10 para o dia 20 depois de pagar no dia 10: cobra de novo
+ * este mês?" — não. Uma regra já cobrada no ciclo corrente só volta a vencer a partir
+ * do ciclo seguinte, então a nova data vale do mês que vem. Uma regra que nunca rodou
+ * vence na primeira ocorrência a partir de hoje.
+ *
+ * Mover a data para **mais tarde no mesmo ciclo** também não cobra duas vezes: o
+ * ciclo já foi cobrado. Mover para **mais cedo** no ciclo seguinte cobra na nova data
+ * sem pular nenhum mês — é o que `processRecurringTransactions` espera ao usar
+ * `nextDue` como piso da janela de varredura.
+ */
+export const nextDueAfterEdit = (
+	rule: RecurrenceRule,
+	lastProcessed: string | null | undefined,
+	today: string
+): string => {
+	const anchor = lastProcessed ? nextCycleStart(rule, lastProcessed) : today;
+	return firstDueOnOrAfter(rule, anchor);
+};
+
+/**
  * Every occurrence in `[fromDate, toDate]`, oldest first.
  *
  * This is what makes catch-up correct: opening the app after a long absence posts one
@@ -182,6 +234,8 @@ export default {
 	weekdayOf,
 	firstDueOnOrAfter,
 	nextDueAfter,
+	nextCycleStart,
+	nextDueAfterEdit,
 	occurrencesBetween,
 	occurrenceId,
 	monthlyEquivalentCents,

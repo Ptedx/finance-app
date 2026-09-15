@@ -79,14 +79,26 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
 
 ### Decisões que não são óbvias
 
-- **`amountCents Int`, nunca Decimal.** Espelha o SQLite do app coluna a coluna. Toda
-  conversão na borda seria mais um lugar onde um centavo se perde.
+- **`amountCents BigInt`, nunca Decimal.** Espelha o SQLite do app coluna a coluna. Toda
+  conversão na borda seria mais um lugar onde um centavo se perde. BigInt, e não Int,
+  porque o teto é o mesmo do app (`MAX_AMOUNT_CENTS` = 10¹⁵ centavos, igual ao
+  `MAX_CENTS` de `app/utils/money.ts`): com o teto do servidor abaixo do teto do app, um
+  valor entre os dois era gravado no aparelho e recusado no sync sem aviso.
+- **O push valida linha a linha.** Uma linha inválida volta em `rejected` com
+  `reason: 'invalid'` e a mensagem; as outras seguem. Validar a remessa inteira de uma
+  vez fazia um único valor ruim responder 400 para a página toda — e como a linha
+  continuava suja no aparelho, ela entrava em toda página seguinte e o sync daquele
+  aparelho travava para sempre.
 - **Datas de calendário são `VarChar(10)`.** O app trata `date` como dia local; virar
   `DateTime` UTC jogaria um lançamento do dia 31 às 22h para o mês seguinte.
 - **`category` não é foreign key.** Aparelhos não sincronizam em ordem — o celular pode
-  enviar um lançamento numa categoria que o tablet criou e ainda não subiu. Uma FK
-  rígida recusaria um dado legítimo. O push valida e reancora em `uncategorized`, que é
-  o que o app já faz ao apagar uma categoria.
+  enviar um lançamento numa categoria que ainda não subiu. Uma FK rígida recusaria um
+  dado legítimo. O push verifica no lugar dela: categoria desconhecida devolve a linha em
+  `rejected` com `reason: 'unknown_category'` e nada é gravado. O aparelho reenvia a
+  categoria junto na remessa seguinte, ou, se nem ele a tem mais, move o lançamento
+  para `uncategorized` e sobe assim. Reancorar no servidor, como era feito, deixava o
+  aparelho com a categoria certa e o servidor com `uncategorized`, e o empate no
+  last-write-wins eternizava a diferença.
 - **PK composta `(userId, id)`.** É o que deixa as categorias padrão manterem os ids
   fixos (`food`, `salary`) que ficam gravados em `Transaction.category`: o `food` de um
   usuário é outra linha que o de outro, e cada um pode renomear ou apagar o seu.

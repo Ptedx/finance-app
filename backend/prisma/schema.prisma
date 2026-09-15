@@ -6,7 +6,11 @@
 //
 // Três consequências disso:
 //
-//  1. Dinheiro é `amountCents Int`, nunca Decimal ou Float. Ver `app/utils/money.ts`.
+//  1. Dinheiro é `amountCents BigInt`, nunca Decimal ou Float. Ver `app/utils/money.ts`.
+//     BigInt, e não Int, porque o teto do app é 10¹⁵ centavos (`MAX_CENTS`) e o de um
+//     Int são 2,1 bilhões: com a coluna menor que o campo, um valor entre os dois era
+//     gravado no aparelho e recusado no sync. O teto vale nos dois lados, em
+//     `MAX_AMOUNT_CENTS` (src/schemas/sync.ts).
 //  2. Datas de calendário (`date`, `nextDue`) são `VarChar(10)` no formato YYYY-MM-DD,
 //     não DateTime. O app trata essas datas como dia local; virar timestamp UTC jogaria
 //     um lançamento do dia 31 às 22h para o mês seguinte.
@@ -82,6 +86,16 @@ enum CategoryType {
   income
 }
 
+/// Custo de viver ou escolha. Base do 50/30/20 no app (`app/utils/metrics.ts`).
+///
+/// Só é lida em categorias de despesa; nas de receita existe por uniformidade. O padrão
+/// é `discretionary` porque classificar um gasto como essencial é uma afirmação do
+/// usuário — assumi-la por ele inflaria as "necessidades" de quem nunca abriu a tela.
+enum CategoryNature {
+  essential
+  discretionary
+}
+
 /// A PK é composta `(userId, id)`, e não um uuid do servidor.
 ///
 /// Isso é o que permite as categorias padrão manterem os ids fixos do app ('food',
@@ -92,18 +106,21 @@ enum CategoryType {
 model Category {
   id        String
   userId    String
-  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   color     String
   icon      String
   type      CategoryType
+  /// Necessidade ou desejo. Tem default para que uma linha vinda de um aparelho anterior
+  /// à coluna entre sem o servidor precisar recusá-la.
+  nature    CategoryNature @default(discretionary)
   updatedAt DateTime
   /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
   /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
   deletedAt DateTime?
   /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
   /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
-  serverSeq Int          @unique @default(autoincrement())
+  serverSeq Int            @unique @default(autoincrement())
 
   @@id([userId, id])
   @@index([userId, serverSeq])
@@ -113,15 +130,18 @@ model Category {
 /// `category` guarda o id da categoria mas **não** é uma foreign key.
 ///
 /// Numa arquitetura offline-first os aparelhos não sincronizam em ordem: o celular pode
-/// enviar um lançamento numa categoria que o tablet criou e ainda não subiu, e uma FK
-/// rígida rejeitaria um dado perfeitamente legítimo. O servidor resolve isso validando
-/// no push — categoria desconhecida vira 'uncategorized', exatamente como o app já faz
-/// quando uma categoria é apagada (ver `deleteCategory` em app/database/database.ts).
+/// enviar um lançamento numa categoria que ainda não subiu, e uma FK rígida rejeitaria
+/// um dado perfeitamente legítimo. O push verifica no lugar da FK: categoria
+/// desconhecida faz a linha voltar em `rejected` com `unknown_category`, sem gravar
+/// nada, e o aparelho reenvia a categoria junto na remessa seguinte (ou, se nem ele a
+/// tem mais, move o lançamento para 'uncategorized' e sobe assim). Reancorar aqui no
+/// servidor, como era feito, deixava o aparelho de origem com a categoria certa e o
+/// servidor com 'uncategorized' — e o empate no last-write-wins eternizava a diferença.
 model Transaction {
   id          String
   userId      String
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amountCents Int
+  amountCents BigInt
   category    String
   /// Dia de calendário local, YYYY-MM-DD.
   date        String    @db.VarChar(10)
@@ -152,7 +172,7 @@ model RecurringTransaction {
   id             String
   userId         String
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amountCents    Int
+  amountCents    BigInt
   isIncome       Boolean        @default(false)
   note           String?        @db.Text
   category       String
@@ -183,7 +203,7 @@ model Budget {
   id          String
   userId      String
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amountCents Int
+  amountCents BigInt
   year        Int
   month       Int
   updatedAt   DateTime
@@ -327,7 +347,7 @@ model PassiveIncome {
   user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   assetName   String
   type        PassiveIncomeType
-  amountCents Int
+  amountCents BigInt
   date        String            @db.VarChar(10)
   createdAt   DateTime          @default(now())
 

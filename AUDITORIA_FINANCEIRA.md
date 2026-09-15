@@ -92,6 +92,98 @@ verificado que ele falha sem a correção.
 
 ---
 
+## Rodada 2 — verificação por invariantes (14/09/2026)
+
+Objetivo: antes do uso real, provar que nenhum centavo se perde em nenhum caminho —
+digitar, gravar, exibir, editar, somar, recorrer, converter, exportar e restaurar.
+Em vez de casos nomeados, esta rodada varre faixas inteiras e entradas aleatórias
+(geradores determinísticos, reproduzíveis) e confere propriedades que valem sempre.
+
+**Resultado: 321 testes passando** (eram 181), em quatro fusos horários
+(`America/Sao_Paulo`, `UTC`, `UTC+14`, `UTC−11`). Typecheck e lint limpos.
+
+### Bugs encontrados e corrigidos
+
+| # | Item | Efeito | Correção |
+|---|---|---|---|
+| R1 | **Editar um lançamento movia a data um dia para trás** (`TransactionForm.tsx`) | `new Date('2026-09-14')` é meia-noite UTC; no Brasil ainda é 13/09. Trocar só a nota gravava a data anterior. A tela mostrava a data certa (via `toISOString`) e salvava a errada. Em fusos a leste de Greenwich (Itália) não acontecia — por isso passou. | `parseISODate` na inicialização e `getISODate` na exibição. Teste `transactionFormDate.test.ts`. |
+| R2 | **Seletor de data transbordava o mês** | 31/jan + mês "fevereiro" = 3/mar; dia 31 escolhido em abril = 1º/mai. Lançamento caía no mês errado sem aviso. | `buildPickedDate` prende o dia ao tamanho do mês. |
+| R3 | **Restaurar backup órfanava as categorias criadas pelo usuário** (`exportUtils.ts`) | `addCategory` gerava id novo; os lançamentos do arquivo apontavam para o id antigo. Viravam "Unknown" nos relatórios e sumiam dos totais por categoria. Categorias padrão (id fixo) não eram afetadas, o que escondia o problema. | `addCategory` aceita id explícito; a importação preserva o original e revive lápides em vez de falhar no meio. |
+
+### O que foi verificado e está correto
+
+- **Dinheiro** (`money.invariants.test.ts`): round-trip `centavos → texto → centavos`
+  é identidade em 8 locales, inclusive digitando tecla a tecla com a formatação ao vivo;
+  varredura completa de 0,00 a 999,99; sinal preservado em todos os locales, BTC e JPY;
+  migração `float × 100` exata para todos os 10.000.001 valores de 2 casas até 100.000,00.
+- **Datas** (`dateUtils.invariants.test.ts`): parse/format é identidade para todo dia de
+  1990 a 2060; `addMonthsClamped` nunca transborda; meses consecutivos de
+  `getMonthRange` são contíguos sem lacuna nem sobreposição.
+- **Recorrência** (`recurrence.invariants.test.ts`): para regras aleatórias, as
+  ocorrências são exatamente os dias que casam a regra; **simulação de aberturas do app**
+  em cadência aleatória (todo dia, a cada 4 meses, uma vez) lança sempre o mesmo conjunto
+  de datas que uma única abertura — nem uma cobrança a mais nem a menos; ids de
+  ocorrência determinísticos e sem colisão.
+- **Métricas** (`metrics.invariants.test.ts`): as três fatias do 50/30/20 somam
+  exatamente 10.000 pontos-base; taxa de poupança coerente com a razão; série anual sempre
+  com 12 meses alinhados por número do mês; read-model e insights batem com as funções.
+- **Exportação** (`exportUtils.test.ts`): CSV lê de volta ao centavo exato para 100.000
+  valores; Net = Income − Expense em todos os meses; porcentagens somam 100%; aspas e
+  vírgulas escapadas.
+- **SQL contra SQLite real** (script em Python, fora do repositório):
+  `CAST(ROUND(amountCents * taxa) AS INTEGER)` coincide com `Math.round` do JS em
+  300.000 pares; `ROUND(amount * 100)` da migração é exato em 10 milhões de valores;
+  `BETWEEN` inclusivo, `strftime` mensal e `SUM(CASE …)` conferidos contra 60.000
+  linhas aleatórias com lápides; índice único parcial de orçamentos aceita reinserção
+  após tombstone.
+
+### Observações da rodada 2 — situação após a rodada 3 (14/09/2026)
+
+| # | Observação | Status |
+|---|---|---|
+| O1 | Teto do backend menor que o do app | ✅ `BigInt` + teto único de 10¹⁵ nos dois lados; push valida linha a linha |
+| O2 | Editar o dia de uma recorrência lançava duas vezes no mês | ✅ já corrigido em `nextDueAfterEdit`; agora coberto por 15 testes |
+| O3 | Categoria desconhecida virava `uncategorized` permanente no servidor | ✅ servidor devolve `unknown_category`; o aparelho reenvia a categoria |
+| O4 | Saldo acumulado ignora lançamentos futuros | ⏸ mantido: caixa vs. competência é intencional |
+| O5 | Suíte exige Node ≥ 18 | ✅ `engines` no package.json + `.nvmrc` (22) |
+
+**O1 era pior do que a observação dizia.** A validação Zod do push recusava o corpo
+inteiro com 400, não só a linha. A fila de sync tratava o 400 como erro genérico e
+entrava em retry com backoff para sempre; como a linha ruim continuava suja e entrava em
+toda página seguinte, **nada mais daquele aparelho subia**. Um único valor acima de
+R$ 21 milhões travava o sync em silêncio. Correção em três partes: coluna `BigInt`
+(migração `20260914230000_amount_cents_bigint`, aplicada e sem drift contra o Postgres
+local), teto `MAX_AMOUNT_CENTS` = `MAX_CENTS` do app, e validação linha a linha — a linha
+inválida volta em `rejected` com `reason: 'invalid'` e a mensagem, as outras seguem.
+
+**O2 estava corrigida no código mas sem teste.** A regra foi extraída para
+`nextDueAfterEdit` em `recurrence.ts` (puro) e `updateRecurringTransaction` passou a
+usá-la. Casos nomeados (dia 10 → 20 após cobrar no 10, dia 25 → 5, virada de ano,
+semanal, anual, regra que nunca rodou) e três invariantes sobre 25.000 regras aleatórias:
+o ciclo seguinte começa logo após o ciclo cobrado, a janela de
+`processRecurringTransactions` não lança nada no ciclo já cobrado e lança exatamente uma
+vez no seguinte. Verificado que 6 dos novos testes falham sem a âncora.
+
+**O3 foi resolvida no aparelho dono do dado, não no servidor.** Reancorar no servidor
+perdia informação e criava a divergência permanente. Agora o servidor não grava e devolve
+`unknown_category` com o id que faltou; o app marca a categoria como suja de novo (sem
+tocar no `updatedAt`, para não atropelar edições de outro aparelho) e tenta a página
+seguinte com ela na frente. Se a categoria não existe nem no aparelho, ou já foi
+reenviada e continua desconhecida, o lançamento é movido para `uncategorized` localmente
+— a mesma coisa que apagar uma categoria faz — e sobe assim. As duas cópias convergem em
+qualquer caminho, e o laço é limitado por `MAX_PAGES`.
+
+**Verificação ponta a ponta** (script fora do repositório, contra a API local e o
+Postgres do docker-compose): uma remessa com categoria nova, lançamento de R$ 30 milhões
+nela, lançamento em categoria inexistente, lançamento acima do teto e uma linha sem os
+campos — 4 aplicadas, 3 rejeitadas com o motivo certo, nada rejeitado foi gravado, o
+valor volta íntegro no pull como `number`, envelope malformado continua 400, e o reenvio
+com a categoria junto aplica as duas linhas.
+
+**Resultado: 336 testes passando** (eram 321). Typecheck limpo no app e no backend.
+`biome check .` reporta erros de formatação pré-existentes (CRLF) em 20 arquivos que esta
+rodada não tocou; os arquivos alterados passam limpos quando checados isoladamente.
+
 ---
 
 ## 🔴 CRÍTICO — corrija antes de lançar qualquer dado real

@@ -16,7 +16,7 @@ import {
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
-import { formatFullDate, getISODate } from '../utils/dateUtils';
+import { formatFullDate, getISODate, lastDayOfMonth, parseISODate } from '../utils/dateUtils';
 import {
 	centsToDisplayInput,
 	finaliseAmountInput,
@@ -25,6 +25,16 @@ import {
 	parseAmountToCents,
 } from '../utils/money';
 import CategoryPicker from './CategoryPicker';
+
+/**
+ * Monta a data escolhida no seletor, com o dia preso ao tamanho do mês.
+ *
+ * `setMonth`/`setDate` transbordam: 31 de janeiro com o mês trocado para fevereiro
+ * virava 3 de março, e dia 31 escolhido em abril virava 1º de maio — silenciosamente,
+ * no mês errado. `monthIndex` é 0-11, como o `Date` do JS.
+ */
+const buildPickedDate = (year: number, monthIndex: number, day: number): Date =>
+	new Date(year, monthIndex, Math.min(day, lastDayOfMonth(year, monthIndex + 1)));
 
 interface TransactionFormProps {
 	initialTransaction?: Transaction;
@@ -48,8 +58,11 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const [category, setCategory] = useState<string | null>(
 		initialTransaction ? initialTransaction.category : null
 	);
+	// `parseISODate`, nunca `new Date('YYYY-MM-DD')`: o construtor lê a string como
+	// meia-noite UTC, que em qualquer fuso a oeste de Greenwich ainda é o dia anterior.
+	// Com o construtor, editar só a nota de um lançamento o movia um dia para trás.
 	const [date, setDate] = useState(
-		initialTransaction ? new Date(initialTransaction.date) : new Date()
+		initialTransaction ? parseISODate(initialTransaction.date) : new Date()
 	);
 	const [note, setNote] = useState(initialTransaction ? initialTransaction.note : '');
 	const [isIncome, setIsIncome] = useState(
@@ -198,11 +211,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					styles.pickerOption,
 					tempDate.getFullYear() === year && styles.selectedPickerOption,
 				]}
-				onPress={() => {
-					const newDate = new Date(tempDate);
-					newDate.setFullYear(year);
-					setTempDate(newDate);
-				}}
+				onPress={() => setTempDate(buildPickedDate(year, tempDate.getMonth(), tempDate.getDate()))}
 			>
 				<Text
 					style={[
@@ -220,11 +229,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				// biome-ignore lint/suspicious/noArrayIndexKey: Required for list rendering with dynamic data
 				key={`month-${index}`}
 				style={[styles.pickerOption, tempDate.getMonth() === index && styles.selectedPickerOption]}
-				onPress={() => {
-					const newDate = new Date(tempDate);
-					newDate.setMonth(index);
-					setTempDate(newDate);
-				}}
+				onPress={() => setTempDate(buildPickedDate(tempDate.getFullYear(), index, tempDate.getDate()))}
 			>
 				<Text
 					style={[
@@ -241,11 +246,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 			<TouchableOpacity
 				key={`day-${day}`}
 				style={[styles.pickerOption, tempDate.getDate() === day && styles.selectedPickerOption]}
-				onPress={() => {
-					const newDate = new Date(tempDate);
-					newDate.setDate(day);
-					setTempDate(newDate);
-				}}
+				onPress={() => setTempDate(buildPickedDate(tempDate.getFullYear(), tempDate.getMonth(), day))}
 			>
 				<Text
 					style={[
@@ -365,7 +366,9 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				<View style={styles.formGroup}>
 					<Text style={styles.label}>Date</Text>
 					<TouchableOpacity style={styles.dateButton} onPress={handleShowDatePicker}>
-						<Text style={styles.dateButtonText}>{formatFullDate(date.toISOString())}</Text>
+						{/* `getISODate` e não `toISOString`: depois das 21h em UTC-3 o segundo já
+						    mostra o dia seguinte, enquanto o que se grava é o dia local. */}
+						<Text style={styles.dateButtonText}>{formatFullDate(getISODate(date))}</Text>
 						<Ionicons name="calendar-outline" size={20} color="white" />
 					</TouchableOpacity>
 				</View>

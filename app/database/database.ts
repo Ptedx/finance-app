@@ -5,6 +5,7 @@ import { addDays, nowTimestamp, todayISO } from '../utils/dateUtils';
 import {
 	firstDueOnOrAfter,
 	nextDueAfter,
+	nextDueAfterEdit,
 	occurrenceId,
 	occurrencesBetween,
 	type RecurrenceRule,
@@ -24,6 +25,7 @@ import {
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
 	DEFAULT_CATEGORIES,
+	ESSENTIAL_DEFAULT_CATEGORY_IDS,
 	LEGACY_INCOME_CATEGORY_IDS,
 	type RecurringTransaction,
 	type RecurringTransactionDraft,
@@ -318,6 +320,37 @@ const migrateBudgetsFromStorage = async (): Promise<void> => {
 };
 
 /**
+ * v4 -> v5: categories gain `nature`, the needs/wants tag.
+ *
+ * Added with a constant default, which SQLite accepts on a NOT NULL column, so every
+ * pre-existing row lands as `discretionary` — the deliberate choice: calling a past
+ * expense essential on the user's behalf would inflate their "needs" without them ever
+ * having said so. The known defaults are then promoted to match a fresh install, so the
+ * same database seeded before and after this version classifies identically.
+ *
+ * Rows are **not** dirtied. The column is new on both sides and the server fills it with
+ * the same default, so marking every category as pending would push a change that changes
+ * nothing — while genuinely losing an edit made offline is the only failure that matters
+ * here, and re-running the migration cannot happen (`user_version` gates it).
+ */
+const migrateCategoryNature = async (): Promise<void> => {
+	if (!(await tableExists('categories'))) return;
+	if (await tableHasColumn('categories', 'nature')) return;
+
+	await db.execAsync(
+		"ALTER TABLE categories ADD COLUMN nature TEXT NOT NULL DEFAULT 'discretionary'"
+	);
+
+	const placeholders = ESSENTIAL_DEFAULT_CATEGORY_IDS.map(() => '?').join(',');
+	await db.runAsync(
+		`UPDATE categories SET nature = 'essential' WHERE id IN (${placeholders})`,
+		ESSENTIAL_DEFAULT_CATEGORY_IDS
+	);
+
+	console.log('Migrated categories to needs/wants tagging');
+};
+
+/**
  * Inserts any default category that is missing, without touching the user's own edits.
  * Runs on every start so seeds added in later versions still reach existing installs.
  *
@@ -338,9 +371,17 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
 	await db.withTransactionAsync(async () => {
 		for (const category of missing) {
 			await db.runAsync(
-				`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, 1)`,
-				[category.id, category.name, category.color, category.icon, category.type, timestamp]
+				`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+				[
+					category.id,
+					category.name,
+					category.color,
+					category.icon,
+					category.type,
+					category.nature,
+					timestamp,
+				]
 			);
 		}
 	});
@@ -356,11 +397,12 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 2) await migrateCategoryTypes();
 	if (version < 3) await migrateSyncColumns();
 	if (version < 4) await migrateBudgetsFromStorage();
+	if (version < 5) await migrateCategoryNature();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
 
-export const initDatabase = async (): Promise<void> => {
+const runInitDatabase = async (): Promise<void> => {
 	try {
 		await db.execAsync('PRAGMA journal_mode = WAL;');
 
@@ -384,6 +426,38 @@ export const initDatabase = async (): Promise<void> => {
 		console.error('Error initializing database:', error);
 		throw error;
 	}
+};
+
+/** A inicialização em curso, se já houver uma. Ver `initDatabase`. */
+let initialisation: Promise<void> | null = null;
+
+/**
+ * Abre e migra o banco. Uma vez só, por mais vezes que seja chamada.
+ *
+ * A inicialização é disparada de dois lugares — `app/_layout.tsx`, que segura a splash
+ * até ela terminar, e `TransactionsContext`, que precisa dela antes da primeira carga —
+ * e em desenvolvimento o Strict Mode ainda duplica cada efeito. Sem esta guarda, duas
+ * execuções simultâneas leem `PRAGMA user_version` **antes** de qualquer uma gravar o
+ * número novo, ambas concluem que a migração falta e ambas rodam o mesmo
+ * `ALTER TABLE ... ADD COLUMN`: a segunda morre com "duplicate column name", e o que o
+ * usuário vê é um alerta genérico de alguma tela que estava lendo o banco naquele
+ * instante. Guardar a promessa transforma toda chamada extra numa espera pela primeira.
+ *
+ * É também o sinal de "banco pronto" para quem lê cedo: um contexto pode `await`
+ * esta função em vez de torcer para que alguém já tenha inicializado.
+ *
+ * A promessa é descartada quando falha — memorizar o erro condenaria a sessão inteira,
+ * quando uma nova tentativa poderia funcionar.
+ */
+export const initDatabase = (): Promise<void> => {
+	if (!initialisation) {
+		initialisation = runInitDatabase().catch((error) => {
+			initialisation = null;
+			throw error;
+		});
+	}
+
+	return initialisation;
 };
 
 // ---------------------------------------------------------------------------
@@ -425,12 +499,34 @@ export const getCategoriesByType = async (type: CategoryType): Promise<Category[
 	}
 };
 
-export const addCategory = async (category: CategoryDraft): Promise<string> => {
-	const id = generateUniqueId();
+export const addCategory = async (
+	category: CategoryDraft,
+	/**
+	 * Fornecido só pela restauração de backup, que precisa manter o id original: os
+	 * lançamentos do arquivo apontam para ele, e um id novo os deixaria órfãos.
+	 */
+	explicitId?: string
+): Promise<string> => {
+	const id = explicitId ?? generateUniqueId();
+	// O conflito só acontece com id explícito: a restauração pode trazer de volta uma
+	// categoria que este aparelho apagou (lápide). O backup é a verdade nesse caso, então
+	// a lápide é revivida em vez de derrubar a importação inteira no meio.
 	await db.runAsync(
-		`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, 1)`,
-		[id, category.name, category.color, category.icon, category.type, nowTimestamp()]
+		`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO UPDATE SET
+       name = excluded.name, color = excluded.color, icon = excluded.icon,
+       type = excluded.type, nature = excluded.nature, updatedAt = excluded.updatedAt,
+       deletedAt = NULL, dirty = 1`,
+		[
+			id,
+			category.name,
+			category.color,
+			category.icon,
+			category.type,
+			category.nature,
+			nowTimestamp(),
+		]
 	);
 	return id;
 };
@@ -438,9 +534,17 @@ export const addCategory = async (category: CategoryDraft): Promise<string> => {
 export const updateCategory = async (category: CategoryEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE categories
-     SET name = ?, color = ?, icon = ?, type = ?, updatedAt = ?, dirty = 1
+     SET name = ?, color = ?, icon = ?, type = ?, nature = ?, updatedAt = ?, dirty = 1
      WHERE id = ?`,
-		[category.name, category.color, category.icon, category.type, nowTimestamp(), category.id]
+		[
+			category.name,
+			category.color,
+			category.icon,
+			category.type,
+			category.nature,
+			nowTimestamp(),
+			category.id,
+		]
 	);
 };
 
@@ -792,12 +896,11 @@ export const getRecurringTransactionById = async (
  *
  * Always derived rather than trusted from the caller: editing a rule's day used to
  * leave the previously stored `nextDue` in place, so the change took effect a cycle late.
+ * The rule itself — "a cycle already charged only charges again next cycle" — lives in
+ * `nextDueAfterEdit`, where it is unit tested; this only feeds it today's date.
  */
-const resolveNextDue = (transaction: RecurringTransactionEdit): string => {
-	const rule = toRule(transaction);
-	const anchor = transaction.lastProcessed ? addDays(transaction.lastProcessed, 1) : todayISO();
-	return firstDueOnOrAfter(rule, anchor);
-};
+const resolveNextDue = (transaction: RecurringTransactionEdit): string =>
+	nextDueAfterEdit(toRule(transaction), transaction.lastProcessed, todayISO());
 
 export const updateRecurringTransaction = async (
 	transaction: RecurringTransactionEdit
@@ -873,11 +976,15 @@ export const processRecurringTransactions = async (): Promise<number> => {
 				const transaction = convertRecurringTransaction(dbTransaction);
 				const rule = toRule(transaction);
 
-				// Resume from the day after the last posting; a rule that has never run
-				// starts at its scheduled first occurrence.
-				const windowStart = transaction.lastProcessed
+				// Resume from the day after the last posting, but never before `nextDue`:
+				// after an edit, `nextDue` already skips the rest of the cycle that was
+				// charged, and re-scanning from `lastProcessed + 1` would post the new day
+				// in that same cycle. A rule that has never run starts at its first occurrence.
+				const resumeFrom = transaction.lastProcessed
 					? addDays(transaction.lastProcessed, 1)
 					: (transaction.nextDue ?? today);
+				const windowStart =
+					transaction.nextDue && transaction.nextDue > resumeFrom ? transaction.nextDue : resumeFrom;
 
 				const dueDates = occurrencesBetween(rule, windowStart, today);
 
@@ -1072,6 +1179,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			color: row.color,
 			icon: row.icon,
 			type: row.type,
+			nature: row.nature,
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt ?? null,
 		})),
@@ -1150,6 +1258,48 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 };
 
 /**
+ * Se a categoria existe neste aparelho, apagada ou não.
+ *
+ * As lápides contam: o servidor também considera uma categoria apagada como conhecida,
+ * e reenviá-la é o que faz um lançamento que a referencia ser aceito.
+ */
+export const hasCategory = async (categoryId: string): Promise<boolean> => {
+	const row = await db.getFirstAsync<{ id: string }>('SELECT id FROM categories WHERE id = ?', [
+		categoryId,
+	]);
+	return row !== null;
+};
+
+/**
+ * Pede para uma categoria subir de novo no próximo push, sem mexer no `updatedAt`.
+ *
+ * É a resposta ao servidor dizer que não conhece uma categoria que um lançamento
+ * daqui usa. Bumpar o `updatedAt` seria fingir uma edição, e poderia atropelar no
+ * last-write-wins uma alteração legítima feita em outro aparelho; reenviar a linha
+ * idêntica é inofensivo, porque o empate é resolvido a favor de quem envia.
+ */
+export const markCategoryDirty = async (categoryId: string): Promise<void> => {
+	await db.runAsync('UPDATE categories SET dirty = 1 WHERE id = ?', [categoryId]);
+};
+
+/**
+ * Move um lançamento ou recorrência para 'uncategorized' — o mesmo destino que
+ * `deleteCategory` dá a eles — quando a categoria original não existe mais nem aqui.
+ *
+ * É uma edição de verdade, então `updatedAt` avança e a linha volta a ficar suja:
+ * é ela, e não a versão órfã, que os outros aparelhos precisam receber.
+ */
+export const reassignToUncategorized = async (
+	table: 'transactions' | 'recurring_transactions',
+	id: string
+): Promise<void> => {
+	await db.runAsync(
+		`UPDATE ${table} SET category = 'uncategorized', updatedAt = ?, dirty = 1 WHERE id = ?`,
+		[nowTimestamp(), id]
+	);
+};
+
+/**
  * Grava as linhas vindas do servidor, resolvendo o conflito linha a linha.
  *
  * A versão do servidor só vence quando é estritamente mais nova; no empate o local
@@ -1173,13 +1323,25 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			if (await isStale('categories', row.id, row.updatedAt)) continue;
 
 			await db.runAsync(
-				`INSERT INTO categories (id, name, color, icon, type, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+				`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, color = excluded.color, icon = excluded.icon,
-           type = excluded.type, updatedAt = excluded.updatedAt,
+           type = excluded.type, nature = excluded.nature, updatedAt = excluded.updatedAt,
            deletedAt = excluded.deletedAt, dirty = 0`,
-				[row.id, row.name, row.color, row.icon, row.type, row.updatedAt, row.deletedAt]
+				[
+					row.id,
+					row.name,
+					row.color,
+					row.icon,
+					row.type,
+					// Um servidor anterior à coluna — ou um aparelho ainda na versão velha,
+					// cuja linha o servidor apenas repassa — não manda `nature`. Cair no
+					// padrão aqui evita gravar NULL numa coluna NOT NULL e desmontar o pull.
+					row.nature ?? 'discretionary',
+					row.updatedAt,
+					row.deletedAt,
+				]
 			);
 		}
 
@@ -1366,6 +1528,9 @@ export default {
 	getDirtyChanges,
 	countDirtyRows,
 	markChangesClean,
+	hasCategory,
+	markCategoryDirty,
+	reassignToUncategorized,
 	applyPulledChanges,
 	getSyncState,
 	setSyncState,

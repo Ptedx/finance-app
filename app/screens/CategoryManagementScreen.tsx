@@ -56,6 +56,27 @@ const CategoryManagementScreen = () => {
 		);
 	};
 
+	/**
+	 * Vira a natureza direto na lista, sem abrir o editor.
+	 *
+	 * Classificar dez categorias é o que habilita a visão 50/30/20, e obrigar a abrir,
+	 * trocar e salvar dez vezes seria o suficiente para ninguém classificar nada.
+	 */
+	const handleToggleNature = async (category: Category) => {
+		try {
+			await updateCategory({
+				id: category.id,
+				name: category.name,
+				color: category.color,
+				icon: category.icon,
+				type: category.type,
+				nature: category.nature === 'essential' ? 'discretionary' : 'essential',
+			});
+		} catch (_error) {
+			Alert.alert('Error', 'Failed to update category. Please try again.');
+		}
+	};
+
 	const handleSaveCategory = async (categoryData: CategoryDraft & { id?: string }) => {
 		try {
 			if (categoryData.id) {
@@ -84,11 +105,36 @@ const CategoryManagementScreen = () => {
 			</View>
 			<View style={styles.categoryDetails}>
 				<Text style={styles.categoryName}>{item.name}</Text>
-				{/* Two categories can share a name across sides of the ledger, so the type
-				    has to be visible here to tell them apart. */}
-				<Text style={item.type === 'income' ? styles.incomeBadge : styles.expenseBadge}>
-					{item.type === 'income' ? 'Income' : 'Expense'}
-				</Text>
+				<View style={styles.badgeRow}>
+					{/* Two categories can share a name across sides of the ledger, so the type
+					    has to be visible here to tell them apart. */}
+					<Text style={item.type === 'income' ? styles.incomeBadge : styles.expenseBadge}>
+						{item.type === 'income' ? 'Income' : 'Expense'}
+					</Text>
+
+					{/* Income is neither a need nor a want, so the chip only exists on the
+					    expense side. */}
+					{item.type === 'expense' && (
+						<TouchableOpacity
+							style={[
+								styles.natureChip,
+								item.nature === 'essential' ? styles.essentialChip : styles.discretionaryChip,
+							]}
+							onPress={() => handleToggleNature(item)}
+						>
+							<Text
+								style={[
+									styles.natureChipText,
+									item.nature === 'essential'
+										? styles.essentialChipText
+										: styles.discretionaryChipText,
+								]}
+							>
+								{item.nature === 'essential' ? 'Essential' : 'Discretionary'}
+							</Text>
+						</TouchableOpacity>
+					)}
+				</View>
 			</View>
 			<View style={styles.categoryActions}>
 				<TouchableOpacity style={styles.actionButton} onPress={() => handleEditCategory(item)}>
@@ -117,7 +163,8 @@ const CategoryManagementScreen = () => {
 			<View style={styles.headerContainer}>
 				<Text style={styles.headerTitle}>Category Management</Text>
 				<Text style={styles.headerSubtitle}>
-					Add, edit, or remove categories for your transactions
+					Add, edit, or remove categories for your transactions. Tap an expense's
+					essential/discretionary chip to split your spending into needs and wants.
 				</Text>
 			</View>
 
@@ -151,6 +198,12 @@ const CategoryManagementScreen = () => {
 };
 
 const styles = StyleSheet.create({
+	badgeRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexWrap: 'wrap',
+		gap: 8,
+	},
 	incomeBadge: {
 		fontSize: 11,
 		color: '#4CAF50',
@@ -160,6 +213,33 @@ const styles = StyleSheet.create({
 		fontSize: 11,
 		color: '#FF6B6B',
 		marginTop: 2,
+	},
+	natureChip: {
+		marginTop: 2,
+		paddingHorizontal: 8,
+		paddingVertical: 2,
+		borderRadius: 10,
+		borderWidth: 1,
+	},
+	// Essencial é o estado afirmado pelo usuário, então ele é o que ganha cor; supérfluo
+	// é o padrão e fica discreto, para a lista não parecer um mar de alertas.
+	essentialChip: {
+		backgroundColor: 'rgba(21, 232, 254, 0.15)',
+		borderColor: 'rgba(21, 232, 254, 0.5)',
+	},
+	discretionaryChip: {
+		backgroundColor: 'transparent',
+		borderColor: 'rgba(255, 255, 255, 0.2)',
+	},
+	natureChipText: {
+		fontSize: 10,
+		fontWeight: '600',
+	},
+	essentialChipText: {
+		color: '#15E8FE',
+	},
+	discretionaryChipText: {
+		color: 'rgba(255, 255, 255, 0.5)',
 	},
 	container: {
 		flex: 1,

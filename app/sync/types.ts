@@ -1,4 +1,4 @@
-import type { CategoryType } from '../database/schema';
+import type { CategoryNature, CategoryType } from '../database/schema';
 
 /**
  * O formato que trafega entre o app e a API.
@@ -21,6 +21,15 @@ export interface WireCategory extends WireMeta {
 	color: string;
 	icon: string;
 	type: CategoryType;
+	/**
+	 * Nulo é aceito na chegada, nunca produzido na saída.
+	 *
+	 * A coluna é mais nova que o protocolo: um servidor ainda sem ela, ou uma linha que
+	 * ele recebeu de um aparelho numa versão anterior, chega sem `nature`. Quem aplica
+	 * resolve para o padrão em vez de recusar a linha — perder a categoria inteira por
+	 * causa de um campo que o app sabe preencher sozinho seria o pior dos dois erros.
+	 */
+	nature: CategoryNature | null;
 }
 
 export interface WireTransaction extends WireMeta {
@@ -90,10 +99,34 @@ export interface PullResponse {
 	changes: SyncChanges;
 }
 
+/**
+ * Por que o servidor não gravou uma linha.
+ *
+ * - `stale`: ele já tem uma versão mais nova. Nada a fazer aqui — o pull seguinte
+ *   traz a vencedora.
+ * - `unknown_category`: o lançamento aponta para uma categoria que o servidor não
+ *   conhece. Em vez de gravar reancorado (e divergir deste aparelho para sempre), ele
+ *   devolve a linha, e cabe a quem enviou subir a categoria junto na próxima remessa.
+ * - `invalid`: a linha não passou na validação — um valor acima do teto, por exemplo.
+ *   Antes, um caso desses derrubava a remessa inteira com 400 e travava o sync do
+ *   aparelho; agora só aquela linha fica de fora.
+ */
+export type RejectionReason = 'stale' | 'unknown_category' | 'invalid';
+
+export interface RejectedRow {
+	collection: keyof SyncChanges;
+	id: string;
+	reason: RejectionReason;
+	/** A categoria que faltou, quando `reason` é `unknown_category`. */
+	category?: string;
+	/** O que a validação reclamou, quando `reason` é `invalid`. */
+	message?: string;
+}
+
 export interface PushResponse {
 	serverTime: string;
 	applied: number;
-	rejected: Array<{ collection: keyof SyncChanges; id: string; reason: 'stale' }>;
+	rejected: RejectedRow[];
 }
 
 export interface SyncStatusResponse {

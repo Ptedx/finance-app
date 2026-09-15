@@ -356,8 +356,17 @@ export const importDatabaseData = async (): Promise<{
 
 		for (const category of importData.categories) {
 			if (existingIds.has(category.id)) continue;
-			await addCategory(category);
-			existingIds.add(category.id);
+			// Backups escritos antes da tag necessidade/desejo não trazem `nature`, e a
+			// coluna é NOT NULL. O padrão é o mesmo da migração: supérfluo até que o
+			// usuário diga o contrário.
+			//
+			// O id original é preservado de propósito: os lançamentos e recorrências do
+			// backup referenciam esse id. Antes, `addCategory` gerava um id novo e toda
+			// transação numa categoria criada pelo usuário ficava apontando para o vazio —
+			// aparecia como "Unknown" nos relatórios e sumia dos totais por categoria.
+			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = category;
+			await addCategory({ ...draft, nature: category.nature ?? 'discretionary' }, id);
+			existingIds.add(id);
 		}
 
 		for (const transaction of importData.transactions) {

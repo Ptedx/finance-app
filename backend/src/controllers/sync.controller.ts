@@ -1,15 +1,16 @@
 import type { Response } from 'express';
-import { DEFAULT_CATEGORIES, FALLBACK_CATEGORY_ID } from '../domain/defaultCategories.js';
+import type { z } from 'zod';
+import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import {
-	type BudgetPayload,
-	type CategoryPayload,
+	budgetSchema,
+	categorySchema,
 	pullQuerySchema,
 	pushBodySchema,
-	type RecurringTransactionPayload,
-	type TransactionPayload,
+	recurringTransactionSchema,
+	transactionSchema,
 } from '../schemas/sync.js';
 
 /**
@@ -25,10 +26,20 @@ type Collection = 'categories' | 'transactions' | 'recurringTransactions' | 'bud
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
+/**
+ * Por que uma linha não foi gravada. Espelha `RejectedRow` em `app/sync/types.ts`.
+ *
+ * - `stale`: o servidor já tem uma versão mais nova.
+ * - `unknown_category`: o lançamento aponta para uma categoria que este perfil não
+ *   conhece. Nada é gravado; `category` diz qual faltou, e quem enviou a reenvia junto.
+ * - `invalid`: a linha não passou na validação da sua coleção; `message` diz por quê.
+ */
 interface RejectedRow {
 	collection: Collection;
 	id: string;
-	reason: 'stale';
+	reason: 'stale' | 'unknown_category' | 'invalid';
+	category?: string;
+	message?: string;
 }
 
 /** `Date | null` do banco vira o `string | null` que o app entende. */
@@ -61,6 +72,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.budget.findMany(page(cursor.budgets)),
 	]);
 
+	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
+	// Cabe num `number` sem perda: o teto de MAX_AMOUNT_CENTS fica bem abaixo de 2^53.
 	const changes = {
 		categories: categories.map((row) => ({
 			id: row.id,
@@ -68,12 +81,13 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			color: row.color,
 			icon: row.icon,
 			type: row.type,
+			nature: row.nature,
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
 		transactions: transactions.map((row) => ({
 			id: row.id,
-			amountCents: row.amountCents,
+			amountCents: Number(row.amountCents),
 			category: row.category,
 			date: row.date,
 			note: row.note,
@@ -83,7 +97,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		})),
 		recurringTransactions: recurringTransactions.map((row) => ({
 			id: row.id,
-			amountCents: row.amountCents,
+			amountCents: Number(row.amountCents),
 			isIncome: row.isIncome,
 			note: row.note,
 			category: row.category,
@@ -101,7 +115,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			id: row.id,
 			year: row.year,
 			month: row.month,
-			amountCents: row.amountCents,
+			amountCents: Number(row.amountCents),
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
@@ -138,87 +152,165 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 // Push
 // ---------------------------------------------------------------------------
 
-/**
- * Aplica uma linha recebida, a menos que a versão do servidor seja mais nova.
- *
- * O empate (`>=`) é resolvido a favor de quem envia: o custo de reaplicar uma escrita
- * idêntica é zero, enquanto recusá-la deixaria o aparelho tentando para sempre.
- */
-const applyRow = async <T extends { id: string; updatedAt: string }>(
-	row: T,
-	current: { updatedAt: Date } | null,
-	write: () => Promise<unknown>
-): Promise<boolean> => {
-	if (current && current.updatedAt > new Date(row.updatedAt)) return false;
-
-	await write();
-	return true;
+/** O `id` de uma linha crua, para nomeá-la em `rejected` mesmo quando ela é inválida. */
+const rowId = (raw: unknown): string => {
+	if (typeof raw !== 'object' || raw === null) return '';
+	const id = (raw as { id?: unknown }).id;
+	return typeof id === 'string' ? id : '';
 };
+
+/**
+ * Separa as linhas válidas das que a validação recusa.
+ *
+ * Validar linha a linha, e não a remessa inteira de uma vez, é o que impede um único
+ * valor fora do teto de derrubar a página com 400. Como a linha ruim continuava suja no
+ * aparelho, ela entrava em toda página seguinte e o sync daquele aparelho parava para
+ * sempre — sem que nada mais dele subisse e sem que nada aparecesse na tela. Agora ela
+ * volta em `rejected` com o motivo, e as outras seguem.
+ */
+const partitionRows = <T>(
+	collection: Collection,
+	rows: unknown[],
+	schema: z.ZodType<T>,
+	rejected: RejectedRow[]
+): T[] => {
+	const valid: T[] = [];
+
+	for (const raw of rows) {
+		const result = schema.safeParse(raw);
+
+		if (result.success) {
+			valid.push(result.data);
+			continue;
+		}
+
+		rejected.push({
+			collection,
+			id: rowId(raw),
+			reason: 'invalid',
+			message: result.error.issues
+				.map((issue) => `${issue.path.join('.') || '(linha)'}: ${issue.message}`)
+				.join('; '),
+		});
+	}
+
+	return valid;
+};
+
+/**
+ * Se a versão do servidor é mais nova que a recebida.
+ *
+ * O empate é resolvido a favor de quem envia: o custo de reaplicar uma escrita idêntica
+ * é zero, enquanto recusá-la deixaria o aparelho tentando para sempre.
+ */
+const isStale = (current: { updatedAt: Date } | null, row: { updatedAt: string }): boolean =>
+	current !== null && current.updatedAt > new Date(row.updatedAt);
 
 export const pushData = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
 	const { changes } = pushBodySchema.parse(req.body);
 	const userId = req.userId;
 
 	const rejected: RejectedRow[] = [];
+
+	const categories = partitionRows('categories', changes.categories, categorySchema, rejected);
+	const transactions = partitionRows(
+		'transactions',
+		changes.transactions,
+		transactionSchema,
+		rejected
+	);
+	const recurringTransactions = partitionRows(
+		'recurringTransactions',
+		changes.recurringTransactions,
+		recurringTransactionSchema,
+		rejected
+	);
+	const budgets = partitionRows('budgets', changes.budgets, budgetSchema, rejected);
+
 	let applied = 0;
 
 	await prisma.$transaction(
 		async (tx) => {
 			// --- Categorias primeiro ---------------------------------------------
 			// Um lançamento pode vir na mesma remessa que a categoria que ele usa; a
-			// validação logo abaixo precisa enxergar essa categoria já gravada.
-			for (const row of changes.categories as CategoryPayload[]) {
+			// verificação logo abaixo precisa enxergar essa categoria já gravada.
+			for (const row of categories) {
 				const current = await tx.category.findUnique({
 					where: { userId_id: { userId, id: row.id } },
 					select: { updatedAt: true },
 				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'categories', id: row.id, reason: 'stale' });
+					continue;
+				}
 
 				const data = {
 					name: row.name,
 					color: row.color,
 					icon: row.icon,
 					type: row.type,
+					// Aparelho anterior à coluna: o padrão do app é o padrão aqui, para que
+					// os dois lados classifiquem a mesma linha do mesmo jeito.
+					nature: row.nature ?? 'discretionary',
 					updatedAt: new Date(row.updatedAt),
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
 
-				const wrote = await applyRow(row, current, () =>
-					tx.category.upsert({
-						where: { userId_id: { userId, id: row.id } },
-						create: { id: row.id, userId, ...data },
-						update: data,
-					})
-				);
-
-				wrote ? (applied += 1) : rejected.push({ collection: 'categories', id: row.id, reason: 'stale' });
+				await tx.category.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
 			}
 
-			// Quais categorias este perfil conhece, para reancorar o que aponta para o
-			// vazio. Inclui as apagadas: um lançamento numa categoria removida vai para
-			// 'uncategorized' por decisão do app, não por acidente do sync.
+			// Quais categorias este perfil conhece. Inclui as apagadas: um lançamento numa
+			// categoria removida é legítimo — o app o move para 'uncategorized' ao apagar,
+			// e essa versão chega por conta própria.
 			const knownCategories = new Set(
 				(await tx.category.findMany({ where: { userId }, select: { id: true } })).map((c) => c.id)
 			);
 
 			/**
-			 * Aparelhos não sincronizam em ordem: o celular pode enviar um lançamento
-			 * numa categoria que o tablet criou e ainda não subiu. Recusar seria perder
-			 * o lançamento; guardá-lo como está deixaria um id órfão. Reancorar em
-			 * 'uncategorized' é o que o próprio app faz ao apagar uma categoria.
+			 * Aparelhos não sincronizam em ordem: o celular pode enviar um lançamento numa
+			 * categoria que ainda não subiu. Gravar reancorado em 'uncategorized', como era
+			 * feito, resolvia o órfão aqui mas criava outro problema: o aparelho de origem
+			 * continuava com a categoria certa, o empate no last-write-wins deixava cada
+			 * lado como estava, e os dois divergiam para sempre sem ninguém saber.
+			 *
+			 * Agora a linha volta com `unknown_category` e nada é gravado. Quem enviou tem a
+			 * categoria — o lançamento é dele — e a reenvia junto na próxima remessa; se
+			 * nem ele a tem mais, é ele quem move o lançamento para 'uncategorized'. A
+			 * decisão fica no aparelho dono do dado, e as duas cópias convergem.
 			 */
-			const resolveCategory = (id: string): string =>
-				knownCategories.has(id) ? id : FALLBACK_CATEGORY_ID;
+			const rejectUnknownCategory = (collection: Collection, row: { id: string; category: string }) => {
+				if (knownCategories.has(row.category)) return false;
+				rejected.push({
+					collection,
+					id: row.id,
+					reason: 'unknown_category',
+					category: row.category,
+				});
+				return true;
+			};
 
 			// --- Lançamentos ------------------------------------------------------
-			for (const row of changes.transactions as TransactionPayload[]) {
+			for (const row of transactions) {
 				const current = await tx.transaction.findUnique({
 					where: { userId_id: { userId, id: row.id } },
 					select: { updatedAt: true },
 				});
 
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'transactions', id: row.id, reason: 'stale' });
+					continue;
+				}
+				if (rejectUnknownCategory('transactions', row)) continue;
+
 				const data = {
-					amountCents: row.amountCents,
-					category: resolveCategory(row.category),
+					amountCents: BigInt(row.amountCents),
+					category: row.category,
 					date: row.date,
 					note: row.note ?? null,
 					isIncome: row.isIncome,
@@ -226,31 +318,32 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
 
-				const wrote = await applyRow(row, current, () =>
-					tx.transaction.upsert({
-						where: { userId_id: { userId, id: row.id } },
-						create: { id: row.id, userId, ...data },
-						update: data,
-					})
-				);
-
-				wrote
-					? (applied += 1)
-					: rejected.push({ collection: 'transactions', id: row.id, reason: 'stale' });
+				await tx.transaction.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
 			}
 
 			// --- Recorrências -----------------------------------------------------
-			for (const row of changes.recurringTransactions as RecurringTransactionPayload[]) {
+			for (const row of recurringTransactions) {
 				const current = await tx.recurringTransaction.findUnique({
 					where: { userId_id: { userId, id: row.id } },
 					select: { updatedAt: true },
 				});
 
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'recurringTransactions', id: row.id, reason: 'stale' });
+					continue;
+				}
+				if (rejectUnknownCategory('recurringTransactions', row)) continue;
+
 				const data = {
-					amountCents: row.amountCents,
+					amountCents: BigInt(row.amountCents),
 					isIncome: row.isIncome,
 					note: row.note ?? null,
-					category: resolveCategory(row.category),
+					category: row.category,
 					recurrenceType: row.recurrenceType,
 					day: row.day ?? null,
 					month: row.month ?? null,
@@ -262,43 +355,40 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
 
-				const wrote = await applyRow(row, current, () =>
-					tx.recurringTransaction.upsert({
-						where: { userId_id: { userId, id: row.id } },
-						create: { id: row.id, userId, ...data },
-						update: data,
-					})
-				);
-
-				wrote
-					? (applied += 1)
-					: rejected.push({ collection: 'recurringTransactions', id: row.id, reason: 'stale' });
+				await tx.recurringTransaction.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
 			}
 
 			// --- Orçamentos -------------------------------------------------------
-			for (const row of changes.budgets as BudgetPayload[]) {
+			for (const row of budgets) {
 				const current = await tx.budget.findUnique({
 					where: { userId_id: { userId, id: row.id } },
 					select: { updatedAt: true },
 				});
 
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'budgets', id: row.id, reason: 'stale' });
+					continue;
+				}
+
 				const data = {
 					year: row.year,
 					month: row.month,
-					amountCents: row.amountCents,
+					amountCents: BigInt(row.amountCents),
 					updatedAt: new Date(row.updatedAt),
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
 
-				const wrote = await applyRow(row, current, () =>
-					tx.budget.upsert({
-						where: { userId_id: { userId, id: row.id } },
-						create: { id: row.id, userId, ...data },
-						update: data,
-					})
-				);
-
-				wrote ? (applied += 1) : rejected.push({ collection: 'budgets', id: row.id, reason: 'stale' });
+				await tx.budget.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
 			}
 		},
 		// Uma remessa cheia são milhares de idas ao banco; o padrão de 5s do Prisma
