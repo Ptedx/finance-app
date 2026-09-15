@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import { useAuth } from '../contexts/AuthContext';
+import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
@@ -40,6 +41,12 @@ const SettingsScreen = () => {
 	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { authenticate } = useBiometricAuth();
+	const {
+		supported: captureSupported,
+		enabled: captureEnabled,
+		pendingCount: capturePending,
+		openSettings: openCaptureSettings,
+	} = useCaptures();
 
 	const [_darkMode, _setDarkMode] = useState(true);
 	const [notifications, setNotifications] = useState(true);
@@ -397,6 +404,30 @@ const SettingsScreen = () => {
 						isResetting ? <ActivityIndicator size="small" color="#FF6B6B" /> : undefined
 					)}
 				</View>
+
+				{/* Captura automática: ligar o acesso a notificações e abrir a revisão.
+				    Ligar é do sistema, não do app — o item leva para a tela do Android. */}
+				{captureSupported && (
+					<View style={styles.section}>
+						<Text style={styles.sectionTitle}>{t('captures.settingsSection')}</Text>
+						{renderSettingsItem(
+							'notifications-circle-outline',
+							t('captures.settingsCapture'),
+							openCaptureSettings,
+							<Text style={captureEnabled ? styles.accountStatus : styles.settingUnavailableText}>
+								{captureEnabled ? t('captures.statusOn') : t('captures.statusOff')}
+							</Text>
+						)}
+						{renderSettingsItem(
+							'checkmark-done-outline',
+							t('captures.settingsReview'),
+							() => router.push('/inbox'),
+							capturePending > 0 ? (
+								<Text style={styles.accountStatus}>{capturePending}</Text>
+							) : undefined
+						)}
+					</View>
+				)}
 
 				{/* About */}
 				<View style={styles.section}>

@@ -12,6 +12,7 @@ import {
 	View,
 } from 'react-native';
 import AccountReminderBanner from '../components/AccountReminderBanner';
+import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import IncomeSection from '../components/IncomeSection';
 import SavingsRateCard from '../components/SavingsRateCard';
 import Summary from '../components/Summary';
@@ -103,6 +104,9 @@ const HomeScreen = () => {
 				}
 			>
 				<AccountReminderBanner />
+
+				{/* Lançamentos capturados das notificações do banco esperando um toque. */}
+				<CaptureReviewBanner />
 
 				{/* O KPI que define trajetória vem antes do resumo do mês: "converti 20% do
 				    que ganhei" diz mais sobre o futuro do que "sobrou R$ 800". */}

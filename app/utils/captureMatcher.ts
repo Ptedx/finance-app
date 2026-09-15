@@ -1,0 +1,340 @@
+/**
+ * O que fazer com uma notificação já interpretada.
+ *
+ * As duas perguntas que mais custam confiança num livro-caixa automático:
+ *
+ *  1. **É a mesma compra duas vezes?** Samsung Pay avisa no ato e o banco avisa logo
+ *     depois; dois avisos, uma compra. Sem tratamento, viram duas despesas.
+ *  2. **É dinheiro trocando de bolso?** Um Pix da conta A para a conta B aparece como
+ *     saída num app e entrada no outro. Lançar os dois inventa uma despesa e uma
+ *     receita que não existem; lançar um só distorce o saldo.
+ *
+ * A regra de ouro aqui é: **o que é certo, decide sozinho; o que é provável, pergunta.**
+ * Carteira + banco com o mesmo valor é certo. Saída e entrada do mesmo valor em dois
+ * bancos no mesmo dia é provável — pode ser um Pix para um amigo e outro de outro amigo —
+ * então vira uma pergunta de um toque, nunca um palpite silencioso.
+ *
+ * Puro: recebe o candidato e o que já está na caixa de entrada, devolve uma decisão.
+ */
+
+import {
+	type CaptureDirection,
+	type CaptureKind,
+	isWalletPackage,
+	merchantKeyOf,
+	normalizeText,
+	type RawCapture,
+} from './captureParser';
+
+export type CaptureStatus =
+	| 'pending'
+	| 'confirmed'
+	| 'dismissed'
+	| 'duplicate'
+	| 'transfer'
+	| 'ignored';
+
+/** A pergunta que um item pendente está fazendo, quando faz alguma. */
+export type CaptureQuestion = 'duplicate' | 'transfer';
+
+/** O que a decisão precisa saber de cada item já existente na caixa de entrada. */
+export interface KnownCapture {
+	id: string;
+	packageName: string;
+	postedAt: string;
+	amountCents: number;
+	direction: CaptureDirection;
+	kind: CaptureKind;
+	merchantKey: string | null;
+	status: CaptureStatus;
+	transactionId: string | null;
+}
+
+export interface Candidate {
+	packageName: string;
+	postedAt: string;
+	amountCents: number;
+	direction: CaptureDirection;
+	kind: CaptureKind;
+	counterparty: string | null;
+	merchantKey: string | null;
+	neutral: boolean;
+}
+
+export type MerchantTreatment = 'transaction' | 'transfer' | 'ignore';
+
+export interface MerchantRule {
+	merchantKey: string;
+	categoryId: string | null;
+	treatAs: MerchantTreatment;
+	confirmations: number;
+}
+
+export type Decision =
+	/** Carteira digital repetindo o aviso do banco (ou o contrário). Nada a perguntar. */
+	| { action: 'duplicate'; relatedId: string }
+	/** Mesmo valor, mesma direção, dois avisos próximos: provável, então pergunta. */
+	| { action: 'ask_duplicate'; relatedId: string }
+	/** Transferência entre contas próprias, certa: par encontrado e nome é o seu, ou regra aprendida. */
+	| { action: 'transfer'; relatedId: string | null; reason: string }
+	/** Saída e entrada do mesmo valor em contas diferentes: provável, então pergunta. */
+	| { action: 'ask_transfer'; relatedId: string }
+	/** Pagamento de fatura, aplicação, resgate: não é receita nem despesa. */
+	| { action: 'neutral'; reason: string }
+	/** Regra aprendida manda ignorar este estabelecimento. */
+	| { action: 'ignore'; reason: string }
+	/** Fica na caixa de entrada com uma categoria sugerida. */
+	| { action: 'pending'; categoryId: string | null }
+	/** Estabelecimento confirmado vezes suficientes: lança e avisa. */
+	| { action: 'auto_confirm'; categoryId: string };
+
+export interface DecisionContext {
+	/** Itens recentes da caixa de entrada, em qualquer status. */
+	recent: KnownCapture[];
+	rule: MerchantRule | undefined;
+	/** Nomes do próprio usuário: um Pix "para VINICIUS COSTA" é troca de bolso. */
+	ownNames: string[];
+	/** Quantas confirmações iguais até o app lançar sozinho. */
+	autoConfirmThreshold: number;
+	/** Palpite de categoria quando não há regra. */
+	fallbackCategoryId: string | null;
+}
+
+// Janelas de tempo. Carteira e banco avisam com segundos de diferença, mas alguns
+// bancos atrasam a notificação da compra no cartão em horas — daí 12h para a certeza.
+// Entre dois bancos, avisos a menos de 3 minutos com o mesmo valor são suspeitos.
+// Uma transferência entre contas próprias pode levar até um dia útil (TED).
+export const WALLET_DUPLICATE_WINDOW_MS = 12 * 60 * 60 * 1000;
+export const SUSPECT_DUPLICATE_WINDOW_MS = 3 * 60 * 1000;
+export const TRANSFER_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_AUTO_CONFIRM_THRESHOLD = 3;
+
+const msBetween = (a: string, b: string): number =>
+	Math.abs(new Date(a).getTime() - new Date(b).getTime());
+
+/** Tipos que podem ser uma perna de transferência entre contas. Compra nunca é. */
+const TRANSFERABLE_KINDS = new Set<CaptureKind>([
+	'pix_out',
+	'pix_in',
+	'transfer_out',
+	'transfer_in',
+	'withdrawal',
+	'deposit',
+	'unknown',
+]);
+
+/** Itens que ainda contam para comparação: descartados e ignorados já saíram do jogo. */
+const isLive = (known: KnownCapture): boolean =>
+	known.status === 'pending' || known.status === 'confirmed' || known.status === 'transfer';
+
+// ---------------------------------------------------------------------------
+// Impressão digital
+// ---------------------------------------------------------------------------
+
+/** FNV-1a de 32 bits: estável, rápido, suficiente para reconhecer a mesma notificação. */
+const fnv1a = (input: string): string => {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < input.length; index += 1) {
+		hash ^= input.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, '0');
+};
+
+/**
+ * Identifica uma notificação. O Android reentrega a mesma notificação quando o app do
+ * banco a atualiza; título, texto, app e o minuto em que foi publicada bastam para
+ * reconhecê-la — e o minuto, em vez do instante exato, absorve a reentrega.
+ */
+export const fingerprintOf = (raw: RawCapture): string => {
+	const minute = raw.postedAt.slice(0, 16);
+	return `${fnv1a(`${raw.packageName}|${raw.title}|${raw.text}|${minute}`)}-${fnv1a(raw.text)}`;
+};
+
+// ---------------------------------------------------------------------------
+// Buscas
+// ---------------------------------------------------------------------------
+
+/**
+ * A mesma compra vista pela carteira e pelo banco.
+ *
+ * Um dos dois é carteira, o outro não; mesmo valor, ambos saída, dentro da janela.
+ * O par pode estar em qualquer status vivo — se o usuário já confirmou o aviso da
+ * carteira antes de o banco avisar, o do banco é que vira duplicata.
+ */
+export const findWalletDuplicate = (
+	candidate: Candidate,
+	recent: KnownCapture[]
+): KnownCapture | undefined =>
+	recent.find(
+		(known) =>
+			isLive(known) &&
+			known.direction === 'out' &&
+			candidate.direction === 'out' &&
+			known.amountCents === candidate.amountCents &&
+			isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName) &&
+			msBetween(known.postedAt, candidate.postedAt) <= WALLET_DUPLICATE_WINDOW_MS
+	);
+
+/**
+ * Dois avisos de banco, mesmo valor e direção, quase ao mesmo tempo.
+ *
+ * Pode ser o banco reenviando com outro texto, pode ser cobrança em dobro, pode ser
+ * duas compras iguais seguidas (dois cafés). Não dá para saber daqui — pergunta.
+ */
+export const findSuspectedDuplicate = (
+	candidate: Candidate,
+	recent: KnownCapture[]
+): KnownCapture | undefined =>
+	recent.find(
+		(known) =>
+			isLive(known) &&
+			known.direction === candidate.direction &&
+			known.amountCents === candidate.amountCents &&
+			!isWalletPackage(known.packageName) &&
+			!isWalletPackage(candidate.packageName) &&
+			msBetween(known.postedAt, candidate.postedAt) <= SUSPECT_DUPLICATE_WINDOW_MS
+	);
+
+/**
+ * A outra perna de uma transferência entre contas próprias.
+ *
+ * Mesmo valor, direção oposta, dois apps diferentes (o mesmo banco não avisa saída e
+ * entrada da mesma transferência), tipos compatíveis com transferência, dentro de um
+ * dia. Compras e estornos ficam de fora: "gastei 50 no mercado" e "recebi 50 de
+ * estorno" não são troca de bolso.
+ */
+export const findTransferCounterpart = (
+	candidate: Candidate,
+	recent: KnownCapture[]
+): KnownCapture | undefined => {
+	if (!TRANSFERABLE_KINDS.has(candidate.kind)) return undefined;
+	return recent.find(
+		(known) =>
+			isLive(known) &&
+			known.direction !== candidate.direction &&
+			known.amountCents === candidate.amountCents &&
+			known.packageName !== candidate.packageName &&
+			TRANSFERABLE_KINDS.has(known.kind) &&
+			msBetween(known.postedAt, candidate.postedAt) <= TRANSFER_WINDOW_MS
+	);
+};
+
+/**
+ * Se a contraparte é o próprio usuário.
+ *
+ * Compara nome a nome, sem acento e sem caixa, e exige ao menos duas palavras iguais
+ * (ou uma, quando o nome só tem uma): "VINICIUS COSTA" bate com "Vinicius A Costa",
+ * mas "Vinicius" sozinho não bate com "Vinicius Silva".
+ */
+export const matchesOwnName = (counterparty: string | null, ownNames: string[]): boolean => {
+	if (!counterparty) return false;
+	const target = new Set(normalizeText(counterparty).split(' ').filter((w) => w.length > 1));
+	if (target.size === 0) return false;
+
+	return ownNames.some((own) => {
+		const words = normalizeText(own).split(' ').filter((w) => w.length > 1);
+		if (words.length === 0) return false;
+		const hits = words.filter((word) => target.has(word)).length;
+		return words.length === 1 ? hits === 1 && target.size === 1 : hits >= 2;
+	});
+};
+
+// ---------------------------------------------------------------------------
+// Decisão
+// ---------------------------------------------------------------------------
+
+export const decide = (candidate: Candidate, context: DecisionContext): Decision => {
+	// 1. Carteira digital + banco: a mesma compra, com certeza. Fica a do banco.
+	const walletTwin = findWalletDuplicate(candidate, context.recent);
+	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id };
+
+	// 2. Movimentos que não são receita nem despesa.
+	if (candidate.neutral) {
+		return {
+			action: 'neutral',
+			reason: candidate.kind === 'invoice_payment' ? 'invoice_payment' : 'investment',
+		};
+	}
+
+	// 3. Regra aprendida para o estabelecimento ou pessoa.
+	const rule = context.rule;
+	if (rule?.treatAs === 'ignore') return { action: 'ignore', reason: 'rule' };
+	if (rule?.treatAs === 'transfer') {
+		const twin = findTransferCounterpart(candidate, context.recent);
+		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'rule' };
+	}
+
+	// 4. Transferência para si mesmo: o nome na notificação é o seu.
+	if (matchesOwnName(candidate.counterparty, context.ownNames)) {
+		const twin = findTransferCounterpart(candidate, context.recent);
+		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'own_name' };
+	}
+
+	// 5. Saída e entrada do mesmo valor em contas diferentes: provável, pergunta.
+	const counterpart = findTransferCounterpart(candidate, context.recent);
+	if (counterpart) return { action: 'ask_transfer', relatedId: counterpart.id };
+
+	// 6. Dois bancos, mesmo valor, quase ao mesmo tempo: provável, pergunta.
+	const suspect = findSuspectedDuplicate(candidate, context.recent);
+	if (suspect) return { action: 'ask_duplicate', relatedId: suspect.id };
+
+	// 7. Categoria: aprendida (e talvez automática) ou palpite.
+	if (rule?.categoryId) {
+		if (rule.confirmations >= context.autoConfirmThreshold) {
+			return { action: 'auto_confirm', categoryId: rule.categoryId };
+		}
+		return { action: 'pending', categoryId: rule.categoryId };
+	}
+
+	return { action: 'pending', categoryId: context.fallbackCategoryId };
+};
+
+/**
+ * Como uma regra evolui a cada confirmação.
+ *
+ * Confirmar com a mesma categoria soma; confirmar com outra recomeça do um — três
+ * confirmações iguais seguidas é o que libera o lançamento automático, e uma mudança
+ * de ideia no meio zera a contagem em vez de ser ignorada.
+ */
+export const learnFromConfirmation = (
+	rule: MerchantRule | undefined,
+	merchantKey: string,
+	categoryId: string
+): MerchantRule => {
+	if (rule && rule.treatAs === 'transaction' && rule.categoryId === categoryId) {
+		return { ...rule, confirmations: rule.confirmations + 1 };
+	}
+	return { merchantKey, categoryId, treatAs: 'transaction', confirmations: 1 };
+};
+
+export const candidateFrom = (
+	raw: RawCapture,
+	parsed: {
+		amountCents: number;
+		direction: CaptureDirection;
+		kind: CaptureKind;
+		counterparty: string | null;
+		neutral: boolean;
+	}
+): Candidate => ({
+	packageName: raw.packageName,
+	postedAt: raw.postedAt,
+	amountCents: parsed.amountCents,
+	direction: parsed.direction,
+	kind: parsed.kind,
+	counterparty: parsed.counterparty,
+	merchantKey: merchantKeyOf(parsed.counterparty),
+	neutral: parsed.neutral,
+});
+
+export default {
+	decide,
+	fingerprintOf,
+	findWalletDuplicate,
+	findSuspectedDuplicate,
+	findTransferCounterpart,
+	matchesOwnName,
+	learnFromConfirmation,
+	candidateFrom,
+};

@@ -18,8 +18,10 @@ import {
 	type CategoryEdit,
 	type CategoryType,
 	CREATE_BUDGETS_TABLE,
+	CREATE_CAPTURES_TABLE,
 	CREATE_CATEGORIES_TABLE,
 	CREATE_INDEXES,
+	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
@@ -39,7 +41,11 @@ import {
 } from './schema';
 import type { SyncChanges } from '../sync/types';
 
-const db = SQLite.openDatabaseSync(DATABASE_NAME);
+/**
+ * O único handle do banco. Exportado para módulos irmãos (`captures.ts`) que têm suas
+ * próprias tabelas; telas e contexts continuam passando pelas funções deste arquivo.
+ */
+export const db = SQLite.openDatabaseSync(DATABASE_NAME);
 
 interface SyncColumnsDB {
 	updatedAt: string;
@@ -398,8 +404,20 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 3) await migrateSyncColumns();
 	if (version < 4) await migrateBudgetsFromStorage();
 	if (version < 5) await migrateCategoryNature();
+	if (version < 6) await migrateCaptureTables();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+};
+
+/**
+ * v5 -> v6: a caixa de entrada de notificações e as regras por estabelecimento.
+ *
+ * Tabelas novas, sem dado a converter: o passo existe para a versão do schema contar a
+ * história completa, e o `CREATE TABLE IF NOT EXISTS` da inicialização faria o mesmo.
+ */
+const migrateCaptureTables = async (): Promise<void> => {
+	await db.execAsync(`${CREATE_CAPTURES_TABLE}${CREATE_MERCHANT_RULES_TABLE}`);
+	console.log('Created capture inbox tables');
 };
 
 const runInitDatabase = async (): Promise<void> => {
@@ -416,6 +434,8 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_RECURRING_TRANSACTIONS_TABLE}
       ${CREATE_BUDGETS_TABLE}
       ${CREATE_SYNC_STATE_TABLE}
+      ${CREATE_CAPTURES_TABLE}
+      ${CREATE_MERCHANT_RULES_TABLE}
       ${CREATE_INDEXES}
     `);
 

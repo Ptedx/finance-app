@@ -3,10 +3,14 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import en from './locales/en';
 import it from './locales/it';
+import pt from './locales/pt';
 
 const resources = {
 	en: { translation: en },
 	it: { translation: it },
+	// Registrado como 'pt': `getLocales()[0].languageCode` devolve 'pt' tanto para pt-BR
+	// quanto para pt-PT, e o texto foi escrito em português do Brasil.
+	pt: { translation: pt },
 };
 
 /**

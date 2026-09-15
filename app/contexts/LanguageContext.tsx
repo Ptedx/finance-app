@@ -14,6 +14,7 @@ export interface Language {
 
 export const AVAILABLE_LANGUAGES: Language[] = [
 	{ code: 'en', name: 'English', nativeName: 'English' },
+	{ code: 'pt', name: 'Portuguese', nativeName: 'Português' },
 	{ code: 'it', name: 'Italian', nativeName: 'Italiano' },
 ];
 
@@ -41,9 +42,11 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					setCurrentLanguage(lang);
 					await i18next.changeLanguage(lang.code);
 				} else {
-					// Auto-detect OS locale — only Italian is explicitly supported
+					// Idioma do aparelho, quando o app tem strings para ele; inglês se não tem.
 					const deviceLocale = getLocales()[0]?.languageCode ?? 'en';
-					const detected = deviceLocale === 'it' ? AVAILABLE_LANGUAGES[1] : DEFAULT_LANGUAGE;
+					const detected =
+						AVAILABLE_LANGUAGES.find((language) => language.code === deviceLocale) ??
+						DEFAULT_LANGUAGE;
 					setCurrentLanguage(detected);
 					await i18next.changeLanguage(detected.code);
 				}

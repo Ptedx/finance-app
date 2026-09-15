@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
+import { useCaptures } from '../contexts/CapturesContext';
 
 // biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
 const TabBarIcon = ({ name, color }: { name: any; color: string }) => {
@@ -9,6 +11,11 @@ const TabBarIcon = ({ name, color }: { name: any; color: string }) => {
 };
 
 export default function TabsLayout() {
+	const { t } = useTranslation();
+	// O selo na aba inicial é o único lembrete de que há lançamentos capturados a
+	// revisar: discreto, sem notificação, e some sozinho quando a fila esvazia.
+	const { pendingCount } = useCaptures();
+
 	return (
 		<Tabs
 			screenOptions={{
@@ -27,14 +34,18 @@ export default function TabsLayout() {
 			<Tabs.Screen
 				name="index"
 				options={{
-					title: 'Home',
+					title: t('tabs.home'),
 					tabBarIcon: ({ color }) => <TabBarIcon name="home" color={color} />,
+					tabBarBadge: pendingCount > 0 ? pendingCount : undefined,
+					tabBarBadgeStyle: styles.badge,
+					tabBarAccessibilityLabel:
+						pendingCount > 0 ? `${t('tabs.home')}, ${t('captures.tabBadge', { count: pendingCount })}` : t('tabs.home'),
 				}}
 			/>
 			<Tabs.Screen
 				name="transactions"
 				options={{
-					title: 'Transactions',
+					title: t('tabs.transactions'),
 					tabBarIcon: ({ color }) => <TabBarIcon name="list" color={color} />,
 				}}
 			/>
@@ -55,8 +66,8 @@ export default function TabsLayout() {
 			<Tabs.Screen
 				name="reports"
 				options={{
-					title: 'Reports',
-					tabBarLabel: 'Reports',
+					title: t('tabs.reports'),
+					tabBarLabel: t('tabs.reports'),
 					tabBarLabelStyle: {
 						fontSize: 12,
 						fontWeight: '500',
@@ -69,7 +80,7 @@ export default function TabsLayout() {
 			<Tabs.Screen
 				name="settings"
 				options={{
-					title: 'Settings',
+					title: t('tabs.settings'),
 					tabBarIcon: ({ color }) => <TabBarIcon name="settings-outline" color={color} />,
 				}}
 			/>
@@ -89,6 +100,12 @@ const styles = StyleSheet.create({
 	tabLabel: {
 		fontSize: 12,
 		fontWeight: '500',
+	},
+	badge: {
+		backgroundColor: '#15E8FE',
+		color: '#000000',
+		fontSize: 11,
+		fontWeight: '700',
 	},
 	addButtonContainer: {
 		top: -10,

@@ -106,8 +106,10 @@ export const DATABASE_NAME = 'spendr.db';
  * 3 — every table gains `updatedAt` / `deletedAt` / `dirty`, so rows can be synced.
  * 4 — budgets move out of AsyncStorage into a table, and `sync_state` is created.
  * 5 — categories gain `nature`, so expenses split into needs and wants.
+ * 6 — `captures` and `merchant_rules` are created: the review inbox for bank
+ *     notifications and what the app has learned about each merchant.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -232,10 +234,102 @@ export const CREATE_SYNC_STATE_TABLE = `
 `;
 
 /**
+ * A notificação de banco capturada e o que o app decidiu sobre ela.
+ *
+ * **Local, nunca sincronizada.** O que sobe para o servidor é a transação que o
+ * usuário confirma; a caixa de entrada é o rascunho de cada aparelho. O texto bruto
+ * (`title`, `text`) fica guardado de propósito: se o parser errar, dá para corrigir a
+ * regra e reprocessar sem ter perdido nada.
+ *
+ * `status`: pending (a revisar), confirmed (virou transação), dismissed (o usuário
+ * descartou), duplicate (era o mesmo aviso de outro app), transfer (troca de bolso
+ * entre contas próprias), ignored (fatura paga, aplicação, regra de ignorar).
+ * `question`: quando pendente, a pergunta que o item faz — duplicate ou transfer —
+ * sempre apontando para `relatedId`.
+ */
+export interface Capture {
+	id: string;
+	fingerprint: string;
+	packageName: string;
+	appLabel: string;
+	title: string;
+	text: string;
+	/** Instante ISO 8601 em que a notificação foi publicada. */
+	postedAt: string;
+	amountCents: number;
+	direction: 'in' | 'out';
+	kind: string;
+	counterparty: string | null;
+	merchantKey: string | null;
+	cardLast4: string | null;
+	status: 'pending' | 'confirmed' | 'dismissed' | 'duplicate' | 'transfer' | 'ignored';
+	question: 'duplicate' | 'transfer' | null;
+	relatedId: string | null;
+	suggestedCategory: string | null;
+	transactionId: string | null;
+	autoConfirmed: boolean;
+	/** Por que saiu do jogo (own_name, rule, invoice_payment, investment…), para o histórico. */
+	reason: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * O que o app aprendeu sobre um estabelecimento ou pessoa (`merchantKey`, ver
+ * `merchantKeyOf`). Também local: é um hábito deste usuário neste aparelho.
+ */
+export interface MerchantRule {
+	merchantKey: string;
+	categoryId: string | null;
+	treatAs: 'transaction' | 'transfer' | 'ignore';
+	confirmations: number;
+	updatedAt: string;
+}
+
+export const CREATE_CAPTURES_TABLE = `
+  CREATE TABLE IF NOT EXISTS captures (
+    id TEXT PRIMARY KEY NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE,
+    packageName TEXT NOT NULL,
+    appLabel TEXT NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    postedAt TEXT NOT NULL,
+    amountCents INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    counterparty TEXT,
+    merchantKey TEXT,
+    cardLast4 TEXT,
+    status TEXT NOT NULL,
+    question TEXT,
+    relatedId TEXT,
+    suggestedCategory TEXT,
+    transactionId TEXT,
+    autoConfirmed INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  );
+`;
+
+export const CREATE_MERCHANT_RULES_TABLE = `
+  CREATE TABLE IF NOT EXISTS merchant_rules (
+    merchantKey TEXT PRIMARY KEY NOT NULL,
+    categoryId TEXT,
+    treatAs TEXT NOT NULL DEFAULT 'transaction',
+    confirmations INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT NOT NULL
+  );
+`;
+
+/**
  * Queries filter by date range constantly; without these they are full scans.
  * The `dirty` indexes keep the push's "what changed?" scan off the full table.
  */
 export const CREATE_INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status, postedAt);
+  CREATE INDEX IF NOT EXISTS idx_captures_posted ON captures (postedAt);
   CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
   CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions (category);
   CREATE INDEX IF NOT EXISTS idx_recurring_next_due ON recurring_transactions (active, nextDue);
@@ -421,6 +515,8 @@ export default {
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_BUDGETS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
+	CREATE_CAPTURES_TABLE,
+	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_INDEXES,
 	DEFAULT_CATEGORIES,
 };
