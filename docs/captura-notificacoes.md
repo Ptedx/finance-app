@@ -122,6 +122,12 @@ Detalhes que importam:
   lançamento vão para revisão, nenhum registro é reivindicado duas vezes, e reimportar
   é sempre um no-op.
 
+## Contas, cartões e parcelas
+
+Desde o v7 cada captura sabe a conta de origem (`accountId`), compras parceladas viram
+uma parcela por mês ao confirmar, e transferências e pagamentos de fatura entram na
+tabela `transfers`. Ver `docs/contas-e-cartoes.md`.
+
 ## Limites conhecidos
 
 - Bancos mudam o texto das notificações. O parser é por palavras-chave, não por banco,

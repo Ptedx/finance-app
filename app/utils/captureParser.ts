@@ -11,6 +11,8 @@
  * Puro, sem importar nada nativo, para ser testado com textos reais.
  */
 
+import { detectNotificationInstallments } from './installments';
+
 export type CaptureDirection = 'in' | 'out';
 
 export type CaptureKind =
@@ -49,6 +51,8 @@ export interface ParsedCapture {
 	 * Lançar isso como gasto contaria o mesmo dinheiro duas vezes.
 	 */
 	neutral: boolean;
+	/** Quantas parcelas, quando a compra é parcelada ("em 3x"). `amountCents` é o total. */
+	installments: number | null;
 }
 
 /**
@@ -361,13 +365,20 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 	const classified = classify(normalized);
 	if (!classified) return null;
 
+	// "3x de R$ 100,00": o primeiro valor do texto é a parcela, e o total é o produto.
+	// "R$ 300,00 em 3x": o primeiro valor já é o total. Nos dois casos o item registra
+	// a compra inteira, e a confirmação a divide em parcelas.
+	const installments = classified.kind === 'purchase' ? detectNotificationInstallments(original) : null;
+	const totalCents = installments?.parcelCents ? installments.parcelCents * installments.count : amountCents;
+
 	return {
-		amountCents,
+		amountCents: totalCents,
 		direction: classified.direction,
 		kind: classified.kind,
 		counterparty: extractCounterparty(original, classified.direction),
 		cardLast4: extractCardLast4(original),
 		neutral: classified.neutral,
+		installments: installments?.count ?? null,
 	};
 };
 

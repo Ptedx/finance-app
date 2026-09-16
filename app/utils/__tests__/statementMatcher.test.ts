@@ -287,6 +287,43 @@ describe('casar com lançamento do livro', () => {
 		expect(summary.pending).toBe(0);
 	});
 
+	it('linha de parcela "2/3" casa só com a parcela 2 de 3, com janela larga', () => {
+		const parcels: LedgerTransaction[] = [1, 2, 3].map((index) => ({
+			id: `p${index}`,
+			amountCents: 10000,
+			isIncome: false,
+			date: ['2026-07-10', '2026-08-10', '2026-09-10'][index - 1],
+			installmentIndex: index,
+			installmentCount: 3,
+		}));
+		const parcelLine = line({
+			fitid: 'fat',
+			amountCents: 10000,
+			postedDate: '2026-09-03',
+			text: 'MAGAZINE LUIZA 2/3',
+			name: 'MAGAZINE LUIZA 2/3',
+		});
+
+		// A parcela 2 é de 08-10; a fatura de setembro a lança em 09-03 (24 dias). Casa.
+		expect(findTransactionForLine(parcelLine, parcels, new Set())?.id).toBe('p2');
+		// A parcela 3, de 09-10, está mais perto pela data — mas o índice é outro.
+		expect(findTransactionForLine(parcelLine, parcels, new Set(['p2']))).toBeUndefined();
+	});
+
+	it('linha sem marca de parcela não usa a janela larga', () => {
+		const parcel: LedgerTransaction = {
+			id: 'p2',
+			amountCents: 10000,
+			isIncome: false,
+			date: '2026-08-10',
+			installmentIndex: 2,
+			installmentCount: 3,
+		};
+		expect(
+			findTransactionForLine(line({ amountCents: 10000, postedDate: '2026-09-03', text: 'MAGAZINE LUIZA' }), [parcel], new Set())
+		).toBeUndefined();
+	});
+
 	it('linha neutra não casa com nada e vai para o histórico como ignorada', () => {
 		const invoice = line({
 			fitid: 'inv',

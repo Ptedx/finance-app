@@ -39,8 +39,8 @@ export const insertCapture = async (draft: CaptureDraft, explicitId?: string): P
 		`INSERT INTO captures
        (id, fingerprint, packageName, appLabel, title, text, postedAt, amountCents, direction, kind,
         counterparty, merchantKey, cardLast4, status, question, relatedId, suggestedCategory,
-        transactionId, autoConfirmed, reason, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        transactionId, autoConfirmed, reason, accountId, transferId, installments, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		[
 			capture.id,
 			capture.fingerprint,
@@ -62,6 +62,9 @@ export const insertCapture = async (draft: CaptureDraft, explicitId?: string): P
 			capture.transactionId,
 			capture.autoConfirmed ? 1 : 0,
 			capture.reason,
+			capture.accountId,
+			capture.transferId,
+			capture.installments,
 			capture.createdAt,
 			capture.updatedAt,
 		]
@@ -118,7 +121,16 @@ export const getResolvedCaptures = async (limit: number): Promise<Capture[]> => 
 export type CapturePatch = Partial<
 	Pick<
 		Capture,
-		'status' | 'question' | 'relatedId' | 'suggestedCategory' | 'transactionId' | 'autoConfirmed' | 'reason'
+		| 'status'
+		| 'question'
+		| 'relatedId'
+		| 'suggestedCategory'
+		| 'transactionId'
+		| 'autoConfirmed'
+		| 'reason'
+		| 'accountId'
+		| 'transferId'
+		| 'installments'
 	>
 >;
 

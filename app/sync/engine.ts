@@ -169,11 +169,13 @@ export const pushAll = async (): Promise<number> => {
 
 		await markChangesClean({
 			categories: changes.categories.filter((r) => !rejected.has(`categories:${r.id}`)),
+			accounts: (changes.accounts ?? []).filter((r) => !rejected.has(`accounts:${r.id}`)),
 			transactions: changes.transactions.filter((r) => !rejected.has(`transactions:${r.id}`)),
 			recurringTransactions: changes.recurringTransactions.filter(
 				(r) => !rejected.has(`recurringTransactions:${r.id}`)
 			),
 			budgets: changes.budgets.filter((r) => !rejected.has(`budgets:${r.id}`)),
+			transfers: (changes.transfers ?? []).filter((r) => !rejected.has(`transfers:${r.id}`)),
 		});
 
 		sent += response.applied;

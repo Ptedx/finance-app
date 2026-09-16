@@ -2,15 +2,17 @@
  * O que acontece com uma notificação capturada, do arquivo nativo até a transação.
  *
  * `ingestRawCaptures` é o funil: impressão digital (a mesma notificação nunca entra
- * duas vezes), interpretação (`captureParser`), decisão (`captureMatcher`) e gravação
- * na caixa de entrada — ou direto no livro-caixa, quando o estabelecimento já foi
- * confirmado vezes suficientes. `applyDecision` é a parte da gravação, compartilhada
- * com o import de extrato (`statementImport`), que decide pelo mesmo motor. As demais
- * funções são as respostas do usuário na tela de revisão. Nenhuma delas mexe em
- * estado React: o `CapturesContext` chama e recarrega.
+ * duas vezes), interpretação (`captureParser`), conta de origem (`accountResolver`),
+ * decisão (`captureMatcher`) e gravação na caixa de entrada — ou direto no livro-caixa,
+ * quando o estabelecimento já foi confirmado vezes suficientes. `applyDecision` é a
+ * parte da gravação, compartilhada com o import de extrato (`statementImport`), que
+ * decide pelo mesmo motor. As demais funções são as respostas do usuário na tela de
+ * revisão. Nenhuma delas mexe em estado React: o `CapturesContext` chama e recarrega.
  *
- * Toda transação criada aqui passa por `addTransaction` e entra na fila de sync como
- * qualquer outra; a caixa de entrada em si nunca sai do aparelho.
+ * Três coisas saem daqui para o livro-caixa, todas pela fila de sync:
+ *  - **transações** (uma, ou N parcelas de uma compra parcelada);
+ *  - **transferências** entre contas do usuário, inclusive o pagamento da fatura;
+ *  - nada, no caso de aplicação, resgate e do que o usuário descarta.
  */
 
 import {
@@ -23,9 +25,24 @@ import {
 	saveMerchantRule,
 	updateCapture,
 } from '../database/captures';
-import { addTransaction, deleteTransaction } from '../database/database';
+import {
+	addTransaction,
+	addTransfer,
+	deleteTransaction,
+	deleteTransactionsInGroup,
+	deleteTransfer,
+	findLiveTransfer,
+	getAccount,
+	getTransfer,
+	updateTransfer,
+} from '../database/database';
 import type { Capture, Category } from '../database/schema';
 import * as syncQueue from '../sync/queue';
+import {
+	findCardForInvoice,
+	findCheckingForCard,
+	resolveAccountForNotification,
+} from './accountResolver';
 import {
 	candidateFrom,
 	DEFAULT_AUTO_CONFIRM_THRESHOLD,
@@ -37,10 +54,15 @@ import {
 	type MerchantRule,
 } from './captureMatcher';
 import { type CaptureKind, guessCategory, parseCapture, type RawCapture } from './captureParser';
-import { getISODate } from './dateUtils';
+import { generateUniqueId } from './categoryEditUtils';
+import { addDays, getISODate } from './dateUtils';
+import { installmentDate, splitInstallments } from './installments';
 
 /** Quanto tempo para trás a decisão olha: um dia útil de TED, com folga. */
 const LOOKBACK_MS = 26 * 60 * 60 * 1000;
+
+/** Uma transferência avisada pelos dois lados pode chegar com dias de diferença. */
+const TRANSFER_LINK_WINDOW_DAYS = 5;
 
 export interface IngestOptions {
 	/** Nomes do usuário: um Pix para si mesmo é troca de bolso. */
@@ -97,19 +119,142 @@ export const resolveCategoryId = (
 
 const localDateOf = (iso: string): string => getISODate(new Date(iso));
 
-const postTransaction = async (
-	capture: Pick<Capture, 'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt'>,
-	categoryId: string
+type Postable = Pick<
+	Capture,
+	'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt' | 'accountId' | 'installments'
+>;
+
+/**
+ * Grava a compra no livro: uma transação, ou N parcelas datadas um mês após a outra
+ * e ligadas por `installmentGroup` (o id da captura). Devolve o id da primeira.
+ */
+const postTransaction = async (capture: Postable, categoryId: string, groupId: string): Promise<string> => {
+	const date = localDateOf(capture.postedAt);
+	const note = capture.counterparty ?? capture.appLabel;
+	const count = capture.installments && capture.installments > 1 ? capture.installments : 1;
+
+	if (count === 1) {
+		const id = await addTransaction({
+			amountCents: capture.amountCents,
+			category: categoryId,
+			date,
+			note,
+			isIncome: capture.direction === 'in',
+			accountId: capture.accountId,
+		});
+		syncQueue.schedule();
+		return id;
+	}
+
+	const parts = splitInstallments(capture.amountCents, count);
+	let firstId = '';
+	for (let index = 1; index <= count; index += 1) {
+		const id = await addTransaction({
+			amountCents: parts[index - 1],
+			category: categoryId,
+			date: installmentDate(date, index),
+			note: `${note} (${index}/${count})`,
+			isIncome: capture.direction === 'in',
+			accountId: capture.accountId,
+			installmentGroup: groupId,
+			installmentIndex: index,
+			installmentCount: count,
+		});
+		if (index === 1) firstId = id;
+	}
+	syncQueue.schedule();
+	return firstId;
+};
+
+/**
+ * Registra (ou reaproveita) a transferência de um movimento entre contas.
+ *
+ * `from`/`to` nulos significam "uma conta que o app não acompanha, ou que ainda não
+ * apareceu". Se a outra perna já criou a transferência com um lado nulo, este lado
+ * a completa em vez de criar outra; e uma transferência viva com o mesmo valor, dias
+ * próximos e lados compatíveis é reaproveitada — é o que impede o pagamento da
+ * fatura de contar duas vezes quando a conta e o cartão avisam.
+ */
+const recordTransfer = async (
+	movement: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel'>,
+	from: string | null,
+	to: string | null,
+	existingTransferId: string | null
 ): Promise<string> => {
-	const id = await addTransaction({
-		amountCents: capture.amountCents,
-		category: categoryId,
-		date: localDateOf(capture.postedAt),
-		note: capture.counterparty ?? capture.appLabel,
-		isIncome: capture.direction === 'in',
+	const date = localDateOf(movement.postedAt);
+
+	if (existingTransferId) {
+		const current = await getTransfer(existingTransferId);
+		if (current && !current.deletedAt) {
+			await updateTransfer({
+				...current,
+				fromAccountId: current.fromAccountId ?? from,
+				toAccountId: current.toAccountId ?? to,
+			});
+			syncQueue.schedule();
+			return current.id;
+		}
+	}
+
+	const live = await findLiveTransfer({
+		amountCents: movement.amountCents,
+		fromAccountId: from,
+		toAccountId: to,
+		dateFrom: addDays(date, -TRANSFER_LINK_WINDOW_DAYS),
+		dateTo: addDays(date, TRANSFER_LINK_WINDOW_DAYS),
+	});
+	if (live) {
+		if ((live.fromAccountId === null && from) || (live.toAccountId === null && to)) {
+			await updateTransfer({
+				...live,
+				fromAccountId: live.fromAccountId ?? from,
+				toAccountId: live.toAccountId ?? to,
+			});
+		}
+		syncQueue.schedule();
+		return live.id;
+	}
+
+	const id = await addTransfer({
+		fromAccountId: from,
+		toAccountId: to,
+		amountCents: movement.amountCents,
+		date,
+		note: movement.counterparty ?? movement.appLabel,
 	});
 	syncQueue.schedule();
 	return id;
+};
+
+/** As pontas de uma transferência vista deste lado: saída parte daqui, entrada chega aqui. */
+const transferSidesOf = (
+	capture: Pick<Capture, 'direction' | 'accountId'>,
+	other: string | null
+): { from: string | null; to: string | null } =>
+	capture.direction === 'out' ? { from: capture.accountId, to: other } : { from: other, to: capture.accountId };
+
+/**
+ * Pagar a fatura é transferir da conta para o cartão. Visto pela conta ("pagamento da
+ * fatura"), o destino é o único cartão do mesmo banco; visto pelo cartão ("pagamento
+ * recebido"), a origem é a única conta do mesmo banco. Com mais de um candidato o lado
+ * fica nulo, e as duas vistas ainda se reconhecem pelo valor e pela data.
+ */
+const recordInvoicePayment = async (
+	capture: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel' | 'accountId' | 'direction'>
+): Promise<string | null> => {
+	if (!capture.accountId) return null;
+	const account = await getAccount(capture.accountId);
+	if (!account) return null;
+
+	if (account.kind === 'credit_card') {
+		if (capture.direction !== 'in') return null;
+		const checking = await findCheckingForCard(account);
+		return recordTransfer(capture, checking?.id ?? null, account.id, null);
+	}
+
+	if (capture.direction !== 'out') return null;
+	const card = await findCardForInvoice(account);
+	return recordTransfer(capture, account.id, card?.id ?? null, null);
 };
 
 // ---------------------------------------------------------------------------
@@ -119,23 +264,26 @@ const postTransaction = async (
 /**
  * Grava um item novo na caixa de entrada conforme a decisão do motor.
  *
- * `base` é o rascunho com os campos da fonte (texto bruto, valor, contraparte…) e
- * status pendente; a decisão diz o status final, a pergunta, o par e a categoria.
- * Só `auto_confirm` toca no livro-caixa.
+ * `base` é o rascunho com os campos da fonte (texto bruto, valor, contraparte, conta…)
+ * e status pendente; a decisão diz o status final, a pergunta, o par e a categoria.
+ * `auto_confirm` toca no livro (transações); `transfer` e o pagamento de fatura tocam
+ * nas transferências. O resto só grava o item.
  */
 export const applyDecision = async (
 	base: CaptureDraft,
 	decision: Decision,
 	categories: Category[],
 	explicitId?: string
-): Promise<{ autoConfirmed: boolean }> => {
+): Promise<{ id: string; autoConfirmed: boolean }> => {
+	const id = explicitId ?? generateUniqueId();
+
 	switch (decision.action) {
 		case 'duplicate':
 			await insertCapture(
 				{ ...base, status: 'duplicate', relatedId: decision.relatedId, reason: decision.reason },
-				explicitId
+				id
 			);
-			return { autoConfirmed: false };
+			return { id, autoConfirmed: false };
 
 		case 'ask_duplicate':
 			await insertCapture(
@@ -145,24 +293,29 @@ export const applyDecision = async (
 					relatedId: decision.relatedId,
 					suggestedCategory: resolveCategoryId(base.suggestedCategory, base.direction, categories),
 				},
-				explicitId
+				id
 			);
-			return { autoConfirmed: false };
+			return { id, autoConfirmed: false };
 
 		case 'transfer': {
-			const inserted = await insertCapture(
-				{ ...base, status: 'transfer', relatedId: decision.relatedId, reason: decision.reason },
-				explicitId
+			const related = decision.relatedId ? await getCapture(decision.relatedId) : null;
+			const sides = transferSidesOf(base, related?.accountId ?? null);
+			const transferId = await recordTransfer(base, sides.from, sides.to, related?.transferId ?? null);
+
+			await insertCapture(
+				{ ...base, status: 'transfer', relatedId: decision.relatedId, reason: decision.reason, transferId },
+				id
 			);
-			if (decision.relatedId) {
-				await updateCapture(decision.relatedId, {
+			if (related) {
+				await updateCapture(related.id, {
 					status: 'transfer',
 					question: null,
-					relatedId: inserted.id,
+					relatedId: id,
 					reason: decision.reason,
+					transferId,
 				});
 			}
-			return { autoConfirmed: false };
+			return { id, autoConfirmed: false };
 		}
 
 		case 'ask_transfer':
@@ -173,25 +326,30 @@ export const applyDecision = async (
 					relatedId: decision.relatedId,
 					suggestedCategory: resolveCategoryId(base.suggestedCategory, base.direction, categories),
 				},
-				explicitId
+				id
 			);
-			return { autoConfirmed: false };
+			return { id, autoConfirmed: false };
 
-		case 'neutral':
+		case 'neutral': {
+			const transferId = decision.reason === 'invoice_payment' ? await recordInvoicePayment(base) : null;
+			await insertCapture({ ...base, status: 'ignored', reason: decision.reason, transferId }, id);
+			return { id, autoConfirmed: false };
+		}
+
 		case 'ignore':
-			await insertCapture({ ...base, status: 'ignored', reason: decision.reason }, explicitId);
-			return { autoConfirmed: false };
+			await insertCapture({ ...base, status: 'ignored', reason: decision.reason }, id);
+			return { id, autoConfirmed: false };
 
 		case 'pending':
 			await insertCapture(
 				{ ...base, suggestedCategory: resolveCategoryId(decision.categoryId, base.direction, categories) },
-				explicitId
+				id
 			);
-			return { autoConfirmed: false };
+			return { id, autoConfirmed: false };
 
 		case 'auto_confirm': {
 			const categoryId = resolveCategoryId(decision.categoryId, base.direction, categories);
-			const transactionId = await postTransaction(base, categoryId);
+			const transactionId = await postTransaction(base, categoryId, id);
 			await insertCapture(
 				{
 					...base,
@@ -201,9 +359,9 @@ export const applyDecision = async (
 					autoConfirmed: true,
 					reason: 'rule',
 				},
-				explicitId
+				id
 			);
-			return { autoConfirmed: true };
+			return { id, autoConfirmed: true };
 		}
 	}
 };
@@ -230,6 +388,7 @@ export const ingestRawCaptures = async (
 		const parsed = parseCapture(raw);
 		if (!parsed) continue;
 
+		const account = await resolveAccountForNotification(raw, parsed);
 		const candidate = candidateFrom(raw, parsed);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
 		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
@@ -275,6 +434,9 @@ export const ingestRawCaptures = async (
 			transactionId: null,
 			autoConfirmed: false,
 			reason: null,
+			accountId: account.id,
+			transferId: null,
+			installments: parsed.installments,
 		};
 
 		const result = await applyDecision(base, decision, options.categories);
@@ -305,7 +467,18 @@ const learnTransfer = async (capture: Capture): Promise<void> => {
 	});
 };
 
-/** Vira transação com a categoria escolhida, e o app aprende o estabelecimento. */
+/** Apaga o que uma captura pôs no livro: a transação, ou todas as parcelas. */
+const removePostedTransactions = async (capture: Capture): Promise<void> => {
+	if (!capture.transactionId) return;
+	if (capture.installments && capture.installments > 1) {
+		await deleteTransactionsInGroup(capture.id);
+	} else {
+		await deleteTransaction(capture.transactionId);
+	}
+	syncQueue.schedule();
+};
+
+/** Vira transação (ou parcelas) com a categoria escolhida, e o app aprende o estabelecimento. */
 export const confirmCapture = async (
 	id: string,
 	categoryId: string,
@@ -315,7 +488,7 @@ export const confirmCapture = async (
 	if (!capture || capture.status !== 'pending') return null;
 
 	const resolved = resolveCategoryId(categoryId, capture.direction, categories);
-	const transactionId = await postTransaction(capture, resolved);
+	const transactionId = await postTransaction(capture, resolved, capture.id);
 	await updateCapture(id, {
 		status: 'confirmed',
 		question: null,
@@ -333,33 +506,37 @@ export const dismissCapture = async (id: string): Promise<void> => {
 };
 
 /**
- * "É transferência entre minhas contas": sai do livro, leva a outra perna junto quando
- * há uma pendente, e o app aprende a contraparte para decidir sozinho da próxima vez.
+ * "É transferência entre minhas contas": sai do livro, entra como transferência entre
+ * as contas das duas pernas (quando há a outra pendente ou já confirmada), e o app
+ * aprende a contraparte para decidir sozinho da próxima vez.
  */
 export const markCaptureTransfer = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
 	if (!capture) return;
 
-	await updateCapture(id, { status: 'transfer', question: null, reason: 'manual' });
+	const related = capture.relatedId ? await getCapture(capture.relatedId) : null;
+	const pairable = related && (related.status === 'pending' || related.status === 'confirmed');
 
-	if (capture.relatedId) {
-		const related = await getCapture(capture.relatedId);
-		if (related?.status === 'pending') {
-			await updateCapture(related.id, { status: 'transfer', question: null, relatedId: id, reason: 'manual' });
-		} else if (related?.status === 'confirmed' && related.transactionId) {
-			// A outra perna já tinha virado lançamento: o usuário acabou de dizer que
-			// não era. Sai do livro e fica registrado como transferência.
-			await deleteTransaction(related.transactionId);
-			syncQueue.schedule();
-			await updateCapture(related.id, {
-				status: 'transfer',
-				question: null,
-				relatedId: id,
-				transactionId: null,
-				autoConfirmed: false,
-				reason: 'manual',
-			});
-		}
+	if (pairable && related.status === 'confirmed') {
+		// A outra perna já tinha virado lançamento: o usuário acabou de dizer que
+		// não era. Sai do livro e fica registrado como transferência.
+		await removePostedTransactions(related);
+	}
+
+	const sides = transferSidesOf(capture, pairable ? related.accountId : null);
+	const transferId = await recordTransfer(capture, sides.from, sides.to, related?.transferId ?? null);
+
+	await updateCapture(id, { status: 'transfer', question: null, reason: 'manual', transferId });
+	if (pairable) {
+		await updateCapture(related.id, {
+			status: 'transfer',
+			question: null,
+			relatedId: id,
+			transactionId: null,
+			autoConfirmed: false,
+			reason: 'manual',
+			transferId,
+		});
 	}
 
 	await learnTransfer(capture);
@@ -385,7 +562,8 @@ export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Pr
 
 /**
  * Volta um item para a fila de revisão, desfazendo o que a decisão (ou o usuário) fez:
- * apaga a transação criada, e solta a outra perna de uma transferência.
+ * apaga a transação (ou as parcelas) criada, apaga a transferência, e solta a outra
+ * perna de uma transferência.
  *
  * Uma linha de extrato ligada a um lançamento digitado (`statement_transaction`) não
  * apaga esse lançamento ao reverter: ele não foi criado por ela, é do usuário.
@@ -395,14 +573,24 @@ export const revertCapture = async (id: string): Promise<void> => {
 	if (!capture || capture.status === 'pending') return;
 
 	if (capture.transactionId && capture.reason !== 'statement_transaction') {
-		await deleteTransaction(capture.transactionId);
+		await removePostedTransactions(capture);
+	}
+
+	if (capture.transferId) {
+		await deleteTransfer(capture.transferId);
 		syncQueue.schedule();
 	}
 
 	if (capture.status === 'transfer' && capture.relatedId) {
 		const related = await getCapture(capture.relatedId);
 		if (related?.status === 'transfer' && related.relatedId === id) {
-			await updateCapture(related.id, { status: 'pending', question: null, relatedId: null, reason: null });
+			await updateCapture(related.id, {
+				status: 'pending',
+				question: null,
+				relatedId: null,
+				reason: null,
+				transferId: null,
+			});
 		}
 	}
 
@@ -413,6 +601,7 @@ export const revertCapture = async (id: string): Promise<void> => {
 		transactionId: null,
 		autoConfirmed: false,
 		reason: null,
+		transferId: null,
 	});
 };
 

@@ -211,6 +211,11 @@ describe('parseOfx — Nubank (SGML, UTF-8)', () => {
 		expect(account.currency).toBe('BRL');
 	});
 
+	it('lê o saldo do extrato e o dia a que ele se refere', () => {
+		expect(account.ledgerBalanceCents).toBe(123456);
+		expect(account.ledgerDate).toBe('2026-09-14');
+	});
+
 	it('lê todas as linhas com FITID, data e valor', () => {
 		expect(account.entries).toHaveLength(6);
 		expect(account.skipped).toBe(0);

@@ -24,6 +24,7 @@ import {
 	isValidAmountInput,
 	parseAmountToCents,
 } from '../utils/money';
+import AccountPicker from './AccountPicker';
 import CategoryPicker from './CategoryPicker';
 
 /**
@@ -65,6 +66,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 		initialTransaction ? parseISODate(initialTransaction.date) : new Date()
 	);
 	const [note, setNote] = useState(initialTransaction ? initialTransaction.note : '');
+	const [accountId, setAccountId] = useState<string | null>(initialTransaction?.accountId ?? null);
 	const [isIncome, setIsIncome] = useState(
 		initialTransaction
 			? initialTransaction.isIncome
@@ -120,6 +122,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				date: getISODate(date),
 				note: note.trim(),
 				isIncome,
+				accountId,
 			};
 
 			if (isEditing && initialTransaction) {
@@ -362,6 +365,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					isIncome={isIncome}
 				/>
 				{errors.category ? <Text style={styles.errorText}>{errors.category}</Text> : null}
+
+				<AccountPicker selectedAccountId={accountId} onSelect={setAccountId} />
 
 				<View style={styles.formGroup}>
 					<Text style={styles.label}>Date</Text>

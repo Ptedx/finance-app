@@ -36,6 +36,7 @@ import {
 	STATEMENT_PACKAGE_PREFIX,
 	withinStatementLag,
 } from './captureMatcher';
+import { parseInstallmentMarker } from './installments';
 import type { OfxAccount, OfxEntry } from './ofxParser';
 
 export interface StatementLine extends OfxEntry {
@@ -75,7 +76,17 @@ export interface LedgerTransaction {
 	isIncome: boolean;
 	/** `YYYY-MM-DD`. */
 	date: string;
+	/** Parcela k de N, quando o lançamento é uma parcela; nulos à vista. */
+	installmentIndex?: number | null;
+	installmentCount?: number | null;
 }
+
+/**
+ * Uma parcela é datada um mês após a anterior a partir da compra, mas a fatura a
+ * lança na data de fechamento do ciclo — até ~40 dias de diferença. A linha do extrato
+ * traz "k/N", e é por isso, não pela data, que ela encontra a parcela certa.
+ */
+export const MATCH_INSTALLMENT_WINDOW_DAYS = 45;
 
 export interface StatementPlanContext {
 	/** Impressões digitais de tudo que já está na caixa de entrada. */
@@ -198,13 +209,21 @@ export const findTransactionForLine = (
 	excluded: Set<string>
 ): LedgerTransaction | undefined => {
 	const isIncome = line.direction === 'in';
+	const marker = parseInstallmentMarker(line.text);
 	let best: LedgerTransaction | undefined;
 
 	for (const transaction of transactions) {
 		if (excluded.has(transaction.id)) continue;
 		if (transaction.isIncome !== isIncome || transaction.amountCents !== line.amountCents) continue;
+
 		const offset = dayNumber(line.postedDate) - dayNumber(transaction.date);
-		if (offset < -MATCH_TRANSACTION_DAYS_BEFORE || offset > MATCH_TRANSACTION_DAYS_AFTER) continue;
+		if (marker) {
+			// Linha de parcela: só a parcela de mesmo índice e total, com janela larga.
+			if (transaction.installmentIndex !== marker.index || transaction.installmentCount !== marker.count) continue;
+			if (Math.abs(offset) > MATCH_INSTALLMENT_WINDOW_DAYS) continue;
+		} else {
+			if (offset < -MATCH_TRANSACTION_DAYS_BEFORE || offset > MATCH_TRANSACTION_DAYS_AFTER) continue;
+		}
 
 		if (
 			!best ||
@@ -244,7 +263,9 @@ export const findRecordForLine = (
 
 	if (capture && transaction) {
 		const captureDeadline = dayNumber(localDateOf(capture.postedAt)) + STATEMENT_LAG_DAYS_BEFORE;
-		const transactionDeadline = dayNumber(transaction.date) + MATCH_TRANSACTION_DAYS_AFTER;
+		const transactionDeadline =
+			dayNumber(transaction.date) +
+			(transaction.installmentIndex ? MATCH_INSTALLMENT_WINDOW_DAYS : MATCH_TRANSACTION_DAYS_AFTER);
 		return transactionDeadline < captureDeadline ? { type: 'transaction', transaction } : { type: 'capture', capture };
 	}
 	if (capture) return { type: 'capture', capture };

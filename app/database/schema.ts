@@ -61,6 +61,64 @@ export interface Transaction extends SyncMeta {
 	date: string;
 	note: string;
 	isIncome: boolean;
+	/** A conta ou cartão de onde saiu (ou entrou). Nulo em lançamentos antigos ou sem origem. */
+	accountId: string | null;
+	/**
+	 * Parcela de uma compra parcelada: todas as parcelas compartilham `installmentGroup`,
+	 * `installmentIndex` vai de 1 a `installmentCount`. Nulos numa compra à vista.
+	 */
+	installmentGroup: string | null;
+	installmentIndex: number | null;
+	installmentCount: number | null;
+}
+
+export type AccountKind = 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
+
+/**
+ * Uma conta ou cartão. É o que dá saldo por conta e fatura por cartão na tela inicial.
+ *
+ * O saldo é calculado, nunca guardado: `openingBalanceCents` é o saldo **no fim de**
+ * `openingBalanceDate` (a âncora), e tudo datado depois soma ou subtrai. Ajustar o
+ * saldo é mover a âncora, não reescrever lançamentos. Num cartão o saldo é negativo
+ * quando há fatura em aberto — a mesma fórmula serve, só a leitura muda.
+ *
+ * `packageName` e `last4` ligam a conta às notificações (app do banco + final do
+ * cartão); `accountKey` liga ao extrato OFX (`banco:conta`). Contas são criadas
+ * sozinhas na primeira notificação ou import de cada origem.
+ */
+export interface Account extends SyncMeta {
+	id: string;
+	name: string;
+	kind: AccountKind;
+	bankName: string | null;
+	color: string;
+	last4: string | null;
+	/** Dia do mês em que a fatura fecha e vence. Só cartões. */
+	closingDay: number | null;
+	dueDay: number | null;
+	creditLimitCents: number | null;
+	packageName: string | null;
+	accountKey: string | null;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	sortOrder: number;
+	archived: boolean;
+}
+
+/**
+ * Dinheiro trocando de bolso: entre duas contas suas, ou entre uma conta sua e uma
+ * que o app não acompanha (`null` de um dos lados). Nunca é receita nem despesa, por
+ * isso vive fora de `transactions` — relatórios, exportação e listas não mudam.
+ * Pagar a fatura do cartão é uma transferência da conta para o cartão.
+ */
+export interface Transfer extends SyncMeta {
+	id: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	/** `YYYY-MM-DD`. */
+	date: string;
+	note: string;
 }
 
 export interface RecurringTransaction extends SyncMeta {
@@ -108,15 +166,19 @@ export const DATABASE_NAME = 'spendr.db';
  * 5 — categories gain `nature`, so expenses split into needs and wants.
  * 6 — `captures` and `merchant_rules` are created: the review inbox for bank
  *     notifications and what the app has learned about each merchant.
+ * 7 — `accounts` and `transfers` are created; transactions gain `accountId` and the
+ *     installment columns; captures gain `accountId` and `transferId`.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
 	'categories',
+	'accounts',
 	'transactions',
 	'recurring_transactions',
 	'budgets',
+	'transfers',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -182,8 +244,53 @@ export const CREATE_TRANSACTIONS_TABLE = `
     date TEXT NOT NULL,
     note TEXT,
     isIncome INTEGER NOT NULL DEFAULT 0,
+    accountId TEXT,
+    installmentGroup TEXT,
+    installmentIndex INTEGER,
+    installmentCount INTEGER,
 ${SYNC_COLUMNS_SQL},
     FOREIGN KEY (category) REFERENCES categories (id)
+  );
+`;
+
+/** Colunas que o v7 acrescenta em `transactions`; a migração adiciona uma a uma. */
+export const TRANSACTION_V7_COLUMNS: Array<[name: string, sql: string]> = [
+	['accountId', 'TEXT'],
+	['installmentGroup', 'TEXT'],
+	['installmentIndex', 'INTEGER'],
+	['installmentCount', 'INTEGER'],
+];
+
+export const CREATE_ACCOUNTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'checking',
+    bankName TEXT,
+    color TEXT NOT NULL DEFAULT '#15E8FE',
+    last4 TEXT,
+    closingDay INTEGER,
+    dueDay INTEGER,
+    creditLimitCents INTEGER,
+    packageName TEXT,
+    accountKey TEXT,
+    openingBalanceCents INTEGER NOT NULL DEFAULT 0,
+    openingBalanceDate TEXT NOT NULL,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+export const CREATE_TRANSFERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS transfers (
+    id TEXT PRIMARY KEY NOT NULL,
+    fromAccountId TEXT,
+    toAccountId TEXT,
+    amountCents INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    note TEXT,
+${SYNC_COLUMNS_SQL}
   );
 `;
 
@@ -270,9 +377,22 @@ export interface Capture {
 	autoConfirmed: boolean;
 	/** Por que saiu do jogo (own_name, rule, invoice_payment, investment…), para o histórico. */
 	reason: string | null;
+	/** A conta ou cartão de origem, resolvida pela fonte (app + final do cartão, ou conta do OFX). */
+	accountId: string | null;
+	/** A transferência criada quando o item é troca de bolso ou pagamento de fatura. */
+	transferId: string | null;
+	/** Quantas parcelas, quando a compra é parcelada. Nulo à vista. */
+	installments: number | null;
 	createdAt: string;
 	updatedAt: string;
 }
+
+/** Colunas que o v7 acrescenta em `captures`. */
+export const CAPTURE_V7_COLUMNS: Array<[name: string, sql: string]> = [
+	['accountId', 'TEXT'],
+	['transferId', 'TEXT'],
+	['installments', 'INTEGER'],
+];
 
 /**
  * O que o app aprendeu sobre um estabelecimento ou pessoa (`merchantKey`, ver
@@ -308,6 +428,9 @@ export const CREATE_CAPTURES_TABLE = `
     transactionId TEXT,
     autoConfirmed INTEGER NOT NULL DEFAULT 0,
     reason TEXT,
+    accountId TEXT,
+    transferId TEXT,
+    installments INTEGER,
     createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL
   );
@@ -330,6 +453,10 @@ export const CREATE_MERCHANT_RULES_TABLE = `
 export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status, postedAt);
   CREATE INDEX IF NOT EXISTS idx_captures_posted ON captures (postedAt);
+  CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (accountId, date);
+  CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers (date);
+  CREATE INDEX IF NOT EXISTS idx_accounts_dirty ON accounts (dirty);
+  CREATE INDEX IF NOT EXISTS idx_transfers_dirty ON transfers (dirty);
   CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
   CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions (category);
   CREATE INDEX IF NOT EXISTS idx_recurring_next_due ON recurring_transactions (active, nextDue);
@@ -349,7 +476,16 @@ export const CREATE_INDEXES = `
  * last-write-wins comparison.
  */
 export type CategoryDraft = Omit<Category, 'id' | keyof SyncMeta>;
-export type TransactionDraft = Omit<Transaction, 'id' | keyof SyncMeta>;
+
+/** Campos do v7 que um lançamento pode não ter: à vista, sem conta conhecida. */
+type OptionalTransactionFields = 'accountId' | 'installmentGroup' | 'installmentIndex' | 'installmentCount';
+export type TransactionDraft = Omit<Transaction, 'id' | keyof SyncMeta | OptionalTransactionFields> &
+	Partial<Pick<Transaction, OptionalTransactionFields>>;
+
+export type AccountDraft = Omit<Account, 'id' | keyof SyncMeta>;
+export type AccountEdit = AccountDraft & { id: string };
+export type TransferDraft = Omit<Transfer, 'id' | keyof SyncMeta>;
+export type TransferEdit = TransferDraft & { id: string };
 export type RecurringTransactionDraft = Omit<
 	RecurringTransaction,
 	'id' | 'lastProcessed' | 'nextDue' | keyof SyncMeta
@@ -517,6 +653,8 @@ export default {
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_CAPTURES_TABLE,
 	CREATE_MERCHANT_RULES_TABLE,
+	CREATE_ACCOUNTS_TABLE,
+	CREATE_TRANSFERS_TABLE,
 	CREATE_INDEXES,
 	DEFAULT_CATEGORIES,
 };

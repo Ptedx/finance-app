@@ -39,6 +39,38 @@ export interface WireTransaction extends WireMeta {
 	date: string;
 	note: string | null;
 	isIncome: boolean;
+	/** Campos do v7. Nulos numa linha anterior a eles, e opcionais na chegada por isso. */
+	accountId?: string | null;
+	installmentGroup?: string | null;
+	installmentIndex?: number | null;
+	installmentCount?: number | null;
+}
+
+export interface WireAccount extends WireMeta {
+	id: string;
+	name: string;
+	kind: 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
+	bankName: string | null;
+	color: string;
+	last4: string | null;
+	closingDay: number | null;
+	dueDay: number | null;
+	creditLimitCents: number | null;
+	packageName: string | null;
+	accountKey: string | null;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	sortOrder: number;
+	archived: boolean;
+}
+
+export interface WireTransfer extends WireMeta {
+	id: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	date: string;
+	note: string | null;
 }
 
 export interface WireRecurringTransaction extends WireMeta {
@@ -68,6 +100,9 @@ export interface SyncChanges {
 	transactions: WireTransaction[];
 	recurringTransactions: WireRecurringTransaction[];
 	budgets: WireBudget[];
+	/** Coleções do v7. Opcionais na chegada: um servidor anterior a elas não as manda. */
+	accounts?: WireAccount[];
+	transfers?: WireTransfer[];
 }
 
 /**
@@ -83,6 +118,8 @@ export interface SyncCursor {
 	transactions: number;
 	recurringTransactions: number;
 	budgets: number;
+	accounts: number;
+	transfers: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -90,6 +127,8 @@ export const EMPTY_CURSOR: SyncCursor = {
 	transactions: 0,
 	recurringTransactions: 0,
 	budgets: 0,
+	accounts: 0,
+	transfers: 0,
 };
 
 export interface PullResponse {
@@ -145,13 +184,17 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	transactions: [],
 	recurringTransactions: [],
 	budgets: [],
+	accounts: [],
+	transfers: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
 	changes.categories.length +
 	changes.transactions.length +
 	changes.recurringTransactions.length +
-	changes.budgets.length;
+	changes.budgets.length +
+	(changes.accounts?.length ?? 0) +
+	(changes.transfers?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

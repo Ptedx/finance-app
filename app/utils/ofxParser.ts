@@ -53,6 +53,14 @@ export interface OfxAccount {
 	entries: OfxEntry[];
 	/** Linhas descartadas por não terem FITID, data ou valor válidos. */
 	skipped: number;
+	/**
+	 * Saldo que o banco imprimiu no extrato (`LEDGERBAL`) e o dia a que ele se refere.
+	 * É a melhor âncora possível para o saldo de uma conta: vem do próprio banco. Nulos
+	 * quando o arquivo não traz, e ignorados pelo app em extratos de cartão, cujo sinal
+	 * varia entre bancos.
+	 */
+	ledgerBalanceCents: number | null;
+	ledgerDate: string | null;
 }
 
 export interface OfxStatement {
@@ -421,6 +429,11 @@ export const parseOfx = (content: string): OfxStatement => {
 			});
 		}
 
+		// LEDGERBAL/BALAMT e LEDGERBAL/DTASOF chegam como folhas do extrato; AVAILBAL
+		// usa os mesmos nomes e viria por cima, mas os bancos daqui só mandam LEDGERBAL.
+		const ledgerBalanceCents = statement.fields.BALAMT ? parseOfxAmount(statement.fields.BALAMT) : null;
+		const ledgerDate = statement.fields.DTASOF ? parseOfxDate(statement.fields.DTASOF) : null;
+
 		return {
 			accountKey,
 			bankId,
@@ -431,6 +444,8 @@ export const parseOfx = (content: string): OfxStatement => {
 			currency: statement.fields.CURDEF ?? null,
 			entries,
 			skipped,
+			ledgerBalanceCents: ledgerBalanceCents === null || ledgerDate === null ? null : ledgerBalanceCents,
+			ledgerDate: ledgerBalanceCents === null ? null : ledgerDate,
 		};
 	});
 

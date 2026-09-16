@@ -12,6 +12,7 @@ import {
 	View,
 } from 'react-native';
 import AccountReminderBanner from '../components/AccountReminderBanner';
+import AccountsOverview from '../components/AccountsOverview';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import IncomeSection from '../components/IncomeSection';
 import SavingsRateCard from '../components/SavingsRateCard';
@@ -119,6 +120,8 @@ const HomeScreen = () => {
 					netCents={periodTotals.netCents}
 					balanceCents={balanceCents}
 				/>
+				{/* Saldo por conta e fatura por cartão: o que responde "quanto eu tenho agora". */}
+				<AccountsOverview />
 				<IncomeSection />
 
 				{/* Recent Transactions */}

@@ -11,7 +11,8 @@ import {
 	resetDatabase,
 	setBudget,
 } from '../database/database';
-import type { Category, RecurringTransaction, Transaction } from '../database/schema';
+import { addAccount, addTransfer, getAccounts, getTransfers } from '../database/database';
+import type { Account, Category, RecurringTransaction, Transaction, Transfer } from '../database/schema';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
 
@@ -33,6 +34,9 @@ export interface DatabaseExportData {
 	categories: Category[];
 	recurringTransactions: RecurringTransaction[];
 	budgets?: ExportedBudget[];
+	/** Contas, cartões e transferências (v7). Ausentes em backups anteriores. */
+	accounts?: Account[];
+	transfers?: Transfer[];
 	exportDate: string;
 }
 
@@ -280,12 +284,16 @@ export const exportDatabaseData = async (
 			amountCents,
 		}));
 
+		const [accounts, transfers] = await Promise.all([getAccounts(), getTransfers()]);
+
 		const exportData: DatabaseExportData = {
 			formatVersion: EXPORT_FORMAT_VERSION,
 			transactions,
 			categories,
 			recurringTransactions,
 			budgets,
+			accounts,
+			transfers,
 			exportDate: new Date().toISOString(),
 		};
 
@@ -369,6 +377,15 @@ export const importDatabaseData = async (): Promise<{
 			existingIds.add(id);
 		}
 
+		// Contas antes dos lançamentos, com o id original: é por ele que `accountId` e as
+		// transferências do backup as encontram. Backups anteriores ao v7 não as trazem.
+		const accountIds = new Set<string>();
+		for (const account of importData.accounts ?? []) {
+			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = account;
+			await addAccount(draft, id);
+			accountIds.add(id);
+		}
+
 		for (const transaction of importData.transactions) {
 			await addTransaction({
 				amountCents: readAmountCents(transaction),
@@ -376,7 +393,23 @@ export const importDatabaseData = async (): Promise<{
 				date: transaction.date,
 				note: transaction.note,
 				isIncome: transaction.isIncome,
+				accountId: transaction.accountId && accountIds.has(transaction.accountId) ? transaction.accountId : null,
+				installmentGroup: transaction.installmentGroup ?? null,
+				installmentIndex: transaction.installmentIndex ?? null,
+				installmentCount: transaction.installmentCount ?? null,
 			});
+		}
+
+		for (const transfer of importData.transfers ?? []) {
+			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = transfer;
+			await addTransfer(
+				{
+					...draft,
+					fromAccountId: draft.fromAccountId && accountIds.has(draft.fromAccountId) ? draft.fromAccountId : null,
+					toAccountId: draft.toAccountId && accountIds.has(draft.toAccountId) ? draft.toAccountId : null,
+				},
+				id
+			);
 		}
 
 		for (const recurring of importData.recurringTransactions) {

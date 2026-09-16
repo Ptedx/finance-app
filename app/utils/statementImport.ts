@@ -24,8 +24,9 @@ import {
 	getStatementFingerprints,
 	insertCapture,
 } from '../database/captures';
-import { db, getTransactionsByDateRange } from '../database/database';
+import { assignTransactionAccount, db, getTransactionsByDateRange } from '../database/database';
 import { generateUniqueId } from '../utils/categoryEditUtils';
+import { resolveAccountForStatement } from './accountResolver';
 import { applyDecision, type IngestOptions, toKnownCapture, toMerchantRule } from './captureActions';
 import { DEFAULT_AUTO_CONFIRM_THRESHOLD, type MerchantRule } from './captureMatcher';
 import { addDays } from './dateUtils';
@@ -76,7 +77,10 @@ const emptySummary = (): StatementSummary => ({
 	ignored: 0,
 });
 
-const baseDraftOf = (line: StatementLine, fingerprint: string): CaptureDraft => ({
+const baseDraftOf = (line: StatementLine, fingerprint: string, accountId: string | null): CaptureDraft => ({
+	accountId,
+	transferId: null,
+	installments: null,
 	fingerprint,
 	packageName: statementPackageName(line.accountKey),
 	appLabel: `${line.bankName} · OFX`,
@@ -153,7 +157,17 @@ export const importOfxContent = async (
 		amountCents: transaction.amountCents,
 		isIncome: transaction.isIncome,
 		date: transaction.date,
+		installmentIndex: transaction.installmentIndex,
+		installmentCount: transaction.installmentCount,
 	}));
+
+	// A conta de cada extrato do arquivo, criada ou adotada antes de qualquer gravação:
+	// as linhas nascem já com a conta, e o LEDGERBAL vira a âncora do saldo.
+	const accountIdByKey = new Map<string, string>();
+	for (const account of statement.accounts) {
+		const resolved = await resolveAccountForStatement(account);
+		accountIdByKey.set(account.accountKey, resolved.id);
+	}
 
 	const { planned, summary } = planStatementImport(lines, {
 		existingFingerprints,
@@ -174,7 +188,8 @@ export const importOfxContent = async (
 			const { action, line, fingerprint, id } = item;
 			if (action.type === 'skip_existing') continue;
 
-			const base = baseDraftOf(line, fingerprint);
+			const accountId = accountIdByKey.get(line.accountKey) ?? null;
+			const base = baseDraftOf(line, fingerprint, accountId);
 
 			if (action.type === 'match_capture') {
 				await insertCapture(
@@ -182,6 +197,8 @@ export const importOfxContent = async (
 					id
 				);
 			} else if (action.type === 'match_transaction') {
+				// O lançamento digitado não sabia de onde saiu; o extrato sabe.
+				if (accountId) await assignTransactionAccount(action.transactionId, accountId);
 				await insertCapture(
 					{
 						...base,

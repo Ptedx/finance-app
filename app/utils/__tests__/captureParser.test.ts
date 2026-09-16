@@ -52,7 +52,25 @@ describe('parseCapture — compras no cartão', () => {
 			counterparty: 'IFOOD *IFOOD',
 			cardLast4: '1234',
 			neutral: false,
+			installments: null,
 		});
+	});
+
+	it('compra parcelada: "em 3x" registra o total, "3x de R$" multiplica a parcela', () => {
+		const total = parseCapture(
+			raw({ title: 'Compra aprovada', text: 'Compra de R$ 300,00 em 3x APROVADA em MAGAZINE LUIZA para o cartão com final 1234.' })
+		);
+		expect(total).toMatchObject({ amountCents: 30000, installments: 3, counterparty: 'MAGAZINE LUIZA' });
+
+		const perParcel = parseCapture(
+			raw({ title: 'Compra aprovada', text: 'Compra parcelada em 3x de R$ 100,00 APROVADA em MAGAZINE LUIZA.' })
+		);
+		expect(perParcel).toMatchObject({ amountCents: 30000, installments: 3 });
+
+		const single = parseCapture(
+			raw({ title: 'Compra aprovada', text: 'Compra de R$ 50,00 em 1x APROVADA em PADARIA.' })
+		);
+		expect(single).toMatchObject({ amountCents: 5000, installments: null });
 	});
 
 	it('Samsung Pay: pagamento aprovado', () => {

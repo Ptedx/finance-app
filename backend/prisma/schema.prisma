@@ -52,6 +52,8 @@ model User {
   transactions          Transaction[]
   recurringTransactions RecurringTransaction[]
   budgets               Budget[]
+  accounts              Account[]
+  transfers             Transfer[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -147,6 +149,12 @@ model Transaction {
   date        String    @db.VarChar(10)
   note        String?   @db.Text
   isIncome    Boolean   @default(false)
+  /// Conta ou cartão de origem (v7). Não é FK pelo mesmo motivo de `category`.
+  accountId        String?
+  /// Parcela de compra parcelada (v7): grupo, índice e total. Nulos à vista.
+  installmentGroup String?
+  installmentIndex Int?
+  installmentCount Int?
   updatedAt   DateTime
   /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
   /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
@@ -194,6 +202,75 @@ model RecurringTransaction {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("recurring_transactions")
+}
+
+enum AccountKind {
+  checking
+  savings
+  investment
+  cash
+  credit_card
+}
+
+/// Conta ou cartão (v7). O saldo não é guardado: é `openingBalanceCents` no fim de
+/// `openingBalanceDate` mais tudo que vem depois — ver `Account` em app/database/schema.ts.
+model Account {
+  id                  String
+  userId              String
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                String
+  kind                AccountKind
+  bankName            String?
+  color               String
+  last4               String?
+  closingDay          Int?
+  dueDay              Int?
+  creditLimitCents    BigInt?
+  packageName         String?
+  accountKey          String?
+  openingBalanceCents BigInt
+  /// Dia de calendário local, YYYY-MM-DD.
+  openingBalanceDate  String      @db.VarChar(10)
+  sortOrder           Int         @default(0)
+  archived            Boolean     @default(false)
+  updatedAt           DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt           DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq           Int         @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("accounts")
+}
+
+/// Dinheiro trocando de bolso entre contas do usuário (v7). Nunca é receita nem
+/// despesa; por isso vive fora de `transactions`. Um dos lados pode ser nulo: a
+/// outra conta não é acompanhada pelo app.
+model Transfer {
+  id            String
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromAccountId String?
+  toAccountId   String?
+  amountCents   BigInt
+  /// Dia de calendário local, YYYY-MM-DD.
+  date          String    @db.VarChar(10)
+  note          String?   @db.Text
+  updatedAt     DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt     DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq     Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@index([userId, date])
+  @@map("transfers")
 }
 
 /// Orçamento mensal. Único por mês **entre as linhas vivas**: um orçamento apagado

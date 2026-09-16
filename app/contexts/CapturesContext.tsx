@@ -25,6 +25,7 @@ import {
 	revertCapture,
 } from '../utils/captureActions';
 import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
+import { useAccounts } from './AccountsContext';
 import { useAuth } from './AuthContext';
 import { useTransactions } from './TransactionsContext';
 
@@ -102,9 +103,15 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	ownNamesRef.current = account?.name ? [account.name] : [];
 	const refreshDataRef = useRef(refreshData);
 	refreshDataRef.current = refreshData;
+	// Transferências e âncoras de saldo não passam por `transactions`, então os saldos
+	// são recarregados explicitamente depois de cada ação que pode tê-los mudado.
+	const { refresh: refreshAccounts } = useAccounts();
+	const refreshAccountsRef = useRef(refreshAccounts);
+	refreshAccountsRef.current = refreshAccounts;
 
 	const reloadLedger = useCallback(async () => {
 		await refreshDataRef.current();
+		await refreshAccountsRef.current();
 	}, []);
 
 	const load = useCallback(async () => {
@@ -263,8 +270,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			categories: categoriesRef.current,
 		});
 		if (result) {
-			// Linhas ligadas a lançamentos não mudam o livro, mas as automáticas sim.
-			await Promise.all([load(), result.summary.autoConfirmed > 0 ? reloadLedger() : Promise.resolve()]);
+			// O import cria ou ancora contas mesmo sem lançar nada: recarrega sempre.
+			await Promise.all([load(), reloadLedger()]);
 		}
 		return result;
 	}, [load, reloadLedger]);

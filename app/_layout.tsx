@@ -9,6 +9,7 @@ import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
 import { AuthProvider } from './contexts/AuthContext';
 import { BudgetProvider } from './contexts/BudgetContext';
+import { AccountsProvider } from './contexts/AccountsContext';
 import { CapturesProvider } from './contexts/CapturesContext';
 import { CurrencyProvider } from './contexts/CurrencyContext';
 import { LanguageProvider } from './contexts/LanguageContext';
@@ -203,11 +204,13 @@ export default function RootLayout() {
 						<RecurringTransactionsProvider>
 							{/* Depende de TransactionsProvider (categorias, recarga) e de AuthProvider
 							    (o nome do usuário reconhece transferências para si mesmo). */}
-							<CapturesProvider>
-								<StatusBar style="light" />
-								<Slot />
-								{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
-							</CapturesProvider>
+							<AccountsProvider>
+								<CapturesProvider>
+									<StatusBar style="light" />
+									<Slot />
+									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
+								</CapturesProvider>
+							</AccountsProvider>
 						</RecurringTransactionsProvider>
 					</TransactionsProvider>
 				</BudgetProvider>
