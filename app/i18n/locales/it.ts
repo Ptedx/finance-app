@@ -393,6 +393,7 @@ account: {
 			manual: 'Tua scelta',
 			rule: 'Imparato dalle tue scelte precedenti',
 			own_name: 'Il nome nella notifica è il tuo',
+			counterpart: "L'altra metà di un trasferimento già riconosciuto",
 			invoice_payment: 'Pagamento della carta: gli acquisti erano già contati',
 			investment: 'Investimento: né entrata né uscita',
 			statement_capture: 'Già catturato da una notifica della banca',

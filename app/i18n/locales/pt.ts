@@ -384,6 +384,7 @@ const pt = {
 			manual: 'Sua escolha',
 			rule: 'Aprendido com suas escolhas anteriores',
 			own_name: 'O nome na notificação é o seu',
+			counterpart: 'Outra ponta de uma transferência já reconhecida',
 			invoice_payment: 'Pagamento da fatura: as compras já foram contadas',
 			investment: 'Investimento: não é receita nem despesa',
 			statement_capture: 'Já capturado por uma notificação do banco',

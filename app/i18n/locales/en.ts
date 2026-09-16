@@ -389,6 +389,7 @@ account: {
 			manual: 'Your choice',
 			rule: 'Learned from your previous choices',
 			own_name: 'The name on the notification is yours',
+			counterpart: 'Other half of a transfer already recognized',
 			invoice_payment: 'Card bill payment: the purchases were already counted',
 			investment: 'Investment: not income or expense',
 			statement_capture: 'Already captured from a bank notification',

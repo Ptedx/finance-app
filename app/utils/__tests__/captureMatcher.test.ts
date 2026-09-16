@@ -28,6 +28,7 @@ const known = (overrides: Partial<KnownCapture>): KnownCapture => ({
 	kind: 'purchase',
 	merchantKey: 'ifood',
 	status: 'pending',
+	relatedId: null,
 	transactionId: null,
 	...overrides,
 });
@@ -183,9 +184,72 @@ describe('transferência entre contas próprias', () => {
 		expect(findTransferCounterpart(candidate({ kind: 'purchase' }), [refund])).toBeUndefined();
 	});
 
-	it('o mesmo app não é par de si mesmo', () => {
+	it('para a pergunta, o mesmo app não é par de si mesmo', () => {
 		const received = known({ id: 'rcv', packageName: NUBANK, direction: 'in', kind: 'pix_in', amountCents: 50_000 });
 		expect(findTransferCounterpart(pixOut(), [received])).toBeUndefined();
+		expect(decide(pixOut({ counterparty: 'Fulano', merchantKey: 'fulano' }), context({ recent: [received] })).action).toBe(
+			'pending'
+		);
+	});
+
+	// Conta pessoal e conta PJ do mesmo banco moram no mesmo app: as duas pontas da
+	// mesma transferência chegam com o mesmo packageName.
+	describe('conta pessoal e PJ no mesmo app', () => {
+		const pjReceived = known({
+			id: 'pj',
+			packageName: NUBANK,
+			direction: 'in',
+			kind: 'pix_in',
+			amountCents: 50_000,
+			merchantKey: 'vinicius costa nunes',
+		});
+		const toCompany = () =>
+			pixOut({ counterparty: 'EMPRESA DO VINICIUS LTDA', merchantKey: 'empresa do vinicius' });
+
+		it('quando o nome é o do usuário, pareia mesmo dentro do mesmo app', () => {
+			const decision = decide(
+				pixOut({ counterparty: 'VINICIUS COSTA NUNES', merchantKey: 'vinicius costa nunes' }),
+				context({ ownNames: ['Vinicius Costa Nunes'], recent: [pjReceived] })
+			);
+			expect(decision).toEqual({ action: 'transfer', relatedId: 'pj', reason: 'own_name' });
+		});
+
+		it('a saída da conta pessoal, chegando depois da entrada já reconhecida, junta-se a ela sem perguntar', () => {
+			const decidedLeg = known({ ...pjReceived, status: 'transfer', relatedId: null });
+			expect(decide(toCompany(), context({ recent: [decidedLeg] }))).toEqual({
+				action: 'transfer',
+				relatedId: 'pj',
+				reason: 'counterpart',
+			});
+		});
+
+		it('uma perna já pareada não serve de par de novo', () => {
+			const paired = known({ ...pjReceived, status: 'transfer', relatedId: 'outra' });
+			expect(decide(toCompany(), context({ recent: [paired] })).action).toBe('pending');
+		});
+
+		it('a entrada da PJ chegando depois da saída pendente pareia pelo nome e leva a saída junto', () => {
+			const outPending = known({
+				id: 'out',
+				packageName: NUBANK,
+				direction: 'out',
+				kind: 'pix_out',
+				amountCents: 50_000,
+				merchantKey: 'empresa do vinicius',
+			});
+			const decision = decide(
+				candidate({
+					packageName: NUBANK,
+					direction: 'in',
+					kind: 'pix_in',
+					amountCents: 50_000,
+					counterparty: 'VINICIUS COSTA NUNES',
+					merchantKey: 'vinicius costa nunes',
+				}),
+				context({ ownNames: ['Vinicius Costa Nunes'], recent: [outPending] })
+			);
+			expect(decision).toEqual({ action: 'transfer', relatedId: 'out', reason: 'own_name' });
+		});
 	});
 
 	it('mais de um dia de diferença não é transferência', () => {

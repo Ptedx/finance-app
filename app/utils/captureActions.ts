@@ -65,6 +65,7 @@ export const toKnownCapture = (capture: Capture): KnownCapture => ({
 	kind: capture.kind as CaptureKind,
 	merchantKey: capture.merchantKey,
 	status: capture.status,
+	relatedId: capture.relatedId,
 	transactionId: capture.transactionId,
 });
 

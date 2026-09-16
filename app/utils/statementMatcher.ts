@@ -328,6 +328,7 @@ export const planStatementImport = (
 					kind: line.kind,
 					merchantKey: line.merchantKey,
 					status: 'duplicate',
+					relatedId: null,
 					transactionId: null,
 				});
 				planned.push({ id, line, fingerprint, action: { type: 'match_capture', captureId: record.capture.id } });
@@ -346,6 +347,7 @@ export const planStatementImport = (
 					kind: line.kind,
 					merchantKey: line.merchantKey,
 					status: 'confirmed',
+					relatedId: null,
 					transactionId: record.transaction.id,
 				});
 				planned.push({
@@ -410,6 +412,7 @@ export const planStatementImport = (
 			kind: line.kind,
 			merchantKey: line.merchantKey,
 			status: statusAfter(decision),
+			relatedId: null,
 			transactionId: null,
 		});
 		planned.push({ id, line, fingerprint, action: { type: 'decision', decision } });

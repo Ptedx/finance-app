@@ -52,6 +52,8 @@ export interface KnownCapture {
 	kind: CaptureKind;
 	merchantKey: string | null;
 	status: CaptureStatus;
+	/** A outra perna, quando o item já foi pareado (duplicata ou transferência). */
+	relatedId: string | null;
 	transactionId: string | null;
 }
 
@@ -259,15 +261,20 @@ export const findSuspectedDuplicate = (
 /**
  * A outra perna de uma transferência entre contas próprias.
  *
- * Mesmo valor, direção oposta, dois apps diferentes (o mesmo banco não avisa saída e
- * entrada da mesma transferência), tipos compatíveis com transferência, dentro de um
- * dia. Compras e estornos ficam de fora: "gastei 50 no mercado" e "recebi 50 de
- * estorno" não são troca de bolso. Duas contas de extrato diferentes contam como
- * apps diferentes; a mesma conta vista por notificação e por extrato, não.
+ * Mesmo valor, direção oposta, tipos compatíveis com transferência, dentro de um dia,
+ * e ainda sem par. Compras e estornos ficam de fora: "gastei 50 no mercado" e "recebi
+ * 50 de estorno" não são troca de bolso.
+ *
+ * Por padrão a outra perna tem que vir de outro app: um Pix para um amigo e outro de
+ * outro amigo, no mesmo banco, no mesmo dia, são dois lançamentos. Mas quando a
+ * decisão já é certa por outro motivo — o nome é o do usuário, ou há regra aprendida —
+ * o mesmo app vale (`allowSamePackage`): conta pessoal e conta PJ do mesmo banco
+ * moram no mesmo aplicativo e avisam as duas pontas da mesma transferência.
  */
 export const findTransferCounterpart = (
 	candidate: Candidate,
-	recent: KnownCapture[]
+	recent: KnownCapture[],
+	allowSamePackage = false
 ): KnownCapture | undefined => {
 	if (!TRANSFERABLE_KINDS.has(candidate.kind)) return undefined;
 	return recent.find(
@@ -275,8 +282,9 @@ export const findTransferCounterpart = (
 			isLive(known) &&
 			known.direction !== candidate.direction &&
 			known.amountCents === candidate.amountCents &&
-			known.packageName !== candidate.packageName &&
+			(allowSamePackage || known.packageName !== candidate.packageName) &&
 			TRANSFERABLE_KINDS.has(known.kind) &&
+			!(known.status === 'transfer' && known.relatedId !== null) &&
 			msBetween(known.postedAt, candidate.postedAt) <= TRANSFER_WINDOW_MS
 	);
 };
@@ -326,17 +334,25 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 	const rule = context.rule;
 	if (rule?.treatAs === 'ignore') return { action: 'ignore', reason: 'rule' };
 	if (rule?.treatAs === 'transfer') {
-		const twin = findTransferCounterpart(candidate, context.recent);
+		const twin = findTransferCounterpart(candidate, context.recent, true);
 		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'rule' };
 	}
 
 	// 4. Transferência para si mesmo: o nome na notificação é o seu.
 	if (matchesOwnName(candidate.counterparty, context.ownNames)) {
-		const twin = findTransferCounterpart(candidate, context.recent);
+		const twin = findTransferCounterpart(candidate, context.recent, true);
 		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'own_name' };
 	}
 
-	// 5. Saída e entrada do mesmo valor em contas diferentes: provável, pergunta.
+	// 5. A outra perna já foi reconhecida como transferência e está sem par (a conta
+	//    PJ recebeu "de VINICIUS", certo pelo nome; esta é a saída da conta pessoal,
+	//    no mesmo app): junta as duas sem perguntar.
+	const decidedLeg = findTransferCounterpart(candidate, context.recent, true);
+	if (decidedLeg?.status === 'transfer') {
+		return { action: 'transfer', relatedId: decidedLeg.id, reason: 'counterpart' };
+	}
+
+	// 6. Saída e entrada do mesmo valor em apps diferentes: provável, pergunta.
 	const counterpart = findTransferCounterpart(candidate, context.recent);
 	if (counterpart) return { action: 'ask_transfer', relatedId: counterpart.id };
 

@@ -51,6 +51,7 @@ const capture = (overrides: Partial<KnownCapture> = {}): KnownCapture => ({
 	kind: 'purchase',
 	merchantKey: 'ifood',
 	status: 'pending',
+	relatedId: null,
 	transactionId: null,
 	...overrides,
 });
@@ -498,6 +499,7 @@ const scenario = (random: () => number) => {
 				kind: event.direction === 'out' ? 'purchase' : 'unknown',
 				merchantKey: null,
 				status: event.notified,
+				relatedId: null,
 				transactionId,
 			});
 			if (transactionId) {
