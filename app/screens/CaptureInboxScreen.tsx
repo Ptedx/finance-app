@@ -18,6 +18,7 @@ import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Capture, Category } from '../database/schema';
 import { resolveCategoryId } from '../utils/captureActions';
+import { isStatementPackage } from '../utils/captureMatcher';
 import { formatCents } from '../utils/money';
 
 /**
@@ -43,6 +44,12 @@ const whenLabel = (iso: string): string => {
 	if (date.toDateString() === today.toDateString()) return time;
 	return `${date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })} ${time}`;
 };
+
+/** Linhas de extrato só têm o dia; mostrar "12:00" seria inventar um horário. */
+const whenLabelFor = (capture: Pick<Capture, 'packageName' | 'postedAt'>): string =>
+	isStatementPackage(capture.packageName)
+		? new Date(capture.postedAt).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
+		: whenLabel(capture.postedAt);
 
 const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {
 	id: 'uncategorized',
@@ -112,7 +119,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
 	const summary = `${isIncome ? t('captures.income') : t('captures.expense')}, ${amount}, ${
 		capture.counterparty ?? kindLabel
-	}, ${t('captures.from', { app: capture.appLabel, time: whenLabel(capture.postedAt) })}`;
+	}, ${t('captures.from', { app: capture.appLabel, time: whenLabelFor(capture) })}`;
 
 	return (
 		<View style={styles.card}>
@@ -122,7 +129,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 						{isIncome ? '+' : '−'} {amount}
 					</Text>
 					<Text style={styles.meta}>
-						{t('captures.from', { app: capture.appLabel, time: whenLabel(capture.postedAt) })}
+						{t('captures.from', { app: capture.appLabel, time: whenLabelFor(capture) })}
 					</Text>
 				</View>
 				<Text style={styles.counterparty}>{capture.counterparty ?? kindLabel}</Text>
@@ -138,7 +145,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					<Text style={styles.questionBody}>
 						{t('captures.questionDuplicateBody', {
 							app: related?.appLabel ?? '?',
-							time: related ? whenLabel(related.postedAt) : '?',
+							time: related ? whenLabelFor(related) : '?',
 						})}
 					</Text>
 					<View style={styles.questionActions}>
@@ -165,7 +172,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					<Text style={styles.questionBody}>
 						{t('captures.questionTransferBody', {
 							app: related?.appLabel ?? '?',
-							time: related ? whenLabel(related.postedAt) : '?',
+							time: related ? whenLabelFor(related) : '?',
 						})}
 					</Text>
 					<View style={styles.questionActions}>
@@ -276,32 +283,53 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert
 	const summary = `${status}. ${isIncome ? '+' : '−'} ${formatCents(capture.amountCents)}, ${
 		capture.counterparty ?? capture.appLabel
 	}. ${detail}`;
+	const [rawOpen, setRawOpen] = useState(false);
 
 	return (
-		<View style={styles.resolvedRow}>
-			<View style={styles.resolvedInfo} accessible accessibilityLabel={summary}>
-				<Text style={styles.resolvedTitle}>
-					<Text style={isIncome ? styles.income : styles.expense}>
-						{isIncome ? '+' : '−'} {formatCents(capture.amountCents)}
+		<View style={styles.resolvedBlock}>
+			<View style={styles.resolvedRow}>
+				{/* Tocar no resumo mostra o texto original: é assim que se confere uma
+				    decisão do app (por que ignorou? de onde veio?) sem sair do histórico. */}
+				<Pressable
+					style={styles.resolvedInfo}
+					onPress={() => setRawOpen((open) => !open)}
+					accessibilityRole="button"
+					accessibilityLabel={summary}
+					accessibilityHint={t('captures.originalNotificationHint')}
+					accessibilityState={{ expanded: rawOpen }}
+				>
+					<Text style={styles.resolvedTitle}>
+						<Text style={isIncome ? styles.income : styles.expense}>
+							{isIncome ? '+' : '−'} {formatCents(capture.amountCents)}
+						</Text>
+						{'  '}
+						{capture.counterparty ?? capture.appLabel}
 					</Text>
-					{'  '}
-					{capture.counterparty ?? capture.appLabel}
-				</Text>
-				<Text style={styles.resolvedMeta}>
-					{status}
-					{detail ? ` · ${detail}` : ''} · {whenLabel(capture.postedAt)}
-				</Text>
+					<Text style={styles.resolvedMeta}>
+						{status}
+						{detail ? ` · ${detail}` : ''} · {whenLabelFor(capture)}
+					</Text>
+					<Text style={styles.resolvedSource}>
+						{capture.appLabel} · {rawOpen ? t('captures.hideOriginal') : t('captures.originalNotification')}
+					</Text>
+				</Pressable>
+				<Pressable
+					onPress={() => onRevert(capture)}
+					accessibilityRole="button"
+					accessibilityLabel={`${revertLabel}: ${capture.counterparty ?? capture.appLabel}`}
+					accessibilityHint={t('captures.revertHint')}
+					style={({ pressed }) => [styles.revertButton, pressed && styles.buttonPressed]}
+				>
+					<Ionicons name="arrow-undo-outline" size={18} color={ACCENT} />
+					<Text style={styles.revertLabel}>{revertLabel}</Text>
+				</Pressable>
 			</View>
-			<Pressable
-				onPress={() => onRevert(capture)}
-				accessibilityRole="button"
-				accessibilityLabel={`${revertLabel}: ${capture.counterparty ?? capture.appLabel}`}
-				accessibilityHint={t('captures.revertHint')}
-				style={({ pressed }) => [styles.revertButton, pressed && styles.buttonPressed]}
-			>
-				<Ionicons name="arrow-undo-outline" size={18} color={ACCENT} />
-				<Text style={styles.revertLabel}>{revertLabel}</Text>
-			</Pressable>
+			{rawOpen && (
+				<Text style={styles.raw} selectable>
+					{capture.title ? `${capture.title}\n` : ''}
+					{capture.text}
+				</Text>
+			)}
 		</View>
 	);
 };
@@ -811,13 +839,21 @@ const styles = StyleSheet.create({
 		justifyContent: 'space-between',
 		minHeight: 48,
 	},
+	resolvedBlock: {
+		borderBottomWidth: 1,
+		borderBottomColor: 'rgba(255,255,255,0.1)',
+		paddingBottom: 6,
+	},
 	resolvedRow: {
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: 12,
 		paddingVertical: 10,
-		borderBottomWidth: 1,
-		borderBottomColor: 'rgba(255,255,255,0.1)',
+	},
+	resolvedSource: {
+		fontSize: 13,
+		color: ACCENT,
+		marginTop: 4,
 	},
 	resolvedInfo: {
 		flex: 1,

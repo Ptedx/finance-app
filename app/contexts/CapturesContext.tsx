@@ -24,6 +24,7 @@ import {
 	markCaptureTransfer,
 	revertCapture,
 } from '../utils/captureActions';
+import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
 import { useAuth } from './AuthContext';
 import { useTransactions } from './TransactionsContext';
 
@@ -67,6 +68,8 @@ interface CapturesContextType {
 	revert: (id: string) => Promise<void>;
 	undo: () => Promise<void>;
 	clearUndo: () => void;
+	/** Abre o seletor de arquivos e importa um extrato OFX. `null` se cancelado. */
+	importStatement: () => Promise<StatementImportResult | null>;
 }
 
 const CapturesContext = createContext<CapturesContextType | undefined>(undefined);
@@ -254,6 +257,18 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const clearUndo = useCallback(() => setLastAction(null), []);
 
+	const importStatement = useCallback(async () => {
+		const result = await pickAndImportOfx({
+			ownNames: ownNamesRef.current,
+			categories: categoriesRef.current,
+		});
+		if (result) {
+			// Linhas ligadas a lançamentos não mudam o livro, mas as automáticas sim.
+			await Promise.all([load(), result.summary.autoConfirmed > 0 ? reloadLedger() : Promise.resolve()]);
+		}
+		return result;
+	}, [load, reloadLedger]);
+
 	const value = useMemo<CapturesContextType>(
 		() => ({
 			supported,
@@ -273,6 +288,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			revert,
 			undo,
 			clearUndo,
+			importStatement,
 		}),
 		[
 			supported,
@@ -291,6 +307,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			revert,
 			undo,
 			clearUndo,
+			importStatement,
 		]
 	);
 

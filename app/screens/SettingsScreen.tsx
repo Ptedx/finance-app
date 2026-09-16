@@ -30,6 +30,7 @@ import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import * as biometricUtils from '../utils/biometricUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import * as notificationUtils from '../utils/notificationUtils';
+import { StatementImportError } from '../utils/statementImport';
 import { resetAsyncStorage } from '../utils/storageUtils';
 
 const SettingsScreen = () => {
@@ -46,7 +47,47 @@ const SettingsScreen = () => {
 		enabled: captureEnabled,
 		pendingCount: capturePending,
 		openSettings: openCaptureSettings,
+		importStatement,
 	} = useCaptures();
+	const [isImportingStatement, setIsImportingStatement] = useState(false);
+
+	/**
+	 * Extrato OFX: nada entra no livro sem revisão. O resumo diz quantas linhas o app
+	 * já conhecia, quantas foram para a caixa de entrada e quantas ficaram de fora.
+	 */
+	const handleImportStatement = async () => {
+		try {
+			setIsImportingStatement(true);
+			const result = await importStatement();
+			if (!result) return;
+
+			const s = result.summary;
+			const toReview = s.pending + s.questions;
+			const body = t('captures.import.summary', {
+				total: s.total,
+				known: s.skippedExisting + s.matchedCaptures + s.matchedTransactions,
+				review: toReview,
+				auto: s.autoConfirmed,
+				ignored: s.ignored + s.transfers,
+			});
+			Alert.alert(
+				t('captures.import.title'),
+				body,
+				toReview > 0
+					? [
+							{ text: t('settings.ok') },
+							{ text: t('captures.import.review'), onPress: () => router.push('/inbox') },
+						]
+					: [{ text: t('settings.ok') }]
+			);
+		} catch (error) {
+			console.error('Error importing statement:', error);
+			const code = error instanceof StatementImportError ? error.code : 'failed';
+			Alert.alert(t('captures.import.failedTitle'), t(`captures.import.error_${code}`));
+		} finally {
+			setIsImportingStatement(false);
+		}
+	};
 
 	const [_darkMode, _setDarkMode] = useState(true);
 	const [notifications, setNotifications] = useState(true);
@@ -396,6 +437,12 @@ const SettingsScreen = () => {
 						t('settings.importData'),
 						handleImportData,
 						isImporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+					)}
+					{renderSettingsItem(
+						'document-text-outline',
+						t('captures.import.item'),
+						handleImportStatement,
+						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
 					)}
 					{renderSettingsItem(
 						'trash-outline',

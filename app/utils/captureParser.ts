@@ -139,6 +139,56 @@ const has = (text: string, ...needles: string[]): boolean =>
 	needles.some((needle) => text.includes(needle));
 
 /**
+ * Propaganda com valor no meio: "invista a partir de R$ 1", "ganhe até R$ 100 de
+ * cashback", "seu dinheiro pode render mais". Tem símbolo de moeda, tem palavras de
+ * investimento ou estorno, e não é movimentação nenhuma. É descartada antes de
+ * classificar — a menos que o texto também confirme algo feito ("aprovada", "você
+ * recebeu"), caso em que é um aviso real com um chamariz no fim.
+ */
+const PROMOTIONAL_PHRASES = [
+	'a partir de r$',
+	'a partir de $',
+	'invista',
+	'ganhe ',
+	'ganhe!',
+	'aproveite',
+	'oferta',
+	'promocao',
+	'cupom',
+	'pode render',
+	'renda mais',
+	'simule',
+	'contrate',
+	'conheca',
+	'desconto de ate',
+	'ate r$',
+	'ate $',
+	'quando quiser',
+	'saiba mais',
+	'toque para',
+	'clique',
+];
+
+const CONFIRMATION_PHRASES = [
+	'aprovada',
+	'aprovado',
+	'voce recebeu',
+	'voce enviou',
+	'voce pagou',
+	'realizada',
+	'realizado',
+	'concluida',
+	'concluido',
+	'efetuada',
+	'efetuado',
+	'recebido',
+	'recebida',
+];
+
+export const isPromotional = (normalized: string): boolean =>
+	has(normalized, ...PROMOTIONAL_PHRASES) && !has(normalized, ...CONFIRMATION_PHRASES);
+
+/**
  * Decide o que a notificação descreve. A ordem importa: "pagamento da fatura" tem a
  * palavra "pagamento", mas não é uma compra; "estorno de compra" tem "compra", mas é
  * dinheiro voltando.
@@ -149,7 +199,22 @@ const classify = (
 	if (has(text, 'fatura') && has(text, 'pagamento', 'paga ', 'pago', 'quitad')) {
 		return { direction: 'out', kind: 'invoice_payment', neutral: true };
 	}
-	if (has(text, 'aplicacao', 'aplicou', 'resgate', 'resgatou', 'investimento realizado')) {
+	// Só o movimento feito, nunca o substantivo solto: "resgate seu dinheiro quando
+	// quiser" é propaganda, "resgate de R$ 300,00 concluído" é dinheiro trocando de bolso.
+	if (
+		has(
+			text,
+			'aplicacao de r$',
+			'aplicacao realizada',
+			'aplicacao efetuada',
+			'aplicou',
+			'resgate de r$',
+			'resgate realizado',
+			'resgate efetuado',
+			'resgatou',
+			'investimento realizado'
+		)
+	) {
 		return { direction: 'out', kind: 'investment', neutral: true };
 	}
 	if (has(text, 'estorno', 'reembolso', 'devolucao', 'cashback', 'estornad')) {
@@ -219,16 +284,28 @@ const classify = (
 // ---------------------------------------------------------------------------
 
 /** Onde um nome termina: vírgula, ponto final de frase, ou a preposição seguinte. */
+// Um nome pode ter ponto no meio ("APPLE.COM/BILL"), então o ponto só encerra quando
+// vem seguido de espaço ou do fim do texto — o ponto final de uma frase.
 const NAME_END =
-	'(?=\\s*(?:,|\\.\\s|\\.$|$|\\s(?:para o|no cartao|no cartão|com o cartao|com o cartão|com|cartao|cartão|final|no valor|via|pelo|pela|em \\d|as \\d|às \\d|dia \\d)\\b))';
+	'(?=\\s*(?:,|\\.\\s|\\.$|$|\\s(?:para o|no cartao|no cartão|com o cartao|com o cartão|com|cartao|cartão|final|o valor|no valor|via|pelo|pela|em \\d|as \\d|às \\d|dia \\d)\\b))';
+const NAME_BODY = '((?:[^,\\n](?!\\sR\\$))+?)';
 
 const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }> = [
 	// "em IFOOD *IFOOD para o cartão" / "em MERCADO XYZ" (compras)
-	{ pattern: new RegExp(`\\bem\\s+(?!\\d)((?:[^,.\\n](?!\\sR\\$))+?)${NAME_END}`, 'i'), when: 'out' },
+	{ pattern: new RegExp(`\\bem\\s+(?!\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'out' },
+	// "no débito no BGC BRASILIA o valor de R$ 63,80" (Inter): o "no" que não é
+	// "no débito", "no cartão" nem "no valor" é o estabelecimento.
+	{
+		pattern: new RegExp(
+			`\\bn[oa]\\s+(?!debito|débito|credito|crédito|cartao|cartão|valor|dia|seu|sua|app|aplicativo|pix)${NAME_BODY}${NAME_END}`,
+			'i'
+		),
+		when: 'out',
+	},
 	// "para Fulano de Tal" (pix e transferências enviadas)
-	{ pattern: new RegExp(`\\bpara\\s+(?!o cart|a cart|voce|você)((?:[^,.\\n](?!\\sR\\$))+?)${NAME_END}`, 'i'), when: 'out' },
+	{ pattern: new RegExp(`\\bpara\\s+(?!o cart|a cart|voce|você)${NAME_BODY}${NAME_END}`, 'i'), when: 'out' },
 	// "de Fulano de Tal" (recebidos) — pulando o "de R$ 100,00" que vem antes
-	{ pattern: new RegExp(`\\bde\\s+(?!r\\$|us\\$|\\$|€|\\d)((?:[^,.\\n](?!\\sR\\$))+?)${NAME_END}`, 'i'), when: 'in' },
+	{ pattern: new RegExp(`\\bde\\s+(?!r\\$|us\\$|\\$|€|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
 	// "Compra aprovada: R$ 35,90 - MERCADO XYZ" (alguns bancos separam com traço)
 	{ pattern: /(?:R\$|US\$|\$|€|£)\s?[\d.,]+\s*[-–:]\s*([^,.\n]+?)(?=\s*(?:,|\.\s|\.$|$))/i },
 ];
@@ -279,6 +356,8 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 	if (amountCents === null) return null;
 
 	const normalized = ` ${normalizeText(original)} `;
+	if (isPromotional(normalized)) return null;
+
 	const classified = classify(normalized);
 	if (!classified) return null;
 

@@ -14,6 +14,10 @@
  * bancos no mesmo dia é provável — pode ser um Pix para um amigo e outro de outro amigo —
  * então vira uma pergunta de um toque, nunca um palpite silencioso.
  *
+ * As linhas de extrato OFX passam pelo mesmo funil, com `packageName` `ofx:<conta>`.
+ * Elas nunca são duplicata umas das outras (o FITID já garante isso), e uma
+ * notificação que chega depois de o extrato já ter a compra vira duplicata dela.
+ *
  * Puro: recebe o candidato e o que já está na caixa de entrada, devolve uma decisão.
  */
 
@@ -25,6 +29,7 @@ import {
 	normalizeText,
 	type RawCapture,
 } from './captureParser';
+import { addDays, getISODate } from './dateUtils';
 
 export type CaptureStatus =
 	| 'pending'
@@ -71,8 +76,8 @@ export interface MerchantRule {
 }
 
 export type Decision =
-	/** Carteira digital repetindo o aviso do banco (ou o contrário). Nada a perguntar. */
-	| { action: 'duplicate'; relatedId: string }
+	/** A mesma movimentação já está na caixa de entrada por outra fonte. Nada a perguntar. */
+	| { action: 'duplicate'; relatedId: string; reason: 'wallet' | 'statement' }
 	/** Mesmo valor, mesma direção, dois avisos próximos: provável, então pergunta. */
 	| { action: 'ask_duplicate'; relatedId: string }
 	/** Transferência entre contas próprias, certa: par encontrado e nome é o seu, ou regra aprendida. */
@@ -109,8 +114,25 @@ export const SUSPECT_DUPLICATE_WINDOW_MS = 3 * 60 * 1000;
 export const TRANSFER_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_AUTO_CONFIRM_THRESHOLD = 3;
 
+/**
+ * Quanto o extrato pode atrasar em relação à notificação. A compra é avisada na hora
+ * e lançada no extrato no mesmo dia ou dias depois (fim de semana, feriado); nunca
+ * antes. Um dia de folga para trás cobre o fuso e a virada da meia-noite.
+ */
+export const STATEMENT_LAG_DAYS_BEFORE = 5;
+export const STATEMENT_LAG_DAYS_AFTER = 1;
+
 const msBetween = (a: string, b: string): number =>
 	Math.abs(new Date(a).getTime() - new Date(b).getTime());
+
+/** Dia de calendário local de um instante. */
+export const localDateOf = (postedAt: string): string => getISODate(new Date(postedAt));
+
+/** Prefixo dos `packageName` sintéticos das linhas de extrato. */
+export const STATEMENT_PACKAGE_PREFIX = 'ofx:';
+
+export const isStatementPackage = (packageName: string): boolean =>
+	packageName.startsWith(STATEMENT_PACKAGE_PREFIX);
 
 /** Tipos que podem ser uma perna de transferência entre contas. Compra nunca é. */
 const TRANSFERABLE_KINDS = new Set<CaptureKind>([
@@ -172,29 +194,67 @@ export const findWalletDuplicate = (
 			known.direction === 'out' &&
 			candidate.direction === 'out' &&
 			known.amountCents === candidate.amountCents &&
+			!isStatementPackage(known.packageName) &&
 			isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName) &&
 			msBetween(known.postedAt, candidate.postedAt) <= WALLET_DUPLICATE_WINDOW_MS
 	);
+
+/**
+ * Se `statementDate` (dia do extrato) é compatível com `noticeDate` (dia do aviso):
+ * o extrato lança no mesmo dia ou até alguns dias depois, nunca muito antes.
+ */
+export const withinStatementLag = (noticeDate: string, statementDate: string): boolean =>
+	statementDate >= addDays(noticeDate, -STATEMENT_LAG_DAYS_AFTER) &&
+	statementDate <= addDays(noticeDate, STATEMENT_LAG_DAYS_BEFORE);
+
+/**
+ * A linha de extrato que já registra esta notificação.
+ *
+ * Só para candidatos vindos de notificação: o extrato costuma ser importado depois,
+ * e aí é o import que casa as linhas com as notificações (`statementMatcher`). Mas se
+ * o extrato veio primeiro — importado no mesmo dia da compra — a notificação que
+ * chega depois não pode virar uma segunda entrada.
+ */
+export const findStatementTwin = (
+	candidate: Candidate,
+	recent: KnownCapture[]
+): KnownCapture | undefined => {
+	if (isStatementPackage(candidate.packageName)) return undefined;
+	const noticeDate = localDateOf(candidate.postedAt);
+	return recent.find(
+		(known) =>
+			isLive(known) &&
+			isStatementPackage(known.packageName) &&
+			known.direction === candidate.direction &&
+			known.amountCents === candidate.amountCents &&
+			withinStatementLag(noticeDate, localDateOf(known.postedAt))
+	);
+};
 
 /**
  * Dois avisos de banco, mesmo valor e direção, quase ao mesmo tempo.
  *
  * Pode ser o banco reenviando com outro texto, pode ser cobrança em dobro, pode ser
  * duas compras iguais seguidas (dois cafés). Não dá para saber daqui — pergunta.
+ * Linhas de extrato ficam de fora dos dois lados: entre si o FITID já as distingue, e
+ * contra notificações o casamento é feito pelo `statementMatcher`, com janela de dias.
  */
 export const findSuspectedDuplicate = (
 	candidate: Candidate,
 	recent: KnownCapture[]
-): KnownCapture | undefined =>
-	recent.find(
+): KnownCapture | undefined => {
+	if (isStatementPackage(candidate.packageName)) return undefined;
+	return recent.find(
 		(known) =>
 			isLive(known) &&
 			known.direction === candidate.direction &&
 			known.amountCents === candidate.amountCents &&
 			!isWalletPackage(known.packageName) &&
 			!isWalletPackage(candidate.packageName) &&
+			!isStatementPackage(known.packageName) &&
 			msBetween(known.postedAt, candidate.postedAt) <= SUSPECT_DUPLICATE_WINDOW_MS
 	);
+};
 
 /**
  * A outra perna de uma transferência entre contas próprias.
@@ -202,7 +262,8 @@ export const findSuspectedDuplicate = (
  * Mesmo valor, direção oposta, dois apps diferentes (o mesmo banco não avisa saída e
  * entrada da mesma transferência), tipos compatíveis com transferência, dentro de um
  * dia. Compras e estornos ficam de fora: "gastei 50 no mercado" e "recebi 50 de
- * estorno" não são troca de bolso.
+ * estorno" não são troca de bolso. Duas contas de extrato diferentes contam como
+ * apps diferentes; a mesma conta vista por notificação e por extrato, não.
  */
 export const findTransferCounterpart = (
 	candidate: Candidate,
@@ -247,7 +308,11 @@ export const matchesOwnName = (counterparty: string | null, ownNames: string[]):
 export const decide = (candidate: Candidate, context: DecisionContext): Decision => {
 	// 1. Carteira digital + banco: a mesma compra, com certeza. Fica a do banco.
 	const walletTwin = findWalletDuplicate(candidate, context.recent);
-	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id };
+	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id, reason: 'wallet' };
+
+	// 1b. O extrato já tem esta movimentação: a notificação chegou depois do import.
+	const statementTwin = findStatementTwin(candidate, context.recent);
+	if (statementTwin) return { action: 'duplicate', relatedId: statementTwin.id, reason: 'statement' };
 
 	// 2. Movimentos que não são receita nem despesa.
 	if (candidate.neutral) {
@@ -332,9 +397,13 @@ export default {
 	decide,
 	fingerprintOf,
 	findWalletDuplicate,
+	findStatementTwin,
 	findSuspectedDuplicate,
 	findTransferCounterpart,
 	matchesOwnName,
 	learnFromConfirmation,
 	candidateFrom,
+	isStatementPackage,
+	withinStatementLag,
+	localDateOf,
 };

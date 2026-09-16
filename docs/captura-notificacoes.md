@@ -85,12 +85,52 @@ Configurações → Captura automática → "Ler notificações do banco" abre a
 Android de acesso a notificações; o app não consegue ligar sozinho. O estado (Ativo /
 Desativo) é relido toda vez que o app volta ao primeiro plano.
 
+## Extrato OFX: a rede de segurança
+
+Configurações → Dados → "Importar extrato do banco (OFX)". O extrato é a fonte mais
+completa, mas chega por último: quando é importado, quase tudo já está no app. Por
+isso o import **nunca insere direto** — ele concilia, e só o que o app não conhecia vai
+para a mesma caixa de entrada das notificações.
+
+Arquivos: `app/utils/ofxParser.ts` (leitura, SGML 1.x e XML 2.x, Latin-1 e UTF-8),
+`app/utils/statementMatcher.ts` (conciliação, pura), `app/utils/statementImport.ts`
+(grava o plano numa única transação).
+
+A escada, do mais certo ao mais provável:
+
+| Passo | Regra | Resultado |
+|---|---|---|
+| 1 | **FITID já visto** (impressão digital `ofx:<conta>:<fitid>`) | Linha ignorada. Reimportar o mesmo arquivo ou dois meses com sobreposição é um no-op |
+| 2 | **Notificação capturada** com o mesmo valor e direção, avisada entre 1 dia depois e 5 dias antes da data do extrato | Linha entra como "já vista" apontando para a notificação. Cada notificação casa com uma linha só |
+| 3 | **Lançamento do livro** que não veio de captura (digitado ou recorrente), mesmo valor e direção, datado entre 2 dias depois e 5 dias antes da linha | Linha ligada ao lançamento. Cada lançamento casa com uma linha só; reverter a linha não apaga o lançamento, que é do usuário |
+| 4 | O que sobra passa pelo **mesmo motor das notificações** | Transferência entre duas contas do arquivo, neutro (fatura, aplicação, resgate), automático (estabelecimento aprendido) ou item para revisar |
+
+Detalhes que importam:
+
+- Entre notificação e lançamento, a linha casa com o registro **que expira antes**
+  (prazo mais cedo primeiro), não com o mais próximo. É o que garante que nenhum
+  registro compatível fique sem par — "mais próximo" deixava um lançamento digitado
+  sobrar e a mesma compra aparecer duas vezes. Coberto por teste com o contraexemplo.
+- Duas linhas de extrato nunca perguntam "é duplicata?" entre si: o FITID já responde.
+- Uma notificação que chega **depois** de o extrato ter a compra vira duplicata da
+  linha, não um segundo item.
+- "Pagamento recebido" no extrato do cartão e "pagamento de fatura" na conta são
+  neutros; rendimento e juros são receita.
+- O plano é determinístico: a ordem das linhas no arquivo não muda o resultado.
+- `statementMatcher.test.ts` inclui um teste por propriedades sobre 400 cenários
+  aleatórios de compras, avisos e lançamentos digitados: só eventos sem aviso e sem
+  lançamento vão para revisão, nenhum registro é reivindicado duas vezes, e reimportar
+  é sempre um no-op.
+
 ## Limites conhecidos
 
 - Bancos mudam o texto das notificações. O parser é por palavras-chave, não por banco,
   e o texto bruto fica guardado — uma notificação mal lida vira um item para corrigir,
   não um dado perdido. Casos novos entram em `captureParser.test.ts`.
 - Se o banco não notifica (app do banco com notificações desligadas, compra no débito
-  sem aviso), nada é capturado. O import de extrato OFX/CSV é a rede de segurança
-  planejada para isso.
+  sem aviso), nada é capturado até o próximo import de extrato.
+- A conciliação do extrato compara valor, direção e data; não compara o nome do
+  estabelecimento. Duas compras do mesmo valor em dias próximos, uma avisada e outra
+  não, podem trocar de par entre si — os totais não mudam, e o que sobra vai para
+  revisão.
 - Regras aprendidas e a caixa de entrada são deste aparelho; não sincronizam.

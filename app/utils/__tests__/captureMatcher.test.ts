@@ -60,7 +60,7 @@ describe('duplicata carteira + banco (Samsung Pay)', () => {
 			candidate({ packageName: NUBANK, postedAt: plus(40_000) }),
 			context({ recent: [samsung] })
 		);
-		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp' });
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
 	});
 
 	it('o Samsung Pay depois do banco também é duplicata', () => {
@@ -69,13 +69,13 @@ describe('duplicata carteira + banco (Samsung Pay)', () => {
 			candidate({ packageName: SAMSUNG_PAY, postedAt: plus(5_000) }),
 			context({ recent: [bank] })
 		);
-		expect(decision).toEqual({ action: 'duplicate', relatedId: 'nb' });
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'nb', reason: 'wallet' });
 	});
 
 	it('continua duplicata mesmo que o usuário já tenha confirmado o primeiro aviso', () => {
 		const confirmed = known({ id: 'sp', packageName: SAMSUNG_PAY, status: 'confirmed', transactionId: 'tx' });
 		const decision = decide(candidate({ postedAt: plus(3 * HOUR) }), context({ recent: [confirmed] }));
-		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp' });
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
 	});
 
 	it('valores diferentes nunca são a mesma compra', () => {
@@ -210,7 +210,7 @@ describe('neutros e regras', () => {
 		const samsung = known({ id: 'sp', packageName: SAMSUNG_PAY, amountCents: 100_000 });
 		expect(
 			decide(candidate({ kind: 'invoice_payment', neutral: true, amountCents: 100_000 }), context({ recent: [samsung] }))
-		).toEqual({ action: 'duplicate', relatedId: 'sp' });
+		).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
 	});
 
 	it('regra de ignorar', () => {

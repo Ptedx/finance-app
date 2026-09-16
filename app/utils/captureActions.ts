@@ -4,8 +4,10 @@
  * `ingestRawCaptures` é o funil: impressão digital (a mesma notificação nunca entra
  * duas vezes), interpretação (`captureParser`), decisão (`captureMatcher`) e gravação
  * na caixa de entrada — ou direto no livro-caixa, quando o estabelecimento já foi
- * confirmado vezes suficientes. As demais funções são as respostas do usuário na tela
- * de revisão. Nenhuma delas mexe em estado React: o `CapturesContext` chama e recarrega.
+ * confirmado vezes suficientes. `applyDecision` é a parte da gravação, compartilhada
+ * com o import de extrato (`statementImport`), que decide pelo mesmo motor. As demais
+ * funções são as respostas do usuário na tela de revisão. Nenhuma delas mexe em
+ * estado React: o `CapturesContext` chama e recarrega.
  *
  * Toda transação criada aqui passa por `addTransaction` e entra na fila de sync como
  * qualquer outra; a caixa de entrada em si nunca sai do aparelho.
@@ -27,6 +29,7 @@ import * as syncQueue from '../sync/queue';
 import {
 	candidateFrom,
 	DEFAULT_AUTO_CONFIRM_THRESHOLD,
+	type Decision,
 	decide,
 	fingerprintOf,
 	type KnownCapture,
@@ -53,7 +56,7 @@ export interface IngestSummary {
 	autoConfirmed: number;
 }
 
-const toKnown = (capture: Capture): KnownCapture => ({
+export const toKnownCapture = (capture: Capture): KnownCapture => ({
 	id: capture.id,
 	packageName: capture.packageName,
 	postedAt: capture.postedAt,
@@ -65,8 +68,12 @@ const toKnown = (capture: Capture): KnownCapture => ({
 	transactionId: capture.transactionId,
 });
 
-const toRule = (row: { merchantKey: string; categoryId: string | null; treatAs: MerchantRule['treatAs']; confirmations: number } | null): MerchantRule | undefined =>
-	row ? { merchantKey: row.merchantKey, categoryId: row.categoryId, treatAs: row.treatAs, confirmations: row.confirmations } : undefined;
+export const toMerchantRule = (
+	row: { merchantKey: string; categoryId: string | null; treatAs: MerchantRule['treatAs']; confirmations: number } | null
+): MerchantRule | undefined =>
+	row
+		? { merchantKey: row.merchantKey, categoryId: row.categoryId, treatAs: row.treatAs, confirmations: row.confirmations }
+		: undefined;
 
 /**
  * Garante que a categoria sugerida existe e é do lado certo do livro (receita ou
@@ -105,7 +112,103 @@ const postTransaction = async (
 };
 
 // ---------------------------------------------------------------------------
-// Entrada
+// Gravação de uma decisão
+// ---------------------------------------------------------------------------
+
+/**
+ * Grava um item novo na caixa de entrada conforme a decisão do motor.
+ *
+ * `base` é o rascunho com os campos da fonte (texto bruto, valor, contraparte…) e
+ * status pendente; a decisão diz o status final, a pergunta, o par e a categoria.
+ * Só `auto_confirm` toca no livro-caixa.
+ */
+export const applyDecision = async (
+	base: CaptureDraft,
+	decision: Decision,
+	categories: Category[],
+	explicitId?: string
+): Promise<{ autoConfirmed: boolean }> => {
+	switch (decision.action) {
+		case 'duplicate':
+			await insertCapture(
+				{ ...base, status: 'duplicate', relatedId: decision.relatedId, reason: decision.reason },
+				explicitId
+			);
+			return { autoConfirmed: false };
+
+		case 'ask_duplicate':
+			await insertCapture(
+				{
+					...base,
+					question: 'duplicate',
+					relatedId: decision.relatedId,
+					suggestedCategory: resolveCategoryId(base.suggestedCategory, base.direction, categories),
+				},
+				explicitId
+			);
+			return { autoConfirmed: false };
+
+		case 'transfer': {
+			const inserted = await insertCapture(
+				{ ...base, status: 'transfer', relatedId: decision.relatedId, reason: decision.reason },
+				explicitId
+			);
+			if (decision.relatedId) {
+				await updateCapture(decision.relatedId, {
+					status: 'transfer',
+					question: null,
+					relatedId: inserted.id,
+					reason: decision.reason,
+				});
+			}
+			return { autoConfirmed: false };
+		}
+
+		case 'ask_transfer':
+			await insertCapture(
+				{
+					...base,
+					question: 'transfer',
+					relatedId: decision.relatedId,
+					suggestedCategory: resolveCategoryId(base.suggestedCategory, base.direction, categories),
+				},
+				explicitId
+			);
+			return { autoConfirmed: false };
+
+		case 'neutral':
+		case 'ignore':
+			await insertCapture({ ...base, status: 'ignored', reason: decision.reason }, explicitId);
+			return { autoConfirmed: false };
+
+		case 'pending':
+			await insertCapture(
+				{ ...base, suggestedCategory: resolveCategoryId(decision.categoryId, base.direction, categories) },
+				explicitId
+			);
+			return { autoConfirmed: false };
+
+		case 'auto_confirm': {
+			const categoryId = resolveCategoryId(decision.categoryId, base.direction, categories);
+			const transactionId = await postTransaction(base, categoryId);
+			await insertCapture(
+				{
+					...base,
+					status: 'confirmed',
+					suggestedCategory: categoryId,
+					transactionId,
+					autoConfirmed: true,
+					reason: 'rule',
+				},
+				explicitId
+			);
+			return { autoConfirmed: true };
+		}
+	}
+};
+
+// ---------------------------------------------------------------------------
+// Entrada de notificações
 // ---------------------------------------------------------------------------
 
 export const ingestRawCaptures = async (
@@ -128,8 +231,8 @@ export const ingestRawCaptures = async (
 
 		const candidate = candidateFrom(raw, parsed);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
-		const recent = (await getRecentCaptures(since)).map(toKnown);
-		const rule = candidate.merchantKey ? toRule(await getMerchantRule(candidate.merchantKey)) : undefined;
+		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
+		const rule = candidate.merchantKey ? toMerchantRule(await getMerchantRule(candidate.merchantKey)) : undefined;
 		const fallbackCategoryId = resolveCategoryId(guessCategory(parsed), parsed.direction, options.categories);
 
 		let decision = decide(candidate, {
@@ -167,83 +270,14 @@ export const ingestRawCaptures = async (
 			status: 'pending',
 			question: null,
 			relatedId: null,
-			suggestedCategory: null,
+			suggestedCategory: rule?.categoryId ?? fallbackCategoryId,
 			transactionId: null,
 			autoConfirmed: false,
 			reason: null,
 		};
 
-		switch (decision.action) {
-			case 'duplicate':
-				await insertCapture({ ...base, status: 'duplicate', relatedId: decision.relatedId, reason: 'wallet' });
-				break;
-
-			case 'ask_duplicate':
-				await insertCapture({
-					...base,
-					question: 'duplicate',
-					relatedId: decision.relatedId,
-					suggestedCategory: rule?.categoryId
-						? resolveCategoryId(rule.categoryId, parsed.direction, options.categories)
-						: fallbackCategoryId,
-				});
-				break;
-
-			case 'transfer': {
-				const inserted = await insertCapture({
-					...base,
-					status: 'transfer',
-					relatedId: decision.relatedId,
-					reason: decision.reason,
-				});
-				if (decision.relatedId) {
-					await updateCapture(decision.relatedId, {
-						status: 'transfer',
-						question: null,
-						relatedId: inserted.id,
-						reason: decision.reason,
-					});
-				}
-				break;
-			}
-
-			case 'ask_transfer':
-				await insertCapture({
-					...base,
-					question: 'transfer',
-					relatedId: decision.relatedId,
-					suggestedCategory: fallbackCategoryId,
-				});
-				break;
-
-			case 'neutral':
-			case 'ignore':
-				await insertCapture({ ...base, status: 'ignored', reason: decision.reason });
-				break;
-
-			case 'pending':
-				await insertCapture({
-					...base,
-					suggestedCategory: resolveCategoryId(decision.categoryId, parsed.direction, options.categories),
-				});
-				break;
-
-			case 'auto_confirm': {
-				const categoryId = resolveCategoryId(decision.categoryId, parsed.direction, options.categories);
-				const transactionId = await postTransaction(base, categoryId);
-				await insertCapture({
-					...base,
-					status: 'confirmed',
-					suggestedCategory: categoryId,
-					transactionId,
-					autoConfirmed: true,
-					reason: 'rule',
-				});
-				summary.autoConfirmed += 1;
-				break;
-			}
-		}
-
+		const result = await applyDecision(base, decision, options.categories);
+		if (result.autoConfirmed) summary.autoConfirmed += 1;
 		summary.inserted += 1;
 	}
 
@@ -256,7 +290,7 @@ export const ingestRawCaptures = async (
 
 const learnCategory = async (capture: Capture, categoryId: string): Promise<void> => {
 	if (!capture.merchantKey) return;
-	const current = toRule(await getMerchantRule(capture.merchantKey));
+	const current = toMerchantRule(await getMerchantRule(capture.merchantKey));
 	await saveMerchantRule(learnFromConfirmation(current, capture.merchantKey, categoryId));
 };
 
@@ -351,12 +385,15 @@ export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Pr
 /**
  * Volta um item para a fila de revisão, desfazendo o que a decisão (ou o usuário) fez:
  * apaga a transação criada, e solta a outra perna de uma transferência.
+ *
+ * Uma linha de extrato ligada a um lançamento digitado (`statement_transaction`) não
+ * apaga esse lançamento ao reverter: ele não foi criado por ela, é do usuário.
  */
 export const revertCapture = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
 	if (!capture || capture.status === 'pending') return;
 
-	if (capture.transactionId) {
+	if (capture.transactionId && capture.reason !== 'statement_transaction') {
 		await deleteTransaction(capture.transactionId);
 		syncQueue.schedule();
 	}
@@ -380,6 +417,7 @@ export const revertCapture = async (id: string): Promise<void> => {
 
 export default {
 	ingestRawCaptures,
+	applyDecision,
 	resolveCategoryId,
 	confirmCapture,
 	dismissCapture,

@@ -180,9 +180,82 @@ describe('parseCapture — o que não deve virar lançamento', () => {
 		).toBeNull();
 		expect(
 			parseCapture(raw({ title: 'Oferta', text: 'Ganhe até R$ 100 de cashback nas compras.' }))
-				?.kind
-		).toBe('refund'); // tem "cashback": entra na caixa para o usuário decidir, nunca some sozinho
+		).toBeNull();
 		expect(parseCapture(raw({ title: 'Saldo', text: 'Seu saldo é R$ 1.234,56' }))).toBeNull();
+	});
+
+	// Caso real (Mercado Pago): tem "resgate" e "R$ 1", e é propaganda. Chegou a virar
+	// item "ignorado como investimento" na caixa de entrada; agora nem entra.
+	it('propaganda de investimento com valor no texto não é movimentação', () => {
+		expect(
+			parseCapture(
+				raw({
+					packageName: 'com.mercadopago.wallet',
+					title: 'Vinícius,  seu dinheiro pode render mais!🔥🤑',
+					text: 'Invista a partir de R$ 1 no CDB de liquidez diária e resgate seu dinheiro quando quiser!💸',
+				})
+			)
+		).toBeNull();
+	});
+
+	it('um aviso real com chamariz no fim continua sendo aviso', () => {
+		const parsed = parseCapture(
+			raw({
+				title: 'Compra aprovada',
+				text: 'Compra de R$ 40,00 APROVADA em MERCADO XYZ. Aproveite: invista seu troco!',
+			})
+		);
+		expect(parsed?.kind).toBe('purchase');
+		expect(parsed?.counterparty).toBe('MERCADO XYZ');
+	});
+
+	it('resgate e aplicação só contam quando foram feitos', () => {
+		expect(parseCapture(raw({ title: 'Resgate realizado', text: 'Resgate de R$ 300,00 na sua conta.' }))?.kind).toBe(
+			'investment'
+		);
+		expect(parseCapture(raw({ title: 'Aplicação', text: 'Aplicação realizada: R$ 200,00 no RDB.' }))?.kind).toBe(
+			'investment'
+		);
+	});
+});
+
+describe('parseCapture — casos reais do aparelho', () => {
+	it('Inter: "no débito no BGC BRASILIA o valor de"', () => {
+		const parsed = parseCapture(
+			raw({
+				packageName: 'br.com.intermedium',
+				appLabel: 'Inter',
+				title: 'Inter',
+				text: 'Olá Vinicius, você acaba de comprar no débito no BGC BRASILIA GUARA CEN o valor de R$ 63,80.',
+			})
+		);
+		expect(parsed).toMatchObject({ amountCents: 6380, direction: 'out', kind: 'purchase' });
+		expect(parsed?.counterparty).toBe('BGC BRASILIA GUARA CEN');
+	});
+
+	it('Nubank: estabelecimento com ponto no nome (APPLE.COM/BILL)', () => {
+		const parsed = parseCapture(
+			raw({
+				title: 'Compra no crédito aprovada',
+				text: 'Compra de R$ 5,90 APROVADA em APPLE.COM/BILL para o cartão com final 6422.',
+			})
+		);
+		expect(parsed?.counterparty).toBe('APPLE.COM/BILL');
+		expect(parsed?.cardLast4).toBe('6422');
+		expect(merchantKeyOf(parsed?.counterparty ?? null)).toBe('apple com bill');
+	});
+
+	it('Nubank: Google YouTubePremium', () => {
+		const parsed = parseCapture(
+			raw({
+				title: 'Compra no crédito aprovada',
+				text: 'Compra de R$ 26,90 APROVADA em Google YouTubePremium para o cartão com final 2513.',
+			})
+		);
+		expect(parsed?.counterparty).toBe('Google YouTubePremium');
+		expect(guessCategory({ direction: 'out', kind: 'purchase', counterparty: parsed?.counterparty ?? null })).toBe(
+			'entertainment'
+		);
 	});
 
 	it('sem valor não há lançamento', () => {

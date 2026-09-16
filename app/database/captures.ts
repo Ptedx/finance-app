@@ -22,9 +22,18 @@ const toCapture = (row: CaptureRow): Capture => ({
 
 export type CaptureDraft = Omit<Capture, 'id' | 'createdAt' | 'updatedAt'>;
 
-export const insertCapture = async (draft: CaptureDraft): Promise<Capture> => {
+/**
+ * `explicitId` é usado pelo import de extrato, que planeja todas as linhas antes de
+ * gravar e precisa que os ids referenciados entre elas (`relatedId`) já existam.
+ */
+export const insertCapture = async (draft: CaptureDraft, explicitId?: string): Promise<Capture> => {
 	const timestamp = nowTimestamp();
-	const capture: Capture = { ...draft, id: generateUniqueId(), createdAt: timestamp, updatedAt: timestamp };
+	const capture: Capture = {
+		...draft,
+		id: explicitId ?? generateUniqueId(),
+		createdAt: timestamp,
+		updatedAt: timestamp,
+	};
 
 	await db.runAsync(
 		`INSERT INTO captures
@@ -171,9 +180,40 @@ export const getTransferMerchantKeys = async (): Promise<string[]> => {
 	return rows.map((row) => row.merchantKey);
 };
 
+// ---------------------------------------------------------------------------
+// O que o import de extrato precisa saber antes de planejar
+// ---------------------------------------------------------------------------
+
+/** Impressões digitais de todas as linhas de extrato já importadas. */
+export const getStatementFingerprints = async (): Promise<Set<string>> => {
+	const rows = await db.getAllAsync<{ fingerprint: string }>(
+		"SELECT fingerprint FROM captures WHERE fingerprint LIKE 'ofx:%'"
+	);
+	return new Set(rows.map((row) => row.fingerprint));
+};
+
+/** Notificações que uma linha de extrato de import anterior já reivindicou. */
+export const getStatementClaimedCaptureIds = async (): Promise<Set<string>> => {
+	const rows = await db.getAllAsync<{ relatedId: string }>(
+		"SELECT relatedId FROM captures WHERE reason = 'statement_capture' AND relatedId IS NOT NULL"
+	);
+	return new Set(rows.map((row) => row.relatedId));
+};
+
+/** Lançamentos criados a partir de uma captura, ou já ligados a uma linha de extrato. */
+export const getLinkedTransactionIds = async (): Promise<Set<string>> => {
+	const rows = await db.getAllAsync<{ transactionId: string }>(
+		'SELECT transactionId FROM captures WHERE transactionId IS NOT NULL'
+	);
+	return new Set(rows.map((row) => row.transactionId));
+};
+
 export default {
 	insertCapture,
 	hasCaptureFingerprint,
+	getStatementFingerprints,
+	getStatementClaimedCaptureIds,
+	getLinkedTransactionIds,
 	getCapture,
 	getRecentCaptures,
 	getPendingCaptures,
