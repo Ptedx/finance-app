@@ -121,14 +121,14 @@ export interface Account extends SyncMeta {
 	last4: string | null;
 	/** Bandeira do cartão (`visa`, `mastercard`, `elo`, `amex`, `hipercard`). Só cartões. */
 	network: string | null;
-	/**
-	 * Legado (v7-v9): dia fixo de fechamento. O ciclo agora sai de `dueDay` e
-	 * `closingDaysBefore`; a coluna fica só para aparelhos antigos no sync.
-	 */
+	/** Dia do mês em que a fatura fecha. Define o ciclo e o nome da fatura. Só cartões. */
 	closingDay: number | null;
-	/** Dia do mês do vencimento; cai no próximo dia útil quando é fim de semana ou feriado. Só cartões. */
+	/** Informativo: dia do mês em que costuma vencer (fechamento + N). O ciclo não usa. */
 	dueDay: number | null;
-	/** Quantos dias antes do vencimento a fatura fecha (Nubank: 7). Só cartões. */
+	/**
+	 * Dias entre o fechamento e o vencimento (Nubank: 7). O vencimento real é o fechamento
+	 * mais isso, no próximo dia útil. Só cartões.
+	 */
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
 	packageName: string | null;
@@ -207,8 +207,11 @@ export const DATABASE_NAME = 'spendr.db';
  *     `kind = credit_card` and `role = card`, and nothing else is.
  * 10 — accounts gain `closingDaysBefore`: the card cycle comes from the due day (moved
  *     to the next business day) minus that many days, instead of a fixed closing day.
+ * 11 — the cycle is anchored on the closing day again (the bank's invoice is named by
+ *     the month it closes in); `closingDaysBefore` is the gap to the due date. Cards
+ *     saved with only a due day get the closing day derived from it.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [

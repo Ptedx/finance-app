@@ -28,7 +28,7 @@ import {
 	type CardSummary,
 	cycleRuleOf,
 	existingInstallmentDates,
-	invoicesDueBetween,
+	invoicesClosingBetween,
 } from '../utils/cardMath';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { todayISO } from '../utils/dateUtils';
@@ -166,7 +166,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					inbound: transfer.toAccountId === account.id,
 				}));
 				nextSummaries.set(account.id, buildCardSummary(account, entries, movements, today));
-				cardActivity.invoiceDueCents = invoicesDueBetween(account, entries, startDate, endDate);
+				cardActivity.invoiceCents = invoicesClosingBetween(account, entries, startDate, endDate);
 			}
 
 			setAccounts(list);

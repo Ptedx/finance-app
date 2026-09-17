@@ -496,6 +496,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 8) await migrateAccountRoles();
 	if (version < 9) await migrateCardsApart();
 	if (version < 10) await migrateCardCycleFromDueDay();
+	if (version < 11) await migrateCardCycleToClosingDay();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -584,6 +585,31 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
 	);
 
 	console.log('Migrated card cycles to due day');
+};
+
+/**
+ * v10 -> v11: o ciclo volta a partir do dia de fechamento.
+ *
+ * O banco dá nome à fatura pelo mês em que ela fecha, e o usuário conhece o dia do
+ * fechamento. Cartões salvos na v10 só com vencimento ganham o fechamento derivado dele
+ * (vencimento menos a distância, voltando para o mês anterior quando passa do dia 1).
+ * Quem já tinha fechamento continua com ele.
+ */
+const migrateCardCycleToClosingDay = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	await db.runAsync(
+		`UPDATE accounts
+     SET closingDay = CASE
+           WHEN dueDay - COALESCE(closingDaysBefore, 7) >= 1 THEN dueDay - COALESCE(closingDaysBefore, 7)
+           ELSE dueDay - COALESCE(closingDaysBefore, 7) + 30 END,
+         closingDaysBefore = COALESCE(closingDaysBefore, 7),
+         updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NULL AND dueDay IS NOT NULL`,
+		[nowTimestamp()]
+	);
+
+	console.log('Migrated card cycles to closing day');
 };
 
 const migrateAccountRoles = async (): Promise<void> => {
@@ -1018,7 +1044,7 @@ export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
 		closingDay: isCard ? (account.closingDay ?? null) : null,
 		dueDay: isCard ? (account.dueDay ?? null) : null,
 		closingDaysBefore:
-			isCard && account.dueDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
+			isCard && account.closingDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
 		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
 		packageName: account.packageName ?? null,
 		accountKey: account.accountKey ?? null,

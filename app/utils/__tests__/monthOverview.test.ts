@@ -97,7 +97,7 @@ describe('buildMonthOverview — detalhes', () => {
 					role: 'card',
 					expenseCents: 16_460,
 					purchasesOriginatedCents: 16_460,
-					invoiceDueCents: 383_280,
+					invoiceCents: 383_280,
 				}),
 			],
 			unassigned: { incomeCents: 0, expenseCents: 0 },

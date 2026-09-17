@@ -200,8 +200,29 @@ export const isPromotional = (normalized: string): boolean =>
 const classify = (
 	text: string
 ): { direction: CaptureDirection; kind: CaptureKind; neutral: boolean } | null => {
-	if (has(text, 'fatura') && has(text, 'pagamento', 'paga ', 'pago', 'quitad')) {
-		return { direction: 'out', kind: 'invoice_payment', neutral: true };
+	if (has(text, 'fatura')) {
+		// Aviso sobre a fatura (fechou, vence, está disponível) não é dinheiro saindo.
+		// "Sua fatura fechou em R$ 3.832,80, o pagamento vence 02/10" tem "pagamento", mas
+		// como pagamento abateria a fatura sem ninguém ter pago, e como compra contaria as
+		// compras de novo. Só a confirmação de um pagamento passa.
+		const confirmed = has(
+			text,
+			'recebemos',
+			'recebido',
+			'realizado',
+			'efetuado',
+			'confirmado',
+			'voce pagou',
+			'foi paga',
+			'fatura paga',
+			'quitad'
+		);
+		if (confirmed && has(text, 'pag', 'quitad')) {
+			return { direction: 'out', kind: 'invoice_payment', neutral: true };
+		}
+		if (has(text, 'pagamento', 'fechou', 'fechada', 'fechamento', 'vence', 'vencimento', 'disponivel', 'em aberto', 'lembrete')) {
+			return null;
+		}
 	}
 	// Só o movimento feito, nunca o substantivo solto: "resgate seu dinheiro quando
 	// quiser" é propaganda, "resgate de R$ 300,00 concluído" é dinheiro trocando de bolso.

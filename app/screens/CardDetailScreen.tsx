@@ -13,6 +13,7 @@ import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
+import { sameBank } from '../utils/accountResolver';
 import { cycleRuleOf, existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
 import { formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
@@ -91,6 +92,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 			if (summary.toPayCents > 0) return t('cards.invoice.closedToPay', { due, amount: formatCents(summary.toPayCents) });
 			if (invoice.amountCents > 0) return t('cards.invoice.paid');
 		}
+		if (invoice.offset < -1 && invoice.amountCents > 0 && invoice.paidCents >= invoice.amountCents) return t('cards.invoice.paid');
 		return t('cards.invoice.closed', { due });
 	};
 
@@ -182,6 +184,18 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 										<Ionicons name="scale-outline" size={18} color="rgba(255,255,255,0.8)" />
 										<Text style={styles.anchorText}>{t('cards.invoice.informed', { date: formatDayMonth(card.openingBalanceDate) })}</Text>
 										<Text style={styles.anchorAmount}>{formatCents(-card.openingBalanceCents)}</Text>
+									</View>
+								) : null}
+
+								{selected.paidCents > 0 ? (
+									<View
+										style={styles.anchorRow}
+										accessible
+										accessibilityLabel={`${selected.offset === 0 ? t('cards.invoice.advance') : t('cards.invoice.paidRow')}, ${formatCents(selected.paidCents)}`}
+									>
+										<Ionicons name="checkmark-circle-outline" size={18} color="#81C784" />
+										<Text style={styles.anchorText}>{selected.offset === 0 ? t('cards.invoice.advance') : t('cards.invoice.paidRow')}</Text>
+										<Text style={[styles.anchorAmount, styles.paidAmount]}>{formatCents(selected.paidCents)}</Text>
 									</View>
 								) : null}
 
@@ -280,7 +294,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 					</View>
 				) : null}
 
-				{summary?.configured && summary.openCycle && card.dueDay ? (
+				{summary?.configured && summary.openCycle && card.closingDay ? (
 					<View style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('cards.dates.title')}
@@ -291,8 +305,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 							<Line label={t('cards.dates.due')} value={formatDayMonth(summary.openCycle.dueDate)} />
 							<Text style={styles.explain}>
 								{t('cards.dates.explain', {
-									count: cycleRuleOf(card)?.closingDaysBefore ?? 7,
-									day: card.dueDay,
+									count: cycleRuleOf(card)?.dueDaysAfter ?? 7,
+									day: card.closingDay,
 									best: formatDayMonth(summary.openCycle.closingDate),
 								})}
 							</Text>
@@ -308,6 +322,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						onClose={() => setSheet(null)}
 						suggestedCents={summary.toPayCents > 0 ? summary.toPayCents : summary.owedCents}
 						accounts={bankAccounts}
+						card={card}
 						onConfirm={async (fromId, cents) => {
 							await recordCardPayment(card.id, fromId, cents, todayISO());
 							setSheet(null);
@@ -376,10 +391,16 @@ const PaySheet: React.FC<{
 	onClose: () => void;
 	suggestedCents: number;
 	accounts: Account[];
+	card: Account;
 	onConfirm: (fromAccountId: string | null, cents: number) => Promise<void>;
-}> = ({ visible, onClose, suggestedCents, accounts, onConfirm }) => {
+}> = ({ visible, onClose, suggestedCents, accounts, card, onConfirm }) => {
 	const { t } = useTranslation();
-	const main = accounts.find((account) => account.role === 'main') ?? accounts[0];
+	// Quem paga a fatura costuma ser a conta do mesmo banco (o Nubank paga o cartão
+	// Nubank); sem ela, a conta principal.
+	const main =
+		accounts.find((account) => account.role !== 'external' && sameBank(account.bankName, card.bankName)) ??
+		accounts.find((account) => account.role === 'main') ??
+		accounts[0];
 	const [amount, setAmount] = useState('');
 	const [from, setFrom] = useState<string>(main?.id ?? 'outside');
 	const [error, setError] = useState<string | undefined>();
@@ -701,6 +722,9 @@ const styles = StyleSheet.create({
 		borderRadius: 16,
 		padding: 16,
 		gap: 4,
+	},
+	paidAmount: {
+		color: '#81C784',
 	},
 	panelTitle: {
 		fontSize: 14,

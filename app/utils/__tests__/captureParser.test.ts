@@ -174,6 +174,27 @@ describe('parseCapture — o que não deve virar lançamento', () => {
 		expect(parsed?.kind).toBe('invoice_payment');
 	});
 
+	it('confirmações de pagamento da fatura, nos jeitos que os bancos escrevem, são pagamento', () => {
+		for (const [title, text] of [
+			['Pagamento recebido', 'Recebemos o pagamento de R$ 3.832,80 da sua fatura.'],
+			['Nubank', 'Você pagou R$ 3.832,80 da fatura do cartão.'],
+			['Fatura', 'Pagamento de R$ 500,00 realizado na fatura com vencimento em 02/10.'],
+		]) {
+			const parsed = parseCapture(raw({ title, text }));
+			expect({ text, kind: parsed?.kind, neutral: parsed?.neutral }).toEqual({ text, kind: 'invoice_payment', neutral: true });
+		}
+	});
+
+	it('aviso de fatura fechada, vencendo ou disponível não é pagamento nem compra', () => {
+		for (const [title, text] of [
+			['Sua fatura fechou', 'A fatura do cartão fechou em R$ 3.832,80. O pagamento vence em 02/10.'],
+			['Fatura disponível', 'Sua fatura de R$ 3.832,80 está disponível. Vencimento: 02/10.'],
+			['Lembrete', 'Sua fatura de R$ 3.832,80 vence amanhã. Faça o pagamento para evitar juros.'],
+		]) {
+			expect({ text, parsed: parseCapture(raw({ title, text })) }).toEqual({ text, parsed: null });
+		}
+	});
+
 	it('aplicação e resgate são neutros', () => {
 		expect(
 			parseCapture(raw({ title: 'Aplicação realizada', text: 'Aplicação de R$ 1.000,00 no CDB.' }))

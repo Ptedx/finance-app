@@ -118,18 +118,34 @@ pagar (sinal invertido só nesses casos).
 
 ### Ciclo e faturas (`cardMath.ts`, puro e testado)
 
-- O usuário informa só o **vencimento** (dia 25, no Nubank) e quantos dias antes a
-  fatura fecha (7, o padrão). Vencimento em sábado, domingo ou feriado bancário nacional
-  (`businessDays.ts`: fixos, Carnaval, Sexta-feira Santa, Corpus Christi, 20/11) passa
-  para o próximo dia útil, e o fechamento acompanha: sempre N dias antes do vencimento real.
+- O usuário informa o **dia do fechamento** (25, no Nubank) e quantos dias depois a
+  fatura vence (7, o padrão). O vencimento real é o fechamento mais esses dias, no
+  próximo dia útil quando cai em fim de semana ou feriado bancário nacional
+  (`businessDays.ts`: fixos, Carnaval, Sexta-feira Santa, Corpus Christi, 20/11).
 - A fatura fecha no começo do dia do fechamento: compras desse dia em diante vão para a
   próxima, e ele é o **melhor dia de compra**.
-- A fatura leva o **nome do mês em que vence**. Vence 25/09 e fecha 18/09: é a de setembro,
-  com compras de 18/08 a 17/09. A de outubro só começa em 18/09. Ciclos são contíguos
-  (teste por propriedades, inclusive nos meses em que o vencimento anda).
-- No quadro do mês, o cartão entra pela **fatura que vence no mês** (`invoicesDueBetween`),
-  com parcelas e com a "fatura atual" informada; as compras feitas no mês são a métrica
-  secundária. Cartão sem vencimento cai no cálculo antigo (compras datadas no mês).
+- A fatura leva o **nome do mês em que fecha**. Fecha 25/09 e vence 02/10: é a de
+  setembro, com compras de 25/08 a 24/09. A de outubro só começa em 25/09. Ciclos são
+  contíguos (teste por propriedades).
+- No quadro do mês, o cartão entra pela **fatura do mês** — a que fecha nele
+  (`invoicesClosingBetween`), com parcelas e com a "fatura atual" informada; as compras
+  feitas no mês são a métrica secundária. Cartão sem fechamento cai no cálculo antigo.
+
+### Pagamento de fatura
+
+O fluxo comum: manda dinheiro de outra conta para a conta do banco do cartão (Pix entre
+contas próprias, já tratado como transferência) e paga a fatura dali.
+
+- Pagar é **transferência** da conta para o cartão, nunca gasto — as compras já
+  contaram. Pode vir da notificação do banco ("Recebemos o pagamento de R$ X"), do
+  extrato OFX ou do botão **Pagar fatura**; as três formas se reconhecem pelo valor e
+  pela data e não duplicam.
+- A conta que paga é a do mesmo banco do cartão. Contas externas (a PJ) não contam, e
+  com mais de uma sobrando vale a principal.
+- O pagamento quita primeiro a fatura fechada; o que passar aparece como pagamento
+  antecipado da aberta. Cada fatura mostra quanto foi pago.
+- Avisos de fatura ("fechou", "vence amanhã", "está disponível") são descartados: não
+  são pagamento nem compra, mesmo trazendo valor e a palavra "pagamento".
 - Cartão de débito não é cartão aqui: não tem fatura nem limite. Na edição do cartão, o
   tipo "Débito" leva os lançamentos para a conta de onde o dinheiro sai e remove o cartão.
 - Datas e dinheiro seguem o **idioma do app** (`locale.ts`): em português, sempre
@@ -181,7 +197,7 @@ fonte do sistema.
 3. **Contas**: importe o OFX de cada conta corrente (âncora no saldo do extrato) ou use
    "Definir saldo" na tela da conta. Marque o papel de cada uma.
 4. **Cartões**: em Cartões, abra ou adicione cada um e informe banco, final, limite,
-   vencimento (fecha 7 dias antes). Depois toque em **Acertar valor** e digite a fatura atual e,
+   fechamento (vence 7 dias depois). Depois toque em **Acertar valor** e digite a fatura atual e,
    se houver, a fechada ainda não paga, como aparecem no app do banco.
 5. **Parcelas de compras antigas**: no cartão, **Parcela antiga**, uma por compra
    (valor da parcela, parcela desta fatura e total). O limite usado e as faturas futuras

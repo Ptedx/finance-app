@@ -17,7 +17,8 @@ import {
 	NETWORK_LABELS,
 	NEUTRAL_CARD_COLOR,
 } from '../utils/bankBrands';
-import { todayISO } from '../utils/dateUtils';
+import { cycleFor } from '../utils/cardMath';
+import { formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 /**
@@ -28,9 +29,10 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * Isso confirma a escolha sem precisar ler.
  *
  * Campos na ordem em que se acha a informação no app do banco: banco, final, bandeira,
- * limite e vencimento. O fechamento não é digitado: sai do vencimento menos N dias (7 no
- * Nubank), já com o vencimento empurrado para dia útil. Só o banco é obrigatório; sem
- * vencimento o cartão funciona, mas não monta faturas — e a tela diz isso.
+ * limite, dia de fechamento e quantos dias depois vence (7 no Nubank). O vencimento não
+ * é digitado: sai do fechamento, já empurrado para dia útil, e a tela mostra as datas da
+ * fatura atual para conferir com o banco. Só o banco é obrigatório; sem fechamento o
+ * cartão funciona, mas não monta faturas — e a tela diz isso.
  *
  * Débito fica de fora: não tem fatura nem limite, a compra sai da conta na hora. Quem
  * cadastrou um débito aqui por engano leva os lançamentos para a conta com um toque.
@@ -65,7 +67,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [cardType, setCardType] = useState<CardType>('credit');
 	const [debitAccountId, setDebitAccountId] = useState<string | null>(null);
 	const [closingDaysBefore, setClosingDaysBefore] = useState(String(existing?.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
-	const [dueDay, setDueDay] = useState(existing?.dueDay ? String(existing.dueDay) : '');
+	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
 	const [currentInvoice, setCurrentInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
@@ -80,7 +82,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		setNetwork((existing.network as CardNetwork | null) ?? null);
 		setLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
 		setClosingDaysBefore(String(existing.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
-		setDueDay(existing.dueDay ? String(existing.dueDay) : '');
+		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
 	}, [existing]);
 
 	const brand = BANK_BRANDS.find((b) => b.id === bankId) ?? null;
@@ -128,13 +130,21 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
+	// As datas da fatura atual com o que está digitado, para conferir com o app do banco.
+	const typedClosing = parseDay(closingDay);
+	const typedDaysAfter = Number(closingDaysBefore);
+	const cyclePreview =
+		typedClosing && Number.isInteger(typedDaysAfter) && typedDaysAfter >= 1 && typedDaysAfter <= 20
+			? cycleFor(todayISO(), { closingDay: typedClosing, dueDaysAfter: typedDaysAfter })
+			: null;
+
 	const handleSave = async () => {
 		const next: Record<string, string | undefined> = {};
 		if (!bankName) next.bank = t('cards.edit.bankRequired');
-		const due = parseDay(dueDay);
-		const daysBefore = Number(closingDaysBefore);
-		if (!Number.isInteger(daysBefore) || daysBefore < 1 || daysBefore > 20) next.closing = t('cards.edit.invalidDaysBefore');
-		if (due === false) next.due = t('cards.edit.invalidDay');
+		const closing = parseDay(closingDay);
+		const daysAfter = Number(closingDaysBefore);
+		if (!Number.isInteger(daysAfter) || daysAfter < 1 || daysAfter > 20) next.daysAfter = t('cards.edit.invalidDaysAfter');
+		if (closing === false) next.closing = t('cards.edit.invalidDay');
 		if (last4 && !/^\d{4}$/.test(last4)) next.last4 = t('cards.edit.invalidLast4');
 
 		let limitCents: number | null = null;
@@ -164,9 +174,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			bankName,
 			color,
 			last4: last4 || null,
-			closingDay: null,
-			dueDay: due as number | null,
-			closingDaysBefore: due ? daysBefore : null,
+			closingDay: closing as number | null,
+			// Informativo: o dia em que costuma vencer. O ciclo sai do fechamento.
+			dueDay: closing ? ((closing + daysAfter - 1) % 30) + 1 : null,
+			closingDaysBefore: closing ? daysAfter : null,
 			creditLimitCents: limitCents,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
@@ -356,26 +367,35 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					<View style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
-								label={t('cards.edit.dueDay')}
-								value={dueDay}
-								onChangeText={(text) => setDueDay(text.replace(/\D/g, '').slice(0, 2))}
-								keyboardType="number-pad"
-								maxLength={2}
-								error={errors.due}
-							/>
-						</View>
-						<View style={styles.column}>
-							<Field
-								label={t('cards.edit.closingDaysBefore')}
-								value={closingDaysBefore}
-								onChangeText={(text) => setClosingDaysBefore(text.replace(/\D/g, '').slice(0, 2))}
+								label={t('cards.edit.closingDay')}
+								value={closingDay}
+								onChangeText={(text) => setClosingDay(text.replace(/\D/g, '').slice(0, 2))}
 								keyboardType="number-pad"
 								maxLength={2}
 								error={errors.closing}
 							/>
 						</View>
+						<View style={styles.column}>
+							<Field
+								label={t('cards.edit.dueDaysAfter')}
+								value={closingDaysBefore}
+								onChangeText={(text) => setClosingDaysBefore(text.replace(/\D/g, '').slice(0, 2))}
+								keyboardType="number-pad"
+								maxLength={2}
+								error={errors.daysAfter}
+							/>
+						</View>
 					</View>
 					<Text style={styles.explain}>{t('cards.edit.cycleHint')}</Text>
+					{cyclePreview ? (
+						<Text style={styles.cyclePreview} accessibilityLiveRegion="polite">
+							{t('cards.edit.cyclePreview', {
+								month: formatMonthLong(`${cyclePreview.key}-01`),
+								closing: formatDayMonth(cyclePreview.closingDate),
+								due: formatDayMonth(cyclePreview.dueDate),
+							})}
+						</Text>
+					) : null}
 
 					{!existing ? (
 						<Field
@@ -463,6 +483,14 @@ const styles = StyleSheet.create({
 	},
 	secondary: {
 		gap: 10,
+	},
+	cyclePreview: {
+		fontSize: 15,
+		lineHeight: 22,
+		color: '#FFFFFF',
+		backgroundColor: 'rgba(21,232,254,0.1)',
+		borderRadius: 12,
+		padding: 12,
 	},
 	debit: {
 		gap: 14,

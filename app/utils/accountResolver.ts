@@ -212,35 +212,41 @@ const maybeAnchorFromStatement = async (account: Account, statement: OfxAccount)
 	return anchored;
 };
 
+/** Mesmo banco: mesmo app de notificação ou mesmo nome de banco. */
+const sameSource = (a: Account, b: Account): boolean =>
+	(a.packageName !== null && a.packageName === b.packageName) || sameBank(a.bankName, b.bankName);
+
 /**
- * O cartão que uma conta corrente paga. Só quando não há dúvida: um único cartão do
- * mesmo banco. Com dois cartões, o pagamento da fatura fica como transferência para
+ * O cartão que uma conta corrente paga. Só quando não há dúvida: um único cartão ativo
+ * do mesmo banco. Com dois cartões, o pagamento da fatura fica como transferência para
  * "fora", e o usuário indica o cartão ao revisar.
  */
 export const findCardForInvoice = async (checking: Account): Promise<Account | null> => {
 	const cards = (await getAccounts()).filter(
-		(account) =>
-			account.kind === 'credit_card' &&
-			!account.archived &&
-			((checking.packageName !== null && account.packageName === checking.packageName) ||
-				sameBank(account.bankName, checking.bankName))
+		(account) => account.kind === 'credit_card' && !account.archived && !account.deletedAt && sameSource(account, checking)
 	);
 	return cards.length === 1 ? cards[0] : null;
 };
 
 /**
  * A conta corrente que paga um cartão: o inverso de `findCardForInvoice`, para o
- * "Pagamento recebido" que aparece no extrato do cartão.
+ * "Pagamento recebido" que aparece no cartão.
+ *
+ * Contas externas não pagam o cartão pessoal: a Nubank PJ é do mesmo banco que o
+ * cartão, mas quem paga é a Nubank PF. Sobrando mais de uma, vence a principal.
  */
 export const findCheckingForCard = async (card: Account): Promise<Account | null> => {
-	const accounts = (await getAccounts()).filter(
+	const candidates = (await getAccounts()).filter(
 		(account) =>
 			account.kind === 'checking' &&
 			!account.archived &&
-			((card.packageName !== null && account.packageName === card.packageName) ||
-				sameBank(account.bankName, card.bankName))
+			!account.deletedAt &&
+			account.role !== 'external' &&
+			sameSource(account, card)
 	);
-	return accounts.length === 1 ? accounts[0] : null;
+	if (candidates.length === 1) return candidates[0];
+	const main = candidates.filter((account) => account.role === 'main');
+	return main.length === 1 ? main[0] : null;
 };
 
 export default {
