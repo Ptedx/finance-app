@@ -20,7 +20,14 @@ import { ACCOUNT_KIND_ICONS } from '../components/AccountPicker';
 import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Account, AccountDraft, AccountKind, Transaction } from '../database/schema';
+import {
+	type Account,
+	type AccountDraft,
+	type AccountKind,
+	type AccountRole,
+	defaultRoleFor,
+	type Transaction,
+} from '../database/schema';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { owedCents } from '../utils/accountMath';
 import { formatDate, todayISO } from '../utils/dateUtils';
@@ -39,6 +46,14 @@ import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/m
 
 const ACCENT = '#15E8FE';
 const KINDS: AccountKind[] = ['checking', 'savings', 'investment', 'cash', 'credit_card'];
+const ROLES: AccountRole[] = ['main', 'card', 'envelope', 'reserve', 'external'];
+const ROLE_ICONS: Record<AccountRole, React.ComponentProps<typeof Ionicons>['name']> = {
+	main: 'home-outline',
+	card: 'card-outline',
+	envelope: 'mail-outline',
+	reserve: 'shield-checkmark-outline',
+	external: 'log-out-outline',
+};
 
 interface AccountEditScreenProps {
 	accountId?: string;
@@ -65,6 +80,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [creditLimit, setCreditLimit] = useState(
 		existing?.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : ''
 	);
+	const [role, setRole] = useState<AccountRole>(existing?.role ?? defaultRoleFor(existing?.kind ?? 'checking'));
+	const [envelopeMonthly, setEnvelopeMonthly] = useState(
+		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
+	);
 	const [balanceInput, setBalanceInput] = useState('');
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string }>({});
 	const [saving, setSaving] = useState(false);
@@ -79,7 +98,15 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
 		setDueDay(existing.dueDay ? String(existing.dueDay) : '');
 		setCreditLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
+		setRole(existing.role);
+		setEnvelopeMonthly(existing.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : '');
 	}, [existing]);
+
+	/** Trocar o tipo numa conta nova leva o papel junto; numa existente o papel é escolha do usuário. */
+	const chooseKind = (next: AccountKind) => {
+		setKind(next);
+		if (!existing) setRole(defaultRoleFor(next));
+	};
 
 	const isCard = kind === 'credit_card';
 	const balanceCents = existing ? (balances.get(existing.id) ?? existing.openingBalanceCents) : 0;
@@ -111,6 +138,12 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			if (limitCents === null || limitCents <= 0) nextErrors.amount = t('accounts.edit.invalidAmount');
 		}
 
+		let envelopeCents: number | null = null;
+		if (role === 'envelope' && envelopeMonthly.trim() !== '') {
+			envelopeCents = parseAmountToCents(envelopeMonthly);
+			if (envelopeCents === null || envelopeCents <= 0) nextErrors.amount = t('accounts.edit.invalidAmount');
+		}
+
 		setErrors(nextErrors);
 		if (Object.keys(nextErrors).length > 0) {
 			announce(Object.values(nextErrors).join('. '));
@@ -120,6 +153,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		const draft: AccountDraft = {
 			name: name.trim(),
 			kind,
+			role,
+			envelopeMonthlyCents: role === 'envelope' ? envelopeCents : null,
 			bankName: bankName.trim() || null,
 			color: existing?.color ?? ACCOUNT_COLORS[kind],
 			last4: isCard && last4.trim() ? last4.trim().slice(-4) : null,
@@ -299,7 +334,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								return (
 									<Pressable
 										key={option}
-										onPress={() => setKind(option)}
+										onPress={() => chooseKind(option)}
 										accessibilityRole="radio"
 										accessibilityState={{ selected }}
 										accessibilityLabel={t(`accounts.kind.${option}`)}
@@ -316,6 +351,44 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							})}
 						</View>
 					</View>
+
+					<View style={styles.field}>
+						<Text style={styles.label}>{t('accounts.edit.role')}</Text>
+						<Text style={styles.roleHint}>{t('accounts.edit.roleHint')}</Text>
+						<View style={styles.kinds} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.role')}>
+							{ROLES.map((option) => {
+								const selected = role === option;
+								return (
+									<Pressable
+										key={option}
+										onPress={() => setRole(option)}
+										accessibilityRole="radio"
+										accessibilityState={{ selected }}
+										accessibilityLabel={t(`accounts.role.${option}`)}
+										accessibilityHint={t(`accounts.roleDescription.${option}`)}
+										style={({ pressed }) => [
+											styles.kindChip,
+											selected && { borderColor: ACCENT, backgroundColor: `${ACCENT}22` },
+											pressed && styles.pressed,
+										]}
+									>
+										<Ionicons name={selected ? 'checkmark-circle' : ROLE_ICONS[option]} size={18} color={selected ? ACCENT : 'rgba(255,255,255,0.8)'} />
+										<Text style={[styles.kindLabel, selected && { color: ACCENT }]}>{t(`accounts.role.${option}`)}</Text>
+									</Pressable>
+								);
+							})}
+						</View>
+						<Text style={styles.roleDescription} accessibilityLiveRegion="polite">
+							{t(`accounts.roleDescription.${role}`)}
+						</Text>
+					</View>
+
+					{role === 'envelope' &&
+						field(t('accounts.edit.envelopeMonthly'), envelopeMonthly, setEnvelopeMonthly, {
+							keyboardType: 'decimal-pad',
+							hint: t('accounts.edit.envelopeMonthlyHint'),
+							error: errors.amount,
+						})}
 
 					{field(t('accounts.edit.bank'), bankName, setBankName, {
 						placeholder: t('accounts.edit.bankPlaceholder'),
@@ -507,6 +580,18 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		flexWrap: 'wrap',
 		gap: 8,
+	},
+	roleHint: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.55)',
+		marginBottom: 8,
+	},
+	roleDescription: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.75)',
+		marginTop: 8,
 	},
 	kindChip: {
 		flexDirection: 'row',

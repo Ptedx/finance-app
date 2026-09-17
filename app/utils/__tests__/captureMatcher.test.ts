@@ -192,6 +192,57 @@ describe('transferência entre contas próprias', () => {
 		);
 	});
 
+	// A PJ não é acompanhada: o que ela manda para a conta pessoal é receita, e o aviso
+	// "você enviou para VINICIUS" que a PJ dispara pelo mesmo app não pode virar par.
+	describe('receita de fonte externa (a PJ do usuário)', () => {
+		const pjSentLeg = known({
+			id: 'pj-out',
+			packageName: NUBANK,
+			direction: 'out',
+			kind: 'pix_out',
+			amountCents: 1_200_000,
+			merchantKey: 'vinicius costa nunes',
+			status: 'transfer',
+			relatedId: null,
+		});
+		const proLabore = () =>
+			candidate({
+				packageName: NUBANK,
+				direction: 'in',
+				kind: 'pix_in',
+				amountCents: 1_200_000,
+				counterparty: 'EMPRESA DO VINICIUS LTDA',
+				merchantKey: 'empresa do vinicius',
+			});
+
+		it('com a fonte marcada como receita, o recebimento fica receita mesmo com a saída da PJ na caixa', () => {
+			const decision = decide(
+				proLabore(),
+				context({
+					externalIncome: true,
+					recent: [pjSentLeg],
+					rule: { merchantKey: 'empresa do vinicius', categoryId: 'salary', treatAs: 'transaction', confirmations: 1 },
+				})
+			);
+			expect(decision).toEqual({ action: 'pending', categoryId: 'salary' });
+		});
+
+		it('sem a marcação, o mesmo recebimento seria juntado à saída — é o que a marcação evita', () => {
+			expect(decide(proLabore(), context({ recent: [pjSentLeg] }))).toEqual({
+				action: 'transfer',
+				relatedId: 'pj-out',
+				reason: 'counterpart',
+			});
+		});
+
+		it('a marcação não afeta saídas: um Pix enviado continua podendo ser transferência', () => {
+			const received = known({ id: 'rcv', packageName: INTER, direction: 'in', kind: 'pix_in', amountCents: 50_000 });
+			expect(
+				decide(pixOut({ counterparty: 'Fulano', merchantKey: 'fulano' }), context({ externalIncome: true, recent: [received] }))
+			).toEqual({ action: 'ask_transfer', relatedId: 'rcv' });
+		});
+	});
+
 	// Conta pessoal e conta PJ do mesmo banco moram no mesmo app: as duas pontas da
 	// mesma transferência chegam com o mesmo packageName.
 	describe('conta pessoal e PJ no mesmo app', () => {

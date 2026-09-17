@@ -2,24 +2,30 @@ import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
 	addAccount,
+	assignUnassignedTransactions,
 	deleteAccount,
 	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
+	getCardPurchasesOriginated,
 	getUnassignedNet,
+	getUnassignedPeriodSummary,
 	setAccountBalanceToday,
 	updateAccount,
 } from '../database/database';
 import type { Account, AccountDraft, AccountEdit } from '../database/schema';
 import { type AccountsOverview, type CardCycle, cardCycleOn, owedCents, summarizeAccounts } from '../utils/accountMath';
 import { todayISO } from '../utils/dateUtils';
+import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
+import { usePeriod } from './PeriodContext';
 import { useTransactions } from './TransactionsContext';
 
 /**
- * Contas e cartões para as telas: a lista, o saldo de cada uma hoje, o total em caixa
- * e o que os cartões devem. Recarrega sempre que o livro-caixa muda (o
- * TransactionsContext recarrega os lançamentos) e quando uma captura vira
- * transferência (o CapturesContext chama `refresh`).
+ * Contas e cartões para as telas: a lista, o saldo de cada uma hoje, o total em caixa,
+ * o que os cartões devem, e o **quadro do mês** por papel de conta (quanto gastei de
+ * verdade, quanto guardei, quanto sobrou). Recarrega sempre que o livro-caixa muda
+ * (o TransactionsContext recarrega os lançamentos), quando o período muda e quando
+ * uma captura vira transferência (o CapturesContext chama `refresh`).
  */
 
 export interface CardStatus {
@@ -38,6 +44,8 @@ interface AccountsContextType {
 	/** Estado do ciclo de cada cartão que tem dia de fechamento. */
 	cards: Map<string, CardStatus>;
 	overview: AccountsOverview;
+	/** O mês selecionado, por papel de conta. Nulo até a primeira carga. */
+	month: MonthOverview | null;
 	unassignedNetCents: number;
 	isLoading: boolean;
 	refresh: () => Promise<void>;
@@ -46,36 +54,60 @@ interface AccountsContextType {
 	removeAccount: (id: string) => Promise<void>;
 	/** "Meu saldo agora é X" — para cartões, X é o valor a pagar. */
 	setBalanceToday: (id: string, balanceCents: number) => Promise<void>;
+	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
+	assignUnassigned: (accountId: string) => Promise<number>;
 }
 
 const AccountsContext = createContext<AccountsContextType | undefined>(undefined);
 
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-	const { transactions } = useTransactions();
+	const { transactions, refreshData } = useTransactions();
+	const { startDate, endDate } = usePeriod();
 
 	const [accounts, setAccounts] = useState<Account[]>([]);
 	const [balances, setBalances] = useState<Map<string, number>>(new Map());
 	const [cards, setCards] = useState<Map<string, CardStatus>>(new Map());
+	const [month, setMonth] = useState<MonthOverview | null>(null);
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [isLoading, setIsLoading] = useState(true);
 
 	const refresh = useCallback(async () => {
 		try {
 			const today = todayISO();
-			const [list, nextBalances, unassigned] = await Promise.all([
+			const [list, nextBalances, unassigned, unassignedPeriod] = await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
 				getUnassignedNet(today),
+				getUnassignedPeriodSummary(startDate, endDate),
 			]);
 
 			const nextCards = new Map<string, CardStatus>();
+			const activity: AccountMonthActivity[] = [];
+
 			for (const account of list) {
+				if (account.deletedAt) continue;
+
+				const period = await getAccountActivity(account.id, startDate, endDate);
+				activity.push({
+					accountId: account.id,
+					name: account.name,
+					kind: account.kind,
+					role: account.archived ? 'external' : account.role,
+					incomeCents: period.incomeCents,
+					expenseCents: period.expenseCents,
+					transfersInCents: period.transfersInCents,
+					transfersOutCents: period.transfersOutCents,
+					purchasesOriginatedCents:
+						account.role === 'card' ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined,
+					envelopeMonthlyCents: account.envelopeMonthlyCents,
+				});
+
 				if (account.kind !== 'credit_card' || account.closingDay === null) continue;
 				const cycle = cardCycleOn(account.closingDay, account.dueDay, today);
-				const activity = await getAccountActivity(account.id, cycle.cycleStart, today);
+				const cycleActivity = await getAccountActivity(account.id, cycle.cycleStart, today);
 				nextCards.set(account.id, {
 					cycle,
-					openInvoiceCents: Math.max(0, activity.expenseCents - activity.incomeCents),
+					openInvoiceCents: Math.max(0, cycleActivity.expenseCents - cycleActivity.incomeCents),
 					owedCents: owedCents(nextBalances.get(account.id) ?? account.openingBalanceCents),
 				});
 			}
@@ -84,14 +116,15 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setBalances(nextBalances);
 			setCards(nextCards);
 			setUnassignedNetCents(unassigned);
+			setMonth(buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod }));
 		} catch (error) {
 			console.error('Error loading accounts:', error);
 		} finally {
 			setIsLoading(false);
 		}
-	}, []);
+	}, [startDate, endDate]);
 
-	// O livro-caixa mudou (o TransactionsContext trocou a lista): os saldos também.
+	// O livro-caixa mudou (o TransactionsContext trocou a lista) ou o período mudou.
 	useEffect(() => {
 		void refresh();
 	}, [refresh, transactions]);
@@ -116,9 +149,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const removeAccount = useCallback(
 		async (id: string) => {
 			await deleteAccount(id);
-			await refresh();
+			await Promise.all([refresh(), refreshData()]);
 		},
-		[refresh]
+		[refresh, refreshData]
 	);
 
 	const setBalanceToday = useCallback(
@@ -130,6 +163,15 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await refresh();
 		},
 		[accounts, refresh]
+	);
+
+	const assignUnassigned = useCallback(
+		async (accountId: string) => {
+			const changed = await assignUnassignedTransactions(accountId);
+			await Promise.all([refresh(), refreshData()]);
+			return changed;
+		},
+		[refresh, refreshData]
 	);
 
 	const activeAccounts = useMemo(() => accounts.filter((account) => !account.archived), [accounts]);
@@ -145,6 +187,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			balances,
 			cards,
 			overview,
+			month,
 			unassignedNetCents,
 			isLoading,
 			refresh,
@@ -152,6 +195,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			saveAccount,
 			removeAccount,
 			setBalanceToday,
+			assignUnassigned,
 		}),
 		[
 			accounts,
@@ -159,6 +203,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			balances,
 			cards,
 			overview,
+			month,
 			unassignedNetCents,
 			isLoading,
 			refresh,
@@ -166,6 +211,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			saveAccount,
 			removeAccount,
 			setBalanceToday,
+			assignUnassigned,
 		]
 	);
 

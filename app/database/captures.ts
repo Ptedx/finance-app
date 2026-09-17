@@ -192,6 +192,27 @@ export const getTransferMerchantKeys = async (): Promise<string[]> => {
 	return rows.map((row) => row.merchantKey);
 };
 
+/**
+ * A saída avisada pela conta PJ pelo mesmo app ("você enviou R$ X para VINICIUS") que
+ * o motor tratou como transferência para fora, sem par. Quando o recebimento da PJ
+ * é reconhecido como receita, essa saída não era da conta pessoal: é neutralizada.
+ */
+export const findUnpairedTransferLeg = async (match: {
+	packageName: string;
+	amountCents: number;
+	since: string;
+	until: string;
+}): Promise<Capture | null> => {
+	const row = await db.getFirstAsync<CaptureRow>(
+		`SELECT * FROM captures
+     WHERE packageName = ? AND amountCents = ? AND direction = 'out' AND status = 'transfer'
+       AND relatedId IS NULL AND postedAt BETWEEN ? AND ?
+     ORDER BY postedAt DESC LIMIT 1`,
+		[match.packageName, match.amountCents, match.since, match.until]
+	);
+	return row ? toCapture(row) : null;
+};
+
 // ---------------------------------------------------------------------------
 // O que o import de extrato precisa saber antes de planejar
 // ---------------------------------------------------------------------------

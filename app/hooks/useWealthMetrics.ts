@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
 	getPeriodSummary,
@@ -49,6 +50,10 @@ export interface WealthMetricsResult {
 
 export const useWealthMetrics = (): WealthMetricsResult => {
 	const { periodTotals, balanceCents, monthlyData, categoryTotals, categories } = useTransactions();
+	// Com contas cadastradas, a reserva é o caixa delas (âncoras do banco + movimento),
+	// não a soma cega dos lançamentos; sem contas, o saldo do livro continua valendo.
+	const { activeAccounts, overview } = useAccounts();
+	const liquidCents = activeAccounts.length > 0 ? overview.cashCents : balanceCents;
 	const { transactions: recurring } = useRecurringTransactions();
 	const { selectedMonth, selectedYear } = usePeriod();
 
@@ -122,7 +127,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			month: selectedYear === getCurrentYear() ? selectedMonth : 12,
 			periodTotals,
 			previousPeriodTotals: previous?.totals ?? null,
-			liquidCents: balanceCents,
+			liquidCents,
 			recurring,
 			expenseTotalsByNature,
 			categoryTotals: categoryTotals.expenses,
@@ -136,7 +141,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			selectedYear,
 			periodTotals,
 			previous,
-			balanceCents,
+			liquidCents,
 			recurring,
 			expenseTotalsByNature,
 			categoryTotals.expenses,

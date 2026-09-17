@@ -104,6 +104,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			id: row.id,
 			name: row.name,
 			kind: row.kind,
+			role: row.role,
+			envelopeMonthlyCents: row.envelopeMonthlyCents === null ? null : Number(row.envelopeMonthlyCents),
 			bankName: row.bankName,
 			color: row.color,
 			last4: row.last4,
@@ -333,9 +335,14 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					continue;
 				}
 
+				// Aparelho anterior ao papel: o padrão pelo tipo, o mesmo que o app aplica.
+				const defaultRole =
+					row.kind === 'credit_card' ? 'card' : row.kind === 'savings' || row.kind === 'investment' ? 'reserve' : 'main';
 				const data = {
 					name: row.name,
 					kind: row.kind,
+					role: row.role ?? defaultRole,
+					envelopeMonthlyCents: row.envelopeMonthlyCents == null ? null : BigInt(row.envelopeMonthlyCents),
 					bankName: row.bankName ?? null,
 					color: row.color,
 					last4: row.last4 ?? null,

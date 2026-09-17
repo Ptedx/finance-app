@@ -17,6 +17,7 @@
 
 import {
 	type CaptureDraft,
+	findUnpairedTransferLeg,
 	getCapture,
 	getMerchantRule,
 	getRecentCaptures,
@@ -366,6 +367,38 @@ export const applyDecision = async (
 	}
 };
 
+/** Se a regra aprendida diz que a contraparte paga receita (categoria de receita). */
+const isExternalIncomeRule = (rule: MerchantRule | undefined, categories: Category[]): boolean =>
+	Boolean(
+		rule?.categoryId &&
+			rule.treatAs === 'transaction' &&
+			categories.some((c) => c.id === rule.categoryId && c.type === 'income' && !c.deletedAt)
+	);
+
+/**
+ * Um recebimento de fonte externa foi reconhecido como receita. Se a saída que a PJ
+ * avisou pelo mesmo app já virou "transferência para fora", ela era da PJ, não da
+ * conta pessoal: apaga a transferência e deixa o aviso no histórico como ignorado.
+ */
+const neutralizeExternalLeg = async (
+	income: Pick<Capture, 'packageName' | 'amountCents' | 'postedAt'>
+): Promise<void> => {
+	const posted = new Date(income.postedAt).getTime();
+	const leg = await findUnpairedTransferLeg({
+		packageName: income.packageName,
+		amountCents: income.amountCents,
+		since: new Date(posted - LOOKBACK_MS).toISOString(),
+		until: new Date(posted + LOOKBACK_MS).toISOString(),
+	});
+	if (!leg) return;
+
+	if (leg.transferId) {
+		await deleteTransfer(leg.transferId);
+		syncQueue.schedule();
+	}
+	await updateCapture(leg.id, { status: 'ignored', reason: 'external_leg', transferId: null });
+};
+
 // ---------------------------------------------------------------------------
 // Entrada de notificações
 // ---------------------------------------------------------------------------
@@ -395,12 +428,15 @@ export const ingestRawCaptures = async (
 		const rule = candidate.merchantKey ? toMerchantRule(await getMerchantRule(candidate.merchantKey)) : undefined;
 		const fallbackCategoryId = resolveCategoryId(guessCategory(parsed), parsed.direction, options.categories);
 
+		const externalIncome = isExternalIncomeRule(rule, options.categories);
+
 		let decision = decide(candidate, {
 			recent,
 			rule,
 			ownNames: options.ownNames,
 			autoConfirmThreshold: threshold,
 			fallbackCategoryId,
+			externalIncome,
 		});
 
 		// Uma transferência "certa" cuja outra perna o usuário já confirmou como
@@ -442,6 +478,8 @@ export const ingestRawCaptures = async (
 		const result = await applyDecision(base, decision, options.categories);
 		if (result.autoConfirmed) summary.autoConfirmed += 1;
 		summary.inserted += 1;
+
+		if (externalIncome && parsed.direction === 'in') await neutralizeExternalLeg(base);
 	}
 
 	return summary;
@@ -497,6 +535,15 @@ export const confirmCapture = async (
 		reason: null,
 	});
 	await learnCategory(capture, resolved);
+
+	// Confirmar um recebimento como receita é o que ensina que a fonte é externa; a
+	// saída que a PJ avisou pelo mesmo app, se já virou transferência, deixa de ser.
+	if (
+		capture.direction === 'in' &&
+		categories.some((c) => c.id === resolved && c.type === 'income' && !c.deletedAt)
+	) {
+		await neutralizeExternalLeg(capture);
+	}
 
 	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };
 };

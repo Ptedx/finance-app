@@ -214,12 +214,23 @@ enum AccountKind {
 
 /// Conta ou cartão (v7). O saldo não é guardado: é `openingBalanceCents` no fim de
 /// `openingBalanceDate` mais tudo que vem depois — ver `Account` em app/database/schema.ts.
+/// O papel da conta no mês (v8). Ver `AccountRole` em app/database/schema.ts.
+enum AccountRole {
+  main
+  card
+  envelope
+  reserve
+  external
+}
+
 model Account {
-  id                  String
-  userId              String
-  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name                String
-  kind                AccountKind
+  id                   String
+  userId               String
+  user                 User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                 String
+  kind                 AccountKind
+  role                 AccountRole @default(main)
+  envelopeMonthlyCents BigInt?
   bankName            String?
   color               String
   last4               String?

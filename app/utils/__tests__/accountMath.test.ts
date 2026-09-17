@@ -5,6 +5,8 @@ const account = (overrides: Partial<Account>): Account => ({
 	id: 'a',
 	name: 'Conta',
 	kind: 'checking',
+	role: 'main',
+	envelopeMonthlyCents: null,
 	bankName: 'Nubank',
 	color: '#000',
 	last4: null,

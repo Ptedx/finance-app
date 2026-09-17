@@ -19,7 +19,7 @@ import {
 	getAccounts,
 	updateAccount,
 } from '../database/database';
-import type { Account, AccountKind } from '../database/schema';
+import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
 import { normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
 import { addDays, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
@@ -61,6 +61,8 @@ const newAccountDraft = (
 ) => ({
 	name: partial.name,
 	kind: partial.kind,
+	role: defaultRoleFor(partial.kind),
+	envelopeMonthlyCents: null,
 	bankName: partial.bankName,
 	color: ACCOUNT_COLORS[partial.kind],
 	last4: partial.last4,

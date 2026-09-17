@@ -75,6 +75,29 @@ export interface Transaction extends SyncMeta {
 export type AccountKind = 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
 
 /**
+ * O papel da conta na sua vida financeira — é o que decide como o mês é calculado.
+ *
+ * - `main`: onde a renda cai. Pix e débito saindo daqui são gastos do mês.
+ * - `card`: compras contam no mês da compra, parcela a parcela; pagar a fatura é
+ *   transferência, não gasto.
+ * - `envelope`: conta de gastos com valor fixo por mês. O que se manda para ela é o
+ *   gasto do mês; o que acontece lá dentro é detalhe e não soma de novo. A sobra fica
+ *   na conta como recompensa.
+ * - `reserve`: dinheiro guardado. O que entra é poupança, não gasto; rendimento é
+ *   receita de investimento.
+ * - `external`: uma conta que o app conhece mas não acompanha (a PJ, por exemplo):
+ *   o que ela manda para a principal é receita.
+ */
+export type AccountRole = 'main' | 'card' | 'envelope' | 'reserve' | 'external';
+
+/** O papel que uma conta nova recebe pelo tipo, até o usuário dizer o contrário. */
+export const defaultRoleFor = (kind: AccountKind): AccountRole => {
+	if (kind === 'credit_card') return 'card';
+	if (kind === 'savings' || kind === 'investment') return 'reserve';
+	return 'main';
+};
+
+/**
  * Uma conta ou cartão. É o que dá saldo por conta e fatura por cartão na tela inicial.
  *
  * O saldo é calculado, nunca guardado: `openingBalanceCents` é o saldo **no fim de**
@@ -90,6 +113,9 @@ export interface Account extends SyncMeta {
 	id: string;
 	name: string;
 	kind: AccountKind;
+	role: AccountRole;
+	/** Quanto entra por mês num envelope, para a barra "gastou X de Y". Só `envelope`. */
+	envelopeMonthlyCents: number | null;
 	bankName: string | null;
 	color: string;
 	last4: string | null;
@@ -168,8 +194,9 @@ export const DATABASE_NAME = 'spendr.db';
  *     notifications and what the app has learned about each merchant.
  * 7 — `accounts` and `transfers` are created; transactions gain `accountId` and the
  *     installment columns; captures gain `accountId` and `transferId`.
+ * 8 — accounts gain `role` (how the month is computed) and `envelopeMonthlyCents`.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -266,6 +293,8 @@ export const CREATE_ACCOUNTS_TABLE = `
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'checking',
+    role TEXT NOT NULL DEFAULT 'main',
+    envelopeMonthlyCents INTEGER,
     bankName TEXT,
     color TEXT NOT NULL DEFAULT '#15E8FE',
     last4 TEXT,
@@ -281,6 +310,12 @@ export const CREATE_ACCOUNTS_TABLE = `
 ${SYNC_COLUMNS_SQL}
   );
 `;
+
+/** Colunas que o v8 acrescenta em `accounts`. */
+export const ACCOUNT_V8_COLUMNS: Array<[name: string, sql: string]> = [
+	['role', "TEXT NOT NULL DEFAULT 'main'"],
+	['envelopeMonthlyCents', 'INTEGER'],
+];
 
 export const CREATE_TRANSFERS_TABLE = `
   CREATE TABLE IF NOT EXISTS transfers (

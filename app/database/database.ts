@@ -44,6 +44,7 @@ import {
 	type Transfer,
 	type TransferDraft,
 	type TransferEdit,
+	ACCOUNT_V8_COLUMNS,
 	CAPTURE_V7_COLUMNS,
 	CREATE_ACCOUNTS_TABLE,
 	CREATE_TRANSFERS_TABLE,
@@ -80,6 +81,8 @@ interface AccountDB extends SyncColumnsDB {
 	id: string;
 	name: string;
 	kind: Account['kind'];
+	role: Account['role'];
+	envelopeMonthlyCents: number | null;
 	bankName: string | null;
 	color: string;
 	last4: string | null;
@@ -149,6 +152,8 @@ const convertAccount = (account: AccountDB): Account => ({
 	id: account.id,
 	name: account.name,
 	kind: account.kind,
+	role: account.role ?? 'main',
+	envelopeMonthlyCents: account.envelopeMonthlyCents ?? null,
 	bankName: account.bankName,
 	color: account.color,
 	last4: account.last4,
@@ -480,8 +485,36 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 5) await migrateCategoryNature();
 	if (version < 6) await migrateCaptureTables();
 	if (version < 7) await migrateAccounts();
+	if (version < 8) await migrateAccountRoles();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+};
+
+/**
+ * v7 -> v8: o papel de cada conta e o valor mensal do envelope.
+ *
+ * Contas já existentes ganham o papel pelo tipo — cartão é `card`, poupança e
+ * investimento são `reserve`, o resto é `main` — o mesmo padrão de uma conta nova.
+ * O usuário muda depois na tela da conta.
+ */
+const migrateAccountRoles = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of ACCOUNT_V8_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	await db.execAsync(`
+    UPDATE accounts SET role = CASE
+      WHEN kind = 'credit_card' THEN 'card'
+      WHEN kind IN ('savings', 'investment') THEN 'reserve'
+      ELSE 'main'
+    END
+    WHERE role = 'main';
+  `);
+
+	console.log('Migrated accounts to roles');
 };
 
 /**
@@ -875,15 +908,17 @@ export const addAccount = async (account: AccountDraft, explicitId?: string): Pr
 	const id = explicitId ?? generateUniqueId();
 	await db.runAsync(
 		`INSERT INTO accounts
-       (id, name, kind, bankName, color, last4, closingDay, dueDay, creditLimitCents,
-        packageName, accountKey, openingBalanceCents, openingBalanceDate, sortOrder, archived,
-        updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+       (id, name, kind, role, envelopeMonthlyCents, bankName, color, last4, closingDay, dueDay,
+        creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        sortOrder, archived, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[
 			id,
 			account.name,
 			account.kind,
+			account.role,
+			account.envelopeMonthlyCents,
 			account.bankName,
 			account.color,
 			account.last4,
@@ -905,13 +940,16 @@ export const addAccount = async (account: AccountDraft, explicitId?: string): Pr
 export const updateAccount = async (account: AccountEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE accounts
-     SET name = ?, kind = ?, bankName = ?, color = ?, last4 = ?, closingDay = ?, dueDay = ?,
-         creditLimitCents = ?, packageName = ?, accountKey = ?, openingBalanceCents = ?,
-         openingBalanceDate = ?, sortOrder = ?, archived = ?, updatedAt = ?, dirty = 1
+     SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, bankName = ?, color = ?, last4 = ?,
+         closingDay = ?, dueDay = ?, creditLimitCents = ?, packageName = ?, accountKey = ?,
+         openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
+         updatedAt = ?, dirty = 1
      WHERE id = ?`,
 		[
 			account.name,
 			account.kind,
+			account.role,
+			account.envelopeMonthlyCents,
 			account.bankName,
 			account.color,
 			account.last4,
@@ -1009,6 +1047,61 @@ export const getAccountBalances = async (asOfDate: string): Promise<Map<string, 
 		[asOfDate, asOfDate, asOfDate]
 	);
 	return new Map(rows.map((row) => [row.accountId, row.balanceCents]));
+};
+
+/** Receita e despesa dos lançamentos sem conta num período. */
+export const getUnassignedPeriodSummary = async (
+	startDate: string,
+	endDate: string
+): Promise<{ incomeCents: number; expenseCents: number }> => {
+	const row = await db.getFirstAsync<{ income: number; expense: number }>(
+		`SELECT
+       COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
+       COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
+     FROM transactions
+     WHERE accountId IS NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+		[startDate, endDate]
+	);
+	return { incomeCents: row?.income ?? 0, expenseCents: row?.expense ?? 0 };
+};
+
+/**
+ * Valor cheio das compras **feitas** num cartão no período: as à vista datadas nele,
+ * mais o total de cada compra parcelada cuja primeira parcela cai nele. É a métrica
+ * "quanto comprei este mês", diferente de "quanto cai na fatura".
+ */
+export const getCardPurchasesOriginated = async (
+	accountId: string,
+	startDate: string,
+	endDate: string
+): Promise<number> => {
+	const [single, groups] = await Promise.all([
+		db.getFirstAsync<{ total: number }>(
+			`SELECT COALESCE(SUM(amountCents), 0) AS total FROM transactions
+       WHERE accountId = ? AND isIncome = 0 AND installmentGroup IS NULL
+         AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+			[accountId, startDate, endDate]
+		),
+		db.getFirstAsync<{ total: number }>(
+			`SELECT COALESCE(SUM(t.amountCents), 0) AS total FROM transactions t
+       WHERE t.accountId = ? AND t.isIncome = 0 AND t.deletedAt IS NULL
+         AND t.installmentGroup IN (
+           SELECT installmentGroup FROM transactions
+           WHERE accountId = ? AND installmentIndex = 1 AND date BETWEEN ? AND ? AND deletedAt IS NULL
+         )`,
+			[accountId, accountId, startDate, endDate]
+		),
+	]);
+	return (single?.total ?? 0) + (groups?.total ?? 0);
+};
+
+/** Dá uma conta a todos os lançamentos que não têm nenhuma. Devolve quantos mudaram. */
+export const assignUnassignedTransactions = async (accountId: string): Promise<number> => {
+	const result = await db.runAsync(
+		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId IS NULL AND deletedAt IS NULL',
+		[accountId, nowTimestamp()]
+	);
+	return result.changes;
 };
 
 /** Receita menos despesa dos lançamentos sem conta, até `asOfDate`. */
@@ -1644,6 +1737,8 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			id: row.id,
 			name: row.name,
 			kind: row.kind,
+			role: row.role ?? 'main',
+			envelopeMonthlyCents: row.envelopeMonthlyCents ?? null,
 			bankName: row.bankName,
 			color: row.color,
 			last4: row.last4,
@@ -1843,12 +1938,13 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 
 			await db.runAsync(
 				`INSERT INTO accounts
-           (id, name, kind, bankName, color, last4, closingDay, dueDay, creditLimitCents,
-            packageName, accountKey, openingBalanceCents, openingBalanceDate, sortOrder, archived,
-            updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           (id, name, kind, role, envelopeMonthlyCents, bankName, color, last4, closingDay, dueDay,
+            creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            sortOrder, archived, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
-           name = excluded.name, kind = excluded.kind, bankName = excluded.bankName,
+           name = excluded.name, kind = excluded.kind, role = excluded.role,
+           envelopeMonthlyCents = excluded.envelopeMonthlyCents, bankName = excluded.bankName,
            color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
            dueDay = excluded.dueDay, creditLimitCents = excluded.creditLimitCents,
            packageName = excluded.packageName, accountKey = excluded.accountKey,
@@ -1860,6 +1956,8 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.id,
 					row.name,
 					row.kind,
+					row.role ?? 'main',
+					row.envelopeMonthlyCents ?? null,
 					row.bankName,
 					row.color,
 					row.last4,
@@ -2100,6 +2198,9 @@ export default {
 	getAccountActivity,
 	getAccountBalances,
 	getUnassignedNet,
+	getUnassignedPeriodSummary,
+	getCardPurchasesOriginated,
+	assignUnassignedTransactions,
 	setAccountBalanceToday,
 	addTransfer,
 	updateTransfer,

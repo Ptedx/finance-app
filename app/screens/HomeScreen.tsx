@@ -15,8 +15,8 @@ import AccountReminderBanner from '../components/AccountReminderBanner';
 import AccountsOverview from '../components/AccountsOverview';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import IncomeSection from '../components/IncomeSection';
+import MonthOverviewCard from '../components/MonthOverviewCard';
 import SavingsRateCard from '../components/SavingsRateCard';
-import Summary from '../components/Summary';
 import TransactionItem from '../components/TransactionItem';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useSync } from '../contexts/SyncContext';
@@ -26,8 +26,7 @@ import type { Transaction } from '../database/schema';
 const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
-	const { currentPeriodTransactions, periodTotals, balanceCents, isLoading, refreshData } =
-		useTransactions();
+	const { currentPeriodTransactions, isLoading, refreshData } = useTransactions();
 
 	const { processTransactions } = useRecurringTransactions();
 	const [refreshing, setRefreshing] = React.useState(false);
@@ -113,13 +112,8 @@ const HomeScreen = () => {
 				    que ganhei" diz mais sobre o futuro do que "sobrou R$ 800". */}
 				<SavingsRateCard />
 
-				{/* Budget Summary */}
-				<Summary
-					expenseCents={periodTotals.expenseCents}
-					incomeCents={periodTotals.incomeCents}
-					netCents={periodTotals.netCents}
-					balanceCents={balanceCents}
-				/>
+				{/* O quadro do mês por papel de conta: receita, gastos por bolso, guardado, sobrou. */}
+				<MonthOverviewCard />
 				{/* Saldo por conta e fatura por cartão: o que responde "quanto eu tenho agora". */}
 				<AccountsOverview />
 				<IncomeSection />

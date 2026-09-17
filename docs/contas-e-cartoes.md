@@ -61,6 +61,50 @@ para a primeira parcela, como os bancos fazem. No extrato do cartão, a linha "L
 casa só com a parcela 2 de 3, com janela de 45 dias (a fatura lança no fechamento, não
 no dia da parcela). Reverter a captura apaga todas as parcelas.
 
+## Papéis: como cada conta entra no mês
+
+Toda conta tem um `role`, escolhido na tela da conta (padrão pelo tipo: cartão é
+`card`, poupança e investimento são `reserve`, o resto é `main`). O papel é o que faz
+as informações não se atravessarem:
+
+| Papel | Exemplo | No quadro do mês |
+|---|---|---|
+| `main` (Principal) | Nubank PF | Receitas caem aqui. Pix e débito saindo são gastos. |
+| `card` (Cartão) | Cartão Nubank | Compras contam no mês da compra, parcela a parcela. Pagar a fatura é transferência. |
+| `envelope` (Envelope) | Inter PF, R$ 1.000/mês | O que entra no envelope é o gasto do mês. O que acontece lá dentro é detalhe ("gastou 700 de 1.000") e a sobra fica na conta como recompensa. |
+| `reserve` (Reserva) | Mercado Pago | O que entra é poupança, não gasto. Rendimento é receita de investimento. |
+| `external` (Externa) | Nubank PJ | Não acompanhada. O que ela manda para a principal é receita. |
+
+O quadro (`monthOverview.ts`, puro e testado) fica no card "Este mês" da tela inicial:
+
+```
+Receitas                       12.000
+Gastos                         10.200
+  Cartão Nubank                 6.800   (7.400 comprados neste mês)
+  Pix e débito                  2.400
+  Inter PF                      1.000   gastou 700 de 1.000
+Guardado                        1.500   mais 30 de rendimento
+Sobrou                          1.800   15% da sua receita ficou com você
+```
+
+Duas métricas no cartão: **o que cai na fatura do mês** (à vista + parcelas do mês, a
+principal, é o que se paga) e **o que foi comprado no mês** (valor cheio, para ver o
+compromisso assumido). O orçamento compara com o gasto total, não só com o cartão.
+
+### A conta PJ
+
+Vive no mesmo app da PF, então as notificações chegam iguais. Quando o usuário
+confirma um recebimento da empresa como receita (categoria de receita), o app aprende
+que aquela contraparte é fonte externa: os próximos recebimentos nunca viram
+transferência, mesmo com a saída "você enviou para VINICIUS" (avisada pela PJ) na
+caixa de entrada; e essa saída, se já tinha virado transferência para fora, é
+neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
+
+### Lançamentos sem conta
+
+Os que entraram antes de existirem contas aparecem em "Sem conta" no painel; um toque
+abre a tela que move todos para uma conta de uma vez.
+
 ## Tela inicial
 
 "Contas e cartões", logo abaixo do resumo do mês: três números (em caixa, cartões a

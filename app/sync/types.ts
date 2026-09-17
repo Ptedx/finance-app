@@ -50,6 +50,9 @@ export interface WireAccount extends WireMeta {
 	id: string;
 	name: string;
 	kind: 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
+	/** Campos do v8; opcionais na chegada de um servidor anterior a eles. */
+	role?: 'main' | 'card' | 'envelope' | 'reserve' | 'external' | null;
+	envelopeMonthlyCents?: number | null;
 	bankName: string | null;
 	color: string;
 	last4: string | null;

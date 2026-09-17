@@ -105,6 +105,14 @@ export interface DecisionContext {
 	autoConfirmThreshold: number;
 	/** Palpite de categoria quando não há regra. */
 	fallbackCategoryId: string | null;
+	/**
+	 * A contraparte é uma fonte externa de receita (a empresa do usuário, por exemplo):
+	 * o app aprendeu isso quando ele confirmou o que ela manda como receita. Um
+	 * recebimento dela nunca é transferência entre contas próprias, mesmo que o outro
+	 * lado ("você enviou para VINICIUS", visto pela conta PJ no mesmo app) esteja na
+	 * caixa de entrada com o mesmo valor.
+	 */
+	externalIncome?: boolean;
 }
 
 // Janelas de tempo. Carteira e banco avisam com segundos de diferença, mas alguns
@@ -344,16 +352,20 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'own_name' };
 	}
 
+	// Receita de fonte externa (a PJ do usuário mandando o pró-labore): é receita, e
+	// ponto. Nunca vira transferência com a saída que a PJ avisou pelo mesmo app.
+	const isExternalIncome = context.externalIncome === true && candidate.direction === 'in';
+
 	// 5. A outra perna já foi reconhecida como transferência e está sem par (a conta
 	//    PJ recebeu "de VINICIUS", certo pelo nome; esta é a saída da conta pessoal,
 	//    no mesmo app): junta as duas sem perguntar.
-	const decidedLeg = findTransferCounterpart(candidate, context.recent, true);
+	const decidedLeg = isExternalIncome ? undefined : findTransferCounterpart(candidate, context.recent, true);
 	if (decidedLeg?.status === 'transfer') {
 		return { action: 'transfer', relatedId: decidedLeg.id, reason: 'counterpart' };
 	}
 
 	// 6. Saída e entrada do mesmo valor em apps diferentes: provável, pergunta.
-	const counterpart = findTransferCounterpart(candidate, context.recent);
+	const counterpart = isExternalIncome ? undefined : findTransferCounterpart(candidate, context.recent);
 	if (counterpart) return { action: 'ask_transfer', relatedId: counterpart.id };
 
 	// 6. Dois bancos, mesmo valor, quase ao mesmo tempo: provável, pergunta.

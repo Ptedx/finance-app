@@ -76,6 +76,9 @@ export const accountSchema = z.object({
 	id: z.string().min(1).max(64),
 	name: z.string().min(1).max(100),
 	kind: z.enum(['checking', 'savings', 'investment', 'cash', 'credit_card']),
+	/** v8. Opcional: um aparelho anterior ao papel não o manda; o servidor resolve pelo tipo. */
+	role: z.enum(['main', 'card', 'envelope', 'reserve', 'external']).nullish(),
+	envelopeMonthlyCents: amountCents.nullish(),
 	bankName: z.string().max(100).nullish(),
 	color: z.string().min(1).max(32),
 	last4: z.string().max(8).nullish(),
