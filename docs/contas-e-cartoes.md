@@ -133,15 +133,29 @@ pagar (sinal invertido só nesses casos).
   (`invoicesClosingBetween`), com parcelas e com a "fatura atual" informada; as compras
   feitas no mês são a métrica secundária. Cartão sem fechamento cai no cálculo antigo.
 
-### Acertar o saldo de uma conta
+### Envelope: o teto vem do dinheiro que está na conta
 
-Na conta, "Acertar saldo" pergunta **de onde vem a diferença**:
+A barra "gastou X de Y" não usa mais o valor combinado como teto fixo:
 
-- **Foi gasto ou recebido**: lança a diferença hoje na conta (`balanceAdjustment`), como
-  "Ajuste com o saldo do banco". O saldo passa a bater **e** o mês mostra o que saiu — é o
-  caso de compras feitas antes de a conta existir no app, inclusive no envelope, onde a
-  barra "gastou X de Y" depende disso.
-- **Só o ponto de partida estava errado**: move a âncora, sem lançar nada no mês.
+- **Y** = o que sobrou do mês anterior + o que entrou neste mês. Sobraram R$ 100 e
+  entraram R$ 1.000: o mês tem R$ 1.100. Terminou zerado: volta a R$ 1.000.
+- Enquanto o envio do mês não aparece como transferência, vale o combinado
+  (`envelopeMonthlyCents`) ou o que já está na conta, o que for maior — é o caso de quem
+  começou a usar o app com o dinheiro do mês já lá.
+- **X** = o que saiu de dentro do envelope no mês; o que sobra é o saldo real da conta.
+
+### Acertar uma conta com o banco
+
+Um modal só, sem escolher "modo" (`AdjustAccountSheet`): **já gastei neste mês** e **ainda
+tenho na conta**. Os dois são o mesmo dinheiro visto de dois lados, então mexer num muda o
+outro. O app faz as duas coisas sozinho:
+
+- a diferença de gasto vira lançamento de hoje (`spendingAdjustment`), que é o que move a
+  barra do envelope e o mês;
+- o que ainda não bate é dinheiro de antes do app (a sobra do mês passado) e move só o
+  ponto de partida.
+
+É para a primeira vez; depois as notificações mantêm sozinhas.
 
 ### Fatura é da conta, cartão é de quem gastou
 

@@ -39,7 +39,7 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 	let secondary = t(`accounts.role.${account.role}`);
 	let barPercent: number | null = null;
 	if (account.role === 'envelope' && envelope) {
-		const target = envelope.monthlyCents ?? envelope.fundedCents;
+		const target = envelope.targetCents;
 		secondary = t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) });
 		barPercent = target > 0 ? Math.round((envelope.spentCents / target) * 100) : null;
 	} else if (account.role === 'reserve' && savedThisMonthCents !== undefined && savedThisMonthCents !== 0) {

@@ -13,22 +13,21 @@ import type { Account } from '../database/schema';
 
 /** Quanto o cartão deve: o saldo negativo lido ao contrário; um saldo positivo é crédito. */
 /**
- * O que falta lançar para o saldo do app bater com o do banco.
+ * O lançamento que falta para o gasto do mês numa conta bater com o que o usuário informou.
  *
- * Duas situações diferentes, e o usuário escolhe: se o dinheiro **foi gasto** (compras que
- * o app não viu, como as do Inter antes de a conta existir), a diferença é um lançamento
- * de verdade e precisa aparecer no mês; se é só o **ponto de partida** que estava errado,
- * a âncora se move e nada entra no mês.
+ * Compras que o app não viu (as do Inter antes de a conta existir, por exemplo) são gasto
+ * de verdade e precisam entrar no mês — é isso que move a barra do envelope. Gasto menor
+ * do que o app já tinha significa dinheiro voltando, então vira entrada.
  *
- * Nulo quando já está igual — aí não há o que lançar.
+ * Nulo quando já está igual.
  */
-export const balanceAdjustment = (
-	currentCents: number,
-	targetCents: number
+export const spendingAdjustment = (
+	currentSpentCents: number,
+	informedSpentCents: number
 ): { amountCents: number; isIncome: boolean } | null => {
-	const difference = targetCents - currentCents;
+	const difference = informedSpentCents - currentSpentCents;
 	if (difference === 0) return null;
-	return { amountCents: Math.abs(difference), isIncome: difference > 0 };
+	return { amountCents: Math.abs(difference), isIncome: difference < 0 };
 };
 
 export const owedCents = (balanceCents: number): number => Math.max(0, -balanceCents);

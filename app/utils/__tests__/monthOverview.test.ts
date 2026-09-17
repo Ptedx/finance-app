@@ -74,7 +74,15 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 
 	it('o envelope conta pelo que entrou, e mostra quanto foi usado', () => {
 		expect(overview.envelopes).toEqual([
-			{ accountId: 'inter', name: 'Inter PF', fundedCents: 100_000, spentCents: 70_000, monthlyCents: 100_000 },
+			{
+				accountId: 'inter',
+				name: 'Inter PF',
+				fundedCents: 100_000,
+				spentCents: 70_000,
+				monthlyCents: 100_000,
+				targetCents: 100_000,
+				remainingCents: 30_000,
+			},
 		]);
 	});
 
@@ -162,5 +170,64 @@ describe('buildMonthOverview — detalhes', () => {
 			unassigned: { incomeCents: 0, expenseCents: 0 },
 		});
 		expect(overview.savedCents).toBe(-3_000);
+	});
+});
+
+describe('envelope: o teto vem do dinheiro que está na conta', () => {
+	const envelope = (overrides: Partial<AccountMonthActivity>) =>
+		buildMonthOverview({
+			accounts: [
+				activity({
+					accountId: 'inter',
+					name: 'Inter PF',
+					role: 'envelope',
+					envelopeMonthlyCents: 100_000,
+					...overrides,
+				}),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		}).envelopes[0];
+
+	it('mês normal: entrou 1.000, gastou 845,20, sobram 154,80', () => {
+		expect(envelope({ transfersInCents: 100_000, expenseCents: 84_520, startBalanceCents: 0, endBalanceCents: 15_480 })).toMatchObject({
+			targetCents: 100_000,
+			spentCents: 84_520,
+			remainingCents: 15_480,
+		});
+	});
+
+	it('sobrou dinheiro do mês passado: o teto do mês sobe junto', () => {
+		// Sobraram R$ 100 e entraram R$ 1.000: o mês tem R$ 1.100 para gastar.
+		expect(envelope({ startBalanceCents: 10_000, transfersInCents: 100_000, expenseCents: 0, endBalanceCents: 110_000 })).toMatchObject({
+			targetCents: 110_000,
+			remainingCents: 110_000,
+		});
+	});
+
+	it('mês que terminou zerado volta ao combinado', () => {
+		expect(envelope({ startBalanceCents: 0, transfersInCents: 100_000, expenseCents: 100_000, endBalanceCents: 0 })).toMatchObject({
+			targetCents: 100_000,
+			spentCents: 100_000,
+			remainingCents: 0,
+		});
+	});
+
+	it('antes de o envio do mês cair, vale o combinado', () => {
+		expect(envelope({ startBalanceCents: 10_000, transfersInCents: 0, expenseCents: 0, endBalanceCents: 10_000 })).toMatchObject({
+			targetCents: 100_000,
+		});
+	});
+
+	it('quem começou a usar o app com o dinheiro do mês já na conta: o teto é o que está lá', () => {
+		// Inter com R$ 1.000 na conta, sem transferência registrada, e R$ 845,20 já gastos.
+		expect(
+			envelope({ startBalanceCents: 100_000, transfersInCents: 0, expenseCents: 84_520, endBalanceCents: 15_480 })
+		).toMatchObject({ targetCents: 100_000, spentCents: 84_520, remainingCents: 15_480 });
+	});
+
+	it('o que saiu do envelope para outra conta sua não vira teto nem gasto', () => {
+		expect(
+			envelope({ startBalanceCents: 0, transfersInCents: 100_000, transfersOutCents: 60_000, expenseCents: 0, endBalanceCents: 40_000 })
+		).toMatchObject({ targetCents: 40_000, fundedCents: 40_000, remainingCents: 40_000 });
 	});
 });

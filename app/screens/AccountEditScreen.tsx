@@ -18,6 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCOUNT_KIND_ICONS } from '../components/AccountPicker';
 import TransactionItem from '../components/TransactionItem';
+import AdjustAccountSheet from '../components/accounts/AdjustAccountSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
@@ -28,7 +29,6 @@ import {
 	defaultRoleFor,
 	type Transaction,
 } from '../database/schema';
-import { balanceAdjustment } from '../utils/accountMath';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { formatDate, todayISO } from '../utils/dateUtils';
@@ -64,7 +64,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, createAccount, saveAccount, removeAccount, setBalanceToday } = useAccounts();
+	const { accounts, balances, periodSpentByAccount, createAccount, saveAccount, removeAccount, adjustAccountMonth } = useAccounts();
 	const { transactions } = useTransactions();
 
 	const existing: Account | undefined = useMemo(
@@ -80,9 +80,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [envelopeMonthly, setEnvelopeMonthly] = useState(
 		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
 	);
-	const [balanceInput, setBalanceInput] = useState('');
-	// O dinheiro saiu (gasto que o app não viu) ou só o ponto de partida estava errado?
-	const [balanceMode, setBalanceMode] = useState<'spend' | 'anchor'>('spend');
+	const [adjusting, setAdjusting] = useState(false);
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string }>({});
 	const [saving, setSaving] = useState(false);
 
@@ -166,42 +164,6 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			setSaving(false);
 		}
 	};
-
-	const handleSetBalance = async () => {
-		if (!existing) return;
-		const cents = parseAmountToCents(balanceInput);
-		if (cents === null) {
-			setErrors((current) => ({ ...current, balance: t('accounts.edit.invalidAmount') }));
-			announce(t('accounts.edit.invalidAmount'));
-			return;
-		}
-		setErrors((current) => ({ ...current, balance: undefined }));
-		const adjustment = balanceAdjustment(balanceCents, cents);
-		await setBalanceToday(existing.id, cents, balanceMode);
-		setBalanceInput('');
-		announce(
-			balanceMode === 'spend' && adjustment
-				? t(adjustment.isIncome ? 'accounts.edit.balanceIncomeAdded' : 'accounts.edit.balanceSpendAdded', {
-						amount: formatCents(adjustment.amountCents),
-					})
-				: t('accounts.edit.balanceSet')
-		);
-	};
-
-	// O que vai acontecer, em uma frase, antes de tocar no botão.
-	const typedBalance = balanceInput.trim() ? parseAmountToCents(balanceInput) : null;
-	const previewAdjustment = typedBalance === null ? null : balanceAdjustment(balanceCents, typedBalance);
-	const balancePreview =
-		typedBalance === null
-			? null
-			: balanceMode === 'anchor'
-				? t('accounts.edit.previewAnchor', { amount: formatCents(typedBalance) })
-				: previewAdjustment === null
-					? t('accounts.edit.previewSame')
-					: t(previewAdjustment.isIncome ? 'accounts.edit.previewIncome' : 'accounts.edit.previewSpend', {
-							current: formatCents(balanceCents),
-							amount: formatCents(previewAdjustment.amountCents),
-						});
 
 	const handleArchive = async () => {
 		if (!existing) return;
@@ -289,58 +251,15 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							)}
 							{existing.accountKey && <Text style={styles.balanceMeta}>{t('accounts.linkedStatement')}</Text>}
 
-							<View style={styles.modes} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.adjustMode')}>
-								{(['spend', 'anchor'] as const).map((mode) => (
-									<Pressable
-										key={mode}
-										onPress={() => setBalanceMode(mode)}
-										accessibilityRole="radio"
-										accessibilityState={{ checked: balanceMode === mode }}
-										accessibilityLabel={t(mode === 'spend' ? 'accounts.edit.modeSpend' : 'accounts.edit.modeAnchor')}
-										accessibilityHint={t(mode === 'spend' ? 'accounts.edit.modeSpendHint' : 'accounts.edit.modeAnchorHint')}
-										style={({ pressed }) => [styles.mode, balanceMode === mode && styles.modeSelected, pressed && styles.pressed]}
-									>
-										<Text style={[styles.modeTitle, balanceMode === mode && styles.modeTitleSelected]}>
-											{t(mode === 'spend' ? 'accounts.edit.modeSpend' : 'accounts.edit.modeAnchor')}
-										</Text>
-										<Text style={styles.modeHint}>
-											{t(mode === 'spend' ? 'accounts.edit.modeSpendHint' : 'accounts.edit.modeAnchorHint')}
-										</Text>
-									</Pressable>
-								))}
-							</View>
-
-							<View style={styles.setBalanceRow}>
-								<TextInput
-									style={[styles.input, styles.setBalanceInput, errors.balance && styles.inputError]}
-									value={balanceInput}
-									onChangeText={setBalanceInput}
-									placeholder={t('accounts.edit.currentBalance')}
-									placeholderTextColor="rgba(255,255,255,0.35)"
-									keyboardType="decimal-pad"
-									accessibilityLabel={t('accounts.edit.currentBalance')}
-									accessibilityHint={t('accounts.edit.setBalanceHint')}
-								/>
-								<Pressable
-									onPress={handleSetBalance}
-									accessibilityRole="button"
-									accessibilityLabel={t('accounts.edit.setBalance')}
-									accessibilityHint={t('accounts.edit.setBalanceHint')}
-									style={({ pressed }) => [styles.primaryButton, styles.setBalanceButton, pressed && styles.pressed]}
-								>
-									<Text style={styles.primaryButtonText}>{t('accounts.edit.setBalance')}</Text>
-								</Pressable>
-							</View>
-							{balancePreview ? (
-								<Text style={styles.balanceMeta} accessibilityLiveRegion="polite">
-									{balancePreview}
-								</Text>
-							) : null}
-							{errors.balance ? (
-								<Text style={styles.error} accessibilityLiveRegion="polite">
-									{errors.balance}
-								</Text>
-							) : null}
+							<Pressable
+								onPress={() => setAdjusting(true)}
+								accessibilityRole="button"
+								accessibilityLabel={t('accounts.edit.setBalance')}
+								accessibilityHint={t('accounts.edit.setBalanceHint')}
+								style={({ pressed }) => [styles.primaryButton, styles.setBalanceButton, pressed && styles.pressed]}
+							>
+								<Text style={styles.primaryButtonText}>{t('accounts.edit.setBalance')}</Text>
+							</Pressable>
 						</View>
 					)}
 
@@ -476,6 +395,21 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					)}
 				</ScrollView>
 			</KeyboardAvoidingView>
+
+			{existing ? (
+				<AdjustAccountSheet
+					visible={adjusting}
+					account={existing}
+					spentCents={periodSpentByAccount.get(existing.id) ?? 0}
+					balanceCents={balanceCents}
+					isEnvelope={existing.role === 'envelope'}
+					onClose={() => setAdjusting(false)}
+					onConfirm={async (input) => {
+						await adjustAccountMonth(existing.id, input);
+						setAdjusting(false);
+					}}
+				/>
+			) : null}
 		</SafeAreaView>
 	);
 };

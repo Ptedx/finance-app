@@ -1,5 +1,5 @@
 import type { Account } from '../../database/schema';
-import { balanceAdjustment, owedCents, summarizeAccounts } from '../accountMath';
+import { owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'a',
@@ -61,20 +61,17 @@ describe('summarizeAccounts', () => {
 	});
 });
 
-describe('balanceAdjustment — acertar o saldo de uma conta', () => {
-	it('saldo do banco menor: a diferença é gasto', () => {
-		expect(balanceAdjustment(100_000, 30_000)).toEqual({ amountCents: 70_000, isIncome: false });
+describe('spendingAdjustment — acertar o gasto do mês numa conta', () => {
+	it('gastou mais do que o app tinha: entra como despesa', () => {
+		// O app tinha R$ 0 de gasto no Inter e o usuário informa R$ 845,20.
+		expect(spendingAdjustment(0, 84_520)).toEqual({ amountCents: 84_520, isIncome: false });
 	});
 
-	it('saldo do banco maior: a diferença é entrada', () => {
-		expect(balanceAdjustment(100_000, 130_000)).toEqual({ amountCents: 30_000, isIncome: true });
+	it('gastou menos do que o app tinha: entra como entrada', () => {
+		expect(spendingAdjustment(84_520, 20_000)).toEqual({ amountCents: 64_520, isIncome: true });
 	});
 
 	it('igual não gera lançamento', () => {
-		expect(balanceAdjustment(100_000, 100_000)).toBeNull();
-	});
-
-	it('funciona com saldo negativo', () => {
-		expect(balanceAdjustment(-5_000, 0)).toEqual({ amountCents: 5_000, isIncome: true });
+		expect(spendingAdjustment(84_520, 84_520)).toBeNull();
 	});
 });

@@ -78,10 +78,10 @@ const MonthOverviewCard: React.FC = () => {
 			))}
 			<Row label={t('month.pixDebit')} value={formatCents(month.mainSpendCents)} indent />
 			{month.envelopes.map((envelope) => {
-				const target = envelope.monthlyCents ?? envelope.fundedCents;
+				const target = envelope.targetCents;
 				const percent = target > 0 ? Math.min(100, Math.round((envelope.spentCents / target) * 100)) : 0;
 				return (
-					<View key={envelope.accountId} style={[styles.row, styles.rowIndent, styles.envelopeRow]} accessible accessibilityLabel={`${envelope.name}, ${formatCents(envelope.fundedCents)}, ${t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}`}>
+					<View key={envelope.accountId} style={[styles.row, styles.rowIndent, styles.envelopeRow]} accessible accessibilityLabel={`${envelope.name}, ${t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}, ${t('month.envelopeLeft', { amount: formatCents(envelope.remainingCents) })}`}>
 						<View style={styles.rowText}>
 							<Text style={[styles.rowLabel, styles.rowLabelIndent]}>{envelope.name}</Text>
 							<Text style={styles.rowSub}>
@@ -91,7 +91,7 @@ const MonthOverviewCard: React.FC = () => {
 								<View style={[styles.fill, { width: `${percent}%` }, percent >= 100 && styles.fillFull]} />
 							</View>
 						</View>
-						<Text style={styles.rowValue}>{formatCents(envelope.fundedCents)}</Text>
+						<Text style={styles.rowValue}>{formatCents(envelope.remainingCents)}</Text>
 					</View>
 				);
 			})}

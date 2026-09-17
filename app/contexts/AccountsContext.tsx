@@ -26,7 +26,7 @@ import {
 import { getPendingCaptures } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Capture } from '../database/schema';
 import * as syncQueue from '../sync/queue';
-import { type AccountsOverview, balanceAdjustment, summarizeAccounts } from '../utils/accountMath';
+import { type AccountsOverview, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
 import {
 	buildCardSummary,
 	cardInstallmentDates,
@@ -41,7 +41,7 @@ import {
 import { resolveCategoryId } from '../utils/captureActions';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { parseCardNames, withCardName } from '../utils/cardNames';
-import { getISODate, todayISO } from '../utils/dateUtils';
+import { addDays, getISODate, todayISO } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
 import { usePeriod } from './PeriodContext';
@@ -109,13 +109,14 @@ interface AccountsContextType {
 	saveAccount: (account: AccountEdit) => Promise<void>;
 	removeAccount: (id: string) => Promise<void>;
 	/**
-	 * "Meu saldo agora é X". Só contas.
-	 *
-	 * `spend`: a diferença virou compra que o app não viu, e entra como gasto (ou entrada)
-	 * de hoje — é o que faz o mês e o envelope mostrarem o que já saiu.
-	 * `anchor`: só o ponto de partida estava errado; nada entra no mês.
+	 * Acerta uma conta com o que o banco mostra: quanto já saiu neste mês e quanto ainda há
+	 * na conta. A diferença de gasto entra como lançamento de hoje (aparece no mês e na
+	 * barra do envelope); o que sobrar de diferença no saldo é sobra de antes do app e move
+	 * só o ponto de partida. Serve para a primeira vez — depois as notificações cobrem.
 	 */
-	setBalanceToday: (id: string, balanceCents: number, mode?: 'spend' | 'anchor') => Promise<void>;
+	adjustAccountMonth: (id: string, input: { spentCents: number; balanceCents: number }) => Promise<void>;
+	/** Gasto do período em cada conta (despesas menos receitas), para preencher o acerto. */
+	periodSpentByAccount: Map<string, number>;
 	/**
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
 	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`).
@@ -184,6 +185,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [cardSummaries, setCardSummaries] = useState<Map<string, CardSummary>>(new Map());
 	const [month, setMonth] = useState<MonthOverview | null>(null);
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
+	const [periodSpentByAccount, setPeriodSpentByAccount] = useState<Map<string, number>>(new Map());
+	// Lido dentro do acerto sem virar dependência dele.
+	const periodSpentRef = useRef(periodSpentByAccount);
+	periodSpentRef.current = periodSpentByAccount;
 	const [isLoading, setIsLoading] = useState(true);
 
 	// Cada recarga ganha um número; só a mais recente grava. Uma recarga lenta, começada
@@ -194,12 +199,17 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		const mine = ++generation.current;
 		try {
 			const today = todayISO();
-			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures] = await Promise.all([
+			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
+			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
+			const periodEnd = endDate < today ? endDate : today;
+			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures, startBalances, endBalances] = await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
 				getUnassignedNet(today),
 				getUnassignedPeriodSummary(startDate, endDate),
 				getPendingCaptures(),
+				getAccountBalances(addDays(startDate, -1)),
+				getAccountBalances(periodEnd),
 			]);
 
 			const nextSummaries = new Map<string, CardSummary>();
@@ -221,6 +231,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					transfersOutCents: period.transfersOutCents,
 					purchasesOriginatedCents: isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined,
 					envelopeMonthlyCents: account.envelopeMonthlyCents,
+					startBalanceCents: startBalances.get(account.id) ?? 0,
+					endBalanceCents: endBalances.get(account.id) ?? 0,
 				});
 
 				if (!isCard) continue;
@@ -257,6 +269,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setBalances(nextBalances);
 			setCardSummaries(nextSummaries);
 			setUnassignedNetCents(unassigned);
+			setPeriodSpentByAccount(
+				new Map(activity.map((item) => [item.accountId, Math.max(0, item.expenseCents - item.incomeCents)]))
+			);
 			setMonth(buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod }));
 		} catch (error) {
 			console.error('Error loading accounts:', error);
@@ -307,29 +322,30 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh, refreshData]
 	);
 
-	const setBalanceToday = useCallback(
-		async (id: string, balanceCents: number, mode: 'spend' | 'anchor' = 'anchor') => {
-			if (mode === 'spend') {
-				const today = todayISO();
-				const current = (await getAccountBalances(today)).get(id) ?? 0;
-				const adjustment = balanceAdjustment(current, balanceCents);
-				if (adjustment) {
-					await addTransaction({
-						amountCents: adjustment.amountCents,
-						category: resolveCategoryId(
-							adjustment.isIncome ? 'other_income' : 'other_expense',
-							adjustment.isIncome ? 'in' : 'out',
-							categories
-						),
-						date: today,
-						note: BALANCE_ADJUSTMENT_NOTE,
-						isIncome: adjustment.isIncome,
-						accountId: id,
-					});
-				}
-			} else {
-				await setAccountBalanceToday(id, balanceCents);
+	const adjustAccountMonth = useCallback(
+		async (id: string, input: { spentCents: number; balanceCents: number }) => {
+			const today = todayISO();
+			const spentNow = periodSpentRef.current.get(id) ?? 0;
+			// O gasto que o app não viu é lançamento de verdade: é ele que mexe na barra.
+			const spend = spendingAdjustment(spentNow, input.spentCents);
+			if (spend) {
+				await addTransaction({
+					amountCents: spend.amountCents,
+					category: resolveCategoryId(
+						spend.isIncome ? 'other_income' : 'other_expense',
+						spend.isIncome ? 'in' : 'out',
+						categories
+					),
+					date: today,
+					note: BALANCE_ADJUSTMENT_NOTE,
+					isIncome: spend.isIncome,
+					accountId: id,
+				});
 			}
+			// O que ainda não bate é dinheiro de antes do app (a sobra do mês passado, por
+			// exemplo): move o ponto de partida, sem entrar no mês.
+			const balanceNow = (await getAccountBalances(today)).get(id) ?? 0;
+			if (balanceNow !== input.balanceCents) await setAccountBalanceToday(id, input.balanceCents);
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
@@ -531,7 +547,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			createAccount,
 			saveAccount,
 			removeAccount,
-			setBalanceToday,
+			adjustAccountMonth,
+			periodSpentByAccount,
 			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,
@@ -556,7 +573,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			createAccount,
 			saveAccount,
 			removeAccount,
-			setBalanceToday,
+			adjustAccountMonth,
+			periodSpentByAccount,
 			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,

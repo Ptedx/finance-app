@@ -31,6 +31,10 @@ export interface AccountMonthActivity {
 	/** Só cartões: valor cheio das compras **feitas** no período, parceladas ou não. */
 	purchasesOriginatedCents?: number;
 	envelopeMonthlyCents?: number | null;
+	/** Saldo da conta na véspera do período: no envelope, é o que sobrou do mês anterior. */
+	startBalanceCents?: number;
+	/** Saldo da conta hoje (ou no fim do período, se ele já passou). */
+	endBalanceCents?: number;
 }
 
 export interface MonthOverviewInput {
@@ -54,12 +58,20 @@ export interface CardMonth {
 export interface EnvelopeMonth {
 	accountId: string;
 	name: string;
-	/** O que entrou no envelope no mês: é isto que conta como gasto. */
+	/** O que entrou no envelope no mês (menos o que saiu para outras contas suas). */
 	fundedCents: number;
-	/** O que saiu de dentro do envelope, para a barra "gastou X de Y". */
+	/** O que saiu de dentro do envelope: compras no débito e Pix daqui. */
 	spentCents: number;
 	/** Valor combinado por mês, quando informado. */
 	monthlyCents: number | null;
+	/**
+	 * O teto da barra: o que sobrou do mês anterior mais o que entrou neste mês. Sobraram
+	 * R$ 100 e entraram R$ 1.000? O mês tem R$ 1.100 para gastar. Enquanto o dinheiro do
+	 * mês não entrou, vale o combinado (`monthlyCents`) mais a sobra.
+	 */
+	targetCents: number;
+	/** O que ainda há na conta: é o número que o banco mostra. */
+	remainingCents: number;
 }
 
 export interface MonthOverview {
@@ -113,12 +125,22 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				// cartão. Sem descontar, o mesmo dinheiro contava duas vezes.
 				const funded = account.transfersInCents - account.transfersOutCents;
 				envelopeFundingCents += funded;
+				const carried = Math.max(0, account.startBalanceCents ?? 0);
+				const monthly = account.envelopeMonthlyCents ?? null;
+				const spent = Math.max(0, account.expenseCents - account.incomeCents);
+				// O teto sai do dinheiro de verdade: o que sobrou do mês anterior mais o que entrou
+				// neste mês. Enquanto o envio do mês não aparece como transferência, vale o combinado
+				// — ou o que já está na conta, se for mais (é o caso de quem começou a usar o app com
+				// o dinheiro do mês já lá).
+				const target = funded > 0 ? carried + funded : Math.max(carried, monthly ?? 0);
 				envelopes.push({
 					accountId: account.accountId,
 					name: account.name,
 					fundedCents: funded,
-					spentCents: Math.max(0, account.expenseCents - account.incomeCents),
-					monthlyCents: account.envelopeMonthlyCents ?? null,
+					spentCents: spent,
+					monthlyCents: monthly,
+					targetCents: target,
+					remainingCents: account.endBalanceCents ?? Math.max(0, target - spent),
 				});
 				break;
 			}
