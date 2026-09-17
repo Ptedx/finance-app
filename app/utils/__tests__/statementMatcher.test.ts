@@ -629,3 +629,19 @@ describe('propriedades da conciliação', () => {
 		}
 	});
 });
+
+describe('extrato respeita a conta', () => {
+	it('lançamento de outra conta não é esta linha', () => {
+		const checking = tx({ id: 'debito', accountId: 'nu-pf' });
+		expect(findTransactionForLine(line(), [checking], new Set(), 'nu-card')).toBeUndefined();
+		expect(findTransactionForLine(line(), [checking], new Set(), 'nu-pf')?.id).toBe('debito');
+		expect(findTransactionForLine(line(), [tx({ id: 'sem-conta', accountId: null })], new Set(), 'nu-card')?.id).toBe('sem-conta');
+	});
+
+	it('notificação de compra em outra conta casa (o extrato corrige a conta); Pix de outra conta não', () => {
+		const purchaseOnChecking = capture({ id: 'compra', accountId: 'nu-pf', kind: 'purchase' });
+		const pixOnChecking = capture({ id: 'pix', accountId: 'nu-pf', kind: 'pix_out' });
+		expect(findCaptureForLine(line(), [purchaseOnChecking], new Set(), 'nu-card')?.id).toBe('compra');
+		expect(findCaptureForLine(line(), [pixOnChecking], new Set(), 'nu-card')).toBeUndefined();
+	});
+});

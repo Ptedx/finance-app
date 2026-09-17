@@ -12,10 +12,17 @@
 
 import { languageOf, monthLong, monthShort } from './locale';
 
-let locale = 'en-US';
+const holder = globalThis as { __spendrDateLocale?: string };
+
+/**
+ * Guardado também no objeto global: quando só este módulo é recarregado (Fast Refresh,
+ * atualização do JS), ele volta com o locale já configurado em vez de cair no inglês.
+ */
+let locale = holder.__spendrDateLocale ?? 'en-US';
 
 export const configureDateLocale = (nextLocale: string): void => {
 	locale = nextLocale;
+	holder.__spendrDateLocale = nextLocale;
 };
 
 /** Parses a `YYYY-MM-DD` string as local midnight, not UTC midnight. */

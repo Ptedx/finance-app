@@ -79,6 +79,8 @@ export interface LedgerTransaction {
 	/** Parcela k de N, quando o lançamento é uma parcela; nulos à vista. */
 	installmentIndex?: number | null;
 	installmentCount?: number | null;
+	/** A conta do lançamento; nulo quando o lançamento ainda não tem conta. */
+	accountId?: string | null;
 }
 
 /**
@@ -103,6 +105,8 @@ export interface StatementPlanContext {
 	autoConfirmThreshold: number;
 	/** Gera o id que a linha terá na caixa de entrada; injetável para o plano ser determinístico. */
 	nextId: () => string;
+	/** A conta de cada extrato do arquivo (`accountKey` → id), já resolvida. */
+	accountIdByKey?: Map<string, string>;
 }
 
 export type StatementAction =
@@ -171,15 +175,24 @@ const isLiveForMatching = (capture: KnownCapture): boolean =>
  * Entre várias, a avisada primeiro; no empate, a de id menor, para o plano ser o
  * mesmo em qualquer ordem de leitura.
  */
+/**
+ * Notificação de outra conta só casa se for compra: uma compra do cartão que a
+ * notificação mandou para a conta corrente é a mesma compra, e o extrato do cartão corrige
+ * a conta. Um Pix da conta corrente com o mesmo valor não é.
+ */
+const CROSS_ACCOUNT_KINDS = new Set(['purchase', 'refund', 'unknown']);
+
 export const findCaptureForLine = (
 	line: StatementLine,
 	captures: KnownCapture[],
-	claimed: Set<string>
+	claimed: Set<string>,
+	accountId: string | null = null
 ): KnownCapture | undefined => {
 	let best: KnownCapture | undefined;
 
 	for (const capture of captures) {
 		if (claimed.has(capture.id)) continue;
+		if (accountId && capture.accountId && capture.accountId !== accountId && !CROSS_ACCOUNT_KINDS.has(capture.kind)) continue;
 		if (!isLiveForMatching(capture)) continue;
 		if (isStatementPackage(capture.packageName)) continue;
 		if (capture.direction !== line.direction || capture.amountCents !== line.amountCents) continue;
@@ -206,7 +219,8 @@ export const findCaptureForLine = (
 export const findTransactionForLine = (
 	line: StatementLine,
 	transactions: LedgerTransaction[],
-	excluded: Set<string>
+	excluded: Set<string>,
+	accountId: string | null = null
 ): LedgerTransaction | undefined => {
 	const isIncome = line.direction === 'in';
 	const marker = parseInstallmentMarker(line.text);
@@ -214,6 +228,9 @@ export const findTransactionForLine = (
 
 	for (const transaction of transactions) {
 		if (excluded.has(transaction.id)) continue;
+		// Lançamento que já tem conta, e é outra, não é esta linha: o mercado de R$ 100 no
+		// débito não pode sumir com a compra de R$ 100 do cartão.
+		if (accountId && transaction.accountId && transaction.accountId !== accountId) continue;
 		if (transaction.isIncome !== isIncome || transaction.amountCents !== line.amountCents) continue;
 
 		const offset = dayNumber(line.postedDate) - dayNumber(transaction.date);
@@ -256,10 +273,11 @@ export const findRecordForLine = (
 	captures: KnownCapture[],
 	transactions: LedgerTransaction[],
 	claimedCaptures: Set<string>,
-	claimedTransactions: Set<string>
+	claimedTransactions: Set<string>,
+	accountId: string | null = null
 ): RecordMatch | undefined => {
-	const capture = findCaptureForLine(line, captures, claimedCaptures);
-	const transaction = findTransactionForLine(line, transactions, claimedTransactions);
+	const capture = findCaptureForLine(line, captures, claimedCaptures, accountId);
+	const transaction = findTransactionForLine(line, transactions, claimedTransactions, accountId);
 
 	if (capture && transaction) {
 		const captureDeadline = dayNumber(localDateOf(capture.postedAt)) + STATEMENT_LAG_DAYS_BEFORE;
@@ -334,7 +352,14 @@ export const planStatementImport = (
 		// Neutros não casam com nada: se o usuário digitou "pagamento da fatura" como
 		// despesa, é escolha dele, e a linha só vai para o histórico como ignorada.
 		if (!line.neutral) {
-			const record = findRecordForLine(line, recent, context.transactions, claimedCaptures, claimedTransactions);
+			const record = findRecordForLine(
+				line,
+				recent,
+				context.transactions,
+				claimedCaptures,
+				claimedTransactions,
+				context.accountIdByKey?.get(line.accountKey) ?? null
+			);
 
 			if (record?.type === 'capture') {
 				claimedCaptures.add(record.capture.id);

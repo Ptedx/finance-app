@@ -2,6 +2,7 @@ import { isBusinessDay } from '../businessDays';
 import {
 	buildCardSummary,
 	buildInstallmentPlans,
+	cardInstallmentDates,
 	type CardEntry,
 	type CardMovement,
 	type CardSettings,
@@ -14,6 +15,7 @@ import {
 	invoiceClosingIn,
 	invoicesClosingBetween,
 	owedOn,
+	planCardAdjustment,
 	shiftCycle,
 } from '../cardMath';
 import { addDays, buildClampedDate } from '../dateUtils';
@@ -366,5 +368,85 @@ describe('daysBetween', () => {
 		expect(daysBetween('2026-09-20', '2026-09-25')).toBe(5);
 		expect(daysBetween('2026-09-25', '2026-09-20')).toBe(-5);
 		expect(daysBetween('2026-02-28', buildClampedDate(2026, 3, 1))).toBe(1);
+	});
+});
+
+describe('planCardAdjustment — acertar com o banco sem misturar faturas', () => {
+	it('fechada não paga fica na fechada, aberta na aberta, e a diferença vira ajuste', () => {
+		// 27/09: setembro fechou em 25/09 e vence 02/10; outubro está aberta.
+		const entries = [purchase('2026-09-20', 10_000), purchase('2026-09-26', 3_000)];
+		const plan = planCardAdjustment(settings(), entries, [], '2026-09-27', 50_000, 200_000);
+		expect(plan).toEqual({ anchorDate: '2026-09-24', anchorCents: -200_000, adjustmentCents: 47_000 });
+
+		// Aplicando o plano, o resumo mostra exatamente o que o banco mostra.
+		const s = settings({ openingBalanceCents: plan.anchorCents, openingBalanceDate: plan.anchorDate });
+		const withAdjustment = [...entries, purchase('2026-09-27', plan.adjustmentCents)];
+		const summary = buildCardSummary(s, withAdjustment, [], '2026-09-27');
+		expect(summary).toMatchObject({ closedInvoiceCents: 200_000, openInvoiceCents: 50_000, toPayCents: 200_000, closedStatus: 'due', owedCents: 250_000 });
+
+		// E pagar a fechada a quita — não vira "pagamento antecipado".
+		const paid = buildCardSummary(s, withAdjustment, [payment('2026-10-01', 200_000)], '2026-10-01');
+		expect(paid).toMatchObject({ toPayCents: 0, closedStatus: 'paid' });
+		expect(paid.invoices.find((i) => i.offset === -1)?.paidCents).toBe(200_000);
+	});
+
+	it('pagamento já registrado depois do fechamento continua abatendo a fechada', () => {
+		const plan = planCardAdjustment(settings(), [], [payment('2026-09-26', 50_000)], '2026-09-27', 0, 150_000);
+		expect(plan.anchorCents).toBe(-200_000);
+		const s = settings({ openingBalanceCents: plan.anchorCents, openingBalanceDate: plan.anchorDate });
+		expect(buildCardSummary(s, [], [payment('2026-09-26', 50_000)], '2026-09-27')).toMatchObject({ toPayCents: 150_000, owedCents: 150_000 });
+	});
+
+	it('quando a aberta já bate, não cria ajuste; quando o app tem a mais, o ajuste é negativo', () => {
+		const entries = [purchase('2026-09-26', 3_000)];
+		expect(planCardAdjustment(settings(), entries, [], '2026-09-27', 3_000, 0).adjustmentCents).toBe(0);
+		expect(planCardAdjustment(settings(), entries, [], '2026-09-27', 1_000, 0).adjustmentCents).toBe(-2_000);
+	});
+
+	it('sem dia de fechamento, âncora na véspera com a soma, descontado o lançado hoje', () => {
+		const plan = planCardAdjustment(settings({ closingDay: null }), [purchase('2026-09-27', 1_000)], [], '2026-09-27', 10_000, 5_000);
+		expect(plan).toEqual({ anchorDate: '2026-09-26', anchorCents: -14_000, adjustmentCents: 0 });
+	});
+});
+
+describe('compras a revisar entram na fatura', () => {
+	it('a compra da caixa de entrada soma na fatura aberta, no devido e no limite, e é listada à parte', () => {
+		const pending = purchase('2026-09-27', 4_500, { pendingReview: true, note: 'IFOOD' });
+		const summary = buildCardSummary(settings(), [purchase('2026-09-26', 1_000), pending], [], '2026-09-27');
+		expect(summary).toMatchObject({ openInvoiceCents: 5_500, owedCents: 5_500, limitUsedCents: 5_500, pendingReviewCents: 4_500 });
+		expect(summary.pendingEntries.map((e) => e.note)).toEqual(['IFOOD']);
+	});
+});
+
+describe('cardInstallmentDates — uma parcela por fatura', () => {
+	it('mês a mês quando cada mês já muda de fatura', () => {
+		expect(cardInstallmentDates('2026-09-10', 3, NUBANK)).toEqual(['2026-09-10', '2026-10-10', '2026-11-10']);
+	});
+
+	it('quando somar um mês cai no fechamento, a parcela vai para o começo da fatura certa', () => {
+		// Fecha dia 30; compra em 29/01. 28/02 já é o fechamento de fevereiro.
+		const rule = { closingDay: 30, dueDaysAfter: 7 };
+		const dates = cardInstallmentDates('2026-01-29', 3, rule);
+		expect(dates.map((d) => cycleFor(d, rule).key)).toEqual(['2026-01', '2026-02', '2026-03']);
+	});
+
+	it('cada parcela numa fatura, em ordem (propriedade)', () => {
+		for (const closingDay of [1, 15, 28, 29, 30, 31]) {
+			const rule = { closingDay, dueDaysAfter: 7 };
+			let date = '2026-01-01';
+			for (let i = 0; i < 400; i += 3) {
+				const keys = cardInstallmentDates(date, 6, rule).map((d) => cycleFor(d, rule).key);
+				expect(new Set(keys).size).toBe(6);
+				expect(keys[5]).toBe(shiftCycle(cycleFor(date, rule), 5, rule).key);
+				date = addDays(date, 3);
+			}
+		}
+	});
+});
+
+describe('invoicesClosingBetween — fechamento no primeiro dia do mês', () => {
+	it('a fatura que fecha em 01/09 é a de setembro', () => {
+		const s = settings({ closingDay: 1 });
+		expect(invoicesClosingBetween(s, [purchase('2026-08-15', 7_000)], '2026-09-01', '2026-09-30')).toBe(7_000);
 	});
 });

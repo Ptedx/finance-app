@@ -31,11 +31,18 @@ const detectLanguage = (): string => {
 	}
 };
 
+/**
+ * O idioma escolhido, disponível já na carga do módulo. `i18n.language` não serve aqui:
+ * o i18next inicializa de forma assíncrona e o valor ainda está vazio neste ponto — era
+ * por isso que datas e dinheiro às vezes saíam no formato americano.
+ */
+export const appLanguage = detectLanguage();
+
 i18n.use(initReactI18next).init({
 	// `compatibilityJSON: 'v3'` used to be set here for Hermes builds without
 	// Intl.PluralRules. Expo 55's Hermes ships Intl, and i18next v4 rejects the option.
 	resources,
-	lng: detectLanguage(),
+	lng: appLanguage,
 	fallbackLng: 'en',
 	interpolation: {
 		escapeValue: false, // React Native doesn't need XSS escaping
@@ -45,11 +52,13 @@ i18n.use(initReactI18next).init({
 // Formatação configurada já na carga do módulo: as telas que desenham antes do
 // CurrencyProvider terminar de ler a moeda salva também saem no formato do idioma.
 try {
-	const formatLocale = resolveFormatLocale(getLocales()[0]?.languageTag, i18n.language);
+	const formatLocale = resolveFormatLocale(getLocales()[0]?.languageTag, appLanguage);
 	configureMoney({ locale: formatLocale });
 	configureDateLocale(formatLocale);
 } catch {
-	// Sem expo-localization (testes): mantém o padrão.
+	const formatLocale = resolveFormatLocale(null, appLanguage);
+	configureMoney({ locale: formatLocale });
+	configureDateLocale(formatLocale);
 }
 
 export default i18n;

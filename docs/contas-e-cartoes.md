@@ -127,19 +127,48 @@ pagar (sinal invertido só nesses casos).
 - A fatura leva o **nome do mês em que fecha**. Fecha 25/09 e vence 02/10: é a de
   setembro, com compras de 25/08 a 24/09. A de outubro só começa em 25/09. Ciclos são
   contíguos (teste por propriedades).
+- Envelope: conta o que entrou **menos o que saiu** para outras contas suas — mandar
+  dinheiro do Inter para pagar a fatura não conta o cartão duas vezes.
 - No quadro do mês, o cartão entra pela **fatura do mês** — a que fecha nele
   (`invoicesClosingBetween`), com parcelas e com a "fatura atual" informada; as compras
   feitas no mês são a métrica secundária. Cartão sem fechamento cai no cálculo antigo.
+
+### Como uma compra chega na fatura
+
+- **Qual cartão** (`notificationTarget.ts`): final exato de um cartão; senão, o **único**
+  cartão de crédito ativo do banco — é o caso dos cartões virtuais do Nubank, com um
+  final por loja. "Débito" no texto vai sempre para a conta. Sem a palavra (o Inter manda
+  "Compra aprovada no cartão final 5678" no débito), vai para o cartão só se o banco tiver
+  um. Um "cartão" com "débito" no nome não atrai compras. Samsung Pay: o banco sai do texto.
+- **Compra ainda na caixa de entrada já está na fatura**, no devido e no limite, marcada
+  "aguardando revisão" (o banco aprovou; só a categoria espera). Perguntas "é a mesma
+  compra?" ficam de fora até a resposta, para não contar duas vezes.
+- Samsung Pay antes do banco: quando o aviso do banco chega, a compra (e o que ela já
+  lançou) passa para a conta ou cartão do banco.
+- Parcelas: uma por fatura, pela regra do cartão (`cardInstallmentDates`).
+- Extrato: lançamento de outra conta não casa com a linha; notificação de compra em outra
+  conta casa e passa para a conta do extrato. Parcelas vindas de notificação casam pela
+  parcela, não pela captura do total.
+- Reparo v12: compras antigas em cartões criados por final virtual ou na conta corrente
+  foram movidas para o cartão de verdade (`planLedgerRepair`).
+
+### Acertar valor
+
+A fechada ainda não paga vira a âncora na véspera do fechamento (pagamentos registrados
+depois continuam abatendo); a aberta é o que caiu desde o fechamento, e a diferença para o
+que o banco mostra vira um lançamento "Ajuste com a fatura do banco" datado hoje. As duas
+nunca se misturam (`planCardAdjustment`).
 
 ### Pagamento de fatura
 
 O fluxo comum: manda dinheiro de outra conta para a conta do banco do cartão (Pix entre
 contas próprias, já tratado como transferência) e paga a fatura dali.
 
+- O pagamento tem data (hoje, ontem, anteontem): ela decide qual fatura ele quita.
 - Pagar é **transferência** da conta para o cartão, nunca gasto — as compras já
   contaram. Pode vir da notificação do banco ("Recebemos o pagamento de R$ X"), do
-  extrato OFX ou do botão **Pagar fatura**; as três formas se reconhecem pelo valor e
-  pela data e não duplicam.
+  extrato OFX ou do botão **Pagar fatura**; pagamento de mesmo valor para o mesmo cartão
+  em até 5 dias é o mesmo, venha de qual conta vier.
 - A conta que paga é a do mesmo banco do cartão. Contas externas (a PJ) não contam, e
   com mais de uma sobrando vale a principal.
 - O pagamento quita primeiro a fatura fechada; o que passar aparece como pagamento

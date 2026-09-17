@@ -15,7 +15,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
 import { sameBank } from '../utils/accountResolver';
 import { cycleRuleOf, existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
-import { formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
+import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
 /**
@@ -44,7 +44,7 @@ type SheetKind = 'pay' | 'adjust' | 'installments' | null;
 const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, cardSummaries, recordCardPayment, setCardOwedToday, addExistingInstallments } = useAccounts();
+	const { accounts, bankAccounts, cardSummaries, recordCardPayment, adjustCardInvoices, addExistingInstallments } = useAccounts();
 	const { transactions, categories } = useTransactions();
 
 	const card: Account | undefined = accounts.find((account) => account.id === cardId && account.kind === 'credit_card');
@@ -53,8 +53,13 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const [selectedKey, setSelectedKey] = useState<string | null>(null);
 	const [sheet, setSheet] = useState<SheetKind>(null);
 
+	// Abre na fatura atual, e volta para ela quando a escolhida some da lista (virou o
+	// ciclo, ou uma fatura futura zerou) — senão o painel sumiria.
 	useEffect(() => {
-		if (!selectedKey && summary?.openCycle) setSelectedKey(summary.openCycle.key);
+		if (!summary?.openCycle) return;
+		if (!selectedKey || !summary.invoices.some((invoice) => invoice.cycle.key === selectedKey)) {
+			setSelectedKey(summary.openCycle.key);
+		}
 	}, [selectedKey, summary]);
 
 	const cardTransactions = useMemo(
@@ -72,11 +77,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	}
 
 	const selected: InvoiceView | undefined = summary?.invoices.find((invoice) => invoice.cycle.key === selectedKey);
-	const selectedTransactions = selected
-		? cardTransactions
-				.filter((tx) => tx.date >= selected.cycle.start && tx.date <= selected.cycle.end)
-				.sort((a, b) => b.date.localeCompare(a.date))
-		: [];
+	const inSelected = (date: string) => Boolean(selected) && date >= (selected as InvoiceView).cycle.start && date <= (selected as InvoiceView).cycle.end;
+	// A lista soma o valor da fatura: o que é de antes do valor informado já está dentro
+	// dele e só aparece contado numa linha, para ninguém achar que contou duas vezes.
+	const selectedTransactions = cardTransactions
+		.filter((tx) => inSelected(tx.date) && tx.date > card.openingBalanceDate)
+		.sort((a, b) => b.date.localeCompare(a.date));
+	const coveredByAnchor = cardTransactions.filter((tx) => inSelected(tx.date) && tx.date <= card.openingBalanceDate).length;
+	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
 	const anchorInSelected =
 		selected &&
 		card.openingBalanceCents !== 0 &&
@@ -199,7 +207,31 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</View>
 								) : null}
 
-								{selectedTransactions.length === 0 && !anchorInSelected ? (
+								{anchorInSelected && coveredByAnchor > 0 ? (
+									<Text style={styles.covered}>{t('cards.invoice.coveredByAnchor', { count: coveredByAnchor })}</Text>
+								) : null}
+
+								{selectedPending.map((entry) => (
+									<Pressable
+										key={entry.id}
+										onPress={() => router.push('/inbox')}
+										accessibilityRole="button"
+										accessibilityLabel={`${entry.note}, ${formatCents(entry.amountCents)}. ${t('cards.invoice.pendingReview')}`}
+										accessibilityHint={t('cards.invoice.pendingHint')}
+										style={({ pressed }) => [styles.anchorRow, pressed && styles.pressed]}
+									>
+										<Ionicons name="time-outline" size={18} color="#FFD166" />
+										<View style={styles.flex}>
+											<Text style={styles.anchorText} numberOfLines={1}>
+												{entry.note}
+											</Text>
+											<Text style={styles.pendingLabel}>{t('cards.invoice.pendingReview')}</Text>
+										</View>
+										<Text style={styles.anchorAmount}>{formatCents(entry.isIncome ? -entry.amountCents : entry.amountCents)}</Text>
+									</Pressable>
+								))}
+
+								{selectedTransactions.length === 0 && selectedPending.length === 0 && !anchorInSelected ? (
 									<Text style={styles.empty}>{t('cards.invoice.empty')}</Text>
 								) : (
 									selectedTransactions.map((transaction) => (
@@ -323,19 +355,21 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						suggestedCents={summary.toPayCents > 0 ? summary.toPayCents : summary.owedCents}
 						accounts={bankAccounts}
 						card={card}
-						onConfirm={async (fromId, cents) => {
-							await recordCardPayment(card.id, fromId, cents, todayISO());
+						onConfirm={async (fromId, cents, date) => {
+							const created = await recordCardPayment(card.id, fromId, cents, date);
 							setSheet(null);
-							AccessibilityInfo.announceForAccessibility(t('cards.pay.done', { amount: formatCents(cents) }));
+							AccessibilityInfo.announceForAccessibility(
+								created ? t('cards.pay.done', { amount: formatCents(cents) }) : t('cards.pay.already', { amount: formatCents(cents) })
+							);
 						}}
 					/>
 					<AdjustSheet
 						visible={sheet === 'adjust'}
 						onClose={() => setSheet(null)}
-						onConfirm={async (cents) => {
-							await setCardOwedToday(card.id, cents);
+						onConfirm={async (openCents, closedCents) => {
+							await adjustCardInvoices(card.id, openCents, closedCents);
 							setSheet(null);
-							AccessibilityInfo.announceForAccessibility(t('cards.adjust.done', { amount: formatCents(cents) }));
+							AccessibilityInfo.announceForAccessibility(t('cards.adjust.done', { amount: formatCents(openCents + closedCents) }));
 						}}
 					/>
 					<InstallmentsSheet
@@ -392,7 +426,7 @@ const PaySheet: React.FC<{
 	suggestedCents: number;
 	accounts: Account[];
 	card: Account;
-	onConfirm: (fromAccountId: string | null, cents: number) => Promise<void>;
+	onConfirm: (fromAccountId: string | null, cents: number, date: string) => Promise<void>;
 }> = ({ visible, onClose, suggestedCents, accounts, card, onConfirm }) => {
 	const { t } = useTranslation();
 	// Quem paga a fatura costuma ser a conta do mesmo banco (o Nubank paga o cartão
@@ -404,11 +438,16 @@ const PaySheet: React.FC<{
 	const [amount, setAmount] = useState('');
 	const [from, setFrom] = useState<string>(main?.id ?? 'outside');
 	const [error, setError] = useState<string | undefined>();
+	// A data decide qual fatura o pagamento quita: registrar hoje um pagamento de semanas
+	// atrás o jogaria na fatura errada.
+	const [day, setDay] = useState<'0' | '1' | '2'>('0');
+	const today = todayISO();
 
 	useEffect(() => {
 		if (!visible) return;
 		setAmount(suggestedCents > 0 ? centsToDisplayInput(suggestedCents) : '');
 		setFrom(main?.id ?? 'outside');
+		setDay('0');
 		setError(undefined);
 	}, [visible, suggestedCents, main?.id]);
 
@@ -421,6 +460,16 @@ const PaySheet: React.FC<{
 		<Sheet visible={visible} onClose={onClose} title={t('cards.pay.title')} subtitle={t('cards.pay.subtitle')}>
 			<Field label={t('cards.pay.amount')} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" error={error} />
 			<ChipGroup label={t('cards.pay.from')} options={options} selected={from} onSelect={setFrom} hint={t('cards.pay.fromHint')} />
+			<ChipGroup
+				label={t('cards.pay.when')}
+				options={[
+					{ value: '0', label: t('cards.pay.today') },
+					{ value: '1', label: t('cards.pay.yesterday') },
+					{ value: '2', label: formatDayMonth(addDays(today, -2)) },
+				]}
+				selected={day}
+				onSelect={setDay}
+			/>
 			<Button
 				label={t('cards.pay.confirm')}
 				icon="checkmark"
@@ -431,14 +480,14 @@ const PaySheet: React.FC<{
 						AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
 						return;
 					}
-					await onConfirm(from === 'outside' ? null : from, cents);
+					await onConfirm(from === 'outside' ? null : from, cents, addDays(today, -Number(day)));
 				}}
 			/>
 		</Sheet>
 	);
 };
 
-const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: (cents: number) => Promise<void> }> = ({
+const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: (openCents: number, closedCents: number) => Promise<void> }> = ({
 	visible,
 	onClose,
 	onConfirm,
@@ -480,12 +529,12 @@ const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: 
 				label={t('cards.adjust.confirm')}
 				icon="checkmark"
 				onPress={async () => {
-					if (total === null || total < 0 || (!open.trim() && !closed.trim())) {
+					if (total === null || openCents === null || closedCents === null || openCents < 0 || closedCents < 0 || (!open.trim() && !closed.trim())) {
 						setError(t('cards.edit.invalidAmount'));
 						AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
 						return;
 					}
-					await onConfirm(total);
+					await onConfirm(openCents, closedCents);
 				}}
 			/>
 		</Sheet>
@@ -761,6 +810,15 @@ const styles = StyleSheet.create({
 		fontSize: 15,
 		fontWeight: '600',
 		color: '#FFFFFF',
+	},
+	covered: {
+		fontSize: 13,
+		color: 'rgba(255,255,255,0.7)',
+		paddingBottom: 8,
+	},
+	pendingLabel: {
+		fontSize: 13,
+		color: '#FFD166',
 	},
 	empty: {
 		fontSize: 14,

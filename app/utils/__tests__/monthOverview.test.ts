@@ -106,6 +106,19 @@ describe('buildMonthOverview — detalhes', () => {
 		expect(month.totalSpendCents).toBe(383_280);
 	});
 
+	it('dinheiro que sai do envelope para outra conta sua não é gasto do envelope — a fatura paga com ele já conta no cartão', () => {
+		const month = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', role: 'main', incomeCents: 1_000_000, transfersInCents: 60_000, transfersOutCents: 100_000 + 380_000 }),
+				activity({ accountId: 'inter', name: 'Inter PF', role: 'envelope', transfersInCents: 100_000, transfersOutCents: 60_000, envelopeMonthlyCents: 100_000 }),
+				activity({ accountId: 'card', kind: 'credit_card', role: 'card', invoiceCents: 380_000, transfersInCents: 380_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(month.envelopes[0].fundedCents).toBe(40_000);
+		expect(month.totalSpendCents).toBe(420_000);
+	});
+
 	it('estorno no cartão reduz o gasto do cartão, nunca abaixo de zero', () => {
 		const overview = buildMonthOverview({
 			accounts: [activity({ role: 'card', kind: 'credit_card', expenseCents: 5_000, incomeCents: 8_000 })],

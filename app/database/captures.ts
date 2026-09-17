@@ -236,7 +236,10 @@ export const getStatementClaimedCaptureIds = async (): Promise<Set<string>> => {
 /** Lançamentos criados a partir de uma captura, ou já ligados a uma linha de extrato. */
 export const getLinkedTransactionIds = async (): Promise<Set<string>> => {
 	const rows = await db.getAllAsync<{ transactionId: string }>(
-		'SELECT transactionId FROM captures WHERE transactionId IS NOT NULL'
+		// Parcelas ficam de fora: a captura guarda o total da compra e só casa com uma linha
+		// do total. A linha "LOJA 01/10" precisa encontrar a parcela 1 pelo lançamento — senão
+		// ela vira uma compra nova e a parcela conta duas vezes.
+		'SELECT transactionId FROM captures WHERE transactionId IS NOT NULL AND (installments IS NULL OR installments <= 1)'
 	);
 	return new Set(rows.map((row) => row.transactionId));
 };

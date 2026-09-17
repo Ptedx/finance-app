@@ -1,11 +1,14 @@
 import type React from 'react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import {
 	addAccount,
 	addTransaction,
 	addTransfer,
 	assignUnassignedTransactions,
 	deleteAccount,
+	deleteTransfersOf,
+	findCardPayment,
 	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
@@ -15,23 +18,29 @@ import {
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
 	moveAccountLedger,
+	setAccountAnchor,
 	setAccountBalanceToday,
 	updateAccount,
 } from '../database/database';
-import type { Account, AccountDraft, AccountEdit } from '../database/schema';
+import { getPendingCaptures } from '../database/captures';
+import type { Account, AccountDraft, AccountEdit, Capture } from '../database/schema';
 import * as syncQueue from '../sync/queue';
 import { type AccountsOverview, summarizeAccounts } from '../utils/accountMath';
 import {
 	buildCardSummary,
+	cardInstallmentDates,
 	type CardEntry,
 	type CardMovement,
 	type CardSummary,
 	cycleRuleOf,
 	existingInstallmentDates,
 	invoicesClosingBetween,
+	planCardAdjustment,
 } from '../utils/cardMath';
+import { resolveCategoryId } from '../utils/captureActions';
 import { generateUniqueId } from '../utils/categoryEditUtils';
-import { todayISO } from '../utils/dateUtils';
+import { getISODate, todayISO } from '../utils/dateUtils';
+import { splitInstallments } from '../utils/installments';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
 import { usePeriod } from './PeriodContext';
 import { useTransactions } from './TransactionsContext';
@@ -81,10 +90,16 @@ interface AccountsContextType {
 	removeAccount: (id: string) => Promise<void>;
 	/** "Meu saldo agora é X". Só contas. */
 	setBalanceToday: (id: string, balanceCents: number) => Promise<void>;
-	/** "O cartão deve X agora" — fatura atual mais fechadas não pagas. */
-	setCardOwedToday: (cardId: string, owedCents: number) => Promise<void>;
-	/** Pagamento de fatura: transferência da conta (ou de fora) para o cartão. */
-	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<void>;
+	/**
+	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
+	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`).
+	 */
+	adjustCardInvoices: (cardId: string, openCents: number, closedCents: number) => Promise<void>;
+	/**
+	 * Pagamento de fatura: transferência da conta (ou de fora) para o cartão. Devolve falso
+	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
+	 */
+	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<boolean>;
 	/** Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. */
 	addExistingInstallments: (input: ExistingInstallmentsInput) => Promise<number>;
 	/**
@@ -98,10 +113,38 @@ interface AccountsContextType {
 
 const AccountsContext = createContext<AccountsContextType | undefined>(undefined);
 
+/** Nota do lançamento de ajuste: o mesmo texto em qualquer idioma, é um marcador. */
+const ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
+
 const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
 
+/**
+ * Uma compra pendente na caixa de entrada, como lançamentos provisórios do cartão — com
+ * as parcelas, se for parcelada. Só as sem pergunta: uma "é a mesma compra?" em aberto
+ * poderia contar a compra duas vezes.
+ */
+const pendingCardEntries = (capture: Capture, card: Account): CardEntry[] => {
+	if (capture.status !== 'pending' || capture.question !== null || capture.accountId !== card.id) return [];
+	const count = capture.installments && capture.installments > 1 ? capture.installments : 1;
+	const parts = splitInstallments(capture.amountCents, count);
+	const dates = cardInstallmentDates(getISODate(new Date(capture.postedAt)), count, cycleRuleOf(card));
+	const note = capture.counterparty ?? capture.appLabel;
+	return dates.map((date, index) => ({
+		id: `capture:${capture.id}:${index + 1}`,
+		amountCents: parts[index],
+		isIncome: capture.direction === 'in',
+		date,
+		note: count > 1 ? `${note} (${index + 1}/${count})` : note,
+		category: capture.suggestedCategory ?? '',
+		installmentGroup: count > 1 ? capture.id : null,
+		installmentIndex: count > 1 ? index + 1 : null,
+		installmentCount: count > 1 ? count : null,
+		pendingReview: true,
+	}));
+};
+
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-	const { transactions, refreshData } = useTransactions();
+	const { transactions, categories, refreshData } = useTransactions();
 	const { startDate, endDate } = usePeriod();
 
 	const [accounts, setAccounts] = useState<Account[]>([]);
@@ -111,14 +154,20 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [isLoading, setIsLoading] = useState(true);
 
+	// Cada recarga ganha um número; só a mais recente grava. Uma recarga lenta, começada
+	// antes de um pagamento ou de trocar o mês, não sobrescreve a que veio depois.
+	const generation = useRef(0);
+
 	const refresh = useCallback(async () => {
+		const mine = ++generation.current;
 		try {
 			const today = todayISO();
-			const [list, nextBalances, unassigned, unassignedPeriod] = await Promise.all([
+			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures] = await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
 				getUnassignedNet(today),
 				getUnassignedPeriodSummary(startDate, endDate),
+				getPendingCaptures(),
 			]);
 
 			const nextSummaries = new Map<string, CardSummary>();
@@ -160,6 +209,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					installmentIndex: tx.installmentIndex,
 					installmentCount: tx.installmentCount,
 				}));
+				for (const capture of pendingCaptures) entries.push(...pendingCardEntries(capture, account));
 				const movements: CardMovement[] = cardTransfers.map((transfer) => ({
 					amountCents: transfer.amountCents,
 					date: transfer.date,
@@ -169,6 +219,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				cardActivity.invoiceCents = invoicesClosingBetween(account, entries, startDate, endDate);
 			}
 
+			if (mine !== generation.current) return;
 			setAccounts(list);
 			setBalances(nextBalances);
 			setCardSummaries(nextSummaries);
@@ -185,6 +236,15 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	useEffect(() => {
 		void refresh();
 	}, [refresh, transactions]);
+
+	// Voltar ao app recalcula: o dia pode ter virado (fechamento, vencimento) e o sync pode
+	// ter trazido pagamentos ou compras de outro aparelho.
+	useEffect(() => {
+		const subscription = AppState.addEventListener('change', (state) => {
+			if (state === 'active') void refresh();
+		});
+		return () => subscription.remove();
+	}, [refresh]);
 
 	const createAccount = useCallback(
 		async (draft: AccountDraft) => {
@@ -223,21 +283,61 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh]
 	);
 
-	const setCardOwedToday = useCallback(
-		async (cardId: string, owedCents: number) => {
-			// Na âncora de um cartão, dever é negativo.
-			await setAccountBalanceToday(cardId, 0 - owedCents);
+	const adjustCardInvoices = useCallback(
+		async (cardId: string, openCents: number, closedCents: number) => {
+			const card = (await getAccounts()).find((account) => account.id === cardId);
+			if (!card) return;
+			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
+			const entries: CardEntry[] = cardTransactions.map((tx) => ({
+				id: tx.id,
+				amountCents: tx.amountCents,
+				isIncome: tx.isIncome,
+				date: tx.date,
+				note: tx.note,
+				category: tx.category,
+				installmentGroup: tx.installmentGroup,
+				installmentIndex: tx.installmentIndex,
+				installmentCount: tx.installmentCount,
+			}));
+			// Compras ainda na caixa de entrada já estão na fatura do banco: entram na conta.
+			for (const capture of await getPendingCaptures()) entries.push(...pendingCardEntries(capture, card));
+			const movements: CardMovement[] = cardTransfers.map((transfer) => ({
+				amountCents: transfer.amountCents,
+				date: transfer.date,
+				inbound: transfer.toAccountId === card.id,
+			}));
+
+			const today = todayISO();
+			const plan = planCardAdjustment(card, entries, movements, today, openCents, closedCents);
+			await setAccountAnchor(card.id, plan.anchorCents, plan.anchorDate);
+			if (plan.adjustmentCents !== 0) {
+				const isIncome = plan.adjustmentCents < 0;
+				await addTransaction({
+					amountCents: Math.abs(plan.adjustmentCents),
+					category: resolveCategoryId(isIncome ? 'other_income' : 'other_expense', isIncome ? 'in' : 'out', categories),
+					date: today,
+					note: ADJUSTMENT_NOTE,
+					isIncome,
+					accountId: card.id,
+				});
+			}
 			syncQueue.schedule();
-			await refresh();
+			await Promise.all([refresh(), refreshData()]);
 		},
-		[refresh]
+		[refresh, refreshData, categories]
 	);
 
 	const recordCardPayment = useCallback(
 		async (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => {
+			// A notificação do banco pode ter registrado este pagamento antes do toque.
+			if (await findCardPayment(cardId, amountCents, date, 5)) {
+				await refresh();
+				return false;
+			}
 			await addTransfer({ fromAccountId, toAccountId: cardId, amountCents, date, note: '' });
 			syncQueue.schedule();
 			await refresh();
+			return true;
 		},
 		[refresh]
 	);
@@ -271,6 +371,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
 			await moveAccountLedger(cardId, accountId);
+			// "Pagamentos" para um débito não existiram: tirá-los evita debitar a conta duas vezes.
+			await deleteTransfersOf(cardId);
 			await deleteAccount(cardId);
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
@@ -332,7 +434,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			saveAccount,
 			removeAccount,
 			setBalanceToday,
-			setCardOwedToday,
+			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
@@ -355,7 +457,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			saveAccount,
 			removeAccount,
 			setBalanceToday,
-			setCardOwedToday,
+			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,

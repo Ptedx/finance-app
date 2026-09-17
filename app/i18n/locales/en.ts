@@ -432,6 +432,18 @@ account: {
 		},
 	},
 
+	transactionDelete: {
+		expenseTitle: 'Delete expense',
+		incomeTitle: 'Delete income',
+		body: 'This entry will be deleted. This cannot be undone.',
+		cancel: 'Cancel',
+		confirm: 'Delete',
+		installmentTitle: 'Delete installment',
+		installmentBody: 'This is one installment of a purchase in {{count}} parts. Delete only this one or the whole purchase?',
+		onlyThis: 'Only this one',
+		allInstallments: 'All installments',
+	},
+
 	cards: {
 		sectionTitle: 'Cards',
 		seeAll: 'See all',
@@ -443,6 +455,7 @@ account: {
 		openInvoice: 'Open bill',
 		owed: 'Amount owed',
 		notConfigured: 'Set the closing day to see the bill',
+		pendingIncluded: 'Includes {{amount}} to review',
 		closesTomorrow: 'Closes tomorrow',
 		closesIn_one: 'Closes in {{count}} day',
 		closesIn_other: 'Closes in {{count}} days',
@@ -482,6 +495,10 @@ account: {
 			advance: 'Early payment',
 			closed: 'Closed · was due {{due}}',
 			period: 'Purchases from {{start}} to {{end}}',
+			pendingReview: 'Awaiting review · already on the bill',
+			pendingHint: 'Opens the inbox to confirm the category',
+			coveredByAnchor_one: '{{count}} earlier purchase is already in the set amount',
+			coveredByAnchor_other: '{{count}} earlier purchases are already in the set amount',
 			informed: 'Amount set on {{date}}',
 			empty: 'No purchases in this bill.',
 		},
@@ -511,6 +528,10 @@ account: {
 		},
 		pay: {
 			title: 'Pay bill',
+			when: 'When you paid',
+			today: 'Today',
+			yesterday: 'Yesterday',
+			already: 'That {{amount}} payment was already recorded',
 			subtitle: 'Records the payment as a transfer from the account to the card: not spending, since the purchases were already counted. It pays the closed bill first; anything beyond that goes to the open one. If the bank notification arrives later, it recognises this payment and does not duplicate it.',
 			amount: 'Amount paid',
 			from: 'Paid from',
@@ -521,7 +542,7 @@ account: {
 		},
 		adjust: {
 			title: 'Match the bank',
-			subtitle: 'Type what the bank app shows now. The app starts from that amount without deleting entries.',
+			subtitle: 'Type what the bank app shows now. The closed bill stays on the closed bill and the open one on the open bill; any difference on the open bill becomes an "adjustment" entry. Nothing is deleted.',
 			open: 'Current bill',
 			openHint: 'The open bill, still receiving purchases',
 			closed: 'Closed bill not yet paid',

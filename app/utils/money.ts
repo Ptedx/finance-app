@@ -17,9 +17,15 @@ export type Cents = number;
 /** Guards against overflow of the integer-cents representation. ~10 trillion units. */
 const MAX_CENTS = 1e15;
 
-let locale = 'en-US';
-let currencyCode = 'USD';
-let currencySymbol = '$';
+/**
+ * Guardado também no objeto global: quando só este módulo é recarregado (Fast Refresh,
+ * atualização do JS), ele volta configurado em vez de cair no dólar americano.
+ */
+const holder = globalThis as { __spendrMoney?: { locale: string; currencyCode: string; currencySymbol: string } };
+
+let locale = holder.__spendrMoney?.locale ?? 'en-US';
+let currencyCode = holder.__spendrMoney?.currencyCode ?? 'USD';
+let currencySymbol = holder.__spendrMoney?.currencySymbol ?? '$';
 
 export interface MoneyConfig {
 	locale?: string;
@@ -31,6 +37,7 @@ export const configureMoney = (config: MoneyConfig): void => {
 	if (config.locale) locale = config.locale;
 	if (config.currencyCode) currencyCode = config.currencyCode;
 	if (config.currencySymbol) currencySymbol = config.currencySymbol;
+	holder.__spendrMoney = { locale, currencyCode, currencySymbol };
 };
 
 export const getMoneyConfig = (): Required<MoneyConfig> => ({

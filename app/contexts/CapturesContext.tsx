@@ -147,7 +147,10 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 						ownNames: ownNamesRef.current,
 						categories: categoriesRef.current,
 					});
+					// Qualquer item novo muda cartões e contas: a compra pendente já aparece na fatura
+					// como "a revisar", e uma conta ou cartão pode ter nascido agora.
 					if (summary.autoConfirmed > 0) await reloadLedger();
+					else if (summary.inserted > 0) await refreshAccountsRef.current();
 				}
 			}
 			await load();
@@ -211,7 +214,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (id: string) => {
 			await dismissCapture(id);
 			remember('dismiss', [id]);
-			await load();
+			// Uma compra pendente descartada sai da fatura, onde aparecia como "a revisar".
+			await Promise.all([load(), refreshAccountsRef.current()]);
 		},
 		[load, remember]
 	);
@@ -230,7 +234,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (id: string, same: boolean) => {
 			await answerCaptureDuplicate(id, same);
 			if (same) remember('duplicate', [id]);
-			await load();
+			await Promise.all([load(), refreshAccountsRef.current()]);
 		},
 		[load, remember]
 	);

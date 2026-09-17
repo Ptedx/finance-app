@@ -7,6 +7,7 @@ import {
 	deleteCategory as dbDeleteCategory,
 	updateCategory as dbUpdateCategory,
 	deleteTransaction,
+	deleteTransactionsInGroup,
 	getBalanceAsOf,
 	getCategories,
 	getMonthlyTransactions,
@@ -72,6 +73,8 @@ interface TransactionsContextType {
 	addNewTransaction: (transaction: TransactionDraft) => Promise<string>;
 	updateExistingTransaction: (transaction: TransactionEdit) => Promise<void>;
 	removeTransaction: (id: string) => Promise<void>;
+	/** Todas as parcelas de uma compra parcelada, de uma vez. */
+	removeInstallmentGroup: (installmentGroup: string) => Promise<void>;
 	refreshData: () => Promise<void>;
 
 	// Category Management Actions
@@ -211,6 +214,12 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
+	const removeInstallmentGroup = async (installmentGroup: string) => {
+		await deleteTransactionsInGroup(installmentGroup);
+		await refreshData();
+		syncQueue.schedule();
+	};
+
 	const removeTransaction = async (id: string) => {
 		try {
 			await deleteTransaction(id);
@@ -275,6 +284,7 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		addNewTransaction,
 		updateExistingTransaction,
 		removeTransaction,
+		removeInstallmentGroup,
 		refreshData,
 		addCategory,
 		updateCategory,

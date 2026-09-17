@@ -17,14 +17,16 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import {
 	type CaptureDraft,
+	getCapture,
 	getLinkedTransactionIds,
 	getMerchantRule,
 	getRecentCaptures,
 	getStatementClaimedCaptureIds,
 	getStatementFingerprints,
 	insertCapture,
+	updateCapture,
 } from '../database/captures';
-import { assignTransactionAccount, db, getTransactionsByDateRange } from '../database/database';
+import { assignTransactionAccount, db, getTransactionsByDateRange, reassignCaptureLedger } from '../database/database';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { resolveAccountForStatement } from './accountResolver';
 import { applyDecision, type IngestOptions, toKnownCapture, toMerchantRule } from './captureActions';
@@ -34,6 +36,7 @@ import { decodeOfxBytes, parseOfx } from './ofxParser';
 import {
 	type LedgerTransaction,
 	linesOf,
+	MATCH_INSTALLMENT_WINDOW_DAYS,
 	planStatementImport,
 	type StatementLine,
 	type StatementSummary,
@@ -140,7 +143,8 @@ export const importOfxContent = async (
 			getLinkedTransactionIds(),
 			getRecentCaptures(`${addDays(firstDate, -CAPTURE_LOOKBACK_DAYS)}T00:00:00.000Z`),
 			getTransactionsByDateRange(
-				addDays(firstDate, -TRANSACTION_LOOKBACK_DAYS),
+				// Parcelas casam com até 45 dias de diferença: a busca precisa ir até lá.
+				addDays(firstDate, -Math.max(TRANSACTION_LOOKBACK_DAYS, MATCH_INSTALLMENT_WINDOW_DAYS)),
 				addDays(lastDate, TRANSACTION_LOOKBACK_DAYS)
 			),
 		]);
@@ -159,6 +163,7 @@ export const importOfxContent = async (
 		date: transaction.date,
 		installmentIndex: transaction.installmentIndex,
 		installmentCount: transaction.installmentCount,
+		accountId: transaction.accountId,
 	}));
 
 	// A conta de cada extrato do arquivo, criada ou adotada antes de qualquer gravação:
@@ -179,6 +184,7 @@ export const importOfxContent = async (
 		ownNames: options.ownNames,
 		autoConfirmThreshold: options.autoConfirmThreshold ?? DEFAULT_AUTO_CONFIRM_THRESHOLD,
 		nextId: generateUniqueId,
+		accountIdByKey,
 	});
 
 	// Tudo ou nada: um import pela metade deixaria linhas "já vistas" sem as que as
@@ -192,6 +198,13 @@ export const importOfxContent = async (
 			const base = baseDraftOf(line, fingerprint, accountId);
 
 			if (action.type === 'match_capture') {
+				// O extrato sabe a conta: uma compra que a notificação pôs na conta corrente,
+				// e o extrato do cartão confirma, passa para o cartão — com o que já lançou.
+				const matched = accountId ? await getCapture(action.captureId) : null;
+				if (matched && accountId && matched.accountId !== accountId) {
+					await updateCapture(matched.id, { accountId });
+					if (matched.transactionId) await reassignCaptureLedger(matched.transactionId, matched.id, accountId);
+				}
 				await insertCapture(
 					{ ...base, status: 'duplicate', relatedId: action.captureId, reason: 'statement_capture' },
 					id

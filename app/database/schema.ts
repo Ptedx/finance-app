@@ -210,8 +210,11 @@ export const DATABASE_NAME = 'spendr.db';
  * 11 — the cycle is anchored on the closing day again (the bank's invoice is named by
  *     the month it closes in); `closingDaysBefore` is the gap to the due date. Cards
  *     saved with only a due day get the closing day derived from it.
+ * 12 — no column changes: card purchases filed by the old notification rules (one card
+ *     per virtual card number, "Compra aprovada" on the checking account) are moved to
+ *     the real card.
  */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [

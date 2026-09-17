@@ -1,3 +1,4 @@
+import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
@@ -13,6 +14,7 @@ import {
 import { STORAGE_KEYS } from '../utils/storageUtils';
 import {
 	type Budget,
+	type Capture,
 	type Category,
 	type CategoryDraft,
 	type CategoryEdit,
@@ -497,6 +499,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 9) await migrateCardsApart();
 	if (version < 10) await migrateCardCycleFromDueDay();
 	if (version < 11) await migrateCardCycleToClosingDay();
+	if (version < 12) await migrateCardPurchasesToRealCard();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -585,6 +588,54 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
 	);
 
 	console.log('Migrated card cycles to due day');
+};
+
+/**
+ * v11 -> v12: compras de cartão registradas pelas regras antigas vão para o cartão certo.
+ * A decisão é de `planLedgerRepair` (puro, testado); aqui só se aplica. Tudo o que muda
+ * fica sujo, para subir no próximo sync.
+ */
+const migrateCardPurchasesToRealCard = async (): Promise<void> => {
+	if (!(await tableExists('accounts')) || !(await tableExists('captures'))) return;
+
+	const accounts = (await db.getAllAsync<AccountDB>('SELECT * FROM accounts')).map(convertAccount);
+	const captures = await db.getAllAsync<Omit<Capture, 'autoConfirmed'> & { autoConfirmed: number }>(
+		"SELECT * FROM captures WHERE cardLast4 IS NOT NULL AND status IN ('pending', 'confirmed')"
+	);
+	const plan = planLedgerRepair(
+		accounts,
+		captures.map((row) => ({ ...row, autoConfirmed: Boolean(row.autoConfirmed) }))
+	);
+	if (plan.mergeCards.length === 0 && plan.moveCaptures.length === 0) return;
+
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		for (const { fromId, toId } of plan.mergeCards) {
+			await db.runAsync(
+				'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
+			await db.runAsync(
+				'UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync(
+				'UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, fromId]);
+		}
+		for (const { captureId, transactionId, toId } of plan.moveCaptures) {
+			await db.runAsync('UPDATE captures SET accountId = ? WHERE id = ?', [toId, captureId]);
+			await db.runAsync(
+				'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL',
+				[toId, timestamp, transactionId ?? '', captureId]
+			);
+		}
+	});
+
+	console.log(`Repaired card purchases: ${plan.mergeCards.length} cards merged, ${plan.moveCaptures.length} purchases moved`);
 };
 
 /**
@@ -1135,6 +1186,22 @@ export const moveAccountLedger = async (fromId: string, toId: string): Promise<v
 	});
 };
 
+/**
+ * Leva o que uma captura pôs no livro — a transação, ou todas as parcelas do grupo — para
+ * outra conta. Usado quando o aviso do banco revela o cartão de uma compra que o Samsung
+ * Pay avisou antes.
+ */
+export const reassignCaptureLedger = async (
+	transactionId: string | null,
+	installmentGroup: string,
+	accountId: string | null
+): Promise<void> => {
+	await db.runAsync(
+		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL',
+		[accountId, nowTimestamp(), transactionId ?? '', installmentGroup]
+	);
+};
+
 /** O que passou por uma conta num intervalo, nas quatro direções. Tudo em centavos. */
 export interface AccountActivity {
 	incomeCents: number;
@@ -1270,6 +1337,15 @@ export const getUnassignedNet = async (asOfDate: string): Promise<number> => {
  * bater com X depois de somar o que já aconteceu hoje. Lançamentos que entrarem mais
  * tarde hoje continuam somando por cima, porque são datados depois da âncora.
  */
+/** Âncora explícita: o saldo (num cartão, negativo = deve) no fim de `date`. */
+export const setAccountAnchor = async (accountId: string, balanceCents: number, date: string): Promise<void> => {
+	await db.runAsync(
+		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[balanceCents, date, nowTimestamp(), accountId]
+	);
+};
+
 export const setAccountBalanceToday = async (accountId: string, balanceCents: number): Promise<void> => {
 	const today = todayISO();
 	const activity = await getAccountActivity(accountId, today, today);
@@ -1327,6 +1403,26 @@ export const deleteTransfer = async (id: string): Promise<void> => {
  * acompanha, ou ainda não identificada) casa com qualquer coisa. É o que impede o
  * pagamento da fatura de virar duas transferências quando a conta e o cartão avisam.
  */
+/** Lápide em todas as transferências que entram ou saem de uma conta. */
+export const deleteTransfersOf = async (accountId: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		'UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL',
+		[timestamp, timestamp, accountId, accountId]
+	);
+};
+
+/** Um pagamento para o cartão, de mesmo valor e perto da data, venha de qual conta vier. */
+export const findCardPayment = async (cardId: string, amountCents: number, date: string, windowDays: number): Promise<Transfer | null> => {
+	const row = await db.getFirstAsync<TransferDB>(
+		`SELECT * FROM transfers
+     WHERE toAccountId = ? AND amountCents = ? AND date BETWEEN ? AND ? AND deletedAt IS NULL
+     ORDER BY date DESC LIMIT 1`,
+		[cardId, amountCents, addDays(date, -windowDays), addDays(date, windowDays)]
+	);
+	return row ? convertTransfer(row) : null;
+};
+
 export const findLiveTransfer = async (match: {
 	amountCents: number;
 	fromAccountId: string | null;

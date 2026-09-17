@@ -427,6 +427,18 @@ const pt = {
 		},
 	},
 
+	transactionDelete: {
+		expenseTitle: 'Excluir despesa',
+		incomeTitle: 'Excluir receita',
+		body: 'Este lançamento será excluído. Não dá para desfazer.',
+		cancel: 'Cancelar',
+		confirm: 'Excluir',
+		installmentTitle: 'Excluir parcela',
+		installmentBody: 'Esta é uma parcela de uma compra em {{count}}x. Excluir só esta ou a compra inteira?',
+		onlyThis: 'Só esta parcela',
+		allInstallments: 'Todas as parcelas',
+	},
+
 	cards: {
 		sectionTitle: 'Cartões',
 		seeAll: 'Ver todos',
@@ -438,6 +450,7 @@ const pt = {
 		openInvoice: 'Fatura aberta',
 		owed: 'Valor devido',
 		notConfigured: 'Informe o dia de fechamento para ver a fatura',
+		pendingIncluded: 'Inclui {{amount}} a revisar',
 		closesTomorrow: 'Fecha amanhã',
 		closesIn_one: 'Fecha em {{count}} dia',
 		closesIn_other: 'Fecha em {{count}} dias',
@@ -477,6 +490,10 @@ const pt = {
 			advance: 'Pagamento antecipado',
 			closed: 'Fechada · venceu {{due}}',
 			period: 'Compras de {{start}} a {{end}}',
+			pendingReview: 'Aguardando revisão · já está na fatura',
+			pendingHint: 'Abre a caixa de entrada para confirmar a categoria',
+			coveredByAnchor_one: '{{count}} compra de antes já está no valor informado',
+			coveredByAnchor_other: '{{count}} compras de antes já estão no valor informado',
 			informed: 'Valor informado em {{date}}',
 			empty: 'Nenhuma compra nesta fatura.',
 		},
@@ -506,6 +523,10 @@ const pt = {
 		},
 		pay: {
 			title: 'Pagar fatura',
+			when: 'Quando pagou',
+			today: 'Hoje',
+			yesterday: 'Ontem',
+			already: 'Esse pagamento de {{amount}} já estava registrado',
 			subtitle: 'Registra o pagamento como transferência da conta para o cartão: não conta como gasto, porque as compras já contaram. Quita primeiro a fatura fechada; o que passar adianta a aberta. Se a notificação do banco chegar depois, ela reconhece este pagamento e não duplica.',
 			amount: 'Valor pago',
 			from: 'Pago com',
@@ -516,7 +537,7 @@ const pt = {
 		},
 		adjust: {
 			title: 'Acertar com o banco',
-			subtitle: 'Digite o que o app do banco mostra agora. O app passa a partir desse valor, sem apagar lançamentos.',
+			subtitle: 'Digite o que o app do banco mostra agora. A fechada fica na fatura fechada e a aberta na aberta; se faltar ou sobrar algo na aberta, entra um lançamento "Ajuste com a fatura do banco". Nada é apagado.',
 			open: 'Fatura atual',
 			openHint: 'A fatura aberta, que ainda recebe compras',
 			closed: 'Fatura fechada ainda não paga',

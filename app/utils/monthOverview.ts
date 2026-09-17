@@ -108,11 +108,15 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				break;
 			}
 			case 'envelope': {
-				envelopeFundingCents += account.transfersInCents;
+				// O que entrou menos o que saiu para outras contas suas. Mandar R$ 600 do envelope
+				// para a principal pagar a fatura não é gasto do envelope: a fatura já conta no
+				// cartão. Sem descontar, o mesmo dinheiro contava duas vezes.
+				const funded = account.transfersInCents - account.transfersOutCents;
+				envelopeFundingCents += funded;
 				envelopes.push({
 					accountId: account.accountId,
 					name: account.name,
-					fundedCents: account.transfersInCents,
+					fundedCents: funded,
 					spentCents: Math.max(0, account.expenseCents - account.incomeCents),
 					monthlyCents: account.envelopeMonthlyCents ?? null,
 				});

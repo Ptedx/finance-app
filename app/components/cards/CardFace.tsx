@@ -91,6 +91,7 @@ const CardFace: React.FC<CardFaceProps> = ({ card, summary, onPress, position, s
 	const closing = summary ? closingLabel(summary) : '';
 	const closed = summary ? closedLabel(summary) : null;
 	const available = summary ? availableLabel(summary) : null;
+	const pending = summary && summary.pendingReviewCents !== 0 ? t('cards.pendingIncluded', { amount: formatCents(summary.pendingReviewCents) }) : null;
 	const usage = summary?.limitUsagePercent ?? null;
 	const status = summary && summary.toPayCents > 0 && summary.closedStatus !== 'paid' && summary.closedStatus !== 'none'
 		? summary.closedStatus
@@ -100,6 +101,7 @@ const CardFace: React.FC<CardFaceProps> = ({ card, summary, onPress, position, s
 		[bank, showName ? card.name : null, card.last4 ? t('cards.endingIn', { last4: card.last4 }) : null].filter(Boolean).join(', '),
 		`${invoiceTitle} ${formatCents(invoiceCents)}`,
 		closing,
+		pending,
 		closed,
 		available,
 		position ? t('cards.position', { index: position.index + 1, total: position.total }) : null,
@@ -133,6 +135,7 @@ const CardFace: React.FC<CardFaceProps> = ({ card, summary, onPress, position, s
 					{formatCents(invoiceCents)}
 				</Text>
 				<Text style={[styles.closing, { color: ink }]}>{closing}</Text>
+				{pending ? <Text style={[styles.closing, { color: ink }]}>{pending}</Text> : null}
 			</View>
 
 			{closed && status ? (

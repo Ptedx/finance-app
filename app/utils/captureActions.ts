@@ -35,6 +35,7 @@ import {
 	findLiveTransfer,
 	getAccount,
 	getTransfer,
+	reassignCaptureLedger,
 	updateTransfer,
 } from '../database/database';
 import type { Capture, Category } from '../database/schema';
@@ -54,10 +55,11 @@ import {
 	learnFromConfirmation,
 	type MerchantRule,
 } from './captureMatcher';
-import { type CaptureKind, guessCategory, parseCapture, type RawCapture } from './captureParser';
+import { type CaptureKind, guessCategory, isWalletPackage, parseCapture, type RawCapture } from './captureParser';
 import { generateUniqueId } from './categoryEditUtils';
 import { addDays, getISODate } from './dateUtils';
-import { installmentDate, splitInstallments } from './installments';
+import { cardInstallmentDates, cycleRuleOf } from './cardMath';
+import { splitInstallments } from './installments';
 
 /** Quanto tempo para trás a decisão olha: um dia útil de TED, com folga. */
 const LOOKBACK_MS = 26 * 60 * 60 * 1000;
@@ -90,6 +92,7 @@ export const toKnownCapture = (capture: Capture): KnownCapture => ({
 	status: capture.status,
 	relatedId: capture.relatedId,
 	transactionId: capture.transactionId,
+	accountId: capture.accountId,
 });
 
 export const toMerchantRule = (
@@ -148,12 +151,15 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 	}
 
 	const parts = splitInstallments(capture.amountCents, count);
+	// No cartão, uma parcela por fatura: a data segue o ciclo do cartão.
+	const account = capture.accountId ? await getAccount(capture.accountId) : null;
+	const dates = cardInstallmentDates(date, count, account?.kind === 'credit_card' ? cycleRuleOf(account) : null);
 	let firstId = '';
 	for (let index = 1; index <= count; index += 1) {
 		const id = await addTransaction({
 			amountCents: parts[index - 1],
 			category: categoryId,
-			date: installmentDate(date, index),
+			date: dates[index - 1],
 			note: `${note} (${index}/${count})`,
 			isIncome: capture.direction === 'in',
 			accountId: capture.accountId,
@@ -247,15 +253,39 @@ const recordInvoicePayment = async (
 	const account = await getAccount(capture.accountId);
 	if (!account) return null;
 
+	// O mesmo pagamento chega por caminhos diferentes — o aviso da conta, o aviso do
+	// cartão, o botão "Pagar fatura", o extrato — e cada um pode achar uma conta de origem
+	// diferente. Pagamento de mesmo valor para o mesmo cartão em poucos dias é o mesmo.
+	const payInto = async (cardId: string | null, from: string | null): Promise<string> => {
+		if (cardId) {
+			const date = localDateOf(capture.postedAt);
+			const live = await findLiveTransfer({
+				amountCents: capture.amountCents,
+				fromAccountId: null,
+				toAccountId: cardId,
+				dateFrom: addDays(date, -TRANSFER_LINK_WINDOW_DAYS),
+				dateTo: addDays(date, TRANSFER_LINK_WINDOW_DAYS),
+			});
+			if (live) {
+				if (live.fromAccountId === null && from) {
+					await updateTransfer({ ...live, fromAccountId: from });
+					syncQueue.schedule();
+				}
+				return live.id;
+			}
+		}
+		return recordTransfer(capture, from, cardId, null);
+	};
+
 	if (account.kind === 'credit_card') {
-		if (capture.direction !== 'in') return null;
+		// Visto pelo cartão, o aviso de pagamento às vezes vem como "saída" do parser.
 		const checking = await findCheckingForCard(account);
-		return recordTransfer(capture, checking?.id ?? null, account.id, null);
+		return payInto(account.id, checking?.id ?? null);
 	}
 
 	if (capture.direction !== 'out') return null;
 	const card = await findCardForInvoice(account);
-	return recordTransfer(capture, account.id, card?.id ?? null, null);
+	return payInto(card?.id ?? null, account.id);
 };
 
 // ---------------------------------------------------------------------------
@@ -279,12 +309,26 @@ export const applyDecision = async (
 	const id = explicitId ?? generateUniqueId();
 
 	switch (decision.action) {
-		case 'duplicate':
+		case 'duplicate': {
 			await insertCapture(
 				{ ...base, status: 'duplicate', relatedId: decision.relatedId, reason: decision.reason },
 				id
 			);
+			// O Samsung Pay avisou primeiro e ficou como a compra; o banco chegou agora e é
+			// quem sabe o cartão. A compra (e o que ela já pôs no livro) vai para a conta do
+			// banco — senão ficaria numa conta "Samsung Wallet" e fora da fatura.
+			if (decision.reason === 'wallet' && base.accountId && !isWalletPackage(base.packageName)) {
+				const survivor = await getCapture(decision.relatedId);
+				if (survivor && isWalletPackage(survivor.packageName) && survivor.accountId !== base.accountId) {
+					await updateCapture(survivor.id, { accountId: base.accountId });
+					if (survivor.transactionId) {
+						await reassignCaptureLedger(survivor.transactionId, survivor.id, base.accountId);
+						syncQueue.schedule();
+					}
+				}
+			}
 			return { id, autoConfirmed: false };
+		}
 
 		case 'ask_duplicate':
 			await insertCapture(
@@ -415,6 +459,9 @@ export const ingestRawCaptures = async (
 	const ordered = [...raws].sort((a, b) => a.postedAt.localeCompare(b.postedAt));
 
 	for (const raw of ordered) {
+		// Uma notificação que falha não leva as outras junto: a fila nativa já foi esvaziada,
+		// e o que não for gravado aqui se perde.
+		try {
 		const fingerprint = fingerprintOf(raw);
 		if (await hasCaptureFingerprint(fingerprint)) continue;
 
@@ -480,6 +527,9 @@ export const ingestRawCaptures = async (
 		summary.inserted += 1;
 
 		if (externalIncome && parsed.direction === 'in') await neutralizeExternalLeg(base);
+		} catch (error) {
+			console.error('Failed to ingest notification:', error);
+		}
 	}
 
 	return summary;

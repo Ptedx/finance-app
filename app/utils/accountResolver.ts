@@ -21,8 +21,11 @@ import {
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
-import { normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
-import { addDays, todayISO } from './dateUtils';
+import { isWalletPackage, normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
+import { isCreditCardNotification, pickNotificationTarget, sameBank } from './notificationTarget';
+
+export { cardHintOf, isCreditCardNotification, pickNotificationTarget, sameBank } from './notificationTarget';
+import { addDays, getISODate, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
 
 export const ACCOUNT_COLORS: Record<AccountKind, string> = {
@@ -31,27 +34,6 @@ export const ACCOUNT_COLORS: Record<AccountKind, string> = {
 	investment: '#FFD166',
 	cash: '#A0E7A0',
 	credit_card: '#FF6B6B',
-};
-
-/** "Nu" e "Nubank", "Inter" e "Banco Inter": o mesmo banco, escrito de dois jeitos. */
-export const sameBank = (a: string | null, b: string | null): boolean => {
-	if (!a || !b) return false;
-	const x = normalizeText(a).replace(/^banco\s+/, '');
-	const y = normalizeText(b).replace(/^banco\s+/, '');
-	if (x === y) return true;
-	const [short, long] = x.length <= y.length ? [x, y] : [y, x];
-	return short.length >= 2 && long.startsWith(short);
-};
-
-/**
- * Se a notificação é de uma compra no crédito. O final do cartão sozinho não basta:
- * o débito do Inter também diz "cartão final 1234". Precisa da palavra "crédito" sem
- * a palavra "débito" por perto.
- */
-export const isCreditCardNotification = (raw: RawCapture, parsed: ParsedCapture): boolean => {
-	if (!parsed.cardLast4) return false;
-	const text = normalizeText(`${raw.title} ${raw.text}`);
-	return text.includes('credito') && !text.includes('debito');
 };
 
 const yesterday = (): string => addDays(todayISO(), -1);
@@ -83,36 +65,40 @@ const newAccountDraft = (
 });
 
 /**
- * A conta de uma notificação: o cartão de crédito com aquele final, ou a conta
- * corrente daquele app. Cria na primeira vez.
+ * A conta de uma notificação: o cartão de crédito certo (`pickNotificationTarget`) ou a
+ * conta corrente daquele app. Cria na primeira vez, ancorada na véspera **da compra** —
+ * não na véspera de quando o app abriu, senão a compra da noite anterior ficaria antes
+ * da âncora e fora da fatura.
  */
 export const resolveAccountForNotification = async (
 	raw: RawCapture,
 	parsed: ParsedCapture
 ): Promise<Account> => {
-	const isCard = isCreditCardNotification(raw, parsed);
+	const purchaseEve = addDays(getISODate(new Date(raw.postedAt)), -1);
+	const accounts = await getAccounts();
+	const target = pickNotificationTarget(accounts, { ...raw, cardLast4: parsed.cardLast4 });
+
+	if (target.type === 'card') {
+		const card = target.account;
+		// Cartão cadastrado à mão ganha o app na primeira notificação do banco.
+		if (card.packageName === null && !isWalletPackage(raw.packageName)) {
+			await updateAccount({ ...card, packageName: raw.packageName });
+			return { ...card, packageName: raw.packageName };
+		}
+		return card;
+	}
+
+	const isCard = target.type === 'new_card';
 	const last4 = isCard ? parsed.cardLast4 : null;
 
 	const existing = await findAccountBySource(raw.packageName, last4);
 	if (existing) return existing;
 
-	// Um cartão de extrato (OFX) do mesmo banco e mesmo final, ainda sem app: adota.
-	if (isCard && last4) {
-		const twin = (await getAccounts()).find(
-			(account) =>
-				account.kind === 'credit_card' &&
-				account.last4 === last4 &&
-				account.packageName === null &&
-				sameBank(account.bankName, raw.appLabel)
-		);
-		if (twin) {
-			await updateAccount({ ...twin, packageName: raw.packageName });
-			return { ...twin, packageName: raw.packageName };
-		}
-	} else {
-		const twin = (await getAccounts()).find(
+	if (!isCard) {
+		const twin = accounts.find(
 			(account) =>
 				account.kind !== 'credit_card' &&
+				!account.deletedAt &&
 				account.packageName === null &&
 				account.accountKey !== null &&
 				sameBank(account.bankName, raw.appLabel)
@@ -131,6 +117,7 @@ export const resolveAccountForNotification = async (
 			last4,
 			packageName: raw.packageName,
 			accountKey: null,
+			openingBalanceDate: purchaseEve,
 		})
 	);
 	const created = (await getAccounts()).find((account) => account.id === id);
@@ -174,10 +161,16 @@ export const resolveAccountForStatement = async (statement: OfxAccount): Promise
 		return maybeAnchorFromStatement(adopted, statement);
 	}
 
+	// Cartão novo por extrato não tem saldo confiável (o sinal varia entre bancos), mas a
+	// âncora precisa ficar antes da primeira linha: com âncora "ontem", todas as compras do
+	// extrato ficariam antes dela e fora das faturas.
+	const firstLine = statement.entries.map((entry) => entry.postedDate).sort()[0];
 	const anchor =
 		!statement.isCard && statement.ledgerBalanceCents !== null && statement.ledgerDate !== null
 			? { openingBalanceCents: statement.ledgerBalanceCents, openingBalanceDate: statement.ledgerDate }
-			: {};
+			: statement.isCard && firstLine
+				? { openingBalanceCents: 0, openingBalanceDate: addDays(firstLine, -1) }
+				: {};
 
 	const id = await addAccount(
 		newAccountDraft({

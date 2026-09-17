@@ -436,6 +436,18 @@ account: {
 		},
 	},
 
+	transactionDelete: {
+		expenseTitle: 'Elimina spesa',
+		incomeTitle: 'Elimina entrata',
+		body: 'Questo movimento verrà eliminato. Non si può annullare.',
+		cancel: 'Annulla',
+		confirm: 'Elimina',
+		installmentTitle: 'Elimina rata',
+		installmentBody: "Questa è una rata di un acquisto in {{count}} rate. Eliminare solo questa o l'intero acquisto?",
+		onlyThis: 'Solo questa rata',
+		allInstallments: 'Tutte le rate',
+	},
+
 	cards: {
 		sectionTitle: 'Carte',
 		seeAll: 'Vedi tutte',
@@ -447,6 +459,7 @@ account: {
 		openInvoice: 'Estratto aperto',
 		owed: 'Importo dovuto',
 		notConfigured: "Imposta il giorno di chiusura per vedere l'estratto",
+		pendingIncluded: 'Include {{amount}} da rivedere',
 		closesTomorrow: 'Chiude domani',
 		closesIn_one: 'Chiude tra {{count}} giorno',
 		closesIn_other: 'Chiude tra {{count}} giorni',
@@ -486,6 +499,10 @@ account: {
 			advance: 'Pagamento anticipato',
 			closed: 'Chiuso · scaduto il {{due}}',
 			period: 'Acquisti dal {{start}} al {{end}}',
+			pendingReview: "In attesa di revisione · già nell'estratto",
+			pendingHint: 'Apre la posta in arrivo per confermare la categoria',
+			coveredByAnchor_one: "{{count}} acquisto precedente è già nell'importo impostato",
+			coveredByAnchor_other: "{{count}} acquisti precedenti sono già nell'importo impostato",
 			informed: 'Importo impostato il {{date}}',
 			empty: 'Nessun acquisto in questo estratto.',
 		},
@@ -515,6 +532,10 @@ account: {
 		},
 		pay: {
 			title: 'Paga estratto',
+			when: 'Quando hai pagato',
+			today: 'Oggi',
+			yesterday: 'Ieri',
+			already: 'Il pagamento di {{amount}} era già registrato',
 			subtitle: "Registra il pagamento come trasferimento dal conto alla carta: non è una spesa, gli acquisti sono già stati contati. Paga prima l'estratto chiuso; il resto anticipa quello aperto. Se la notifica della banca arriva dopo, riconosce questo pagamento e non lo duplica.",
 			amount: 'Importo pagato',
 			from: 'Pagato con',
@@ -525,7 +546,7 @@ account: {
 		},
 		adjust: {
 			title: 'Allinea con la banca',
-			subtitle: "Digita quello che mostra ora l'app della banca. L'app riparte da quell'importo senza cancellare movimenti.",
+			subtitle: "Digita quello che mostra ora l'app della banca. Il chiuso resta nell'estratto chiuso e l'aperto in quello aperto; una differenza sull'aperto diventa un movimento di rettifica. Nulla viene cancellato.",
 			open: 'Estratto attuale',
 			openHint: "L'estratto aperto, che riceve ancora acquisti",
 			closed: 'Estratto chiuso non ancora pagato',

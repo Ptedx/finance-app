@@ -18,7 +18,7 @@ import {
 	NEUTRAL_CARD_COLOR,
 } from '../utils/bankBrands';
 import { cycleFor } from '../utils/cardMath';
-import { formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
+import { addDays, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 /**
@@ -50,7 +50,7 @@ interface CardEditScreenProps {
 const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, setCardOwedToday, convertCardToDebit } = useAccounts();
+	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit } = useAccounts();
 
 	const existing: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
@@ -182,7 +182,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
 			openingBalanceCents: existing?.openingBalanceCents ?? 0,
-			openingBalanceDate: existing?.openingBalanceDate ?? todayISO(),
+			// Véspera de hoje: uma compra lançada hoje, depois de criar o cartão, precisa contar.
+			openingBalanceDate: existing?.openingBalanceDate ?? addDays(todayISO(), -1),
 			sortOrder: existing?.sortOrder ?? accounts.length,
 			archived: existing?.archived ?? false,
 		};
@@ -195,7 +196,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				router.back();
 			} else {
 				const id = await createAccount(draft);
-				if (invoiceCents !== null && invoiceCents > 0) await setCardOwedToday(id, invoiceCents);
+				if (invoiceCents !== null && invoiceCents > 0) await adjustCardInvoices(id, invoiceCents, 0);
 				router.replace({ pathname: '/cards/[id]', params: { id } });
 			}
 		} finally {

@@ -55,6 +55,8 @@ export interface KnownCapture {
 	/** A outra perna, quando o item já foi pareado (duplicata ou transferência). */
 	relatedId: string | null;
 	transactionId: string | null;
+	/** A conta ou cartão em que a captura caiu. Opcional para quem não precisa. */
+	accountId?: string | null;
 }
 
 export interface Candidate {
