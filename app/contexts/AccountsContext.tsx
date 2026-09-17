@@ -26,7 +26,7 @@ import {
 import { getPendingCaptures } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Capture } from '../database/schema';
 import * as syncQueue from '../sync/queue';
-import { type AccountsOverview, summarizeAccounts } from '../utils/accountMath';
+import { type AccountsOverview, balanceAdjustment, summarizeAccounts } from '../utils/accountMath';
 import {
 	buildCardSummary,
 	cardInstallmentDates,
@@ -108,8 +108,14 @@ interface AccountsContextType {
 	createAccount: (draft: AccountDraft) => Promise<string>;
 	saveAccount: (account: AccountEdit) => Promise<void>;
 	removeAccount: (id: string) => Promise<void>;
-	/** "Meu saldo agora é X". Só contas. */
-	setBalanceToday: (id: string, balanceCents: number) => Promise<void>;
+	/**
+	 * "Meu saldo agora é X". Só contas.
+	 *
+	 * `spend`: a diferença virou compra que o app não viu, e entra como gasto (ou entrada)
+	 * de hoje — é o que faz o mês e o envelope mostrarem o que já saiu.
+	 * `anchor`: só o ponto de partida estava errado; nada entra no mês.
+	 */
+	setBalanceToday: (id: string, balanceCents: number, mode?: 'spend' | 'anchor') => Promise<void>;
 	/**
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
 	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`).
@@ -137,6 +143,9 @@ const AccountsContext = createContext<AccountsContextType | undefined>(undefined
 
 /** Nota do lançamento de ajuste: o mesmo texto em qualquer idioma, é um marcador. */
 const ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
+
+/** Nota do lançamento que acerta o saldo de uma conta. */
+const BALANCE_ADJUSTMENT_NOTE = 'Ajuste com o saldo do banco';
 
 const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
 
@@ -299,12 +308,32 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	const setBalanceToday = useCallback(
-		async (id: string, balanceCents: number) => {
-			await setAccountBalanceToday(id, balanceCents);
+		async (id: string, balanceCents: number, mode: 'spend' | 'anchor' = 'anchor') => {
+			if (mode === 'spend') {
+				const today = todayISO();
+				const current = (await getAccountBalances(today)).get(id) ?? 0;
+				const adjustment = balanceAdjustment(current, balanceCents);
+				if (adjustment) {
+					await addTransaction({
+						amountCents: adjustment.amountCents,
+						category: resolveCategoryId(
+							adjustment.isIncome ? 'other_income' : 'other_expense',
+							adjustment.isIncome ? 'in' : 'out',
+							categories
+						),
+						date: today,
+						note: BALANCE_ADJUSTMENT_NOTE,
+						isIncome: adjustment.isIncome,
+						accountId: id,
+					});
+				}
+			} else {
+				await setAccountBalanceToday(id, balanceCents);
+			}
 			syncQueue.schedule();
-			await refresh();
+			await Promise.all([refresh(), refreshData()]);
 		},
-		[refresh]
+		[refresh, refreshData, categories]
 	);
 
 	const adjustCardInvoices = useCallback(

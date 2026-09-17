@@ -28,6 +28,7 @@ import {
 	defaultRoleFor,
 	type Transaction,
 } from '../database/schema';
+import { balanceAdjustment } from '../utils/accountMath';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { formatDate, todayISO } from '../utils/dateUtils';
@@ -80,6 +81,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
 	);
 	const [balanceInput, setBalanceInput] = useState('');
+	// O dinheiro saiu (gasto que o app não viu) ou só o ponto de partida estava errado?
+	const [balanceMode, setBalanceMode] = useState<'spend' | 'anchor'>('spend');
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string }>({});
 	const [saving, setSaving] = useState(false);
 
@@ -173,10 +176,32 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			return;
 		}
 		setErrors((current) => ({ ...current, balance: undefined }));
-		await setBalanceToday(existing.id, cents);
+		const adjustment = balanceAdjustment(balanceCents, cents);
+		await setBalanceToday(existing.id, cents, balanceMode);
 		setBalanceInput('');
-		announce(t('accounts.edit.balanceSet'));
+		announce(
+			balanceMode === 'spend' && adjustment
+				? t(adjustment.isIncome ? 'accounts.edit.balanceIncomeAdded' : 'accounts.edit.balanceSpendAdded', {
+						amount: formatCents(adjustment.amountCents),
+					})
+				: t('accounts.edit.balanceSet')
+		);
 	};
+
+	// O que vai acontecer, em uma frase, antes de tocar no botão.
+	const typedBalance = balanceInput.trim() ? parseAmountToCents(balanceInput) : null;
+	const previewAdjustment = typedBalance === null ? null : balanceAdjustment(balanceCents, typedBalance);
+	const balancePreview =
+		typedBalance === null
+			? null
+			: balanceMode === 'anchor'
+				? t('accounts.edit.previewAnchor', { amount: formatCents(typedBalance) })
+				: previewAdjustment === null
+					? t('accounts.edit.previewSame')
+					: t(previewAdjustment.isIncome ? 'accounts.edit.previewIncome' : 'accounts.edit.previewSpend', {
+							current: formatCents(balanceCents),
+							amount: formatCents(previewAdjustment.amountCents),
+						});
 
 	const handleArchive = async () => {
 		if (!existing) return;
@@ -264,6 +289,27 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							)}
 							{existing.accountKey && <Text style={styles.balanceMeta}>{t('accounts.linkedStatement')}</Text>}
 
+							<View style={styles.modes} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.adjustMode')}>
+								{(['spend', 'anchor'] as const).map((mode) => (
+									<Pressable
+										key={mode}
+										onPress={() => setBalanceMode(mode)}
+										accessibilityRole="radio"
+										accessibilityState={{ checked: balanceMode === mode }}
+										accessibilityLabel={t(mode === 'spend' ? 'accounts.edit.modeSpend' : 'accounts.edit.modeAnchor')}
+										accessibilityHint={t(mode === 'spend' ? 'accounts.edit.modeSpendHint' : 'accounts.edit.modeAnchorHint')}
+										style={({ pressed }) => [styles.mode, balanceMode === mode && styles.modeSelected, pressed && styles.pressed]}
+									>
+										<Text style={[styles.modeTitle, balanceMode === mode && styles.modeTitleSelected]}>
+											{t(mode === 'spend' ? 'accounts.edit.modeSpend' : 'accounts.edit.modeAnchor')}
+										</Text>
+										<Text style={styles.modeHint}>
+											{t(mode === 'spend' ? 'accounts.edit.modeSpendHint' : 'accounts.edit.modeAnchorHint')}
+										</Text>
+									</Pressable>
+								))}
+							</View>
+
 							<View style={styles.setBalanceRow}>
 								<TextInput
 									style={[styles.input, styles.setBalanceInput, errors.balance && styles.inputError]}
@@ -285,6 +331,11 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 									<Text style={styles.primaryButtonText}>{t('accounts.edit.setBalance')}</Text>
 								</Pressable>
 							</View>
+							{balancePreview ? (
+								<Text style={styles.balanceMeta} accessibilityLiveRegion="polite">
+									{balancePreview}
+								</Text>
+							) : null}
 							{errors.balance ? (
 								<Text style={styles.error} accessibilityLiveRegion="polite">
 									{errors.balance}
@@ -481,6 +532,36 @@ const styles = StyleSheet.create({
 		fontSize: 13,
 		lineHeight: 18,
 		color: 'rgba(255,255,255,0.7)',
+	},
+	modes: {
+		gap: 8,
+		marginTop: 12,
+	},
+	mode: {
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.15)',
+		borderRadius: 12,
+		padding: 12,
+		minHeight: 48,
+		justifyContent: 'center',
+	},
+	modeSelected: {
+		borderColor: '#15E8FE',
+		backgroundColor: 'rgba(21,232,254,0.1)',
+	},
+	modeTitle: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: '#FFFFFF',
+	},
+	modeTitleSelected: {
+		color: '#15E8FE',
+	},
+	modeHint: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.7)',
+		marginTop: 2,
 	},
 	setBalanceRow: {
 		flexDirection: 'row',

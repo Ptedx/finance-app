@@ -12,6 +12,25 @@
 import type { Account } from '../database/schema';
 
 /** Quanto o cartão deve: o saldo negativo lido ao contrário; um saldo positivo é crédito. */
+/**
+ * O que falta lançar para o saldo do app bater com o do banco.
+ *
+ * Duas situações diferentes, e o usuário escolhe: se o dinheiro **foi gasto** (compras que
+ * o app não viu, como as do Inter antes de a conta existir), a diferença é um lançamento
+ * de verdade e precisa aparecer no mês; se é só o **ponto de partida** que estava errado,
+ * a âncora se move e nada entra no mês.
+ *
+ * Nulo quando já está igual — aí não há o que lançar.
+ */
+export const balanceAdjustment = (
+	currentCents: number,
+	targetCents: number
+): { amountCents: number; isIncome: boolean } | null => {
+	const difference = targetCents - currentCents;
+	if (difference === 0) return null;
+	return { amountCents: Math.abs(difference), isIncome: difference > 0 };
+};
+
 export const owedCents = (balanceCents: number): number => Math.max(0, -balanceCents);
 
 export interface AccountsOverview {

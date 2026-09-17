@@ -133,6 +133,16 @@ pagar (sinal invertido só nesses casos).
   (`invoicesClosingBetween`), com parcelas e com a "fatura atual" informada; as compras
   feitas no mês são a métrica secundária. Cartão sem fechamento cai no cálculo antigo.
 
+### Acertar o saldo de uma conta
+
+Na conta, "Acertar saldo" pergunta **de onde vem a diferença**:
+
+- **Foi gasto ou recebido**: lança a diferença hoje na conta (`balanceAdjustment`), como
+  "Ajuste com o saldo do banco". O saldo passa a bater **e** o mês mostra o que saiu — é o
+  caso de compras feitas antes de a conta existir no app, inclusive no envelope, onde a
+  barra "gastou X de Y" depende disso.
+- **Só o ponto de partida estava errado**: move a âncora, sem lançar nada no mês.
+
 ### Fatura é da conta, cartão é de quem gastou
 
 - Uma **conta de crédito** (o "Cartão 1534" do Nubank) tem **uma fatura**. O cartão físico

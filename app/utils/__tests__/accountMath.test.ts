@@ -1,5 +1,5 @@
 import type { Account } from '../../database/schema';
-import { owedCents, summarizeAccounts } from '../accountMath';
+import { balanceAdjustment, owedCents, summarizeAccounts } from '../accountMath';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'a',
@@ -58,5 +58,23 @@ describe('summarizeAccounts', () => {
 	it('conta sem saldo calculado usa a âncora', () => {
 		const accounts = [account({ id: 'x', openingBalanceCents: 777 })];
 		expect(summarizeAccounts(accounts, new Map(), 0).cashCents).toBe(777);
+	});
+});
+
+describe('balanceAdjustment — acertar o saldo de uma conta', () => {
+	it('saldo do banco menor: a diferença é gasto', () => {
+		expect(balanceAdjustment(100_000, 30_000)).toEqual({ amountCents: 70_000, isIncome: false });
+	});
+
+	it('saldo do banco maior: a diferença é entrada', () => {
+		expect(balanceAdjustment(100_000, 130_000)).toEqual({ amountCents: 30_000, isIncome: true });
+	});
+
+	it('igual não gera lançamento', () => {
+		expect(balanceAdjustment(100_000, 100_000)).toBeNull();
+	});
+
+	it('funciona com saldo negativo', () => {
+		expect(balanceAdjustment(-5_000, 0)).toEqual({ amountCents: 5_000, isIncome: true });
 	});
 });
