@@ -1,41 +1,123 @@
-import { Stack, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import {
-	FlatList,
-	RefreshControl,
-	SafeAreaView,
-	StyleSheet,
-	Switch,
-	Text,
-	View,
-} from 'react-native';
+import { useTranslation } from 'react-i18next';
+import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import PeriodSelector from '../components/PeriodSelector';
 import TransactionItem from '../components/TransactionItem';
+import { useAccounts } from '../contexts/AccountsContext';
+import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
+import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
+import { formatCents } from '../utils/money';
+
+/**
+ * Lançamentos: a lista de tudo o que entrou e saiu, com o extrato como referência.
+ *
+ * O que a tela responde, de cima para baixo: "de que mês estou falando" (o mesmo seletor
+ * da tela inicial, para os números conversarem entre as telas), "quanto entrou e saiu
+ * nele", "onde está aquele lançamento" (busca e filtros) e, por fim, a lista.
+ *
+ * A lista é agrupada por dia, com o total do dia no cabeçalho: é assim que se lê um
+ * extrato, e é o que permite achar uma compra sem ler cada linha. Os cabeçalhos ficam
+ * grudados no topo enquanto o dia rola.
+ *
+ * Filtros como escolha única (tudo, entradas ou saídas) em vez dos dois interruptores de
+ * antes, que podiam ser desligados ao mesmo tempo e esvaziar a tela sem explicar por quê.
+ *
+ * Acessibilidade: cada grupo de filtro é um `radiogroup` com estado, os cabeçalhos de dia
+ * são `header` (o leitor de tela pula de dia em dia), os alvos têm 48 pontos, e o vazio
+ * diz qual é o caso — mês sem lançamento, filtro escondendo tudo ou carregando — com o
+ * caminho para desfazer.
+ */
+
+const ACCENT = '#15E8FE';
+const INCOME = '#4CAF50';
+const EXPENSE = '#FF6B6B';
+
+type Kind = 'all' | 'income' | 'expense';
+
+interface DaySection {
+	title: string;
+	date: string;
+	totalCents: number;
+	data: Transaction[];
+}
 
 const TransactionListScreen = () => {
+	const { t } = useTranslation();
 	const router = useRouter();
-	const { transactions, isLoading, refreshData } = useTransactions();
+	const { transactions, categories, isLoading, refreshData } = useTransactions();
+	const { activeAccounts } = useAccounts();
+	const { startDate, endDate, selectedMonth } = usePeriod();
+
 	const [refreshing, setRefreshing] = useState(false);
-	const [showIncomes, setShowIncomes] = useState(true);
-	const [showExpenses, setShowExpenses] = useState(true);
+	const [kind, setKind] = useState<Kind>('all');
+	const [accountId, setAccountId] = useState<string | null>(null);
+	const [search, setSearch] = useState('');
 
-	// Filter transactions based on toggle settings - memoized to prevent recalculation on every render
-	const filteredTransactions = useMemo(() => {
-		return transactions.filter(
-			(transaction) =>
-				(transaction.isIncome && showIncomes) || (!transaction.isIncome && showExpenses)
-		);
-	}, [transactions, showIncomes, showExpenses]);
+	const categoryNames = useMemo(
+		() => new Map(categories.map((category) => [category.id, category.name.toLocaleLowerCase()])),
+		[categories]
+	);
 
-	// Sort transactions by date, newest first - memoized to prevent resorting on every render
-	const sortedTransactions = useMemo(() => {
-		return [...filteredTransactions].sort(
-			(a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-		);
-	}, [filteredTransactions]);
+	const inPeriod = useMemo(
+		() => transactions.filter((transaction) => transaction.date >= startDate && transaction.date <= endDate),
+		[transactions, startDate, endDate]
+	);
 
-	// Create callback functions with useCallback to prevent recreation on every render
+	const totals = useMemo(() => {
+		let incomeCents = 0;
+		let expenseCents = 0;
+		for (const transaction of inPeriod) {
+			if (transaction.isIncome) incomeCents += transaction.amountCents;
+			else expenseCents += transaction.amountCents;
+		}
+		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+	}, [inPeriod]);
+
+	const filtered = useMemo(() => {
+		const term = search.trim().toLocaleLowerCase();
+		return inPeriod.filter((transaction) => {
+			if (kind === 'income' && !transaction.isIncome) return false;
+			if (kind === 'expense' && transaction.isIncome) return false;
+			if (accountId && transaction.accountId !== accountId) return false;
+			if (!term) return true;
+			const note = transaction.note?.toLocaleLowerCase() ?? '';
+			return note.includes(term) || (categoryNames.get(transaction.category) ?? '').includes(term);
+		});
+	}, [inPeriod, kind, accountId, search, categoryNames]);
+
+	const sections = useMemo<DaySection[]>(() => {
+		const today = todayISO();
+		const yesterday = addDays(today, -1);
+		const byDay = new Map<string, DaySection>();
+
+		for (const transaction of [...filtered].sort((a, b) => b.date.localeCompare(a.date))) {
+			let day = byDay.get(transaction.date);
+			if (!day) {
+				day = {
+					date: transaction.date,
+					title:
+						transaction.date === today
+							? t('transactionsList.today')
+							: transaction.date === yesterday
+								? t('transactionsList.yesterday')
+								: formatFullDate(transaction.date),
+					totalCents: 0,
+					data: [],
+				};
+				byDay.set(transaction.date, day);
+			}
+			day.totalCents += transaction.isIncome ? transaction.amountCents : -transaction.amountCents;
+			day.data.push(transaction);
+		}
+
+		return [...byDay.values()];
+	}, [filtered, t]);
+
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
@@ -47,111 +129,186 @@ const TransactionListScreen = () => {
 		}
 	}, [refreshData]);
 
-	const handleTransactionPress = useCallback(
-		(transaction: Transaction) => {
-			router.push({
-				pathname: '/transaction/[id]',
-				params: { id: transaction.id },
-			});
-		},
+	const openTransaction = useCallback(
+		(transaction: Transaction) => router.push({ pathname: '/transaction/[id]', params: { id: transaction.id } }),
 		[router]
 	);
 
-	const toggleIncome = useCallback(() => {
-		setShowIncomes((prev) => !prev);
-	}, []);
+	const isFiltered = kind !== 'all' || accountId !== null || search.trim() !== '';
+	const clearFilters = () => {
+		setKind('all');
+		setAccountId(null);
+		setSearch('');
+	};
 
-	const toggleExpense = useCallback(() => {
-		setShowExpenses((prev) => !prev);
-	}, []);
+	const kinds: Array<{ value: Kind; label: string }> = [
+		{ value: 'all', label: t('transactionsList.filterAll') },
+		{ value: 'income', label: t('transactionsList.filterIncome') },
+		{ value: 'expense', label: t('transactionsList.filterExpense') },
+	];
 
-	// Memoize the empty list component to prevent recreation on every render
-	const renderEmptyList = useCallback(() => {
-		if (isLoading || refreshing) {
-			return (
-				<View style={styles.emptyContainer}>
-					<Text style={styles.emptyText}>Loading transactions...</Text>
+	const header = (
+		<View style={styles.header}>
+			<View
+				style={styles.totals}
+				accessible
+				accessibilityLabel={[
+					`${t('transactionsList.income')} ${formatCents(totals.incomeCents)}`,
+					`${t('transactionsList.expense')} ${formatCents(totals.expenseCents)}`,
+					`${t('transactionsList.net')} ${formatCents(totals.netCents)}`,
+				].join('. ')}
+			>
+				<View style={styles.total}>
+					<Text style={styles.totalLabel}>{t('transactionsList.income')}</Text>
+					<Text style={[styles.totalValue, styles.income]}>{formatCents(totals.incomeCents)}</Text>
 				</View>
-			);
-		}
-
-		return (
-			<View style={styles.emptyContainer}>
-				<Text style={styles.emptyText}>
-					{!showIncomes && !showExpenses
-						? 'Enable income or expense to see transactions'
-						: 'No transactions yet. Tap the "+" button to add one.'}
-				</Text>
+				<View style={styles.total}>
+					<Text style={styles.totalLabel}>{t('transactionsList.expense')}</Text>
+					<Text style={[styles.totalValue, styles.expense]}>{formatCents(totals.expenseCents)}</Text>
+				</View>
+				<View style={styles.total}>
+					<Text style={styles.totalLabel}>{t('transactionsList.net')}</Text>
+					<Text style={[styles.totalValue, totals.netCents < 0 && styles.expense]}>{formatCents(totals.netCents)}</Text>
+				</View>
 			</View>
-		);
-	}, [isLoading, refreshing, showIncomes, showExpenses]);
 
-	// Memoize the render item function to prevent recreation on every render
-	const renderItem = useCallback(
-		({ item }: { item: Transaction }) => (
-			<TransactionItem transaction={item} onPress={handleTransactionPress} />
-		),
-		[handleTransactionPress]
+			<View style={styles.searchRow}>
+				<Ionicons name="search" size={18} color="rgba(255,255,255,0.6)" />
+				<TextInput
+					style={styles.search}
+					value={search}
+					onChangeText={setSearch}
+					placeholder={t('transactionsList.searchPlaceholder')}
+					placeholderTextColor="rgba(255,255,255,0.4)"
+					accessibilityLabel={t('transactionsList.searchLabel')}
+					returnKeyType="search"
+					autoCorrect={false}
+				/>
+				{search ? (
+					<Pressable
+						onPress={() => setSearch('')}
+						accessibilityRole="button"
+						accessibilityLabel={t('transactionsList.clearSearch')}
+						style={styles.clear}
+					>
+						<Ionicons name="close-circle" size={20} color="rgba(255,255,255,0.7)" />
+					</Pressable>
+				) : null}
+			</View>
+
+			<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={t('transactionsList.filterLabel')}>
+				{kinds.map((option) => {
+					const selected = kind === option.value;
+					return (
+						<Pressable
+							key={option.value}
+							onPress={() => setKind(option.value)}
+							accessibilityRole="radio"
+							accessibilityState={{ checked: selected }}
+							accessibilityLabel={option.label}
+							style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+						>
+							<Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
+						</Pressable>
+					);
+				})}
+			</View>
+
+			{activeAccounts.length > 1 ? (
+				<ScrollView
+					horizontal
+					showsHorizontalScrollIndicator={false}
+					contentContainerStyle={styles.accountChips}
+					accessibilityRole="radiogroup"
+					accessibilityLabel={t('transactionsList.accountLabel')}
+				>
+					{[{ id: null as string | null, name: t('transactionsList.allAccounts'), color: ACCENT }, ...activeAccounts].map(
+						(account) => {
+							const selected = accountId === account.id;
+							return (
+								<Pressable
+									key={account.id ?? 'all'}
+									onPress={() => setAccountId(account.id)}
+									accessibilityRole="radio"
+									accessibilityState={{ checked: selected }}
+									accessibilityLabel={account.name}
+									style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+								>
+									<View style={[styles.dot, { backgroundColor: account.color }]} />
+									<Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
+										{account.name}
+									</Text>
+								</Pressable>
+							);
+						}
+					)}
+				</ScrollView>
+			) : null}
+
+			<Text style={styles.count} accessibilityLiveRegion="polite">
+				{t('transactionsList.count', { count: filtered.length })}
+			</Text>
+		</View>
+	);
+
+	const empty = (
+		<View style={styles.empty}>
+			<Ionicons name={isLoading ? 'hourglass-outline' : 'receipt-outline'} size={32} color="rgba(255,255,255,0.5)" />
+			<Text style={styles.emptyText}>
+				{isLoading
+					? t('transactionsList.loading')
+					: isFiltered
+						? t('transactionsList.emptyFiltered')
+						: t('transactionsList.emptyPeriod', { month: getMonthName(selectedMonth) })}
+			</Text>
+			{!isLoading && isFiltered ? (
+				<Pressable
+					onPress={clearFilters}
+					accessibilityRole="button"
+					accessibilityLabel={t('transactionsList.clearFilters')}
+					style={({ pressed }) => [styles.clearFilters, pressed && styles.pressed]}
+				>
+					<Text style={styles.clearFiltersText}>{t('transactionsList.clearFilters')}</Text>
+				</Pressable>
+			) : null}
+		</View>
 	);
 
 	return (
-		<SafeAreaView style={styles.container}>
-			<Stack.Screen
-				options={{
-					title: 'Transactions',
-					headerStyle: {
-						backgroundColor: '#1A1A1A',
-					},
-					headerTintColor: '#FFFFFF',
-					headerShadowVisible: false,
-				}}
-			/>
-
-			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle}>Transactions</Text>
-				<Text style={styles.headerSubtitle}>View and manage all your transactions</Text>
+		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+			<View style={styles.titleRow}>
+				<Text style={styles.title} accessibilityRole="header">
+					{t('transactionsList.title')}
+				</Text>
+				<PeriodSelector />
 			</View>
 
-			<View style={styles.filterContainer}>
-				<View style={styles.filterOption}>
-					<Text style={styles.filterLabel}>Incomes</Text>
-					<Switch
-						value={showIncomes}
-						onValueChange={toggleIncome}
-						trackColor={{ false: '#3e3e3e', true: 'rgba(76, 175, 80, 0.3)' }}
-						thumbColor={showIncomes ? '#4CAF50' : '#f4f3f4'}
-					/>
-				</View>
-
-				<View style={styles.filterOption}>
-					<Text style={styles.filterLabel}>Expenses</Text>
-					<Switch
-						value={showExpenses}
-						onValueChange={toggleExpense}
-						trackColor={{ false: '#3e3e3e', true: 'rgba(255, 107, 107, 0.3)' }}
-						thumbColor={showExpenses ? '#FF6B6B' : '#f4f3f4'}
-					/>
-				</View>
-			</View>
-
-			<FlatList
-				data={sortedTransactions}
-				renderItem={renderItem}
+			<SectionList
+				sections={sections}
 				keyExtractor={(item) => item.id}
-				contentContainerStyle={styles.listContent}
-				ListEmptyComponent={renderEmptyList}
+				renderItem={({ item }) => <TransactionItem transaction={item} onPress={openTransaction} />}
+				renderSectionHeader={({ section }) => (
+					<View
+						style={styles.dayHeader}
+						accessible
+						accessibilityRole="header"
+						accessibilityLabel={`${section.title}, ${formatCents(section.totalCents)}`}
+					>
+						<Text style={styles.dayTitle}>{section.title}</Text>
+						<Text style={[styles.dayTotal, section.totalCents < 0 && styles.expense]}>{formatCents(section.totalCents)}</Text>
+					</View>
+				)}
+				ListHeaderComponent={header}
+				ListEmptyComponent={empty}
+				stickySectionHeadersEnabled
+				contentContainerStyle={styles.content}
 				refreshControl={
-					<RefreshControl
-						refreshing={refreshing}
-						onRefresh={handleRefresh}
-						tintColor="#15E8FE"
-						colors={['#15E8FE']}
-					/>
+					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />
 				}
-				removeClippedSubviews={true} // Optimize memory usage for lists
-				maxToRenderPerBatch={10} // Limit number of items rendered per batch
-				initialNumToRender={8} // Limit initial render amount
-				windowSize={5} // Reduce rendering window
+				keyboardShouldPersistTaps="handled"
+				initialNumToRender={12}
+				maxToRenderPerBatch={12}
+				windowSize={7}
 			/>
 		</SafeAreaView>
 	);
@@ -161,57 +318,164 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingTop: 60,
 	},
-	headerContainer: {
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
 		paddingHorizontal: 16,
-		paddingVertical: 12,
+		paddingTop: 8,
+		paddingBottom: 4,
+		gap: 12,
 	},
-	headerTitle: {
-		fontSize: 24,
+	title: {
+		fontSize: 26,
 		fontWeight: '700',
 		color: '#FFFFFF',
-		marginBottom: 4,
 	},
-	headerSubtitle: {
-		fontSize: 14,
-		color: 'rgba(255, 255, 255, 0.7)',
-		marginBottom: 8,
+	header: {
+		gap: 12,
+		paddingBottom: 8,
 	},
-	filterContainer: {
+	totals: {
 		flexDirection: 'row',
-		justifyContent: 'space-around',
-		paddingVertical: 10,
-		marginHorizontal: 16,
-		marginBottom: 10,
 		backgroundColor: '#1E1E1E',
-		borderRadius: 8,
+		borderRadius: 16,
+		padding: 14,
+		gap: 8,
 	},
-	filterOption: {
+	total: {
+		flex: 1,
+		gap: 2,
+	},
+	totalLabel: {
+		fontSize: 13,
+		color: 'rgba(255,255,255,0.7)',
+	},
+	totalValue: {
+		fontSize: 16,
+		fontWeight: '700',
+		color: '#FFFFFF',
+	},
+	income: {
+		color: INCOME,
+	},
+	expense: {
+		color: EXPENSE,
+	},
+	searchRow: {
 		flexDirection: 'row',
 		alignItems: 'center',
+		gap: 8,
+		backgroundColor: '#1E1E1E',
+		borderRadius: 12,
+		paddingHorizontal: 12,
 	},
-	filterLabel: {
+	search: {
+		flex: 1,
+		minHeight: 48,
 		color: '#FFFFFF',
-		marginRight: 8,
 		fontSize: 16,
 	},
-	listContent: {
-		padding: 16,
-		paddingBottom: 80,
-		flexGrow: 1,
-	},
-	emptyContainer: {
-		flex: 1,
+	clear: {
+		width: 48,
+		height: 48,
 		alignItems: 'center',
 		justifyContent: 'center',
-		paddingTop: 60,
+	},
+	chips: {
+		flexDirection: 'row',
+		gap: 8,
+	},
+	accountChips: {
+		gap: 8,
+		paddingRight: 16,
+	},
+	chip: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 8,
+		minHeight: 48,
+		paddingHorizontal: 14,
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.15)',
+		backgroundColor: '#1E1E1E',
+	},
+	chipSelected: {
+		borderColor: ACCENT,
+		backgroundColor: 'rgba(21,232,254,0.12)',
+	},
+	chipText: {
+		fontSize: 15,
+		color: 'rgba(255,255,255,0.85)',
+		maxWidth: 160,
+	},
+	chipTextSelected: {
+		color: ACCENT,
+		fontWeight: '600',
+	},
+	dot: {
+		width: 10,
+		height: 10,
+		borderRadius: 5,
+	},
+	pressed: {
+		opacity: 0.85,
+	},
+	count: {
+		fontSize: 13,
+		color: 'rgba(255,255,255,0.6)',
+	},
+	content: {
+		paddingHorizontal: 16,
+		paddingBottom: 90,
+		flexGrow: 1,
+	},
+	dayHeader: {
+		flexDirection: 'row',
+		alignItems: 'baseline',
+		justifyContent: 'space-between',
+		gap: 12,
+		paddingVertical: 8,
+		backgroundColor: '#121212',
+	},
+	dayTitle: {
+		fontSize: 14,
+		fontWeight: '700',
+		color: 'rgba(255,255,255,0.85)',
+		textTransform: 'capitalize',
+	},
+	dayTotal: {
+		fontSize: 14,
+		fontWeight: '600',
+		color: '#FFFFFF',
+	},
+	empty: {
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: 12,
+		paddingTop: 48,
+		paddingHorizontal: 24,
 	},
 	emptyText: {
-		color: 'rgba(255, 255, 255, 0.6)',
+		fontSize: 15,
+		lineHeight: 22,
+		color: 'rgba(255,255,255,0.7)',
 		textAlign: 'center',
-		fontSize: 16,
-		marginBottom: 20,
+	},
+	clearFilters: {
+		minHeight: 48,
+		justifyContent: 'center',
+		paddingHorizontal: 18,
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: ACCENT,
+	},
+	clearFiltersText: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: ACCENT,
 	},
 });
 

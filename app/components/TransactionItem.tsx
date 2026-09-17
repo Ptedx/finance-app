@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
@@ -13,15 +14,18 @@ interface TransactionItemProps {
 }
 
 const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress }) => {
+	const { t } = useTranslation();
 	const { categories } = useTransactions();
 
-	// Special handling for Uncategorized category
+	// Categoria apagada, ou lançamento antigo sem categoria: mostra "Sem categoria".
 	const category = categories.find((c) => c.id === transaction.category) || {
 		id: 'uncategorized',
-		name: 'Uncategorized',
+		name: t('transactionsList.uncategorized'),
 		color: '#9CA3AF',
 		icon: 'help-circle',
 	};
+	const note = transaction.note || t('transactionsList.noDescription');
+	const amount = `${transaction.isIncome ? '+' : '-'} ${formatCents(transaction.amountCents)}`;
 
 	const handlePress = () => {
 		if (onPress) {
@@ -30,23 +34,29 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress 
 	};
 
 	return (
-		<TouchableOpacity style={styles.container} onPress={handlePress}>
+		<TouchableOpacity
+			style={styles.container}
+			onPress={handlePress}
+			accessibilityRole="button"
+			accessibilityLabel={`${note}, ${category.name}, ${amount}, ${formatDate(transaction.date)}`}
+			accessibilityHint={onPress ? t('transactionsList.openHint') : undefined}
+		>
 			<View style={[styles.categoryIcon, { backgroundColor: category.color }]}>
 				{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
 				<Ionicons name={category.icon as any} size={18} color="#000000" />
 			</View>
 
 			<View style={styles.detailsContainer}>
-				<Text style={styles.categoryName}>{category.name}</Text>
-				<Text style={styles.note}>{transaction.note || 'No description'}</Text>
+				<Text style={styles.categoryName} numberOfLines={1}>
+					{note}
+				</Text>
+				<Text style={styles.note} numberOfLines={1}>
+					{category.name}
+				</Text>
 			</View>
 
 			<View style={styles.amountContainer}>
-				<Text
-					style={[styles.amount, transaction.isIncome ? styles.incomeAmount : styles.expenseAmount]}
-				>
-					{transaction.isIncome ? '+' : '-'} {formatCents(transaction.amountCents)}
-				</Text>
+				<Text style={[styles.amount, transaction.isIncome ? styles.incomeAmount : styles.expenseAmount]}>{amount}</Text>
 				<Text style={styles.date}>{formatDate(transaction.date)}</Text>
 			</View>
 		</TouchableOpacity>

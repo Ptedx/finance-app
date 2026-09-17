@@ -50,13 +50,7 @@ const AccountsScreen = () => {
 				<View
 					style={styles.totals}
 					accessible
-					accessibilityLabel={[
-						`${t('accounts.cash')} ${formatCents(overview.cashCents)}`,
-						`${t('accounts.afterCards')} ${formatCents(overview.netCents)}`,
-						overview.savedCents > 0 ? `${t('accounts.saved')} ${formatCents(overview.savedCents)}` : null,
-					]
-						.filter(Boolean)
-						.join('. ')}
+					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
 				>
 					<Text style={styles.totalsLine}>
 						{t('accounts.cash')}: {formatCents(overview.cashCents)}
@@ -64,11 +58,7 @@ const AccountsScreen = () => {
 					<Text style={[styles.totalsLine, styles.totalsNet]}>
 						{t('accounts.afterCards')}: {formatCents(overview.netCents)}
 					</Text>
-					{overview.savedCents > 0 ? (
-						<Text style={styles.totalsLine}>
-							{t('accounts.saved')}: {formatCents(overview.savedCents)}
-						</Text>
-					) : null}
+
 				</View>
 
 				<Pressable
