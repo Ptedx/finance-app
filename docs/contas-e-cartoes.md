@@ -150,6 +150,9 @@ Um modal só, sem escolher "modo" (`AdjustAccountSheet`): **já gastei neste mê
 tenho na conta**. Os dois são o mesmo dinheiro visto de dois lados, então mexer num muda o
 outro. O app faz as duas coisas sozinho:
 
+- os campos se ligam pelo **dinheiro do mês** (`counterpartCents`): no envelope, o teto da
+  barra; nas outras contas, o que o app tem mais o que já viu sair. Digitar de um lado
+  calcula o outro, nos dois sentidos;
 - a diferença de gasto vira lançamento de hoje (`spendingAdjustment`), que é o que move a
   barra do envelope e o mês;
 - o que ainda não bate é dinheiro de antes do app (a sobra do mês passado) e move só o
@@ -215,8 +218,9 @@ contas próprias, já tratado como transferência) e paga a fatura dali.
   são pagamento nem compra, mesmo trazendo valor e a palavra "pagamento".
 - Cartão de débito não é cartão aqui: não tem fatura nem limite. Na edição do cartão, o
   tipo "Débito" leva os lançamentos para a conta de onde o dinheiro sai e remove o cartão.
-- Datas e dinheiro seguem o **idioma do app** (`locale.ts`): em português, sempre
-  "16/09" e "R$ 3.832,80", mesmo com região do aparelho em inglês ou `Intl` reduzido.
+- Datas e dinheiro seguem o **idioma do app** (`locale.ts`, `applyFormatLocale`), inclusive
+  quando ele muda depois de carregar (preferência salva, tela de Ajustes): em português,
+  sempre "16/09" e "R$ 3.832,80", mesmo com região do aparelho em inglês ou `Intl` reduzido.
 - **Devido** = âncora + compras − estornos − pagamentos até hoje. **Fatura aberta** =
   lançamentos do ciclo aberto, inclusive parcelas já programadas nele. **A pagar agora**
   = devido − o que já caiu na fatura aberta: é o que falta das faturas fechadas, com

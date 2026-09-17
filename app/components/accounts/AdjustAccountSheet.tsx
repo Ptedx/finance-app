@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, StyleSheet, Text } from 'react-native';
 import type { Account } from '../../database/schema';
-import { centsToDisplayInput, formatCents, parseAmountToCents } from '../../utils/money';
+import { counterpartCents } from '../../utils/accountMath';
+import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../../utils/money';
 import { Button, Field } from '../cards/formParts';
 import Sheet from '../cards/Sheet';
 
@@ -11,22 +12,28 @@ import Sheet from '../cards/Sheet';
  * Acertar uma conta com o app do banco, na primeira vez.
  *
  * Dois campos que são o mesmo dinheiro visto de dois lados: o que já saiu no mês e o que
- * ainda há na conta. Mexer num muda o outro, porque o total do mês é a soma dos dois —
- * digitar "gastei 845,20" já mostra "tem 154,80". O usuário pode corrigir o que tem na
- * conta quando sobrou dinheiro do mês anterior, e aí o teto do mês sobe sozinho.
+ * ainda há na conta. Eles se ligam pelo **dinheiro do mês** — no envelope, o teto da barra
+ * (a sobra do mês anterior mais o que entrou); nas outras contas, o que o app tem hoje
+ * mais o que já viu sair. Digitar "gastei 845,20" com R$ 1.000 no mês mostra "tem 154,80",
+ * e digitar quanto tem calcula o gasto de volta.
  *
- * Sem escolher "modo": o app decide o que é gasto (entra no mês) e o que é sobra de antes
- * (só ponto de partida).
+ * Mexer nos dois é permitido de propósito: quando sobrou dinheiro do mês passado que o app
+ * não conhecia, a conta não fecha com o teto de hoje, e é o usuário quem sabe disso. O app
+ * então lança o gasto no mês e trata o resto como ponto de partida.
  */
 const AdjustAccountSheet: React.FC<{
 	visible: boolean;
 	account: Account;
+	/** Gasto que o app já tem no período. */
 	spentCents: number;
+	/** Saldo que o app tem hoje. */
 	balanceCents: number;
+	/** O dinheiro do mês, que liga os dois campos. */
+	targetCents: number;
 	isEnvelope: boolean;
 	onClose: () => void;
 	onConfirm: (input: { spentCents: number; balanceCents: number }) => Promise<void>;
-}> = ({ visible, account, spentCents, balanceCents, isEnvelope, onClose, onConfirm }) => {
+}> = ({ visible, account, spentCents, balanceCents, targetCents, isEnvelope, onClose, onConfirm }) => {
 	const { t } = useTranslation();
 	const [spent, setSpent] = useState('');
 	const [balance, setBalance] = useState('');
@@ -39,21 +46,24 @@ const AdjustAccountSheet: React.FC<{
 		setError(undefined);
 	}, [visible, spentCents, balanceCents]);
 
-	// O dinheiro do mês: o que já saiu mais o que ainda está lá.
-	const availableCents = spentCents + balanceCents;
+	// Sem dinheiro do mês conhecido (conta nova), o par continua sendo o que o app tem.
+	const availableCents = targetCents > 0 ? targetCents : spentCents + balanceCents;
+
 	const typedSpent = parseAmountToCents(spent);
 	const typedBalance = parseAmountToCents(balance);
 
 	const onSpentChange = (text: string) => {
-		setSpent(text);
-		const value = parseAmountToCents(text);
-		if (value !== null) setBalance(centsToDisplayInput(Math.max(0, availableCents - value)));
+		const next = formatAmountInput(text);
+		setSpent(next);
+		const value = parseAmountToCents(next);
+		if (value !== null) setBalance(centsToDisplayInput(counterpartCents(availableCents, value)));
 	};
 
 	const onBalanceChange = (text: string) => {
-		setBalance(text);
-		const value = parseAmountToCents(text);
-		if (value !== null) setSpent(centsToDisplayInput(Math.max(0, availableCents - value)));
+		const next = formatAmountInput(text);
+		setBalance(next);
+		const value = parseAmountToCents(next);
+		if (value !== null) setSpent(centsToDisplayInput(counterpartCents(availableCents, value)));
 	};
 
 	const preview =
@@ -78,14 +88,18 @@ const AdjustAccountSheet: React.FC<{
 				hint={t('accounts.adjust.spentHint')}
 				value={spent}
 				onChangeText={onSpentChange}
+				onBlur={() => setSpent(finaliseAmountInput(spent))}
 				keyboardType="decimal-pad"
+				selectTextOnFocus
 			/>
 			<Field
 				label={t('accounts.adjust.balance')}
 				hint={t('accounts.adjust.balanceHint')}
 				value={balance}
 				onChangeText={onBalanceChange}
+				onBlur={() => setBalance(finaliseAmountInput(balance))}
 				keyboardType="decimal-pad"
+				selectTextOnFocus
 				error={error}
 			/>
 			{preview ? (
@@ -97,7 +111,7 @@ const AdjustAccountSheet: React.FC<{
 				label={t('accounts.adjust.confirm')}
 				icon="checkmark"
 				onPress={async () => {
-					if (typedSpent === null || typedBalance === null || typedSpent < 0) {
+					if (typedSpent === null || typedBalance === null || typedSpent < 0 || typedBalance < 0) {
 						setError(t('accounts.edit.invalidAmount'));
 						AccessibilityInfo.announceForAccessibility(t('accounts.edit.invalidAmount'));
 						return;

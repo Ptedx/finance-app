@@ -64,7 +64,8 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, periodSpentByAccount, createAccount, saveAccount, removeAccount, adjustAccountMonth } = useAccounts();
+	const { accounts, balances, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, adjustAccountMonth } =
+		useAccounts();
 	const { transactions } = useTransactions();
 
 	const existing: Account | undefined = useMemo(
@@ -402,6 +403,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					account={existing}
 					spentCents={periodSpentByAccount.get(existing.id) ?? 0}
 					balanceCents={balanceCents}
+					targetCents={month?.envelopes.find((envelope) => envelope.accountId === existing.id)?.targetCents ?? 0}
 					isEnvelope={existing.role === 'envelope'}
 					onClose={() => setAdjusting(false)}
 					onConfirm={async (input) => {

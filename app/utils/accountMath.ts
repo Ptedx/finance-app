@@ -21,6 +21,14 @@ import type { Account } from '../database/schema';
  *
  * Nulo quando já está igual.
  */
+/**
+ * O outro lado do par "já gastei" e "ainda tenho": os dois somam o dinheiro do mês.
+ * Nunca negativo — quem gastou mais do que o mês tinha corrige o outro campo, e o app
+ * entende a diferença como sobra de antes.
+ */
+export const counterpartCents = (availableCents: number, typedCents: number): number =>
+	Math.max(0, availableCents - typedCents);
+
 export const spendingAdjustment = (
 	currentSpentCents: number,
 	informedSpentCents: number

@@ -3,7 +3,7 @@ import { getLocales } from 'expo-localization';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
-import { appLanguage } from '../i18n';
+import i18n, { appLanguage } from '../i18n';
 import { configureDateLocale } from '../utils/dateUtils';
 import { resolveFormatLocale } from '../utils/locale';
 import { configureMoney } from '../utils/money';
@@ -54,9 +54,9 @@ const detectDeviceCurrency = (): Currency => {
  */
 const detectFormatLocale = (): string => {
 	try {
-		return resolveFormatLocale(getLocales()[0]?.languageTag, appLanguage);
+		return resolveFormatLocale(getLocales()[0]?.languageTag, i18n.language || appLanguage);
 	} catch {
-		return resolveFormatLocale(null, appLanguage);
+		return resolveFormatLocale(null, i18n.language || appLanguage);
 	}
 };
 

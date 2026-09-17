@@ -1,5 +1,6 @@
 import type { Account } from '../../database/schema';
-import { owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
+import { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
+import { centsToDisplayInput, configureMoney, finaliseAmountInput, formatAmountInput, parseAmountToCents } from '../money';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'a',
@@ -73,5 +74,37 @@ describe('spendingAdjustment — acertar o gasto do mês numa conta', () => {
 
 	it('igual não gera lançamento', () => {
 		expect(spendingAdjustment(84_520, 84_520)).toBeNull();
+	});
+});
+
+describe('acertar a conta: "já gastei" e "ainda tenho" são o mesmo dinheiro', () => {
+	afterEach(() => configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' }));
+
+	it('com R$ 1.000 no mês, digitar 845,20 deixa 154,80 do outro lado, e vice-versa', () => {
+		expect(counterpartCents(100_000, 84_520)).toBe(15_480);
+		expect(counterpartCents(100_000, 15_480)).toBe(84_520);
+	});
+
+	it('gastou mais do que o mês tinha: o outro lado não fica negativo', () => {
+		expect(counterpartCents(100_000, 120_000)).toBe(0);
+	});
+
+	it('digitando em português, o valor não se perde no caminho', () => {
+		configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+
+		// Digitação tecla a tecla no campo, como o app formata a cada letra.
+		let typed = '';
+		for (const key of '845,20') typed = formatAmountInput(typed + key);
+		expect(typed).toBe('845,20');
+		expect(parseAmountToCents(typed)).toBe(84_520);
+
+		// O outro campo é preenchido pelo app e volta ao mesmo centavo.
+		const other = centsToDisplayInput(counterpartCents(100_000, parseAmountToCents(typed) as number));
+		expect(other).toBe('154,80');
+		expect(parseAmountToCents(other)).toBe(15_480);
+
+		// Sair do campo arredonda sem mudar o valor.
+		expect(finaliseAmountInput('845,2')).toBe('845,20');
+		expect(parseAmountToCents(finaliseAmountInput('1.000'))).toBe(100_000);
 	});
 });

@@ -49,16 +49,27 @@ i18n.use(initReactI18next).init({
 	},
 });
 
-// Formatação configurada já na carga do módulo: as telas que desenham antes do
-// CurrencyProvider terminar de ler a moeda salva também saem no formato do idioma.
-try {
-	const formatLocale = resolveFormatLocale(getLocales()[0]?.languageTag, appLanguage);
+/**
+ * Põe números e datas no formato do idioma dado.
+ *
+ * Roda na carga (as telas que desenham antes de qualquer contexto já saem certas) e a
+ * cada troca de idioma: o idioma pode vir de uma preferência salva ou da tela de Ajustes,
+ * depois de o app carregar, e antes disso o formato ficava preso no do arranque — era por
+ * isso que um app em português mostrava "R$154.80" e "Sep 16".
+ */
+export const applyFormatLocale = (language: string): void => {
+	let deviceTag: string | null = null;
+	try {
+		deviceTag = getLocales()[0]?.languageTag ?? null;
+	} catch {
+		deviceTag = null;
+	}
+	const formatLocale = resolveFormatLocale(deviceTag, language);
 	configureMoney({ locale: formatLocale });
 	configureDateLocale(formatLocale);
-} catch {
-	const formatLocale = resolveFormatLocale(null, appLanguage);
-	configureMoney({ locale: formatLocale });
-	configureDateLocale(formatLocale);
-}
+};
+
+applyFormatLocale(appLanguage);
+i18n.on('languageChanged', applyFormatLocale);
 
 export default i18n;
