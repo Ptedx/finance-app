@@ -7,6 +7,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useBudget } from '../contexts/BudgetContext';
 import { formatCents } from '../utils/money';
 import BudgetEditor from './BudgetEditor';
+import PeriodSelector from './PeriodSelector';
 
 /**
  * O quadro do mês: quanto entrou, quanto saiu de verdade e por onde, quanto foi
@@ -55,6 +56,9 @@ const MonthOverviewCard: React.FC = () => {
 				<Text style={styles.title} accessibilityRole="header">
 					{t('month.title')}
 				</Text>
+				{/* Trocar de mês continua a um toque: o resumo antigo tinha o seletor, e o
+				    quadro do mês é quem mais precisa dele. */}
+				<PeriodSelector />
 			</View>
 
 			<Row label={t('month.income')} value={formatCents(month.incomeCents)} emphasis="income" />
@@ -150,6 +154,10 @@ const styles = StyleSheet.create({
 		marginBottom: 20,
 	},
 	header: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		gap: 8,
 		marginBottom: 8,
 	},
 	title: {

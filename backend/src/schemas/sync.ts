@@ -79,6 +79,8 @@ export const accountSchema = z.object({
 	/** v8. Opcional: um aparelho anterior ao papel não o manda; o servidor resolve pelo tipo. */
 	role: z.enum(['main', 'card', 'envelope', 'reserve', 'external']).nullish(),
 	envelopeMonthlyCents: amountCents.nullish(),
+	/** v9: bandeira do cartão. Opcional para aparelhos anteriores. */
+	network: z.enum(['visa', 'mastercard', 'elo', 'amex', 'hipercard']).nullish(),
 	bankName: z.string().max(100).nullish(),
 	color: z.string().min(1).max(32),
 	last4: z.string().max(8).nullish(),

@@ -9,7 +9,7 @@ import type { Account } from '../database/schema';
 import { formatCents } from '../utils/money';
 
 /**
- * Gerenciar contas e cartões: a lista completa, inclusive as arquivadas, e o botão de
+ * Gerenciar contas (cartões têm tela própria): a lista completa, inclusive as arquivadas, e o botão de
  * adicionar. Tocar numa conta abre a edição, onde fica o "definir saldo".
  */
 
@@ -18,10 +18,12 @@ const ACCENT = '#15E8FE';
 const AccountsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, cards, overview } = useAccounts();
+	const { accounts, balances, overview } = useAccounts();
 
-	const active = accounts.filter((account) => !account.archived);
-	const archived = accounts.filter((account) => account.archived);
+	// Só contas: cartões vivem em /cards.
+	const bankOnly = accounts.filter((account) => account.kind !== 'credit_card');
+	const active = bankOnly.filter((account) => !account.archived);
+	const archived = bankOnly.filter((account) => account.archived);
 	const openAccount = (account: Account) =>
 		router.push({ pathname: '/accounts/[id]', params: { id: account.id } });
 
@@ -48,20 +50,13 @@ const AccountsScreen = () => {
 				<View
 					style={styles.totals}
 					accessible
-					accessibilityLabel={t('accounts.overviewLabel', {
-						cash: formatCents(overview.cashCents),
-						cards: formatCents(overview.cardsOwedCents),
-						net: formatCents(overview.netCents),
-					})}
+					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
 				>
 					<Text style={styles.totalsLine}>
 						{t('accounts.cash')}: {formatCents(overview.cashCents)}
 					</Text>
-					<Text style={styles.totalsLine}>
-						{t('accounts.cards')}: {formatCents(overview.cardsOwedCents)}
-					</Text>
 					<Text style={[styles.totalsLine, styles.totalsNet]}>
-						{t('accounts.net')}: {formatCents(overview.netCents)}
+						{t('accounts.afterCards')}: {formatCents(overview.netCents)}
 					</Text>
 				</View>
 
@@ -83,7 +78,6 @@ const AccountsScreen = () => {
 							key={account.id}
 							account={account}
 							balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-							card={cards.get(account.id)}
 							onPress={openAccount}
 						/>
 					))}
@@ -99,7 +93,6 @@ const AccountsScreen = () => {
 								key={account.id}
 								account={account}
 								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-								card={cards.get(account.id)}
 								onPress={openAccount}
 							/>
 						))}

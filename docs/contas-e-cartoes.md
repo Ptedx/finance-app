@@ -105,47 +105,80 @@ neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
 Os que entraram antes de existirem contas aparecem em "Sem conta" no painel; um toque
 abre a tela que move todos para uma conta de uma vez.
 
+## Cartões: um módulo à parte
+
+Cartão não tem saldo. Tem **limite**, **fatura aberta**, **fatura fechada** e **parcelas
+futuras**. Desde o schema v9 cartão é sempre `kind = credit_card` e `role = card`
+(`normalizeAccountDraft` garante em toda gravação), e as telas de conta não aceitam
+cartão: cadastro, edição e detalhe vivem em `/cards`.
+
+A migração v9 corrige cartões salvos como conta com papel "cartão": vira cartão de
+crédito, e o valor positivo que tinha sido digitado como "saldo" passa a ser valor a
+pagar (sinal invertido só nesses casos).
+
+### Ciclo e faturas (`cardMath.ts`, puro e testado)
+
+- "Fecha dia 10" = a fatura fecha no começo do dia 10. Compras do dia 10 em diante vão
+  para a próxima; o dia de fechamento é o **melhor dia de compra**.
+- A fatura que fecha em 10/out cobre 10/set a 09/out e vence no primeiro dia de
+  vencimento depois do fechamento. Ciclos são contíguos (teste por propriedades).
+- **Devido** = âncora + compras − estornos − pagamentos até hoje. **Fatura aberta** =
+  lançamentos do ciclo aberto, inclusive parcelas já programadas nele. **A pagar agora**
+  = devido − o que já caiu na fatura aberta: é o que falta das faturas fechadas, com
+  status em dia, vence em até 3 dias, ou vencida.
+- **Limite usado** = devido + parcelas futuras (é o que o banco desconta).
+- "Acertar valor" põe a âncora em ontem com o que o app do banco mostra (fatura atual
+  + fechada não paga). A âncora entra como um lançamento único no ciclo em que cai, então
+  devido, fatura aberta e a pagar sempre fecham entre si.
+- Pagar fatura é transferência da conta para o cartão; não é gasto.
+- "Parcela antiga" cria as parcelas restantes de compras feitas antes do app: a atual no
+  começo do ciclo aberto e uma por fatura depois dela.
+
+### Visual
+
+`CardFace` pinta o cartão com a cor do banco (`bankBrands.ts`); o texto é preto ou
+branco pelo contraste WCAG, testado ≥ 4,5:1 para todas as marcas. O selo de fatura
+fechada/vencida tem fundo escuro e ícone próprios. A face inteira é um elemento com
+rótulo completo na ordem de leitura.
+
 ## Tela inicial
 
-"Contas e cartões", logo abaixo do resumo do mês: três números (em caixa, cartões a
-pagar, líquido) e uma linha por conta, cartões por último. Cartão com dia de fechamento
-mostra "Fatura aberta R$ X · Fecha em N dias" e a barra do limite. Lista vertical, não
-carrossel: um carrossel esconde contas e é ruim para o leitor de tela. Cada linha é um
-botão de 56 pontos com rótulo completo ("Nubank final 6422, a pagar R$ 200,00, fatura
-aberta R$ 80,00"); vermelho nunca é a única pista.
+Ordem pela pergunta de quem abre o app:
 
-Gerenciar: Ajustes → "Contas e cartões", ou "Gerenciar" no painel. A tela da conta tem
-"definir saldo" no topo, o formulário, arquivar, excluir e os lançamentos recentes.
+1. **Para revisar** — faixa da caixa de entrada, só quando há algo.
+2. **Este mês** — receita, gastos por bolso, guardado, sobrou, com seletor de mês.
+3. **Cartões** — "a pagar agora", "faturas abertas" e "limite disponível" no topo, e os
+   cartões como na carteira num carrossel com a borda do próximo aparecendo. "Ver todos"
+   abre os mesmos cartões em lista vertical, para quem não desliza bem.
+4. **Contas** — "em caixa" e "depois das faturas", e uma linha por conta.
+5. **Recorrências**, no fim.
+
+O histórico de lançamentos saiu da tela inicial (fica na aba Lançamentos). A taxa de
+poupança e o fôlego foram para Relatórios.
+
+Acessibilidade: cada seção abre com título marcado como cabeçalho; cada cartão é um
+botão com "cartão 2 de 3" no rótulo; os pontos do carrossel ficam fora do leitor de
+tela; alvos de pelo menos 44–48 pontos; nada tem altura fixa, e o texto cresce com a
+fonte do sistema.
 
 ## Roteiro: deixar o app 100% alinhado com o banco
 
-1. **Backup.** Ajustes → Dados → Exportar. Leva segundos e guarda contas, transferências
-   e parcelas.
-2. **Ligue a captura** (Ajustes → Captura automática) e use os apps dos bancos por um
-   dia: as contas correntes e os cartões aparecem sozinhos em "Contas e cartões".
-3. **Importe o OFX de cada conta corrente** (Nubank pessoal, Nubank PJ, Inter,
-   Mercado Pago) do mês corrente. Cada import cria ou adota a conta, traz o histórico do
-   mês para revisão e **ancora o saldo no valor do extrato**. Depois disso o saldo já
-   está certo sem digitar nada.
-4. **Poupança do Mercado Pago** e qualquer conta sem extrato: abra "Contas e cartões",
-   "Adicionar conta", tipo Investimento ou Poupança, e use "Definir saldo" com o valor
-   que o app do banco mostra agora.
-5. **Cartões**: abra cada um, informe dia de fechamento, vencimento e limite. Em
-   "Valor a pagar agora" digite o total em aberto que o app do banco mostra (fatura
-   fechada + aberta) e toque em "Definir saldo". A partir daí cada compra nova entra pela
-   notificação e o pagamento da fatura entra pela conta.
-6. **Compras parceladas já em andamento** (feitas antes do app): as parcelas que
-   ainda vão cair não geram notificação. Dois caminhos: importar o OFX do cartão todo
-   mês, e cada parcela nova aparece para revisar como "LOJA 3/6"; ou digitar as
-   parcelas restantes uma vez, com a data de cada mês e o cartão como conta. As compras
-   novas chegam pela notificação já divididas.
-7. **Revise a caixa de entrada** uma vez por dia nas primeiras semanas. Confirmar,
-   descartar e "transferência entre minhas contas" ensinam o app; depois de 3
-   confirmações iguais, o estabelecimento entra sozinho.
-8. **Todo mês**: importe o OFX de cada conta corrente. Nada duplica, e o saldo é
-   reancorado no valor do banco. Se o "em caixa" do app e o saldo do banco divergirem,
-   é porque algo ficou pendente na caixa de entrada ou um lançamento manual não tem
-   conta — a tela da conta lista os lançamentos dela para conferir.
+1. **Backup.** Ajustes → Dados → Exportar.
+2. **Ligue a captura** (Ajustes → Captura automática). Contas correntes e cartões
+   aparecem sozinhos conforme as notificações chegam.
+3. **Contas**: importe o OFX de cada conta corrente (âncora no saldo do extrato) ou use
+   "Definir saldo" na tela da conta. Marque o papel de cada uma.
+4. **Cartões**: em Cartões, abra ou adicione cada um e informe banco, final, limite,
+   fechamento e vencimento. Depois toque em **Acertar valor** e digite a fatura atual e,
+   se houver, a fechada ainda não paga, como aparecem no app do banco.
+5. **Parcelas de compras antigas**: no cartão, **Parcela antiga**, uma por compra
+   (valor da parcela, parcela desta fatura e total). O limite usado e as faturas futuras
+   passam a bater com o banco.
+6. **Pagou a fatura**: se a notificação do pagamento chegar, vira transferência sozinha;
+   senão, **Pagar fatura** no cartão.
+7. **Revise a caixa de entrada** nas primeiras semanas.
+8. **Todo mês**: confira "a pagar agora" e o limite disponível com o app do banco; se
+   divergirem, **Acertar valor** resolve sem apagar nada.
 
 ## Limites conhecidos
 

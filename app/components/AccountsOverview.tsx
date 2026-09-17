@@ -3,24 +3,22 @@ import { useRouter } from 'expo-router';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { type CardStatus, useAccounts } from '../contexts/AccountsContext';
+import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
-import { limitUsagePercent } from '../utils/accountMath';
-import { formatDate } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 import type { EnvelopeMonth } from '../utils/monthOverview';
 import { ACCOUNT_KIND_ICONS } from './AccountPicker';
 
 /**
- * "Contas" e "Cartões" na tela inicial, em dois blocos, como no banco.
+ * "Contas" na tela inicial. Só contas: cartões têm a própria seção, com limite e fatura.
  *
- * Contas: saldo de cada uma, e o que o papel acrescenta — o envelope mostra "gastou X
- * de Y" com a sobra acumulando, a reserva mostra quanto entrou no mês. Cartões: o que
- * deve, a fatura aberta, quando fecha e vence, e a barra do limite.
+ * No topo, dois números que respondem "quanto eu tenho": **em caixa** (a soma das
+ * contas) e **depois das faturas** (o caixa menos o que os cartões devem hoje). Abaixo,
+ * uma linha por conta, com o que o papel dela acrescenta: o envelope mostra quanto já
+ * foi usado do mês, a reserva mostra quanto entrou.
  *
- * Desenho: lista vertical, não carrossel. Carrossel esconde contas e é ruim para o
- * leitor de tela; a lista lê de cima a baixo e cada linha é um botão de 56 pontos com
- * rótulo completo. Vermelho nunca é a única pista: o texto diz "a pagar".
+ * Lista vertical: cada linha é um botão de 56 pontos com rótulo completo. Valores
+ * negativos têm sinal no texto, não só cor.
  */
 
 const ACCENT = '#15E8FE';
@@ -28,45 +26,19 @@ const ACCENT = '#15E8FE';
 interface AccountRowProps {
 	account: Account;
 	balanceCents: number;
-	card: CardStatus | undefined;
 	envelope?: EnvelopeMonth;
 	/** Entrou na reserva neste mês (líquido). */
 	savedThisMonthCents?: number;
 	onPress: (account: Account) => void;
 }
 
-export const AccountRow: React.FC<AccountRowProps> = ({
-	account,
-	balanceCents,
-	card,
-	envelope,
-	savedThisMonthCents,
-	onPress,
-}) => {
+export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, envelope, savedThisMonthCents, onPress }) => {
 	const { t } = useTranslation();
-	const isCard = account.kind === 'credit_card';
-	const owed = card?.owedCents ?? Math.max(0, -balanceCents);
-	const percent = isCard ? limitUsagePercent(owed, account.creditLimitCents) : null;
+	const amount = `${balanceCents < 0 ? '− ' : ''}${formatCents(Math.abs(balanceCents))}`;
 
-	const primary = isCard
-		? owed > 0
-			? formatCents(owed)
-			: balanceCents > 0
-				? `+ ${formatCents(balanceCents)}`
-				: formatCents(0)
-		: `${balanceCents < 0 ? '− ' : ''}${formatCents(Math.abs(balanceCents))}`;
-	const primaryLabel = isCard ? (owed > 0 ? t('accounts.owed') : t('accounts.credit')) : t('accounts.balance');
-
-	let secondary = `${t(`accounts.kind.${account.kind}`)} · ${t(`accounts.role.${account.role}`)}`;
+	let secondary = t(`accounts.role.${account.role}`);
 	let barPercent: number | null = null;
-	if (isCard && card) {
-		const closing =
-			card.cycle.daysToClosing === 0
-				? t('accounts.closesToday')
-				: t('accounts.closesIn', { count: card.cycle.daysToClosing });
-		secondary = `${t('accounts.openInvoice')} ${formatCents(card.openInvoiceCents)} · ${closing} · ${t('accounts.due', { date: formatDate(card.cycle.nextDue) })}`;
-		barPercent = percent;
-	} else if (account.role === 'envelope' && envelope) {
+	if (account.role === 'envelope' && envelope) {
 		const target = envelope.monthlyCents ?? envelope.fundedCents;
 		secondary = t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) });
 		barPercent = target > 0 ? Math.round((envelope.spentCents / target) * 100) : null;
@@ -74,19 +46,11 @@ export const AccountRow: React.FC<AccountRowProps> = ({
 		secondary = t('accounts.savedThisMonth', { amount: formatCents(savedThisMonthCents) });
 	}
 
-	const summary = isCard
-		? t('accounts.cardSummary', {
-				name: account.name,
-				owed: formatCents(owed),
-				invoice: card ? formatCents(card.openInvoiceCents) : formatCents(0),
-			})
-		: t('accounts.accountSummary', { name: account.name, balance: primary });
-
 	return (
 		<Pressable
 			onPress={() => onPress(account)}
 			accessibilityRole="button"
-			accessibilityLabel={`${summary}. ${secondary}`}
+			accessibilityLabel={`${t('accounts.accountSummary', { name: account.name, balance: amount })}. ${secondary}`}
 			accessibilityHint={t('accounts.accountHint')}
 			style={({ pressed }) => [styles.row, pressed && styles.pressed]}
 		>
@@ -101,23 +65,17 @@ export const AccountRow: React.FC<AccountRowProps> = ({
 					{secondary}
 				</Text>
 				{barPercent !== null && (
-					<View style={styles.track} accessible={false}>
+					<View style={styles.track}>
 						<View
 							style={[
 								styles.fill,
-								{ width: `${Math.min(100, barPercent)}%`, backgroundColor: barPercent >= 90 ? '#FF6B6B' : account.color },
+								{ width: `${Math.min(100, barPercent)}%`, backgroundColor: barPercent >= 90 ? '#FF6B6B' : ACCENT },
 							]}
 						/>
 					</View>
 				)}
 			</View>
-			<View style={styles.amounts}>
-				<Text style={[styles.amount, (isCard ? owed > 0 : balanceCents < 0) ? styles.owed : styles.positive]}>{primary}</Text>
-				<Text style={styles.amountLabel}>
-					{primaryLabel}
-					{percent !== null ? ` · ${t('accounts.limitUsed', { percent })}` : ''}
-				</Text>
-			</View>
+			<Text style={[styles.amount, balanceCents < 0 && styles.negative]}>{amount}</Text>
 		</Pressable>
 	);
 };
@@ -125,191 +83,146 @@ export const AccountRow: React.FC<AccountRowProps> = ({
 const AccountsOverview: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { activeAccounts, balances, cards, overview, month, unassignedNetCents, isLoading } = useAccounts();
+	const { bankAccounts, balances, overview, month, unassignedNetCents, isLoading } = useAccounts();
 
 	if (isLoading) return null;
 
-	const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-	const bankAccounts = activeAccounts.filter((account) => account.kind !== 'credit_card').sort(byOrder);
-	const creditCards = activeAccounts.filter((account) => account.kind === 'credit_card').sort(byOrder);
 	const envelopes = new Map((month?.envelopes ?? []).map((envelope) => [envelope.accountId, envelope]));
-
-	const openAccount = (account: Account) =>
-		router.push({ pathname: '/accounts/[id]', params: { id: account.id } });
-
-	const rowFor = (account: Account) => (
-		<AccountRow
-			key={account.id}
-			account={account}
-			balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-			card={cards.get(account.id)}
-			envelope={envelopes.get(account.id)}
-			savedThisMonthCents={account.role === 'reserve' && month ? month.savedCents : undefined}
-			onPress={openAccount}
-		/>
-	);
+	const openAccount = (account: Account) => router.push({ pathname: '/accounts/[id]', params: { id: account.id } });
 
 	return (
-		<View style={styles.container}>
+		<View style={styles.section}>
 			<View style={styles.header}>
 				<Text style={styles.title} accessibilityRole="header">
-					{t('accounts.sectionTitle')}
+					{t('accounts.groupAccounts')}
 				</Text>
 				<Pressable
 					onPress={() => router.push('/accounts/index')}
 					accessibilityRole="button"
 					accessibilityLabel={t('accounts.manage')}
 					hitSlop={12}
-					style={styles.manage}
+					style={styles.link}
 				>
-					<Text style={styles.manageText}>{t('accounts.manage')}</Text>
+					<Text style={styles.linkText}>{t('accounts.manage')}</Text>
 				</Pressable>
 			</View>
 
-			{activeAccounts.length === 0 ? (
-				<View style={styles.empty}>
-					<Text style={styles.emptyText}>{t('accounts.empty')}</Text>
-					<Pressable
-						onPress={() => router.push('/accounts/new')}
-						accessibilityRole="button"
-						accessibilityLabel={t('accounts.add')}
-						style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
-					>
-						<Ionicons name="add" size={20} color="#000000" />
-						<Text style={styles.addButtonText}>{t('accounts.add')}</Text>
-					</Pressable>
-				</View>
-			) : (
-				<>
-					<View
-						style={styles.totals}
-						accessible
-						accessibilityLabel={t('accounts.overviewLabel', {
-							cash: formatCents(overview.cashCents),
-							cards: formatCents(overview.cardsOwedCents),
-							net: formatCents(overview.netCents),
-						})}
-					>
-						<View style={styles.total}>
-							<Text style={styles.totalLabel}>{t('accounts.cash')}</Text>
-							<Text style={[styles.totalValue, overview.cashCents < 0 && styles.owed]}>{formatCents(overview.cashCents)}</Text>
-						</View>
-						<View style={styles.total}>
-							<Text style={styles.totalLabel}>{t('accounts.cards')}</Text>
-							<Text style={[styles.totalValue, overview.cardsOwedCents > 0 && styles.owed]}>{formatCents(overview.cardsOwedCents)}</Text>
-						</View>
-						<View style={styles.total}>
-							<Text style={styles.totalLabel}>{t('accounts.net')}</Text>
-							<Text style={[styles.totalValue, overview.netCents < 0 && styles.owed]}>{formatCents(overview.netCents)}</Text>
-						</View>
-					</View>
-
-					<Text style={styles.groupTitle} accessibilityRole="header">
-						{t('accounts.groupAccounts')}
-					</Text>
-					{bankAccounts.map(rowFor)}
-					{unassignedNetCents !== 0 && (
-						<Pressable
-							onPress={() => router.push('/accounts/unassigned')}
-							accessibilityRole="button"
-							accessibilityLabel={`${t('accounts.unassigned')}, ${formatCents(unassignedNetCents)}`}
-							accessibilityHint={t('accounts.unassignedAction')}
-							style={({ pressed }) => [styles.row, pressed && styles.pressed]}
-						>
-							<View style={[styles.icon, styles.iconMuted]}>
-								<Ionicons name="help-outline" size={20} color="#FFFFFF" />
-							</View>
-							<View style={styles.info}>
-								<Text style={styles.name}>{t('accounts.unassigned')}</Text>
-								<Text style={styles.secondary}>{t('accounts.unassignedAction')}</Text>
-							</View>
-							<View style={styles.amounts}>
-								<Text style={[styles.amount, unassignedNetCents < 0 ? styles.owed : styles.positive]}>
-									{formatCents(unassignedNetCents)}
-								</Text>
-							</View>
-						</Pressable>
-					)}
-
-					<Text style={styles.groupTitle} accessibilityRole="header">
-						{t('accounts.groupCards')}
-					</Text>
-					{creditCards.length === 0 ? (
+			<View style={styles.card}>
+				{bankAccounts.length === 0 ? (
+					<View style={styles.empty}>
+						<Text style={styles.emptyText}>{t('accounts.empty')}</Text>
 						<Pressable
 							onPress={() => router.push('/accounts/new')}
 							accessibilityRole="button"
-							accessibilityLabel={t('accounts.addCard')}
-							style={({ pressed }) => [styles.addCard, pressed && styles.pressed]}
+							accessibilityLabel={t('accounts.add')}
+							style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
 						>
-							<Ionicons name="card-outline" size={18} color={ACCENT} />
-							<Text style={styles.addCardText}>{t('accounts.addCard')}</Text>
+							<Ionicons name="add" size={20} color="#000000" />
+							<Text style={styles.addButtonText}>{t('accounts.add')}</Text>
 						</Pressable>
-					) : (
-						creditCards.map(rowFor)
-					)}
-				</>
-			)}
+					</View>
+				) : (
+					<>
+						<View
+							style={styles.totals}
+							accessible
+							accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
+						>
+							<View style={styles.total}>
+								<Text style={styles.totalLabel}>{t('accounts.cash')}</Text>
+								<Text style={[styles.totalValue, overview.cashCents < 0 && styles.negative]}>{formatCents(overview.cashCents)}</Text>
+							</View>
+							<View style={styles.total}>
+								<Text style={styles.totalLabel}>{t('accounts.afterCards')}</Text>
+								<Text style={[styles.totalValue, overview.netCents < 0 && styles.negative]}>{formatCents(overview.netCents)}</Text>
+							</View>
+						</View>
+
+						{bankAccounts.map((account) => (
+							<AccountRow
+								key={account.id}
+								account={account}
+								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+								envelope={envelopes.get(account.id)}
+								savedThisMonthCents={account.role === 'reserve' && month ? month.savedCents : undefined}
+								onPress={openAccount}
+							/>
+						))}
+
+						{unassignedNetCents !== 0 && (
+							<Pressable
+								onPress={() => router.push('/accounts/unassigned')}
+								accessibilityRole="button"
+								accessibilityLabel={`${t('accounts.unassigned')}, ${formatCents(unassignedNetCents)}`}
+								accessibilityHint={t('accounts.unassignedAction')}
+								style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+							>
+								<View style={[styles.icon, styles.iconMuted]}>
+									<Ionicons name="help-outline" size={20} color="#FFFFFF" />
+								</View>
+								<View style={styles.info}>
+									<Text style={styles.name}>{t('accounts.unassigned')}</Text>
+									<Text style={styles.secondary}>{t('accounts.unassignedAction')}</Text>
+								</View>
+								<Text style={[styles.amount, unassignedNetCents < 0 && styles.negative]}>
+									{`${unassignedNetCents < 0 ? '− ' : ''}${formatCents(Math.abs(unassignedNetCents))}`}
+								</Text>
+							</Pressable>
+						)}
+					</>
+				)}
+			</View>
 		</View>
 	);
 };
 
 const styles = StyleSheet.create({
-	container: {
-		backgroundColor: '#1E1E1E',
-		borderRadius: 12,
-		padding: 16,
-		marginBottom: 20,
+	section: {
+		marginBottom: 24,
 	},
 	header: {
 		flexDirection: 'row',
 		alignItems: 'center',
 		justifyContent: 'space-between',
-		marginBottom: 12,
+		marginBottom: 10,
 	},
 	title: {
-		fontSize: 18,
-		fontWeight: '600',
+		fontSize: 20,
+		fontWeight: '700',
 		color: '#FFFFFF',
 	},
-	manage: {
+	link: {
 		minHeight: 44,
 		justifyContent: 'center',
 	},
-	manageText: {
-		fontSize: 14,
+	linkText: {
+		fontSize: 15,
 		fontWeight: '600',
 		color: ACCENT,
+	},
+	card: {
+		backgroundColor: '#1E1E1E',
+		borderRadius: 16,
+		paddingHorizontal: 16,
+		paddingVertical: 8,
 	},
 	totals: {
 		flexDirection: 'row',
 		gap: 8,
-		marginBottom: 4,
+		paddingVertical: 8,
 	},
 	total: {
 		flex: 1,
-		backgroundColor: 'rgba(255,255,255,0.05)',
-		borderRadius: 10,
-		paddingVertical: 10,
-		paddingHorizontal: 10,
 	},
 	totalLabel: {
 		fontSize: 12,
-		color: 'rgba(255,255,255,0.7)',
-		marginBottom: 4,
+		color: 'rgba(255,255,255,0.75)',
+		marginBottom: 2,
 	},
 	totalValue: {
-		fontSize: 15,
-		fontWeight: '700',
+		fontSize: 20,
+		fontWeight: '800',
 		color: '#FFFFFF',
-	},
-	groupTitle: {
-		fontSize: 13,
-		fontWeight: '600',
-		letterSpacing: 0.5,
-		textTransform: 'uppercase',
-		color: 'rgba(255,255,255,0.55)',
-		marginTop: 14,
-		marginBottom: 2,
 	},
 	row: {
 		flexDirection: 'row',
@@ -344,7 +257,7 @@ const styles = StyleSheet.create({
 	secondary: {
 		fontSize: 13,
 		lineHeight: 18,
-		color: 'rgba(255,255,255,0.7)',
+		color: 'rgba(255,255,255,0.75)',
 		marginTop: 2,
 	},
 	track: {
@@ -358,26 +271,17 @@ const styles = StyleSheet.create({
 		height: 4,
 		borderRadius: 2,
 	},
-	amounts: {
-		alignItems: 'flex-end',
-	},
 	amount: {
 		fontSize: 16,
 		fontWeight: '700',
-	},
-	positive: {
 		color: '#FFFFFF',
 	},
-	owed: {
-		color: '#FF6B6B',
-	},
-	amountLabel: {
-		fontSize: 12,
-		color: 'rgba(255,255,255,0.7)',
-		marginTop: 2,
+	negative: {
+		color: '#FF8A80',
 	},
 	empty: {
 		gap: 12,
+		paddingVertical: 8,
 	},
 	emptyText: {
 		fontSize: 15,
@@ -397,18 +301,6 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 		fontWeight: '600',
 		color: '#000000',
-	},
-	addCard: {
-		flexDirection: 'row',
-		alignItems: 'center',
-		gap: 8,
-		minHeight: 48,
-		paddingVertical: 8,
-	},
-	addCardText: {
-		fontSize: 14,
-		fontWeight: '600',
-		color: ACCENT,
 	},
 });
 

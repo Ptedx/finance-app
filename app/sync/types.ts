@@ -53,6 +53,8 @@ export interface WireAccount extends WireMeta {
 	/** Campos do v8; opcionais na chegada de um servidor anterior a eles. */
 	role?: 'main' | 'card' | 'envelope' | 'reserve' | 'external' | null;
 	envelopeMonthlyCents?: number | null;
+	/** v9; opcional na chegada de um servidor anterior. */
+	network?: string | null;
 	bankName: string | null;
 	color: string;
 	last4: string | null;

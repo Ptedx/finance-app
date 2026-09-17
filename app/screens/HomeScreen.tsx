@@ -1,146 +1,99 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-	RefreshControl,
-	ScrollView,
-	StatusBar,
-	StyleSheet,
-	Text,
-	TouchableOpacity,
-	View,
-} from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccountReminderBanner from '../components/AccountReminderBanner';
 import AccountsOverview from '../components/AccountsOverview';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
+import CardsSection from '../components/cards/CardsSection';
 import IncomeSection from '../components/IncomeSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
-import SavingsRateCard from '../components/SavingsRateCard';
-import TransactionItem from '../components/TransactionItem';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Transaction } from '../database/schema';
 
+/**
+ * Tela inicial, organizada pela ordem das perguntas de quem abre o app:
+ *
+ *  1. **Tem algo para eu fazer?** — lançamentos capturados esperando revisão.
+ *  2. **Como está o mês?** — receita, gastos por bolso, guardado, sobrou.
+ *  3. **O que os cartões pedem?** — fatura aberta, o que vence, limite. Visual de
+ *     carteira: a cor do banco identifica o cartão antes de qualquer texto.
+ *  4. **Quanto eu tenho?** — contas, caixa e o que sobra depois das faturas.
+ *  5. **O que se repete?** — recorrências, no fim, porque se mexe pouco nelas.
+ *
+ * O histórico de lançamentos saiu daqui: vive na aba Lançamentos, que é onde se procura
+ * um lançamento. A taxa de poupança e o fôlego foram para Relatórios — o "Este mês" já
+ * diz quanto da receita ficou com você.
+ *
+ * Acessibilidade: cada seção começa com um título marcado como cabeçalho, então o
+ * leitor de tela pula de seção em seção; o botão de ajustes tem rótulo e 48 pontos.
+ */
 const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
-	const { currentPeriodTransactions, isLoading, refreshData } = useTransactions();
-
+	const insets = useSafeAreaInsets();
+	const { refreshData } = useTransactions();
+	const { refresh: refreshAccounts } = useAccounts();
 	const { processTransactions } = useRecurringTransactions();
-	const [refreshing, setRefreshing] = React.useState(false);
+	const { syncNow } = useSync();
+	const [refreshing, setRefreshing] = useState(false);
 
-	// Process recurring transactions when the app starts
+	// Recorrências vencidas são lançadas uma vez, ao abrir.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
 	useEffect(() => {
-		const processRecurring = async () => {
-			try {
-				await processTransactions();
-			} catch (error) {
-				console.error('Failed to process recurring transactions:', error);
-			}
-		};
-
-		processRecurring();
+		processTransactions().catch((error) => console.error('Failed to process recurring transactions:', error));
 	}, []);
-
-	const { syncNow } = useSync();
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
 			await processTransactions();
 			await refreshData();
-			// Puxar para atualizar tambem alinha com o servidor, quando ha sessao.
+			await refreshAccounts();
+			// Puxar para atualizar também alinha com o servidor, quando há sessão.
 			syncNow();
 		} catch (error) {
 			console.error('Error during refresh:', error);
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, processTransactions, syncNow]);
-
-	const handleTransactionPress = (transaction: Transaction) => {
-		router.push({
-			pathname: '/transaction/[id]',
-			params: { id: transaction.id },
-		});
-	};
-
-	const handleViewAllTransactions = () => {
-		router.push({ pathname: '/transactions' });
-	};
-
-	const handleOpenSettings = () => {
-		router.push({ pathname: '/settings' });
-	};
-
-	const recentTransactions = [...currentPeriodTransactions]
-		.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-		.slice(0, 5);
+	}, [refreshData, refreshAccounts, processTransactions, syncNow]);
 
 	return (
 		<View style={styles.container}>
 			<StatusBar barStyle="light-content" />
 
-			{/* Header */}
-			<View style={styles.header}>
-				<Text style={styles.headerTitle}>{t('home.title')}</Text>
-				<TouchableOpacity onPress={handleOpenSettings}>
-					<Ionicons name="settings-outline" size={24} color="#ffffff" />
-				</TouchableOpacity>
+			<View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+				<Text style={styles.headerTitle} accessibilityRole="header">
+					{t('home.title')}
+				</Text>
+				<Pressable
+					onPress={() => router.push({ pathname: '/settings' })}
+					accessibilityRole="button"
+					accessibilityLabel={t('tabs.settings')}
+					style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+				>
+					<Ionicons name="settings-outline" size={24} color="#FFFFFF" />
+				</Pressable>
 			</View>
 
 			<ScrollView
+				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={
-					<RefreshControl
-						refreshing={refreshing}
-						onRefresh={handleRefresh}
-						tintColor="#15E8FE"
-						colors={['#15E8FE']}
-					/>
+					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#15E8FE" colors={['#15E8FE']} />
 				}
 			>
 				<AccountReminderBanner />
-
-				{/* Lançamentos capturados das notificações do banco esperando um toque. */}
 				<CaptureReviewBanner />
-
-				{/* O KPI que define trajetória vem antes do resumo do mês: "converti 20% do
-				    que ganhei" diz mais sobre o futuro do que "sobrou R$ 800". */}
-				<SavingsRateCard />
-
-				{/* O quadro do mês por papel de conta: receita, gastos por bolso, guardado, sobrou. */}
 				<MonthOverviewCard />
-				{/* Saldo por conta e fatura por cartão: o que responde "quanto eu tenho agora". */}
+				<CardsSection />
 				<AccountsOverview />
 				<IncomeSection />
-
-				{/* Recent Transactions */}
-				<View style={styles.sectionHeader}>
-					<Text style={styles.sectionTitle}>{t('home.recentTransactions')}</Text>
-					<TouchableOpacity onPress={handleViewAllTransactions}>
-						<Text style={styles.seeAllText}>{t('home.seeAll')}</Text>
-					</TouchableOpacity>
-				</View>
-
-				<View style={styles.transactionsContainer}>
-					{isLoading ? (
-						<Text style={styles.emptyText}>{t('home.loading')}</Text>
-					) : recentTransactions.length === 0 ? (
-						<Text style={styles.emptyText}>{t('home.empty')}</Text>
-					) : (
-						recentTransactions.map((transaction) => (
-							<TransactionItem
-								key={transaction.id}
-								transaction={transaction}
-								onPress={handleTransactionPress}
-							/>
-						))
-					)}
-				</View>
 			</ScrollView>
 		</View>
 	);
@@ -150,44 +103,32 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingHorizontal: 16,
 	},
 	header: {
 		flexDirection: 'row',
-		justifyContent: 'space-between',
 		alignItems: 'center',
-		marginBottom: 20,
-		paddingTop: 60,
+		justifyContent: 'space-between',
+		paddingHorizontal: 16,
+		paddingBottom: 12,
 	},
 	headerTitle: {
 		fontSize: 28,
-		fontWeight: '700',
-		color: '#ffffff',
-		letterSpacing: 0.5,
+		fontWeight: 'bold',
+		color: '#FFFFFF',
 	},
-	sectionHeader: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
+	iconButton: {
+		width: 48,
+		height: 48,
+		borderRadius: 24,
 		alignItems: 'center',
-		marginBottom: 12,
+		justifyContent: 'center',
 	},
-	sectionTitle: {
-		fontSize: 18,
-		fontWeight: '600',
-		color: '#ffffff',
+	pressed: {
+		opacity: 0.6,
 	},
-	seeAllText: {
-		fontSize: 14,
-		color: '#15E8FE',
-	},
-	transactionsContainer: {
-		marginBottom: 80,
-	},
-	emptyText: {
-		color: 'rgba(255, 255, 255, 0.6)',
-		textAlign: 'center',
-		marginTop: 20,
-		fontSize: 16,
+	content: {
+		paddingHorizontal: 16,
+		paddingBottom: 120,
 	},
 });
 

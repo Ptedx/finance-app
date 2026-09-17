@@ -14,6 +14,7 @@ import {
 	View,
 } from 'react-native';
 import { LineChart, PieChart } from 'react-native-chart-kit';
+import SavingsRateCard from '../components/SavingsRateCard';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { useWealthMetrics } from '../hooks/useWealthMetrics';
@@ -609,7 +610,10 @@ const ReportsScreen = () => {
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						{/* Summary Section */}
+						{/* Taxa de poupança e fôlego: saíram da tela inicial, onde o "Este mês" já mostra quanto sobrou. */}
+							<SavingsRateCard />
+
+							{/* Summary Section */}
 						<View style={styles.sectionContainer}>
 							<Text style={styles.sectionTitle}>{t('reports.monthlySummary')}</Text>
 							<View style={styles.summaryContainer}>

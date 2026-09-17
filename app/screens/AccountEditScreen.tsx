@@ -29,7 +29,7 @@ import {
 	type Transaction,
 } from '../database/schema';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
-import { owedCents } from '../utils/accountMath';
+import { brandFor } from '../utils/bankBrands';
 import { formatDate, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
@@ -45,8 +45,9 @@ import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/m
  */
 
 const ACCENT = '#15E8FE';
-const KINDS: AccountKind[] = ['checking', 'savings', 'investment', 'cash', 'credit_card'];
-const ROLES: AccountRole[] = ['main', 'card', 'envelope', 'reserve', 'external'];
+// Cartão não é conta: tem tela e cadastro próprios em /cards.
+const KINDS: AccountKind[] = ['checking', 'savings', 'investment', 'cash'];
+const ROLES: AccountRole[] = ['main', 'envelope', 'reserve', 'external'];
 const ROLE_ICONS: Record<AccountRole, React.ComponentProps<typeof Ionicons>['name']> = {
 	main: 'home-outline',
 	card: 'card-outline',
@@ -62,7 +63,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, cards, createAccount, saveAccount, removeAccount, setBalanceToday } = useAccounts();
+	const { accounts, balances, createAccount, saveAccount, removeAccount, setBalanceToday } = useAccounts();
 	const { transactions } = useTransactions();
 
 	const existing: Account | undefined = useMemo(
@@ -74,12 +75,6 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [name, setName] = useState(existing?.name ?? '');
 	const [kind, setKind] = useState<AccountKind>(existing?.kind ?? 'checking');
 	const [bankName, setBankName] = useState(existing?.bankName ?? '');
-	const [last4, setLast4] = useState(existing?.last4 ?? '');
-	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
-	const [dueDay, setDueDay] = useState(existing?.dueDay ? String(existing.dueDay) : '');
-	const [creditLimit, setCreditLimit] = useState(
-		existing?.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : ''
-	);
 	const [role, setRole] = useState<AccountRole>(existing?.role ?? defaultRoleFor(existing?.kind ?? 'checking'));
 	const [envelopeMonthly, setEnvelopeMonthly] = useState(
 		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
@@ -94,13 +89,13 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		setName(existing.name);
 		setKind(existing.kind);
 		setBankName(existing.bankName ?? '');
-		setLast4(existing.last4 ?? '');
-		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
-		setDueDay(existing.dueDay ? String(existing.dueDay) : '');
-		setCreditLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
 		setRole(existing.role);
 		setEnvelopeMonthly(existing.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : '');
 	}, [existing]);
+
+	useEffect(() => {
+		if (existing?.kind === 'credit_card') router.replace({ pathname: '/cards/[id]', params: { id: existing.id } });
+	}, [existing, router]);
 
 	/** Trocar o tipo numa conta nova leva o papel junto; numa existente o papel é escolha do usuário. */
 	const chooseKind = (next: AccountKind) => {
@@ -108,9 +103,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		if (!existing) setRole(defaultRoleFor(next));
 	};
 
-	const isCard = kind === 'credit_card';
 	const balanceCents = existing ? (balances.get(existing.id) ?? existing.openingBalanceCents) : 0;
-	const card = existing ? cards.get(existing.id) : undefined;
 	const recent: Transaction[] = useMemo(
 		() => (existing ? transactions.filter((tx) => tx.accountId === existing.id).slice(0, 10) : []),
 		[transactions, existing]
@@ -118,25 +111,9 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
-	const parseDay = (value: string): number | null | false => {
-		if (value.trim() === '') return null;
-		const day = Number(value);
-		return Number.isInteger(day) && day >= 1 && day <= 31 ? day : false;
-	};
-
 	const handleSave = async () => {
 		const nextErrors: typeof errors = {};
 		if (name.trim().length === 0) nextErrors.name = t('accounts.edit.invalidName');
-
-		const closing = isCard ? parseDay(closingDay) : null;
-		const due = isCard ? parseDay(dueDay) : null;
-		if (closing === false || due === false) nextErrors.day = t('accounts.edit.invalidDay');
-
-		let limitCents: number | null = null;
-		if (isCard && creditLimit.trim() !== '') {
-			limitCents = parseAmountToCents(creditLimit);
-			if (limitCents === null || limitCents <= 0) nextErrors.amount = t('accounts.edit.invalidAmount');
-		}
 
 		let envelopeCents: number | null = null;
 		if (role === 'envelope' && envelopeMonthly.trim() !== '') {
@@ -156,11 +133,12 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			role,
 			envelopeMonthlyCents: role === 'envelope' ? envelopeCents : null,
 			bankName: bankName.trim() || null,
-			color: existing?.color ?? ACCOUNT_COLORS[kind],
-			last4: isCard && last4.trim() ? last4.trim().slice(-4) : null,
-			closingDay: isCard ? (closing as number | null) : null,
-			dueDay: isCard ? (due as number | null) : null,
-			creditLimitCents: isCard ? limitCents : null,
+			network: null,
+			color: existing?.color ?? brandFor(bankName)?.color ?? ACCOUNT_COLORS[kind],
+			last4: null,
+			closingDay: null,
+			dueDay: null,
+			creditLimitCents: null,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
 			openingBalanceCents: existing?.openingBalanceCents ?? 0,
@@ -270,17 +248,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 					{existing && (
 						<View style={styles.balanceCard}>
-							<Text style={styles.balanceLabel}>{isCard ? t('accounts.owed') : t('accounts.balance')}</Text>
-							<Text style={[styles.balanceValue, (isCard ? owedCents(balanceCents) > 0 : balanceCents < 0) && styles.owed]}>
-								{isCard ? formatCents(owedCents(balanceCents)) : formatCents(balanceCents)}
+							<Text style={styles.balanceLabel}>{t('accounts.balance')}</Text>
+							<Text style={[styles.balanceValue, balanceCents < 0 && styles.owed]}>
+								{formatCents(balanceCents)}
 							</Text>
-							{card && (
-								<Text style={styles.balanceMeta}>
-									{t('accounts.openInvoice')} {formatCents(card.openInvoiceCents)} ·{' '}
-									{t('accounts.closes', { date: formatDate(card.cycle.nextClosing) })} ·{' '}
-									{t('accounts.due', { date: formatDate(card.cycle.nextDue) })}
-								</Text>
-							)}
 							<Text style={styles.balanceMeta}>
 								{t('accounts.anchoredOn', { date: formatDate(existing.openingBalanceDate) })}
 							</Text>
@@ -296,10 +267,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 									style={[styles.input, styles.setBalanceInput, errors.balance && styles.inputError]}
 									value={balanceInput}
 									onChangeText={setBalanceInput}
-									placeholder={isCard ? t('accounts.edit.currentOwed') : t('accounts.edit.currentBalance')}
+									placeholder={t('accounts.edit.currentBalance')}
 									placeholderTextColor="rgba(255,255,255,0.35)"
 									keyboardType="decimal-pad"
-									accessibilityLabel={isCard ? t('accounts.edit.currentOwed') : t('accounts.edit.currentBalance')}
+									accessibilityLabel={t('accounts.edit.currentBalance')}
 									accessibilityHint={t('accounts.edit.setBalanceHint')}
 								/>
 								<Pressable
@@ -394,33 +365,6 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						placeholder: t('accounts.edit.bankPlaceholder'),
 						optional: true,
 					})}
-
-					{isCard && (
-						<>
-							{field(t('accounts.edit.last4'), last4, (text) => setLast4(text.replace(/\D/g, '').slice(0, 4)), {
-								keyboardType: 'number-pad',
-								optional: true,
-							})}
-							<View style={styles.twoColumns}>
-								<View style={styles.column}>
-									{field(t('accounts.edit.closingDay'), closingDay, (text) => setClosingDay(text.replace(/\D/g, '').slice(0, 2)), {
-										keyboardType: 'number-pad',
-										error: errors.day,
-									})}
-								</View>
-								<View style={styles.column}>
-									{field(t('accounts.edit.dueDay'), dueDay, (text) => setDueDay(text.replace(/\D/g, '').slice(0, 2)), {
-										keyboardType: 'number-pad',
-									})}
-								</View>
-							</View>
-							{field(t('accounts.edit.creditLimit'), creditLimit, setCreditLimit, {
-								keyboardType: 'decimal-pad',
-								optional: true,
-								error: errors.amount,
-							})}
-						</>
-					)}
 
 					<Pressable
 						onPress={handleSave}

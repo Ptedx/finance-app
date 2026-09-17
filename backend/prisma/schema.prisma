@@ -231,6 +231,8 @@ model Account {
   kind                 AccountKind
   role                 AccountRole @default(main)
   envelopeMonthlyCents BigInt?
+  /// Bandeira do cartão (v9): visa, mastercard, elo, amex, hipercard.
+  network              String?
   bankName            String?
   color               String
   last4               String?

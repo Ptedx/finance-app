@@ -20,6 +20,7 @@ import {
 	updateAccount,
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
+import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
 import { normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
 import { addDays, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
@@ -63,8 +64,11 @@ const newAccountDraft = (
 	kind: partial.kind,
 	role: defaultRoleFor(partial.kind),
 	envelopeMonthlyCents: null,
+	network: null,
 	bankName: partial.bankName,
-	color: ACCOUNT_COLORS[partial.kind],
+	// A cor do banco quando ele é conhecido: o Nubank roxo, o Inter laranja. É o que
+	// deixa o cartão reconhecível de relance na tela inicial.
+	color: brandFor(partial.bankName)?.color ?? (partial.kind === 'credit_card' ? NEUTRAL_CARD_COLOR : ACCOUNT_COLORS[partial.kind]),
 	last4: partial.last4,
 	closingDay: null,
 	dueDay: null,

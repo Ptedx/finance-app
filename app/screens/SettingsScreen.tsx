@@ -380,6 +380,7 @@ const SettingsScreen = () => {
 						)
 					)}
 					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
+					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),

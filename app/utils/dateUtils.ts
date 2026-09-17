@@ -56,6 +56,18 @@ export const formatDate = (dateString: string): string =>
 		day: 'numeric',
 	});
 
+/** "17/10" no pt-BR, "10/17" no en-US: dia e mês com dois dígitos, na ordem do idioma. */
+export const formatDayMonth = (dateString: string): string =>
+	parseISODate(dateString).toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
+
+/** Nome do mês por extenso ("outubro"). */
+export const formatMonthLong = (dateString: string): string =>
+	parseISODate(dateString).toLocaleDateString(locale, { month: 'long' });
+
+/** Mês abreviado ("out"), para rótulos curtos como as abas de fatura. */
+export const formatMonthShort = (dateString: string): string =>
+	parseISODate(dateString).toLocaleDateString(locale, { month: 'short' }).replace('.', '');
+
 export const formatFullDate = (dateString: string): string =>
 	parseISODate(dateString).toLocaleDateString(locale, {
 		year: 'numeric',

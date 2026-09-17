@@ -119,6 +119,8 @@ export interface Account extends SyncMeta {
 	bankName: string | null;
 	color: string;
 	last4: string | null;
+	/** Bandeira do cartão (`visa`, `mastercard`, `elo`, `amex`, `hipercard`). Só cartões. */
+	network: string | null;
 	/** Dia do mês em que a fatura fecha e vence. Só cartões. */
 	closingDay: number | null;
 	dueDay: number | null;
@@ -195,8 +197,10 @@ export const DATABASE_NAME = 'spendr.db';
  * 7 — `accounts` and `transfers` are created; transactions gain `accountId` and the
  *     installment columns; captures gain `accountId` and `transferId`.
  * 8 — accounts gain `role` (how the month is computed) and `envelopeMonthlyCents`.
+ * 9 — accounts gain `network` (card brand); cards are normalised so a card is always
+ *     `kind = credit_card` and `role = card`, and nothing else is.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -295,6 +299,7 @@ export const CREATE_ACCOUNTS_TABLE = `
     kind TEXT NOT NULL DEFAULT 'checking',
     role TEXT NOT NULL DEFAULT 'main',
     envelopeMonthlyCents INTEGER,
+    network TEXT,
     bankName TEXT,
     color TEXT NOT NULL DEFAULT '#15E8FE',
     last4 TEXT,
@@ -316,6 +321,9 @@ export const ACCOUNT_V8_COLUMNS: Array<[name: string, sql: string]> = [
 	['role', "TEXT NOT NULL DEFAULT 'main'"],
 	['envelopeMonthlyCents', 'INTEGER'],
 ];
+
+/** Colunas que o v9 acrescenta em `accounts`. */
+export const ACCOUNT_V9_COLUMNS: Array<[name: string, sql: string]> = [['network', 'TEXT']];
 
 export const CREATE_TRANSFERS_TABLE = `
   CREATE TABLE IF NOT EXISTS transfers (
