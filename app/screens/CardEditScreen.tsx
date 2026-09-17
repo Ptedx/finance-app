@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
 import { useAccounts } from '../contexts/AccountsContext';
-import type { Account, AccountDraft } from '../database/schema';
+import { type Account, type AccountDraft, DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
 import {
 	BANK_BRANDS,
 	brandFor,
@@ -28,12 +28,18 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * Isso confirma a escolha sem precisar ler.
  *
  * Campos na ordem em que se acha a informação no app do banco: banco, final, bandeira,
- * limite, fechamento e vencimento. Só o banco é obrigatório; sem fechamento o cartão
- * funciona, mas não monta faturas — e a tela diz isso.
+ * limite e vencimento. O fechamento não é digitado: sai do vencimento menos N dias (7 no
+ * Nubank), já com o vencimento empurrado para dia útil. Só o banco é obrigatório; sem
+ * vencimento o cartão funciona, mas não monta faturas — e a tela diz isso.
+ *
+ * Débito fica de fora: não tem fatura nem limite, a compra sai da conta na hora. Quem
+ * cadastrou um débito aqui por engano leva os lançamentos para a conta com um toque.
  */
 
 const POPULAR_BANKS = ['nubank', 'inter', 'mercadopago', 'itau', 'bradesco', 'santander', 'bb', 'caixa', 'c6', 'picpay'];
 const OTHER = 'other';
+
+type CardType = 'credit' | 'debit';
 
 interface CardEditScreenProps {
 	cardId?: string;
@@ -42,7 +48,7 @@ interface CardEditScreenProps {
 const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, createAccount, saveAccount, removeAccount, setCardOwedToday } = useAccounts();
+	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, setCardOwedToday, convertCardToDebit } = useAccounts();
 
 	const existing: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
@@ -56,7 +62,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [last4, setLast4] = useState(existing?.last4 ?? '');
 	const [network, setNetwork] = useState<CardNetwork | null>((existing?.network as CardNetwork | null) ?? null);
 	const [limit, setLimit] = useState(existing?.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
-	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
+	const [cardType, setCardType] = useState<CardType>('credit');
+	const [debitAccountId, setDebitAccountId] = useState<string | null>(null);
+	const [closingDaysBefore, setClosingDaysBefore] = useState(String(existing?.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
 	const [dueDay, setDueDay] = useState(existing?.dueDay ? String(existing.dueDay) : '');
 	const [currentInvoice, setCurrentInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -71,7 +79,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		setLast4(existing.last4 ?? '');
 		setNetwork((existing.network as CardNetwork | null) ?? null);
 		setLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
-		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
+		setClosingDaysBefore(String(existing.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
 		setDueDay(existing.dueDay ? String(existing.dueDay) : '');
 	}, [existing]);
 
@@ -114,6 +122,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		network,
 		closingDay: null,
 		dueDay: null,
+		closingDaysBefore: null,
 		creditLimitCents: null,
 	};
 
@@ -122,9 +131,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const handleSave = async () => {
 		const next: Record<string, string | undefined> = {};
 		if (!bankName) next.bank = t('cards.edit.bankRequired');
-		const closing = parseDay(closingDay);
 		const due = parseDay(dueDay);
-		if (closing === false) next.closing = t('cards.edit.invalidDay');
+		const daysBefore = Number(closingDaysBefore);
+		if (!Number.isInteger(daysBefore) || daysBefore < 1 || daysBefore > 20) next.closing = t('cards.edit.invalidDaysBefore');
 		if (due === false) next.due = t('cards.edit.invalidDay');
 		if (last4 && !/^\d{4}$/.test(last4)) next.last4 = t('cards.edit.invalidLast4');
 
@@ -155,8 +164,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			bankName,
 			color,
 			last4: last4 || null,
-			closingDay: closing as number | null,
+			closingDay: null,
 			dueDay: due as number | null,
+			closingDaysBefore: due ? daysBefore : null,
 			creditLimitCents: limitCents,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
@@ -182,6 +192,24 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		}
 	};
 
+	const sameBankAccount = bankAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
+	const chosenDebitAccount = bankAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
+
+	const handleConvertToDebit = () => {
+		if (!existing || !chosenDebitAccount) return;
+		Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitConfirm', { account: chosenDebitAccount.name }), [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{
+				text: t('cards.edit.debitConvert'),
+				onPress: async () => {
+					await convertCardToDebit(existing.id, chosenDebitAccount.id);
+					announce(t('cards.edit.debitDone', { account: chosenDebitAccount.name }));
+					router.replace('/cards/index');
+				},
+			},
+		]);
+	};
+
 	const handleArchive = async () => {
 		if (!existing) return;
 		await saveAccount({ ...existing, archived: !existing.archived });
@@ -198,7 +226,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				style: 'destructive',
 				onPress: async () => {
 					await removeAccount(existing.id);
-					router.replace('/cards');
+					router.replace('/cards/index');
 				},
 			},
 		]);
@@ -227,6 +255,46 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						<CardFace card={preview} summary={undefined} />
 					</View>
 
+					<ChipGroup
+						label={t('cards.edit.type')}
+						options={[
+							{ value: 'credit', label: t('cards.edit.credit') },
+							{ value: 'debit', label: t('cards.edit.debit') },
+						]}
+						selected={cardType}
+						onSelect={(value) => setCardType(value)}
+					/>
+
+					{cardType === 'debit' ? (
+						<View style={styles.debit} accessibilityLiveRegion="polite">
+							<Text style={styles.debitBody}>{t('cards.edit.debitBody')}</Text>
+							{existing ? (
+								bankAccounts.length > 0 ? (
+									<>
+										<ChipGroup
+											label={t('cards.edit.debitAccount')}
+											options={bankAccounts.map((account) => ({ value: account.id, label: account.name, color: account.color }))}
+											selected={chosenDebitAccount?.id ?? null}
+											onSelect={(value) => setDebitAccountId(value)}
+										/>
+										<Button
+											label={t('cards.edit.debitConvert')}
+											icon="swap-horizontal"
+											onPress={handleConvertToDebit}
+											disabled={!chosenDebitAccount}
+										/>
+									</>
+								) : (
+									<Text style={styles.debitBody}>{t('cards.edit.debitNoAccount')}</Text>
+								)
+							) : (
+								<Button label={t('cards.back')} icon="arrow-back" variant="secondary" onPress={() => router.back()} />
+							)}
+						</View>
+					) : null}
+
+					{cardType === 'credit' ? (
+					<>
 					<ChipGroup
 						label={t('cards.edit.bank')}
 						options={bankOptions}
@@ -288,22 +356,22 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					<View style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
-								label={t('cards.edit.closingDay')}
-								value={closingDay}
-								onChangeText={(text) => setClosingDay(text.replace(/\D/g, '').slice(0, 2))}
-								keyboardType="number-pad"
-								maxLength={2}
-								error={errors.closing}
-							/>
-						</View>
-						<View style={styles.column}>
-							<Field
 								label={t('cards.edit.dueDay')}
 								value={dueDay}
 								onChangeText={(text) => setDueDay(text.replace(/\D/g, '').slice(0, 2))}
 								keyboardType="number-pad"
 								maxLength={2}
 								error={errors.due}
+							/>
+						</View>
+						<View style={styles.column}>
+							<Field
+								label={t('cards.edit.closingDaysBefore')}
+								value={closingDaysBefore}
+								onChangeText={(text) => setClosingDaysBefore(text.replace(/\D/g, '').slice(0, 2))}
+								keyboardType="number-pad"
+								maxLength={2}
+								error={errors.closing}
 							/>
 						</View>
 					</View>
@@ -334,6 +402,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 							/>
 							<Button label={t('cards.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
 						</View>
+					) : null}
+					</>
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>
@@ -393,6 +463,17 @@ const styles = StyleSheet.create({
 	},
 	secondary: {
 		gap: 10,
+	},
+	debit: {
+		gap: 14,
+		backgroundColor: '#1E1E1E',
+		borderRadius: 16,
+		padding: 16,
+	},
+	debitBody: {
+		fontSize: 15,
+		lineHeight: 22,
+		color: 'rgba(255,255,255,0.85)',
 	},
 });
 

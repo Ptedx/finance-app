@@ -1,22 +1,29 @@
+import { isBusinessDay } from '../businessDays';
 import {
 	buildCardSummary,
 	buildInstallmentPlans,
 	type CardEntry,
 	type CardMovement,
 	type CardSettings,
-	cycleClosingIn,
+	type CycleRule,
 	cycleFor,
+	cycleRuleOf,
 	daysBetween,
 	existingInstallmentDates,
 	invoiceAmount,
+	invoiceDueIn,
+	invoicesDueBetween,
 	owedOn,
 	shiftCycle,
 } from '../cardMath';
 import { addDays, buildClampedDate } from '../dateUtils';
 
+/** O Nubank do usuário: vence dia 25, fecha 7 dias antes. */
+const NUBANK: CycleRule = { dueDay: 25, closingDaysBefore: 7 };
+
 const settings = (overrides: Partial<CardSettings> = {}): CardSettings => ({
-	closingDay: 10,
-	dueDay: 17,
+	dueDay: 25,
+	closingDaysBefore: 7,
 	creditLimitCents: 500_000,
 	openingBalanceCents: 0,
 	openingBalanceDate: '2026-01-01',
@@ -39,50 +46,83 @@ const purchase = (date: string, amountCents: number, overrides: Partial<CardEntr
 
 const payment = (date: string, amountCents: number): CardMovement => ({ date, amountCents, inbound: true });
 
-describe('cycleFor — em qual fatura a compra entra', () => {
-	it('antes do dia de fechamento entra na fatura que fecha neste mês', () => {
-		expect(cycleFor('2026-09-09', 10, 17)).toEqual({
+// Calendário de 2026 usado abaixo: 25/09 é sexta, 25/10 é domingo, 25/11 é quarta e
+// 25/12 é Natal numa sexta.
+
+describe('invoiceDueIn — a fatura leva o nome do mês em que vence', () => {
+	it('setembro: vence sexta 25/09, fecha 18/09, compras de 18/08 a 17/09', () => {
+		expect(invoiceDueIn(2026, 9, NUBANK)).toEqual({
 			key: '2026-09',
-			start: '2026-08-10',
-			end: '2026-09-09',
-			closingDate: '2026-09-10',
-			dueDate: '2026-09-17',
+			start: '2026-08-18',
+			end: '2026-09-17',
+			closingDate: '2026-09-18',
+			dueDate: '2026-09-25',
 		});
 	});
 
-	it('no dia do fechamento já entra na próxima: é o melhor dia de compra', () => {
-		expect(cycleFor('2026-09-10', 10, 17)).toMatchObject({ key: '2026-10', start: '2026-09-10', end: '2026-10-09' });
+	it('outubro: 25/10 é domingo, vence segunda 26/10 e o fechamento acompanha (19/10)', () => {
+		expect(invoiceDueIn(2026, 10, NUBANK)).toEqual({
+			key: '2026-10',
+			start: '2026-09-18',
+			end: '2026-10-18',
+			closingDate: '2026-10-19',
+			dueDate: '2026-10-26',
+		});
 	});
 
-	it('vencimento antes do dia de fechamento cai no mês seguinte ao fechamento', () => {
-		expect(cycleFor('2026-09-20', 25, 3)).toMatchObject({ closingDate: '2026-09-25', dueDate: '2026-10-03' });
+	it('dezembro: Natal numa sexta empurra o vencimento para segunda 28/12', () => {
+		expect(invoiceDueIn(2026, 12, NUBANK)).toMatchObject({ closingDate: '2026-12-21', dueDate: '2026-12-28' });
 	});
 
-	it('fechamento no dia 31 prende nos meses curtos e volta ao 31', () => {
-		expect(cycleFor('2026-02-10', 31, 7)).toMatchObject({ start: '2026-01-31', end: '2026-02-27', closingDate: '2026-02-28' });
-		expect(cycleFor('2026-02-28', 31, 7)).toMatchObject({ start: '2026-02-28', closingDate: '2026-03-31' });
+	it('vencimento no dia 31 prende no fim dos meses curtos', () => {
+		// 28/02/2026 é sábado: vence segunda 02/03.
+		expect(invoiceDueIn(2026, 2, { dueDay: 31, closingDaysBefore: 7 })).toMatchObject({ key: '2026-02', dueDate: '2026-03-02' });
+	});
+});
+
+describe('cycleFor — em qual fatura a compra entra', () => {
+	it('até a véspera do fechamento é a fatura de setembro; a de outubro só começa depois', () => {
+		expect(cycleFor('2026-09-17', NUBANK).key).toBe('2026-09');
+		expect(cycleFor('2026-09-18', NUBANK).key).toBe('2026-10');
+	});
+
+	it('vencimento no começo do mês fecha no mês anterior', () => {
+		// Vence 05/10 (segunda), fecha 25/09 com 10 dias de antecedência.
+		const rule = { dueDay: 5, closingDaysBefore: 10 };
+		expect(cycleFor('2026-09-24', rule)).toMatchObject({ key: '2026-10', closingDate: '2026-09-25', dueDate: '2026-10-05' });
+		expect(cycleFor('2026-09-25', rule).key).toBe('2026-11');
 	});
 
 	it('virada de ano', () => {
-		expect(cycleFor('2026-12-20', 15, 22)).toMatchObject({ key: '2027-01', closingDate: '2027-01-15', dueDate: '2027-01-22' });
-		expect(shiftCycle(cycleClosingIn(2026, 12, 15, 22), 1, 15, 22).key).toBe('2027-01');
-		expect(shiftCycle(cycleClosingIn(2027, 1, 15, 22), -1, 15, 22).key).toBe('2026-12');
+		expect(cycleFor('2026-12-21', NUBANK).key).toBe('2027-01');
+		expect(shiftCycle(invoiceDueIn(2026, 12, NUBANK), 1, NUBANK).key).toBe('2027-01');
+		expect(shiftCycle(invoiceDueIn(2027, 1, NUBANK), -1, NUBANK).key).toBe('2026-12');
 	});
 
-	it('ciclos são contíguos e todo dia pertence a exatamente um (propriedade)', () => {
-		for (const closingDay of [1, 5, 10, 28, 29, 30, 31]) {
-			for (const dueDay of [1, 7, 20, 31]) {
+	it('ciclos são contíguos, todo dia pertence a exatamente um e o vencimento é dia útil (propriedade)', () => {
+		for (const dueDay of [1, 5, 10, 15, 25, 28, 30, 31]) {
+			for (const closingDaysBefore of [1, 7, 10, 20]) {
+				const rule = { dueDay, closingDaysBefore };
 				let date = '2025-01-01';
+				let previousKey = '';
 				for (let i = 0; i < 800; i += 1) {
-					const cycle = cycleFor(date, closingDay, dueDay);
+					const cycle = cycleFor(date, rule);
 					expect(date >= cycle.start && date <= cycle.end).toBe(true);
-					expect(cycle.dueDate > cycle.closingDate).toBe(true);
 					expect(addDays(cycle.end, 1)).toBe(cycle.closingDate);
-					expect(shiftCycle(cycle, 1, closingDay, dueDay).start).toBe(cycle.closingDate);
+					expect(addDays(cycle.dueDate, -closingDaysBefore)).toBe(cycle.closingDate);
+					expect(isBusinessDay(cycle.dueDate)).toBe(true);
+					expect(shiftCycle(cycle, 1, rule).start).toBe(cycle.closingDate);
+					expect(cycle.key >= previousKey).toBe(true);
+					previousKey = cycle.key;
 					date = addDays(date, 1);
 				}
 			}
 		}
+	});
+
+	it('sem vencimento não há regra', () => {
+		expect(cycleRuleOf({ dueDay: null, closingDaysBefore: 7 })).toBeNull();
+		expect(cycleRuleOf({ dueDay: 25, closingDaysBefore: null })).toEqual({ dueDay: 25, closingDaysBefore: 7 });
 	});
 });
 
@@ -100,19 +140,34 @@ describe('owedOn e invoiceAmount', () => {
 		const s = settings({ openingBalanceCents: -80_000, openingBalanceDate: '2026-09-04' });
 		const entries = [purchase('2026-09-02', 5_000), purchase('2026-09-06', 2_000)];
 		expect(owedOn(s, entries, [], '2026-09-06')).toBe(82_000);
-		const cycle = cycleFor('2026-09-06', 10, 17);
+		const cycle = cycleFor('2026-09-06', NUBANK);
 		expect(invoiceAmount(cycle, s, entries)).toBe(82_000);
 		expect(invoiceAmount(cycle, s, entries, '2026-09-05')).toBe(80_000);
 	});
 });
 
 describe('buildCardSummary', () => {
+	it('a fatura do Nubank do usuário: 3.800 informados em 15/09 e compras depois, em 17/09 ainda é a de setembro', () => {
+		const s = settings({ creditLimitCents: 1_600_000, openingBalanceCents: -380_000, openingBalanceDate: '2026-09-15' });
+		const summary = buildCardSummary(s, [purchase('2026-09-16', 3_280)], [], '2026-09-17');
+		expect(summary).toMatchObject({
+			owedCents: 383_280,
+			openInvoiceCents: 383_280,
+			toPayCents: 0,
+			closedStatus: 'none',
+			daysToClosing: 1,
+			bestPurchaseDate: '2026-09-18',
+			limitAvailableCents: 1_216_720,
+		});
+		expect(summary.openCycle).toMatchObject({ key: '2026-09', dueDate: '2026-09-25' });
+	});
+
 	it('cartão novo com compras no ciclo aberto: fatura aberta, nada a pagar, limite descontado', () => {
 		const summary = buildCardSummary(
 			settings(),
-			[purchase('2026-09-12', 30_000), purchase('2026-09-20', 20_000)],
+			[purchase('2026-09-20', 30_000), purchase('2026-10-01', 20_000)],
 			[],
-			'2026-09-25'
+			'2026-10-05'
 		);
 		expect(summary).toMatchObject({
 			configured: true,
@@ -123,44 +178,44 @@ describe('buildCardSummary', () => {
 			limitUsedCents: 50_000,
 			limitAvailableCents: 450_000,
 			limitUsagePercent: 10,
-			daysToClosing: 15,
-			bestPurchaseDay: 10,
+			daysToClosing: 14,
+			bestPurchaseDate: '2026-10-19',
 		});
 		expect(summary.openCycle?.key).toBe('2026-10');
 	});
 
 	it('fatura fechada e não paga: a pagar, com status pelo vencimento', () => {
-		const entries = [purchase('2026-08-20', 70_000), purchase('2026-09-12', 10_000)];
-		const due = buildCardSummary(settings(), entries, [], '2026-09-12');
+		const entries = [purchase('2026-09-10', 70_000), purchase('2026-09-20', 10_000)];
+		const due = buildCardSummary(settings(), entries, [], '2026-09-20');
 		expect(due).toMatchObject({ closedInvoiceCents: 70_000, openInvoiceCents: 10_000, toPayCents: 70_000, closedStatus: 'due', daysToDue: 5 });
-		expect(buildCardSummary(settings(), entries, [], '2026-09-15').closedStatus).toBe('due_soon');
-		expect(buildCardSummary(settings(), entries, [], '2026-09-18')).toMatchObject({ closedStatus: 'overdue', daysToDue: -1 });
+		expect(buildCardSummary(settings(), entries, [], '2026-09-22').closedStatus).toBe('due_soon');
+		expect(buildCardSummary(settings(), entries, [], '2026-09-26')).toMatchObject({ closedStatus: 'overdue', daysToDue: -1 });
 	});
 
 	it('pagamento da fatura fechada zera o a pagar e marca como paga', () => {
-		const entries = [purchase('2026-08-20', 70_000), purchase('2026-09-12', 10_000)];
-		const summary = buildCardSummary(settings(), entries, [payment('2026-09-15', 70_000)], '2026-09-16');
+		const entries = [purchase('2026-09-10', 70_000), purchase('2026-09-20', 10_000)];
+		const summary = buildCardSummary(settings(), entries, [payment('2026-09-24', 70_000)], '2026-09-24');
 		expect(summary).toMatchObject({ toPayCents: 0, closedStatus: 'paid', owedCents: 10_000, paidSinceClosingCents: 70_000 });
 	});
 
 	it('pagamento parcial deixa o restante a pagar', () => {
-		const summary = buildCardSummary(settings(), [purchase('2026-08-20', 70_000)], [payment('2026-09-15', 50_000)], '2026-09-16');
+		const summary = buildCardSummary(settings(), [purchase('2026-09-10', 70_000)], [payment('2026-09-23', 50_000)], '2026-09-23');
 		expect(summary).toMatchObject({ toPayCents: 20_000, closedStatus: 'due_soon' });
 	});
 
 	it('pagar a mais vira crédito', () => {
-		const summary = buildCardSummary(settings(), [purchase('2026-08-20', 10_000)], [payment('2026-09-15', 15_000)], '2026-09-16');
+		const summary = buildCardSummary(settings(), [purchase('2026-09-10', 10_000)], [payment('2026-09-23', 15_000)], '2026-09-23');
 		expect(summary).toMatchObject({ owedCents: 0, creditCents: 5_000, toPayCents: 0 });
 	});
 
 	it('parcelas futuras ocupam o limite mas não a fatura aberta', () => {
 		const group = 'g1';
 		const parcels = [
-			purchase('2026-09-12', 10_000, { installmentGroup: group, installmentIndex: 1, installmentCount: 3, note: 'TV (1/3)' }),
-			purchase('2026-10-12', 10_000, { installmentGroup: group, installmentIndex: 2, installmentCount: 3, note: 'TV (2/3)' }),
-			purchase('2026-11-12', 10_000, { installmentGroup: group, installmentIndex: 3, installmentCount: 3, note: 'TV (3/3)' }),
+			purchase('2026-09-20', 10_000, { installmentGroup: group, installmentIndex: 1, installmentCount: 3, note: 'TV (1/3)' }),
+			purchase('2026-10-20', 10_000, { installmentGroup: group, installmentIndex: 2, installmentCount: 3, note: 'TV (2/3)' }),
+			purchase('2026-11-20', 10_000, { installmentGroup: group, installmentIndex: 3, installmentCount: 3, note: 'TV (3/3)' }),
 		];
-		const summary = buildCardSummary(settings(), parcels, [], '2026-09-20');
+		const summary = buildCardSummary(settings(), parcels, [], '2026-09-25');
 		expect(summary).toMatchObject({
 			owedCents: 10_000,
 			openInvoiceCents: 10_000,
@@ -181,14 +236,14 @@ describe('buildCardSummary', () => {
 				remainingCount: 2,
 				parcelCents: 10_000,
 				remainingCents: 20_000,
-				nextDate: '2026-10-12',
-				lastDate: '2026-11-12',
+				nextDate: '2026-10-20',
+				lastDate: '2026-11-20',
 			},
 		]);
 	});
 
 	it('parcela programada para mais tarde no ciclo aberto entra na fatura aberta mas não no devido de hoje', () => {
-		const summary = buildCardSummary(settings(), [purchase('2026-10-05', 10_000)], [], '2026-09-20');
+		const summary = buildCardSummary(settings(), [purchase('2026-10-05', 10_000)], [], '2026-09-25');
 		expect(summary).toMatchObject({ owedCents: 0, openInvoiceCents: 10_000, futureCommittedCents: 10_000, toPayCents: 0 });
 	});
 
@@ -198,9 +253,9 @@ describe('buildCardSummary', () => {
 		expect(summary).toMatchObject({ owedCents: 376_720, openInvoiceCents: 376_720, toPayCents: 0, closedStatus: 'none' });
 	});
 
-	it('sem dia de fechamento: limite e devido funcionam, faturas não', () => {
-		const summary = buildCardSummary(settings({ closingDay: null }), [purchase('2026-09-12', 10_000)], [], '2026-09-20');
-		expect(summary).toMatchObject({ configured: false, owedCents: 10_000, toPayCents: 10_000, invoices: [], limitUsedCents: 10_000 });
+	it('sem vencimento: limite e devido funcionam, faturas não', () => {
+		const summary = buildCardSummary(settings({ dueDay: null }), [purchase('2026-09-12', 10_000)], [], '2026-09-20');
+		expect(summary).toMatchObject({ configured: false, owedCents: 10_000, toPayCents: 10_000, invoices: [], limitUsedCents: 10_000, bestPurchaseDate: null });
 	});
 
 	it('sem limite: uso e disponível são nulos', () => {
@@ -220,25 +275,48 @@ describe('buildCardSummary', () => {
 			return state / 0x100000000;
 		};
 		for (let round = 0; round < 200; round += 1) {
-			const closingDay = 1 + Math.floor(random() * 31);
+			const rule = { dueDay: 1 + Math.floor(random() * 31), closingDaysBefore: 1 + Math.floor(random() * 20) };
 			const today = '2026-09-20';
 			const entries: CardEntry[] = [];
 			for (let i = 0; i < 20; i += 1) {
 				entries.push(purchase(addDays('2026-06-01', Math.floor(random() * 110)), 100 + Math.floor(random() * 50_000), { isIncome: random() < 0.1 }));
 			}
-			const s = settings({ closingDay, dueDay: 7 });
+			const s = settings(rule);
 			const summary = buildCardSummary(s, entries, [], today);
 			const posted = entries.filter((e) => e.date <= today);
 			const total = posted.reduce((sum, e) => sum + (e.isIncome ? -e.amountCents : e.amountCents), 0);
 			let byCycles = 0;
-			let cycle = cycleFor('2026-06-01', closingDay, 7);
+			let cycle = cycleFor('2026-06-01', rule);
 			while (cycle.start <= today) {
 				byCycles += invoiceAmount(cycle, s, entries, today);
-				cycle = shiftCycle(cycle, 1, closingDay, 7);
+				cycle = shiftCycle(cycle, 1, rule);
 			}
 			expect(byCycles).toBe(total);
 			expect(summary.owedCents - summary.creditCents).toBe(total);
 		}
+	});
+});
+
+describe('invoicesDueBetween — o cartão no quadro do mês', () => {
+	const s = settings({ openingBalanceCents: -380_000, openingBalanceDate: '2026-09-15' });
+	const entries = [purchase('2026-09-16', 3_280), purchase('2026-09-20', 5_000), purchase('2026-10-25', 1_000)];
+
+	it('setembro mostra a fatura que vence em setembro, com o valor informado dentro', () => {
+		expect(invoicesDueBetween(s, entries, '2026-09-01', '2026-09-30')).toBe(383_280);
+	});
+
+	it('outubro mostra só o que foi comprado depois do fechamento de setembro', () => {
+		expect(invoicesDueBetween(s, entries, '2026-10-01', '2026-10-31')).toBe(5_000);
+		expect(invoicesDueBetween(s, entries, '2026-11-01', '2026-11-30')).toBe(1_000);
+	});
+
+	it('meses seguidos somam todas as faturas, sem contar nada duas vezes', () => {
+		const months = ['09', '10', '11'].map((m) => invoicesDueBetween(s, entries, `2026-${m}-01`, buildClampedDate(2026, Number(m), 31)) ?? 0);
+		expect(months.reduce((a, b) => a + b, 0)).toBe(invoicesDueBetween(s, entries, '2026-09-01', '2026-11-30'));
+	});
+
+	it('sem vencimento devolve nulo, para quem chama usar as compras do mês', () => {
+		expect(invoicesDueBetween(settings({ dueDay: null }), entries, '2026-09-01', '2026-09-30')).toBeNull();
 	});
 });
 
@@ -253,30 +331,31 @@ describe('buildInstallmentPlans', () => {
 
 describe('existingInstallmentDates — compra parcelada feita antes do app', () => {
 	it('a parcela atual no começo do ciclo aberto, as seguintes uma por fatura', () => {
-		expect(existingInstallmentDates(4, 6, 10, 17, '2026-09-20')).toEqual([
-			{ index: 4, date: '2026-09-10' },
-			{ index: 5, date: '2026-10-10' },
-			{ index: 6, date: '2026-11-10' },
+		expect(existingInstallmentDates(4, 6, NUBANK, '2026-09-20')).toEqual([
+			{ index: 4, date: '2026-09-18' },
+			{ index: 5, date: '2026-10-19' },
+			{ index: 6, date: '2026-11-18' },
 		]);
 	});
 
 	it('cada parcela cai numa fatura diferente e na ordem (propriedade)', () => {
-		for (const closingDay of [1, 15, 28, 31]) {
-			const dates = existingInstallmentDates(1, 12, closingDay, 5, '2026-01-30');
-			const keys = dates.map((d) => cycleFor(d.date, closingDay, 5).key);
+		for (const dueDay of [1, 15, 25, 31]) {
+			const rule = { dueDay, closingDaysBefore: 7 };
+			const dates = existingInstallmentDates(1, 12, rule, '2026-01-30');
+			const keys = dates.map((d) => cycleFor(d.date, rule).key);
 			expect(new Set(keys).size).toBe(12);
 			expect([...keys].sort()).toEqual(keys);
-			expect(keys[0]).toBe(cycleFor('2026-01-30', closingDay, 5).key);
+			expect(keys[0]).toBe(cycleFor('2026-01-30', rule).key);
 		}
 	});
 
-	it('sem fechamento, de mês em mês a partir de hoje; índices inválidos não geram nada', () => {
-		expect(existingInstallmentDates(2, 3, null, null, '2026-01-31')).toEqual([
+	it('sem vencimento, de mês em mês a partir de hoje; índices inválidos não geram nada', () => {
+		expect(existingInstallmentDates(2, 3, null, '2026-01-31')).toEqual([
 			{ index: 2, date: '2026-01-31' },
 			{ index: 3, date: '2026-02-28' },
 		]);
-		expect(existingInstallmentDates(0, 3, 10, 17, '2026-09-20')).toEqual([]);
-		expect(existingInstallmentDates(4, 3, 10, 17, '2026-09-20')).toEqual([]);
+		expect(existingInstallmentDates(0, 3, NUBANK, '2026-09-20')).toEqual([]);
+		expect(existingInstallmentDates(4, 3, NUBANK, '2026-09-20')).toEqual([]);
 	});
 });
 

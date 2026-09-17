@@ -46,6 +46,8 @@ import {
 	type TransferEdit,
 	ACCOUNT_V8_COLUMNS,
 	ACCOUNT_V9_COLUMNS,
+	ACCOUNT_V10_COLUMNS,
+	DEFAULT_CLOSING_DAYS_BEFORE,
 	defaultRoleFor,
 	CAPTURE_V7_COLUMNS,
 	CREATE_ACCOUNTS_TABLE,
@@ -91,6 +93,7 @@ interface AccountDB extends SyncColumnsDB {
 	last4: string | null;
 	closingDay: number | null;
 	dueDay: number | null;
+	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
 	packageName: string | null;
 	accountKey: string | null;
@@ -163,6 +166,7 @@ const convertAccount = (account: AccountDB): Account => ({
 	last4: account.last4,
 	closingDay: account.closingDay,
 	dueDay: account.dueDay,
+	closingDaysBefore: account.closingDaysBefore ?? null,
 	creditLimitCents: account.creditLimitCents,
 	packageName: account.packageName,
 	accountKey: account.accountKey,
@@ -491,6 +495,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 7) await migrateAccounts();
 	if (version < 8) await migrateAccountRoles();
 	if (version < 9) await migrateCardsApart();
+	if (version < 10) await migrateCardCycleFromDueDay();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -535,6 +540,50 @@ const migrateCardsApart = async (): Promise<void> => {
 	);
 
 	console.log('Migrated cards apart from accounts');
+};
+
+/**
+ * v9 -> v10: o ciclo do cartão sai do vencimento.
+ *
+ * Bancos brasileiros fecham a fatura um número fixo de dias antes do vencimento (o
+ * Nubank, 7), e o vencimento pula para o próximo dia útil. Um dia fixo de fechamento
+ * erra nos meses em que o vencimento anda. Cartões com fechamento e vencimento
+ * informados ganham a distância entre eles; só com fechamento, vencimento 7 dias
+ * depois. Distâncias fora de 1..20 viram 7, o padrão do mercado.
+ */
+const migrateCardCycleFromDueDay = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of ACCOUNT_V10_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		`UPDATE accounts
+     SET dueDay = CASE WHEN closingDay + 7 > 30 THEN closingDay + 7 - 30 ELSE closingDay + 7 END,
+         closingDaysBefore = 7, updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NOT NULL AND dueDay IS NULL`,
+		[timestamp]
+	);
+	await db.runAsync(
+		`UPDATE accounts
+     SET closingDaysBefore = CASE
+           WHEN (CASE WHEN dueDay > closingDay THEN dueDay - closingDay ELSE dueDay + 30 - closingDay END) BETWEEN 1 AND 20
+             THEN (CASE WHEN dueDay > closingDay THEN dueDay - closingDay ELSE dueDay + 30 - closingDay END)
+           ELSE 7 END,
+         updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NOT NULL AND closingDaysBefore IS NULL`,
+		[timestamp]
+	);
+	await db.runAsync(
+		`UPDATE accounts SET closingDaysBefore = 7, updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND dueDay IS NOT NULL AND closingDaysBefore IS NULL`,
+		[timestamp]
+	);
+
+	console.log('Migrated card cycles to due day');
 };
 
 const migrateAccountRoles = async (): Promise<void> => {
@@ -968,6 +1017,8 @@ export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
 		last4: account.last4 ?? null,
 		closingDay: isCard ? (account.closingDay ?? null) : null,
 		dueDay: isCard ? (account.dueDay ?? null) : null,
+		closingDaysBefore:
+			isCard && account.dueDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
 		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
 		packageName: account.packageName ?? null,
 		accountKey: account.accountKey ?? null,
@@ -987,6 +1038,7 @@ const accountValues = (account: AccountDraft): Array<string | number | null> => 
 	account.last4,
 	account.closingDay,
 	account.dueDay,
+	account.closingDaysBefore,
 	account.creditLimitCents,
 	account.packageName,
 	account.accountKey,
@@ -1002,9 +1054,9 @@ export const addAccount = async (draft: AccountDraft, explicitId?: string): Prom
 	await db.runAsync(
 		`INSERT INTO accounts
        (name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-        creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        closingDaysBefore, creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
         sortOrder, archived, id, updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[...accountValues(account), id, nowTimestamp()]
 	);
@@ -1017,7 +1069,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE accounts
      SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
-         last4 = ?, closingDay = ?, dueDay = ?, creditLimitCents = ?, packageName = ?, accountKey = ?,
+         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, packageName = ?, accountKey = ?,
          openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
          updatedAt = ?, dirty = 1
      WHERE id = ?`,
@@ -1038,6 +1090,22 @@ export const deleteAccount = async (id: string): Promise<void> => {
 			'UPDATE transactions SET accountId = NULL, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
 			[timestamp, id]
 		);
+	});
+};
+
+/**
+ * Leva os lançamentos e capturas de uma conta para outra. Serve para desfazer um
+ * cartão de débito cadastrado como cartão: débito sai direto da conta, então o que foi
+ * lançado nele pertence à conta.
+ */
+export const moveAccountLedger = async (fromId: string, toId: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		await db.runAsync(
+			'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			[toId, timestamp, fromId]
+		);
+		await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
 	});
 };
 
@@ -1820,6 +1888,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			last4: row.last4,
 			closingDay: row.closingDay,
 			dueDay: row.dueDay,
+			closingDaysBefore: row.closingDaysBefore ?? null,
 			creditLimitCents: row.creditLimitCents,
 			packageName: row.packageName,
 			accountKey: row.accountKey,
@@ -2015,15 +2084,16 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			await db.runAsync(
 				`INSERT INTO accounts
            (id, name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-            creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            closingDaysBefore, creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
             sortOrder, archived, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, kind = excluded.kind, role = excluded.role,
            envelopeMonthlyCents = excluded.envelopeMonthlyCents, network = excluded.network,
            bankName = excluded.bankName,
            color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
-           dueDay = excluded.dueDay, creditLimitCents = excluded.creditLimitCents,
+           dueDay = excluded.dueDay, closingDaysBefore = excluded.closingDaysBefore,
+           creditLimitCents = excluded.creditLimitCents,
            packageName = excluded.packageName, accountKey = excluded.accountKey,
            openingBalanceCents = excluded.openingBalanceCents,
            openingBalanceDate = excluded.openingBalanceDate, sortOrder = excluded.sortOrder,
@@ -2041,6 +2111,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.last4,
 					row.closingDay,
 					row.dueDay,
+					row.closingDaysBefore ?? null,
 					row.creditLimitCents,
 					row.packageName,
 					row.accountKey,

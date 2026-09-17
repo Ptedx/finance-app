@@ -86,6 +86,8 @@ export const accountSchema = z.object({
 	last4: z.string().max(8).nullish(),
 	closingDay: z.number().int().min(1).max(31).nullish(),
 	dueDay: z.number().int().min(1).max(31).nullish(),
+	/** v10: dias entre fechamento e vencimento. Opcional para aparelhos anteriores. */
+	closingDaysBefore: z.number().int().min(1).max(20).nullish(),
 	creditLimitCents: amountCents.nullish(),
 	packageName: z.string().max(200).nullish(),
 	accountKey: z.string().max(200).nullish(),

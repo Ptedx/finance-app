@@ -8,11 +8,18 @@
  *
  * ## Ciclo
  *
- * "Fecha dia 10" significa que a fatura fecha no começo do dia 10: compras do dia 10 em
- * diante vão para a próxima. O dia de fechamento é, por isso, o **melhor dia de compra**.
- * A fatura que fecha em 10/out cobre de 10/set a 09/out e vence no primeiro "dia de
- * vencimento" depois do fechamento. Ciclos são contíguos e cada dia pertence a
- * exatamente um — o teste por propriedades garante.
+ * O usuário informa só o **dia do vencimento**. Como nos bancos brasileiros:
+ *
+ * - o vencimento de cada mês é aquele dia, ou o próximo dia útil quando cai em fim de
+ *   semana ou feriado bancário;
+ * - a fatura **fecha** `closingDaysBefore` dias antes desse vencimento (Nubank: 7), no
+ *   começo do dia — compras do dia do fechamento já vão para a próxima fatura. O dia
+ *   do fechamento é, por isso, o **melhor dia de compra**;
+ * - a fatura leva o **nome do mês em que vence**: vence em 25/09, é a fatura de
+ *   setembro. A de outubro só começa a receber compras depois que a de setembro fecha.
+ *
+ * Ciclos são contíguos e cada dia pertence a exatamente um — o teste por propriedades
+ * garante, inclusive nos meses em que o vencimento anda por causa de feriado.
  *
  * ## De onde vem o dinheiro devido
  *
@@ -23,22 +30,31 @@
  * e a fechada sempre fecham entre si.
  */
 
+import { DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
+import { nextBusinessDay } from './businessDays';
 import { addDays, addMonthsClamped, buildClampedDate, parseISODate } from './dateUtils';
 
 export interface InvoiceCycle {
-	/** `YYYY-MM` do mês em que a fatura fecha. Identifica a fatura. */
+	/** `YYYY-MM` do mês em que a fatura vence. Identifica a fatura e dá o nome dela. */
 	key: string;
 	/** Primeiro dia com compras nesta fatura (o fechamento anterior). */
 	start: string;
 	/** Último dia com compras nesta fatura (véspera do fechamento). */
 	end: string;
 	closingDate: string;
+	/** Já ajustado para dia útil. */
 	dueDate: string;
 }
 
+/** O que define o ciclo de um cartão. */
+export interface CycleRule {
+	dueDay: number;
+	closingDaysBefore: number;
+}
+
 export interface CardSettings {
-	closingDay: number | null;
 	dueDay: number | null;
+	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
 	openingBalanceCents: number;
 	openingBalanceDate: string;
@@ -64,6 +80,12 @@ export interface CardMovement {
 	inbound: boolean;
 }
 
+/** A regra do ciclo, ou nula enquanto o cartão não tem vencimento informado. */
+export const cycleRuleOf = (settings: Pick<CardSettings, 'dueDay' | 'closingDaysBefore'>): CycleRule | null =>
+	settings.dueDay === null
+		? null
+		: { dueDay: settings.dueDay, closingDaysBefore: settings.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE };
+
 // ---------------------------------------------------------------------------
 // Datas
 // ---------------------------------------------------------------------------
@@ -83,37 +105,43 @@ const dayNumber = (date: string): number => {
 /** Dias de `from` até `to`; negativo quando `to` já passou. */
 export const daysBetween = (from: string, to: string): number => dayNumber(to) - dayNumber(from);
 
-/** A fatura que fecha no mês `year`/`month`. Sempre derivada do dia preferido, nunca de uma data já presa. */
-export const cycleClosingIn = (year: number, month: number, closingDay: number, dueDay: number | null): InvoiceCycle => {
-	const closingDate = buildClampedDate(year, month, closingDay);
+/** Vencimento real do mês: o dia informado, ou o próximo dia útil. */
+export const dueDateIn = (year: number, month: number, dueDay: number): string =>
+	nextBusinessDay(buildClampedDate(year, month, dueDay));
+
+/** Fechamento da fatura que vence em `year`/`month`. */
+const closingDateIn = (year: number, month: number, rule: CycleRule): string =>
+	addDays(dueDateIn(year, month, rule.dueDay), -rule.closingDaysBefore);
+
+/** A fatura que vence no mês `year`/`month`. Sempre derivada da regra, nunca de uma data já presa. */
+export const invoiceDueIn = (year: number, month: number, rule: CycleRule): InvoiceCycle => {
+	const closingDate = closingDateIn(year, month, rule);
 	const [py, pm] = shiftYearMonth(year, month, -1);
-	const start = buildClampedDate(py, pm, closingDay);
-
-	const due = dueDay ?? closingDay;
-	let dueDate = buildClampedDate(year, month, due);
-	if (dueDate <= closingDate) {
-		const [ny, nm] = shiftYearMonth(year, month, 1);
-		dueDate = buildClampedDate(ny, nm, due);
-	}
-
-	return { key: `${year}-${pad(month)}`, start, end: addDays(closingDate, -1), closingDate, dueDate };
-};
-
-/** A fatura em que uma compra feita em `date` entra. */
-export const cycleFor = (date: string, closingDay: number, dueDay: number | null): InvoiceCycle => {
-	const parsed = parseISODate(date);
-	const year = parsed.getFullYear();
-	const month = parsed.getMonth() + 1;
-	if (date < buildClampedDate(year, month, closingDay)) return cycleClosingIn(year, month, closingDay, dueDay);
-	const [ny, nm] = shiftYearMonth(year, month, 1);
-	return cycleClosingIn(ny, nm, closingDay, dueDay);
+	return {
+		key: `${year}-${pad(month)}`,
+		start: closingDateIn(py, pm, rule),
+		end: addDays(closingDate, -1),
+		closingDate,
+		dueDate: dueDateIn(year, month, rule.dueDay),
+	};
 };
 
 /** A fatura `offset` ciclos depois (ou antes, se negativo) de `cycle`. */
-export const shiftCycle = (cycle: InvoiceCycle, offset: number, closingDay: number, dueDay: number | null): InvoiceCycle => {
+export const shiftCycle = (cycle: InvoiceCycle, offset: number, rule: CycleRule): InvoiceCycle => {
 	const [year, month] = cycle.key.split('-').map(Number);
 	const [ty, tm] = shiftYearMonth(year, month, offset);
-	return cycleClosingIn(ty, tm, closingDay, dueDay);
+	return invoiceDueIn(ty, tm, rule);
+};
+
+/** A fatura em que uma compra feita em `date` entra. */
+export const cycleFor = (date: string, rule: CycleRule): InvoiceCycle => {
+	const parsed = parseISODate(date);
+	let cycle = invoiceDueIn(parsed.getFullYear(), parsed.getMonth() + 1, rule);
+	// O fechamento pode cair no mês anterior ao vencimento (vencimento dia 3, por
+	// exemplo), então anda para um lado ou para o outro até a data caber.
+	while (date >= cycle.closingDate) cycle = shiftCycle(cycle, 1, rule);
+	while (date < cycle.start) cycle = shiftCycle(cycle, -1, rule);
+	return cycle;
 };
 
 // ---------------------------------------------------------------------------
@@ -191,7 +219,7 @@ export interface InstallmentPlan {
 }
 
 export interface CardSummary {
-	/** Sem dia de fechamento o app não sabe montar faturas; o resto funciona. */
+	/** Sem dia de vencimento o app não sabe montar faturas; o resto funciona. */
 	configured: boolean;
 	/** Tudo o que já caiu e não foi pago. */
 	owedCents: number;
@@ -218,8 +246,8 @@ export interface CardSummary {
 	paidSinceClosingCents: number;
 	daysToClosing: number | null;
 	daysToDue: number | null;
-	/** O dia do mês em que comprar joga a compra para o mais longe possível. */
-	bestPurchaseDay: number | null;
+	/** O próximo fechamento: comprar a partir dele joga a compra para a fatura seguinte. */
+	bestPurchaseDate: string | null;
 
 	/** Faturas anteriores, a atual e as futuras com valor, da mais antiga para a mais nova. */
 	invoices: InvoiceView[];
@@ -297,7 +325,8 @@ export const buildCardSummary = (
 		installmentPlans,
 	};
 
-	if (settings.closingDay === null) {
+	const rule = cycleRuleOf(settings);
+	if (rule === null) {
 		return {
 			...base,
 			configured: false,
@@ -310,14 +339,13 @@ export const buildCardSummary = (
 			paidSinceClosingCents: 0,
 			daysToClosing: null,
 			daysToDue: null,
-			bestPurchaseDay: null,
+			bestPurchaseDate: null,
 			invoices: [],
 		};
 	}
 
-	const { closingDay, dueDay } = settings;
-	const openCycle = cycleFor(today, closingDay, dueDay);
-	const closedCycle = shiftCycle(openCycle, -1, closingDay, dueDay);
+	const openCycle = cycleFor(today, rule);
+	const closedCycle = shiftCycle(openCycle, -1, rule);
 
 	const openInvoiceCents = invoiceAmount(openCycle, settings, entries);
 	const openPostedCents = invoiceAmount(openCycle, settings, entries, today);
@@ -340,7 +368,7 @@ export const buildCardSummary = (
 
 	const invoices: InvoiceView[] = [];
 	for (let offset = -PAST_INVOICES; offset <= FUTURE_INVOICES; offset += 1) {
-		const cycle = shiftCycle(openCycle, offset, closingDay, dueDay);
+		const cycle = shiftCycle(openCycle, offset, rule);
 		const amountCents = invoiceAmount(cycle, settings, entries);
 		if (offset < -1 && amountCents === 0) continue;
 		if (offset > 0 && amountCents === 0) continue;
@@ -359,7 +387,7 @@ export const buildCardSummary = (
 		paidSinceClosingCents,
 		daysToClosing: daysBetween(today, openCycle.closingDate),
 		daysToDue,
-		bestPurchaseDay: closingDay,
+		bestPurchaseDate: openCycle.closingDate,
 		invoices,
 	};
 };
@@ -368,33 +396,56 @@ export const buildCardSummary = (
  * Datas das parcelas restantes de uma compra parcelada feita **antes** do app, a partir
  * da parcela que cai na fatura aberta. A parcela atual entra no começo do ciclo aberto;
  * as seguintes, no começo de cada ciclo depois dele — uma por fatura, como no banco.
- * Sem dia de fechamento, a atual fica hoje e as outras de mês em mês.
+ * Sem vencimento informado, a atual fica hoje e as outras de mês em mês.
  */
 export const existingInstallmentDates = (
 	currentIndex: number,
 	totalCount: number,
-	closingDay: number | null,
-	dueDay: number | null,
+	rule: CycleRule | null,
 	today: string
 ): Array<{ index: number; date: string }> => {
 	const dates: Array<{ index: number; date: string }> = [];
 	if (currentIndex < 1 || totalCount < currentIndex) return dates;
 
-	const open = closingDay === null ? null : cycleFor(today, closingDay, dueDay);
+	const open = rule === null ? null : cycleFor(today, rule);
 	for (let index = currentIndex; index <= totalCount; index += 1) {
 		const offset = index - currentIndex;
-		const date =
-			open && closingDay !== null
-				? shiftCycle(open, offset, closingDay, dueDay).start
-				: addMonthsClamped(today, offset);
+		const date = open && rule ? shiftCycle(open, offset, rule).start : addMonthsClamped(today, offset);
 		dates.push({ index, date });
 	}
 	return dates;
 };
 
+/**
+ * Quanto das faturas **vence** entre `startDate` e `endDate`: é o que o cartão tira do
+ * bolso naquele período, com parcelas e com a "fatura atual" informada. Nulo quando o
+ * cartão não tem vencimento — aí quem chama usa as compras datadas no período.
+ */
+export const invoicesDueBetween = (
+	settings: CardSettings,
+	entries: CardEntry[],
+	startDate: string,
+	endDate: string
+): number | null => {
+	const rule = cycleRuleOf(settings);
+	if (rule === null) return null;
+
+	let total = 0;
+	// Começa um ciclo antes: a fatura que vence no começo do período fechou antes dele.
+	let cycle = shiftCycle(cycleFor(startDate, rule), -1, rule);
+	while (cycle.dueDate <= endDate) {
+		if (cycle.dueDate >= startDate) total += invoiceAmount(cycle, settings, entries);
+		cycle = shiftCycle(cycle, 1, rule);
+	}
+	return total + 0;
+};
+
 export default {
+	cycleRuleOf,
 	cycleFor,
-	cycleClosingIn,
+	invoiceDueIn,
+	dueDateIn,
+	invoicesDueBetween,
 	shiftCycle,
 	owedOn,
 	invoiceAmount,

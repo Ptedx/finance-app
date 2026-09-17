@@ -12,6 +12,7 @@ const account = (overrides: Partial<Account>): Account => ({
 	color: '#000',
 	last4: null,
 	closingDay: null,
+	closingDaysBefore: null,
 	dueDay: null,
 	creditLimitCents: null,
 	packageName: null,

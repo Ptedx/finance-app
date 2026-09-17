@@ -14,6 +14,7 @@ import {
 	getCardPurchasesOriginated,
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
+	moveAccountLedger,
 	setAccountBalanceToday,
 	updateAccount,
 } from '../database/database';
@@ -25,7 +26,9 @@ import {
 	type CardEntry,
 	type CardMovement,
 	type CardSummary,
+	cycleRuleOf,
 	existingInstallmentDates,
+	invoicesDueBetween,
 } from '../utils/cardMath';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { todayISO } from '../utils/dateUtils';
@@ -84,6 +87,11 @@ interface AccountsContextType {
 	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<void>;
 	/** Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. */
 	addExistingInstallments: (input: ExistingInstallmentsInput) => Promise<number>;
+	/**
+	 * Cartão de débito cadastrado como cartão: leva os lançamentos para a conta de onde o
+	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
+	 */
+	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
 	assignUnassigned: (accountId: string) => Promise<number>;
 }
@@ -135,6 +143,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				});
 
 				if (!isCard) continue;
+				const cardActivity = activity[activity.length - 1];
 
 				const [cardTransactions, cardTransfers] = await Promise.all([
 					getAccountTransactions(account.id),
@@ -157,6 +166,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					inbound: transfer.toAccountId === account.id,
 				}));
 				nextSummaries.set(account.id, buildCardSummary(account, entries, movements, today));
+				cardActivity.invoiceDueCents = invoicesDueBetween(account, entries, startDate, endDate);
 			}
 
 			setAccounts(list);
@@ -236,7 +246,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (input: ExistingInstallmentsInput) => {
 			const card = accounts.find((account) => account.id === input.cardId);
 			if (!card) return 0;
-			const dates = existingInstallmentDates(input.currentIndex, input.totalCount, card.closingDay, card.dueDay, todayISO());
+			const dates = existingInstallmentDates(input.currentIndex, input.totalCount, cycleRuleOf(card), todayISO());
 			const group = generateUniqueId();
 			for (const { index, date } of dates) {
 				await addTransaction({
@@ -256,6 +266,16 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			return dates.length;
 		},
 		[accounts, refreshData]
+	);
+
+	const convertCardToDebit = useCallback(
+		async (cardId: string, accountId: string) => {
+			await moveAccountLedger(cardId, accountId);
+			await deleteAccount(cardId);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[refresh, refreshData]
 	);
 
 	const assignUnassigned = useCallback(
@@ -315,6 +335,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setCardOwedToday,
 			recordCardPayment,
 			addExistingInstallments,
+			convertCardToDebit,
 			assignUnassigned,
 		}),
 		[
@@ -337,6 +358,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setCardOwedToday,
 			recordCardPayment,
 			addExistingInstallments,
+			convertCardToDebit,
 			assignUnassigned,
 		]
 	);

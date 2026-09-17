@@ -87,6 +87,25 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 });
 
 describe('buildMonthOverview — detalhes', () => {
+	it('com vencimento informado, o cartão conta pela fatura que vence no mês — não pelas compras datadas nele', () => {
+		const month = buildMonthOverview({
+			accounts: [
+				activity({
+					accountId: 'card',
+					name: 'Cartão 1534',
+					kind: 'credit_card',
+					role: 'card',
+					expenseCents: 16_460,
+					purchasesOriginatedCents: 16_460,
+					invoiceDueCents: 383_280,
+				}),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(month.cards[0]).toMatchObject({ spendCents: 383_280, purchasesCents: 16_460 });
+		expect(month.totalSpendCents).toBe(383_280);
+	});
+
 	it('estorno no cartão reduz o gasto do cartão, nunca abaixo de zero', () => {
 		const overview = buildMonthOverview({
 			accounts: [activity({ role: 'card', kind: 'credit_card', expenseCents: 5_000, incomeCents: 8_000 })],

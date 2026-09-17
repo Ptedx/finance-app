@@ -13,7 +13,7 @@ import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
-import { existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
+import { cycleRuleOf, existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
 import { formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
@@ -30,6 +30,9 @@ import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/m
  */
 
 const ROW_GAP = 12;
+
+/** A fatura leva o nome do mês em que vence, que é a chave dela. */
+const invoiceMonth = (invoice: InvoiceView): string => `${invoice.cycle.key}-01`;
 
 interface CardDetailScreenProps {
 	cardId: string;
@@ -145,14 +148,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>
 							{summary.invoices.map((invoice) => {
 								const isSelected = invoice.cycle.key === selectedKey;
-								const month = formatMonthShort(invoice.cycle.dueDate);
+								const month = formatMonthShort(invoiceMonth(invoice));
 								return (
 									<Pressable
 										key={invoice.cycle.key}
 										onPress={() => setSelectedKey(invoice.cycle.key)}
 										accessibilityRole="tab"
 										accessibilityState={{ selected: isSelected }}
-										accessibilityLabel={`${t('cards.invoice.of', { month: formatMonthLong(invoice.cycle.dueDate) })}, ${formatCents(invoice.amountCents)}. ${invoiceStatus(invoice)}`}
+										accessibilityLabel={`${t('cards.invoice.of', { month: formatMonthLong(invoiceMonth(invoice)) })}, ${formatCents(invoice.amountCents)}. ${invoiceStatus(invoice)}`}
 										style={({ pressed }) => [styles.tab, isSelected && styles.tabSelected, pressed && styles.pressed]}
 									>
 										<Text style={[styles.tabMonth, isSelected && styles.tabTextSelected]}>
@@ -167,7 +170,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 
 						{selected ? (
 							<View style={styles.panel}>
-								<Text style={styles.panelTitle}>{t('cards.invoice.of', { month: formatMonthLong(selected.cycle.dueDate) })}</Text>
+								<Text style={styles.panelTitle}>{t('cards.invoice.of', { month: formatMonthLong(invoiceMonth(selected)) })}</Text>
 								<Text style={styles.panelAmount}>{formatCents(selected.amountCents)}</Text>
 								<Text style={styles.panelStatus}>{invoiceStatus(selected)}</Text>
 								<Text style={styles.panelMeta}>
@@ -277,16 +280,22 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 					</View>
 				) : null}
 
-				{summary?.configured ? (
+				{summary?.configured && summary.openCycle && card.dueDay ? (
 					<View style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('cards.dates.title')}
 						</Text>
 						<View style={styles.panel}>
-							<Line label={t('cards.dates.best')} value={t('cards.dates.day', { day: summary.bestPurchaseDay })} />
-							<Line label={t('cards.dates.closing')} value={t('cards.dates.day', { day: card.closingDay })} />
-							<Line label={t('cards.dates.due')} value={t('cards.dates.day', { day: card.dueDay ?? card.closingDay })} />
-							<Text style={styles.explain}>{t('cards.dates.explain', { day: summary.bestPurchaseDay })}</Text>
+							<Line label={t('cards.dates.best')} value={formatDayMonth(summary.openCycle.closingDate)} />
+							<Line label={t('cards.dates.closing')} value={formatDayMonth(summary.openCycle.closingDate)} />
+							<Line label={t('cards.dates.due')} value={formatDayMonth(summary.openCycle.dueDate)} />
+							<Text style={styles.explain}>
+								{t('cards.dates.explain', {
+									count: cycleRuleOf(card)?.closingDaysBefore ?? 7,
+									day: card.dueDay,
+									best: formatDayMonth(summary.openCycle.closingDate),
+								})}
+							</Text>
 						</View>
 					</View>
 				) : null}
@@ -492,7 +501,7 @@ const InstallmentsSheet: React.FC<{
 	const totalCount = Number(total);
 	const valid =
 		Number.isInteger(currentIndex) && Number.isInteger(totalCount) && currentIndex >= 1 && totalCount >= 2 && totalCount <= 48 && currentIndex <= totalCount;
-	const dates = valid ? existingInstallmentDates(currentIndex, totalCount, card.closingDay, card.dueDay, todayISO()) : [];
+	const dates = valid ? existingInstallmentDates(currentIndex, totalCount, cycleRuleOf(card), todayISO()) : [];
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.installments.title')} subtitle={t('cards.installments.subtitle')}>
@@ -696,7 +705,6 @@ const styles = StyleSheet.create({
 	panelTitle: {
 		fontSize: 14,
 		color: 'rgba(255,255,255,0.75)',
-		textTransform: 'capitalize',
 	},
 	panelAmount: {
 		fontSize: 28,

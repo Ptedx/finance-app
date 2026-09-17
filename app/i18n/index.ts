@@ -4,6 +4,9 @@ import { initReactI18next } from 'react-i18next';
 import en from './locales/en';
 import it from './locales/it';
 import pt from './locales/pt';
+import { configureDateLocale } from '../utils/dateUtils';
+import { resolveFormatLocale } from '../utils/locale';
+import { configureMoney } from '../utils/money';
 
 const resources = {
 	en: { translation: en },
@@ -38,5 +41,15 @@ i18n.use(initReactI18next).init({
 		escapeValue: false, // React Native doesn't need XSS escaping
 	},
 });
+
+// Formatação configurada já na carga do módulo: as telas que desenham antes do
+// CurrencyProvider terminar de ler a moeda salva também saem no formato do idioma.
+try {
+	const formatLocale = resolveFormatLocale(getLocales()[0]?.languageTag, i18n.language);
+	configureMoney({ locale: formatLocale });
+	configureDateLocale(formatLocale);
+} catch {
+	// Sem expo-localization (testes): mantém o padrão.
+}
 
 export default i18n;

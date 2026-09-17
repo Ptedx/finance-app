@@ -137,6 +137,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			color: existing?.color ?? brandFor(bankName)?.color ?? ACCOUNT_COLORS[kind],
 			last4: null,
 			closingDay: null,
+			closingDaysBefore: null,
 			dueDay: null,
 			creditLimitCents: null,
 			packageName: existing?.packageName ?? null,

@@ -60,6 +60,8 @@ export interface WireAccount extends WireMeta {
 	last4: string | null;
 	closingDay: number | null;
 	dueDay: number | null;
+	/** v10; opcional na chegada de um servidor anterior. */
+	closingDaysBefore?: number | null;
 	creditLimitCents: number | null;
 	packageName: string | null;
 	accountKey: string | null;

@@ -19,6 +19,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Capture, Category } from '../database/schema';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage } from '../utils/captureMatcher';
+import { formatDate, getISODate } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 
 /**
@@ -40,15 +41,15 @@ const ACCENT = '#15E8FE';
 const whenLabel = (iso: string): string => {
 	const date = new Date(iso);
 	const today = new Date();
-	const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+	const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 	if (date.toDateString() === today.toDateString()) return time;
-	return `${date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })} ${time}`;
+	return `${formatDate(getISODate(date))} ${time}`;
 };
 
 /** Linhas de extrato só têm o dia; mostrar "12:00" seria inventar um horário. */
 const whenLabelFor = (capture: Pick<Capture, 'packageName' | 'postedAt'>): string =>
 	isStatementPackage(capture.packageName)
-		? new Date(capture.postedAt).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
+		? formatDate(getISODate(new Date(capture.postedAt)))
 		: whenLabel(capture.postedAt);
 
 const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {

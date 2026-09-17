@@ -23,6 +23,11 @@ export interface AccountMonthActivity {
 	expenseCents: number;
 	transfersInCents: number;
 	transfersOutCents: number;
+	/**
+	 * Só cartões: soma das faturas que **vencem** no período. É a métrica principal —
+	 * o que sai do bolso. Nulo quando o cartão não tem vencimento informado.
+	 */
+	invoiceDueCents?: number | null;
 	/** Só cartões: valor cheio das compras **feitas** no período, parceladas ou não. */
 	purchasesOriginatedCents?: number;
 	envelopeMonthlyCents?: number | null;
@@ -37,7 +42,10 @@ export interface MonthOverviewInput {
 export interface CardMonth {
 	accountId: string;
 	name: string;
-	/** O que cai na fatura deste mês: compras à vista do mês e parcelas do mês, menos estornos. */
+	/**
+	 * A fatura que vence neste mês, com parcelas e com a "fatura atual" informada. Sem
+	 * vencimento no cartão, as compras e parcelas datadas no mês, menos estornos.
+	 */
 	spendCents: number;
 	/** O que foi comprado neste mês, valor cheio — a métrica secundária. */
 	purchasesCents: number;
@@ -92,7 +100,7 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				break;
 			}
 			case 'card': {
-				const spend = Math.max(0, account.expenseCents - account.incomeCents);
+				const spend = Math.max(0, account.invoiceDueCents ?? account.expenseCents - account.incomeCents);
 				const purchases = account.purchasesOriginatedCents ?? 0;
 				cardSpendCents += spend;
 				cardPurchasesCents += purchases;

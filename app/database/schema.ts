@@ -121,9 +121,15 @@ export interface Account extends SyncMeta {
 	last4: string | null;
 	/** Bandeira do cartão (`visa`, `mastercard`, `elo`, `amex`, `hipercard`). Só cartões. */
 	network: string | null;
-	/** Dia do mês em que a fatura fecha e vence. Só cartões. */
+	/**
+	 * Legado (v7-v9): dia fixo de fechamento. O ciclo agora sai de `dueDay` e
+	 * `closingDaysBefore`; a coluna fica só para aparelhos antigos no sync.
+	 */
 	closingDay: number | null;
+	/** Dia do mês do vencimento; cai no próximo dia útil quando é fim de semana ou feriado. Só cartões. */
 	dueDay: number | null;
+	/** Quantos dias antes do vencimento a fatura fecha (Nubank: 7). Só cartões. */
+	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
 	packageName: string | null;
 	accountKey: string | null;
@@ -199,8 +205,10 @@ export const DATABASE_NAME = 'spendr.db';
  * 8 — accounts gain `role` (how the month is computed) and `envelopeMonthlyCents`.
  * 9 — accounts gain `network` (card brand); cards are normalised so a card is always
  *     `kind = credit_card` and `role = card`, and nothing else is.
+ * 10 — accounts gain `closingDaysBefore`: the card cycle comes from the due day (moved
+ *     to the next business day) minus that many days, instead of a fixed closing day.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -305,6 +313,7 @@ export const CREATE_ACCOUNTS_TABLE = `
     last4 TEXT,
     closingDay INTEGER,
     dueDay INTEGER,
+    closingDaysBefore INTEGER,
     creditLimitCents INTEGER,
     packageName TEXT,
     accountKey TEXT,
@@ -324,6 +333,12 @@ export const ACCOUNT_V8_COLUMNS: Array<[name: string, sql: string]> = [
 
 /** Colunas que o v9 acrescenta em `accounts`. */
 export const ACCOUNT_V9_COLUMNS: Array<[name: string, sql: string]> = [['network', 'TEXT']];
+
+/** Colunas que o v10 acrescenta em `accounts`. */
+export const ACCOUNT_V10_COLUMNS: Array<[name: string, sql: string]> = [['closingDaysBefore', 'INTEGER']];
+
+/** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
+export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
 
 export const CREATE_TRANSFERS_TABLE = `
   CREATE TABLE IF NOT EXISTS transfers (

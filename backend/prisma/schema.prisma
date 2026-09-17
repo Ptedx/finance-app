@@ -238,6 +238,8 @@ model Account {
   last4               String?
   closingDay          Int?
   dueDay              Int?
+  /// Dias entre o fechamento e o vencimento (v10).
+  closingDaysBefore   Int?
   creditLimitCents    BigInt?
   packageName         String?
   accountKey          String?

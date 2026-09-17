@@ -9,6 +9,8 @@
  * This module is intentionally free of React Native imports so it can be unit tested.
  */
 
+import { groupDigits, intlHonours, languageOf, SEPARATORS } from './locale';
+
 /** An integer amount of cents. Negative means an outflow when a sign is meaningful. */
 export type Cents = number;
 
@@ -187,8 +189,24 @@ export const isValidAmountInput = (input: string): boolean => {
  */
 const normaliseSpaces = (text: string): string => text.replace(/[  ]/g, ' ');
 
+/**
+ * Dinheiro formatado à mão, para motores cujo `Intl` ignora o locale. Segue o jeito de
+ * cada idioma: "R$ 3.832,80", "$3,832.80", "3.832,80 €".
+ */
+const manualCurrency = (cents: Cents): string => {
+	const language = languageOf(locale);
+	const { group, decimal } = SEPARATORS[language];
+	const abs = Math.abs(Math.round(cents));
+	const body = `${groupDigits(String(Math.floor(abs / 100)), group)}${decimal}${String(abs % 100).padStart(2, '0')}`;
+	const sign = cents < 0 ? '-' : '';
+	if (language === 'it') return `${sign}${body} ${currencySymbol}`;
+	if (language === 'pt') return `${sign}${currencySymbol} ${body}`;
+	return `${sign}${currencySymbol}${body}`;
+};
+
 export const formatCents = (cents: Cents): string => {
 	const value = (Number.isFinite(cents) ? cents : 0) / 100;
+	if (!intlHonours(locale)) return manualCurrency(Number.isFinite(cents) ? cents : 0);
 
 	try {
 		const formatter = new Intl.NumberFormat(locale, {
@@ -222,6 +240,11 @@ export const formatCents = (cents: Cents): string => {
  */
 export const centsToInputString = (cents: Cents): string => {
 	const value = (Number.isFinite(cents) ? cents : 0) / 100;
+	if (!intlHonours(locale)) {
+		const safe = Number.isFinite(cents) ? Math.round(cents) : 0;
+		const abs = Math.abs(safe);
+		return `${safe < 0 ? '-' : ''}${Math.floor(abs / 100)}${SEPARATORS[languageOf(locale)].decimal}${String(abs % 100).padStart(2, '0')}`;
+	}
 	return new Intl.NumberFormat(locale, {
 		minimumFractionDigits: 2,
 		maximumFractionDigits: 2,
@@ -236,6 +259,7 @@ export const centsToInputString = (cents: Cents): string => {
  * build shows `1.234,56` on a Brazilian phone and `1,234.56` on an American one.
  */
 const localeSeparators = (): { group: string; decimal: string } => {
+	if (!intlHonours(locale)) return SEPARATORS[languageOf(locale)];
 	try {
 		const parts = new Intl.NumberFormat(locale).formatToParts(12345.6);
 		return {
@@ -276,14 +300,18 @@ export const formatAmountInput = (input: string): string => {
 	if (integerDigits === '' && !hasDecimal) return '';
 
 	let grouped: string;
-	try {
-		// BigInt keeps this exact for any length: Number would start rounding past 2^53,
-		// and an amount field is exactly where a user pastes something absurd.
-		grouped = new Intl.NumberFormat(locale, { useGrouping: true }).format(
-			BigInt(integerDigits === '' ? '0' : integerDigits)
-		);
-	} catch {
-		grouped = integerDigits === '' ? '0' : integerDigits;
+	if (!intlHonours(locale)) {
+		grouped = groupDigits(integerDigits === '' ? '0' : integerDigits.replace(/^0+(?=d)/, ''), group);
+	} else {
+		try {
+			// BigInt keeps this exact for any length: Number would start rounding past 2^53,
+			// and an amount field is exactly where a user pastes something absurd.
+			grouped = new Intl.NumberFormat(locale, { useGrouping: true }).format(
+				BigInt(integerDigits === '' ? '0' : integerDigits)
+			);
+		} catch {
+			grouped = integerDigits === '' ? '0' : integerDigits;
+		}
 	}
 
 	return hasDecimal ? `${grouped}${decimal}${fractionDigits}` : grouped;

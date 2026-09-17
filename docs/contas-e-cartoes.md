@@ -118,10 +118,22 @@ pagar (sinal invertido só nesses casos).
 
 ### Ciclo e faturas (`cardMath.ts`, puro e testado)
 
-- "Fecha dia 10" = a fatura fecha no começo do dia 10. Compras do dia 10 em diante vão
-  para a próxima; o dia de fechamento é o **melhor dia de compra**.
-- A fatura que fecha em 10/out cobre 10/set a 09/out e vence no primeiro dia de
-  vencimento depois do fechamento. Ciclos são contíguos (teste por propriedades).
+- O usuário informa só o **vencimento** (dia 25, no Nubank) e quantos dias antes a
+  fatura fecha (7, o padrão). Vencimento em sábado, domingo ou feriado bancário nacional
+  (`businessDays.ts`: fixos, Carnaval, Sexta-feira Santa, Corpus Christi, 20/11) passa
+  para o próximo dia útil, e o fechamento acompanha: sempre N dias antes do vencimento real.
+- A fatura fecha no começo do dia do fechamento: compras desse dia em diante vão para a
+  próxima, e ele é o **melhor dia de compra**.
+- A fatura leva o **nome do mês em que vence**. Vence 25/09 e fecha 18/09: é a de setembro,
+  com compras de 18/08 a 17/09. A de outubro só começa em 18/09. Ciclos são contíguos
+  (teste por propriedades, inclusive nos meses em que o vencimento anda).
+- No quadro do mês, o cartão entra pela **fatura que vence no mês** (`invoicesDueBetween`),
+  com parcelas e com a "fatura atual" informada; as compras feitas no mês são a métrica
+  secundária. Cartão sem vencimento cai no cálculo antigo (compras datadas no mês).
+- Cartão de débito não é cartão aqui: não tem fatura nem limite. Na edição do cartão, o
+  tipo "Débito" leva os lançamentos para a conta de onde o dinheiro sai e remove o cartão.
+- Datas e dinheiro seguem o **idioma do app** (`locale.ts`): em português, sempre
+  "16/09" e "R$ 3.832,80", mesmo com região do aparelho em inglês ou `Intl` reduzido.
 - **Devido** = âncora + compras − estornos − pagamentos até hoje. **Fatura aberta** =
   lançamentos do ciclo aberto, inclusive parcelas já programadas nele. **A pagar agora**
   = devido − o que já caiu na fatura aberta: é o que falta das faturas fechadas, com
@@ -169,7 +181,7 @@ fonte do sistema.
 3. **Contas**: importe o OFX de cada conta corrente (âncora no saldo do extrato) ou use
    "Definir saldo" na tela da conta. Marque o papel de cada uma.
 4. **Cartões**: em Cartões, abra ou adicione cada um e informe banco, final, limite,
-   fechamento e vencimento. Depois toque em **Acertar valor** e digite a fatura atual e,
+   vencimento (fecha 7 dias antes). Depois toque em **Acertar valor** e digite a fatura atual e,
    se houver, a fechada ainda não paga, como aparecem no app do banco.
 5. **Parcelas de compras antigas**: no cartão, **Parcela antiga**, uma por compra
    (valor da parcela, parcela desta fatura e total). O limite usado e as faturas futuras

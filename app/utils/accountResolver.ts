@@ -71,6 +71,7 @@ const newAccountDraft = (
 	color: brandFor(partial.bankName)?.color ?? (partial.kind === 'credit_card' ? NEUTRAL_CARD_COLOR : ACCOUNT_COLORS[partial.kind]),
 	last4: partial.last4,
 	closingDay: null,
+	closingDaysBefore: null,
 	dueDay: null,
 	creditLimitCents: null,
 	packageName: partial.packageName,

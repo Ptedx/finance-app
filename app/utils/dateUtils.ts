@@ -10,6 +10,8 @@
  * in local time, and `toISOString()` is never used to derive one.
  */
 
+import { languageOf, monthLong, monthShort } from './locale';
+
 let locale = 'en-US';
 
 export const configureDateLocale = (nextLocale: string): void => {
@@ -50,30 +52,51 @@ export const todayISO = (): string => getISODate(new Date());
  */
 export const nowTimestamp = (): string => new Date().toISOString();
 
-export const formatDate = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, {
-		month: 'short',
-		day: 'numeric',
-	});
+/**
+ * Datas por tabela, não por `Intl`: o formato fica igual em qualquer motor JS e em
+ * qualquer região do aparelho. Português e italiano escrevem dia antes do mês.
+ */
+const parts = (dateString: string): { year: number; month: number; day: number } => {
+	const date = parseISODate(dateString);
+	return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
+};
 
-/** "17/10" no pt-BR, "10/17" no en-US: dia e mês com dois dígitos, na ordem do idioma. */
-export const formatDayMonth = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
+const two = (value: number): string => String(value).padStart(2, '0');
 
-/** Nome do mês por extenso ("outubro"). */
-export const formatMonthLong = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, { month: 'long' });
+/** '16 set' no pt-BR, 'Sep 16' no en-US. */
+export const formatDate = (dateString: string): string => {
+	const { month, day } = parts(dateString);
+	const language = languageOf(locale);
+	return language === 'en' ? `${monthShort(language, month)} ${day}` : `${day} ${monthShort(language, month)}`;
+};
 
-/** Mês abreviado ("out"), para rótulos curtos como as abas de fatura. */
-export const formatMonthShort = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, { month: 'short' }).replace('.', '');
+/** '16/09' no pt-BR, '09/16' no en-US: dia e mês com dois dígitos, na ordem do idioma. */
+export const formatDayMonth = (dateString: string): string => {
+	const { month, day } = parts(dateString);
+	return languageOf(locale) === 'en' ? `${two(month)}/${two(day)}` : `${two(day)}/${two(month)}`;
+};
 
-export const formatFullDate = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, {
-		year: 'numeric',
-		month: 'long',
-		day: 'numeric',
-	});
+/** '16/09/2026' no pt-BR. */
+export const formatShortDate = (dateString: string): string => {
+	const { year } = parts(dateString);
+	return `${formatDayMonth(dateString)}/${year}`;
+};
+
+/** Nome do mês por extenso ('setembro'). */
+export const formatMonthLong = (dateString: string): string => monthLong(languageOf(locale), parts(dateString).month);
+
+/** Mês abreviado ('set'), para rótulos curtos como as abas de fatura. */
+export const formatMonthShort = (dateString: string): string => monthShort(languageOf(locale), parts(dateString).month);
+
+/** '16 de setembro de 2026', 'September 16, 2026', '16 settembre 2026'. */
+export const formatFullDate = (dateString: string): string => {
+	const { year, month, day } = parts(dateString);
+	const language = languageOf(locale);
+	const name = monthLong(language, month);
+	if (language === 'pt') return `${day} de ${name} de ${year}`;
+	if (language === 'it') return `${day} ${name} ${year}`;
+	return `${name} ${day}, ${year}`;
+};
 
 /** Number of days in a month. `month` is 1-12. */
 export const lastDayOfMonth = (year: number, month: number): number =>
@@ -128,8 +151,7 @@ export const getMonthRange = (
 	endDate: getISODate(new Date(year, month, 0)),
 });
 
-export const getMonthName = (month: number): string =>
-	new Date(2000, month - 1, 1).toLocaleString(locale, { month: 'long' });
+export const getMonthName = (month: number): string => monthLong(languageOf(locale), month);
 
 export const getCurrentMonthName = (): string =>
 	getMonthName(new Date().getMonth() + 1).toUpperCase();
