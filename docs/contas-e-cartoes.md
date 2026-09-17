@@ -133,6 +133,20 @@ pagar (sinal invertido só nesses casos).
   (`invoicesClosingBetween`), com parcelas e com a "fatura atual" informada; as compras
   feitas no mês são a métrica secundária. Cartão sem fechamento cai no cálculo antigo.
 
+### Fatura é da conta, cartão é de quem gastou
+
+- Uma **conta de crédito** (o "Cartão 1534" do Nubank) tem **uma fatura**. O cartão físico
+  e os virtuais (iFood/99, assinaturas) caem nela.
+- Cada lançamento guarda o **final do cartão** que fez a compra (`transactions.cardLast4`,
+  vindo da notificação). A conta guarda o nome de cada final (`accounts.cardNames`, JSON).
+- Na fatura, **Por cartão** mostra quanto cada final gastou; tocar filtra a lista, o lápis
+  dá nome ao cartão.
+- **Débito** é cartão de uma conta corrente: sem fatura, sem limite. Aparece em Cartões
+  (e no carrossel da tela inicial) com o gasto do mês e o histórico por mês. O dinheiro
+  já saiu da conta, então não conta de novo em lugar nenhum.
+- Migração v13: finais recuperados das capturas; um "cartão de crédito" com "débito" no
+  nome vira o cartão de débito da conta corrente do mesmo banco, com o nome.
+
 ### Como uma compra chega na fatura
 
 - **Qual cartão** (`notificationTarget.ts`): final exato de um cartão; senão, o **único**

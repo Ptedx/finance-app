@@ -7,6 +7,7 @@ import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View } from
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import { ACCENT, Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
+import RenameCardSheet from '../components/cards/RenameCardSheet';
 import Sheet from '../components/cards/Sheet';
 import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import TransactionItem from '../components/TransactionItem';
@@ -15,6 +16,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
 import { sameBank } from '../utils/accountResolver';
 import { cycleRuleOf, existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
+import { usageByCard } from '../utils/cardNames';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
@@ -44,7 +46,8 @@ type SheetKind = 'pay' | 'adjust' | 'installments' | null;
 const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, cardSummaries, recordCardPayment, adjustCardInvoices, addExistingInstallments } = useAccounts();
+	const { accounts, bankAccounts, cardSummaries, recordCardPayment, adjustCardInvoices, addExistingInstallments, renameCard } =
+		useAccounts();
 	const { transactions, categories } = useTransactions();
 
 	const card: Account | undefined = accounts.find((account) => account.id === cardId && account.kind === 'credit_card');
@@ -52,6 +55,9 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 
 	const [selectedKey, setSelectedKey] = useState<string | null>(null);
 	const [sheet, setSheet] = useState<SheetKind>(null);
+	// Filtro da lista da fatura por cartão: undefined = todos, null = sem cartão identificado.
+	const [cardFilter, setCardFilter] = useState<string | null | undefined>(undefined);
+	const [renaming, setRenaming] = useState<{ last4: string; name: string | null } | null>(null);
 
 	// Abre na fatura atual, e volta para ela quando a escolhida some da lista (virou o
 	// ciclo, ou uma fatura futura zerou) — senão o painel sumiria.
@@ -85,6 +91,12 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		.sort((a, b) => b.date.localeCompare(a.date));
 	const coveredByAnchor = cardTransactions.filter((tx) => inSelected(tx.date) && tx.date <= card.openingBalanceDate).length;
 	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
+	// Quem gastou nesta fatura: o físico e cada virtual. A fatura é uma só; isto é o "por cartão".
+	const usage = usageByCard([...selectedTransactions, ...selectedPending], card.cardNames, card.last4);
+	const showUsage = usage.filter((item) => item.count > 0).length > 1 || usage.some((item) => item.last4 !== null && item.last4 !== card.last4);
+	const matchesFilter = (last4: string | null | undefined) => cardFilter === undefined || (last4 ?? null) === cardFilter;
+	const cardLabel = (last4: string | null, name: string | null) =>
+		last4 === null ? t('cards.byCard.unknown') : (name ?? t('cards.finalLabel', { last4 }));
 	const anchorInSelected =
 		selected &&
 		card.openingBalanceCents !== 0 &&
@@ -207,11 +219,56 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</View>
 								) : null}
 
+								{showUsage ? (
+									<View style={styles.usage}>
+										<Text style={styles.usageTitle} accessibilityRole="header">
+											{t('cards.byCard.title')}
+										</Text>
+										{usage.map((item) => {
+											const selectedRow = cardFilter !== undefined && cardFilter === item.last4;
+											const label = cardLabel(item.last4, item.name);
+											return (
+												<View key={item.last4 ?? 'none'} style={styles.usageRow}>
+													<Pressable
+														onPress={() => setCardFilter(selectedRow ? undefined : item.last4)}
+														accessibilityRole="button"
+														accessibilityState={{ selected: selectedRow }}
+														accessibilityLabel={`${label}, ${formatCents(item.totalCents)}, ${t('cards.byCard.purchases', { count: item.count })}`}
+														accessibilityHint={selectedRow ? t('cards.byCard.clearHint') : t('cards.byCard.filterHint')}
+														style={({ pressed }) => [styles.usageMain, selectedRow && styles.usageSelected, pressed && styles.pressed]}
+													>
+														<View style={styles.flex}>
+															<Text style={[styles.usageName, selectedRow && styles.usageNameSelected]} numberOfLines={1}>
+																{label}
+															</Text>
+															<Text style={styles.usageMeta}>
+																{item.last4 ? `•••• ${item.last4} · ` : ''}
+																{t('cards.byCard.purchases', { count: item.count })}
+															</Text>
+														</View>
+														<Text style={styles.usageAmount}>{formatCents(item.totalCents)}</Text>
+													</Pressable>
+													{item.last4 ? (
+														<Pressable
+															onPress={() => setRenaming({ last4: item.last4 as string, name: item.name })}
+															accessibilityRole="button"
+															accessibilityLabel={t('cards.rename.actionFor', { card: label })}
+															style={styles.iconButton}
+														>
+															<Ionicons name="pencil-outline" size={20} color="rgba(255,255,255,0.85)" />
+														</Pressable>
+													) : null}
+												</View>
+											);
+										})}
+									</View>
+								) : null}
+
 								{anchorInSelected && coveredByAnchor > 0 ? (
 									<Text style={styles.covered}>{t('cards.invoice.coveredByAnchor', { count: coveredByAnchor })}</Text>
 								) : null}
 
-								{selectedPending.map((entry) => (
+								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4)).map((entry) => (
 									<Pressable
 										key={entry.id}
 										onPress={() => router.push('/inbox')}
@@ -234,7 +291,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								{selectedTransactions.length === 0 && selectedPending.length === 0 && !anchorInSelected ? (
 									<Text style={styles.empty}>{t('cards.invoice.empty')}</Text>
 								) : (
-									selectedTransactions.map((transaction) => (
+									selectedTransactions.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
 										<TransactionItem
 											key={transaction.id}
 											transaction={transaction}
@@ -370,6 +427,16 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 							await adjustCardInvoices(card.id, openCents, closedCents);
 							setSheet(null);
 							AccessibilityInfo.announceForAccessibility(t('cards.adjust.done', { amount: formatCents(openCents + closedCents) }));
+						}}
+					/>
+					<RenameCardSheet
+						visible={renaming !== null}
+						last4={renaming?.last4 ?? ''}
+						currentName={renaming?.name ?? null}
+						onClose={() => setRenaming(null)}
+						onSave={async (name) => {
+							if (renaming) await renameCard(card.id, renaming.last4, name);
+							setRenaming(null);
 						}}
 					/>
 					<InstallmentsSheet
@@ -815,6 +882,56 @@ const styles = StyleSheet.create({
 		fontSize: 13,
 		color: 'rgba(255,255,255,0.7)',
 		paddingBottom: 8,
+	},
+	usage: {
+		borderTopWidth: 1,
+		borderTopColor: 'rgba(255,255,255,0.08)',
+		paddingTop: 10,
+		paddingBottom: 6,
+		gap: 4,
+	},
+	usageTitle: {
+		fontSize: 14,
+		fontWeight: '700',
+		color: 'rgba(255,255,255,0.85)',
+		marginBottom: 2,
+	},
+	usageRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
+	},
+	usageMain: {
+		flex: 1,
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 8,
+		minHeight: 48,
+		paddingHorizontal: 10,
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: 'transparent',
+	},
+	usageSelected: {
+		borderColor: ACCENT,
+		backgroundColor: 'rgba(21,232,254,0.1)',
+	},
+	usageName: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: '#FFFFFF',
+	},
+	usageNameSelected: {
+		color: ACCENT,
+	},
+	usageMeta: {
+		fontSize: 12,
+		color: 'rgba(255,255,255,0.7)',
+	},
+	usageAmount: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#FFFFFF',
 	},
 	pendingLabel: {
 		fontSize: 13,

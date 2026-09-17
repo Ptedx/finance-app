@@ -80,6 +80,8 @@ export interface CardEntry {
 	installmentGroup: string | null;
 	installmentIndex: number | null;
 	installmentCount: number | null;
+	/** Qual cartão (físico, virtual) fez a compra. Não muda a fatura, só o "quem gastou". */
+	cardLast4?: string | null;
 	/**
 	 * Compra avisada pelo banco que ainda está na caixa de entrada. Já é dívida no cartão —
 	 * o banco aprovou — então entra na fatura e no limite; só a categoria espera.

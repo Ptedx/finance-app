@@ -18,6 +18,7 @@ import {
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
 	moveAccountLedger,
+	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
 	updateAccount,
@@ -39,6 +40,7 @@ import {
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { generateUniqueId } from '../utils/categoryEditUtils';
+import { parseCardNames, withCardName } from '../utils/cardNames';
 import { getISODate, todayISO } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
@@ -56,6 +58,22 @@ import { useTransactions } from './TransactionsContext';
  * transferência (o CapturesContext chama `refresh`).
  */
 
+/**
+ * Um cartão de débito: não tem fatura nem limite, é um cartão da conta corrente. Existe
+ * quando a conta tem compras com aquele final ou quando o usuário deu nome a ele.
+ */
+export interface DebitCard {
+	/** `contaId:final`. */
+	key: string;
+	account: Account;
+	last4: string;
+	name: string | null;
+	/** Compras menos estornos no período selecionado. */
+	periodSpentCents: number;
+	/** Data da compra mais recente, para ordenar. */
+	lastUsed: string | null;
+}
+
 export interface ExistingInstallmentsInput {
 	cardId: string;
 	note: string;
@@ -72,6 +90,8 @@ interface AccountsContextType {
 	bankAccounts: Account[];
 	/** Cartões ativos, na ordem de exibição. */
 	creditCards: Account[];
+	/** Cartões de débito das contas ativas, os mais usados primeiro. */
+	debitCards: DebitCard[];
 	/** Só as não arquivadas, contas e cartões — para seletores de lançamento. */
 	activeAccounts: Account[];
 	balances: Map<string, number>;
@@ -107,6 +127,8 @@ interface AccountsContextType {
 	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
 	 */
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
+	/** Dá nome a um cartão (físico, virtual ou de débito) pelo final; nome vazio tira. */
+	renameCard: (accountId: string, last4: string, name: string | null) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
 	assignUnassigned: (accountId: string) => Promise<number>;
 }
@@ -139,6 +161,7 @@ const pendingCardEntries = (capture: Capture, card: Account): CardEntry[] => {
 		installmentGroup: count > 1 ? capture.id : null,
 		installmentIndex: count > 1 ? index + 1 : null,
 		installmentCount: count > 1 ? count : null,
+		cardLast4: capture.cardLast4,
 		pendingReview: true,
 	}));
 };
@@ -208,6 +231,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					installmentGroup: tx.installmentGroup,
 					installmentIndex: tx.installmentIndex,
 					installmentCount: tx.installmentCount,
+				cardLast4: tx.cardLast4,
 				}));
 				for (const capture of pendingCaptures) entries.push(...pendingCardEntries(capture, account));
 				const movements: CardMovement[] = cardTransfers.map((transfer) => ({
@@ -298,6 +322,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				installmentGroup: tx.installmentGroup,
 				installmentIndex: tx.installmentIndex,
 				installmentCount: tx.installmentCount,
+				cardLast4: tx.cardLast4,
 			}));
 			// Compras ainda na caixa de entrada já estão na fatura do banco: entram na conta.
 			for (const capture of await getPendingCaptures()) entries.push(...pendingCardEntries(capture, card));
@@ -370,14 +395,31 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
-			await moveAccountLedger(cardId, accountId);
+			const card = accounts.find((account) => account.id === cardId);
+			const checking = accounts.find((account) => account.id === accountId);
+			// O nome do "cartão" vira o nome do cartão de débito da conta.
+			if (card?.last4 && checking) {
+				await setAccountCardNames(checking.id, withCardName(checking.cardNames, card.last4, card.name));
+			}
+			await moveAccountLedger(cardId, accountId, card?.last4 ?? null);
 			// "Pagamentos" para um débito não existiram: tirá-los evita debitar a conta duas vezes.
 			await deleteTransfersOf(cardId);
 			await deleteAccount(cardId);
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
-		[refresh, refreshData]
+		[accounts, refresh, refreshData]
+	);
+
+	const renameCard = useCallback(
+		async (accountId: string, last4: string, name: string | null) => {
+			const account = accounts.find((candidate) => candidate.id === accountId);
+			if (!account) return;
+			await setAccountCardNames(accountId, withCardName(account.cardNames, last4, name));
+			syncQueue.schedule();
+			await refresh();
+		},
+		[accounts, refresh]
 	);
 
 	const assignUnassigned = useCallback(
@@ -397,6 +439,32 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		() => summarizeAccounts(accounts, balances, unassignedNetCents),
 		[accounts, balances, unassignedNetCents]
 	);
+
+	const debitCards = useMemo<DebitCard[]>(() => {
+		const byKey = new Map<string, DebitCard>();
+		for (const account of bankAccounts) {
+			for (const [last4, name] of Object.entries(parseCardNames(account.cardNames))) {
+				byKey.set(`${account.id}:${last4}`, { key: `${account.id}:${last4}`, account, last4, name, periodSpentCents: 0, lastUsed: null });
+			}
+		}
+		const accountById = new Map(bankAccounts.map((account) => [account.id, account]));
+		for (const tx of transactions) {
+			if (!tx.cardLast4 || !tx.accountId) continue;
+			const account = accountById.get(tx.accountId);
+			if (!account) continue;
+			const key = `${account.id}:${tx.cardLast4}`;
+			let card = byKey.get(key);
+			if (!card) {
+				card = { key, account, last4: tx.cardLast4, name: null, periodSpentCents: 0, lastUsed: null };
+				byKey.set(key, card);
+			}
+			if (tx.date >= startDate && tx.date <= endDate) card.periodSpentCents += tx.isIncome ? -tx.amountCents : tx.amountCents;
+			if (!card.lastUsed || tx.date > card.lastUsed) card.lastUsed = tx.date;
+		}
+		return [...byKey.values()].sort(
+			(a, b) => (b.lastUsed ?? '').localeCompare(a.lastUsed ?? '') || a.last4.localeCompare(b.last4)
+		);
+	}, [bankAccounts, transactions, startDate, endDate]);
 
 	const cardsTotals = useMemo(() => {
 		let toPayCents = 0;
@@ -421,6 +489,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			accounts,
 			bankAccounts,
 			creditCards,
+			debitCards,
 			activeAccounts,
 			balances,
 			cardSummaries,
@@ -438,12 +507,14 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			renameCard,
 			assignUnassigned,
 		}),
 		[
 			accounts,
 			bankAccounts,
 			creditCards,
+			debitCards,
 			activeAccounts,
 			balances,
 			cardSummaries,
@@ -461,6 +532,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			renameCard,
 			assignUnassigned,
 		]
 	);

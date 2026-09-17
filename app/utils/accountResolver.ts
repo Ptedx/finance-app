@@ -56,6 +56,7 @@ const newAccountDraft = (
 	closingDaysBefore: null,
 	dueDay: null,
 	creditLimitCents: null,
+	cardNames: null,
 	packageName: partial.packageName,
 	accountKey: partial.accountKey,
 	openingBalanceCents: partial.openingBalanceCents ?? 0,

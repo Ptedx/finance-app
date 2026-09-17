@@ -125,7 +125,7 @@ const localDateOf = (iso: string): string => getISODate(new Date(iso));
 
 type Postable = Pick<
 	Capture,
-	'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt' | 'accountId' | 'installments'
+	'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt' | 'accountId' | 'installments' | 'cardLast4'
 >;
 
 /**
@@ -145,6 +145,7 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 			note,
 			isIncome: capture.direction === 'in',
 			accountId: capture.accountId,
+			cardLast4: capture.cardLast4,
 		});
 		syncQueue.schedule();
 		return id;
@@ -166,6 +167,7 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 			installmentGroup: groupId,
 			installmentIndex: index,
 			installmentCount: count,
+			cardLast4: capture.cardLast4,
 		});
 		if (index === 1) firstId = id;
 	}

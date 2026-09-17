@@ -140,6 +140,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			closingDaysBefore: null,
 			dueDay: null,
 			creditLimitCents: null,
+			cardNames: existing?.cardNames ?? null,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
 			openingBalanceCents: existing?.openingBalanceCents ?? 0,

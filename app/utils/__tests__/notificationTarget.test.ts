@@ -19,6 +19,7 @@ const account = (overrides: Partial<Account>): Account => ({
 	dueDay: null,
 	closingDaysBefore: null,
 	creditLimitCents: null,
+	cardNames: null,
 	packageName: null,
 	accountKey: null,
 	openingBalanceCents: 0,

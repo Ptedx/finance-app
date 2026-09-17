@@ -70,6 +70,11 @@ export interface Transaction extends SyncMeta {
 	installmentGroup: string | null;
 	installmentIndex: number | null;
 	installmentCount: number | null;
+	/**
+	 * Final do cartão que fez a compra (físico ou virtual, crédito ou débito). A fatura é da
+	 * conta; o cartão é para saber quem gastou. Nulo quando não se sabe.
+	 */
+	cardLast4: string | null;
 }
 
 export type AccountKind = 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
@@ -131,6 +136,12 @@ export interface Account extends SyncMeta {
 	 */
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
+	/**
+	 * Nomes dos cartões desta conta, por final, em JSON (`{"6422": "iFood/99"}`). Numa conta
+	 * de crédito são os cartões físico e virtuais que caem na mesma fatura; numa conta
+	 * corrente, os cartões de débito. Ler e gravar por `utils/cardNames.ts`.
+	 */
+	cardNames: string | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -213,8 +224,11 @@ export const DATABASE_NAME = 'spendr.db';
  * 12 — no column changes: card purchases filed by the old notification rules (one card
  *     per virtual card number, "Compra aprovada" on the checking account) are moved to
  *     the real card.
+ * 13 — transactions gain `cardLast4` (which physical/virtual/debit card made the purchase,
+ *     backfilled from captures); accounts gain `cardNames`. A "card" whose name says
+ *     debit becomes a debit card of its bank's checking account.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -293,6 +307,7 @@ export const CREATE_TRANSACTIONS_TABLE = `
     installmentGroup TEXT,
     installmentIndex INTEGER,
     installmentCount INTEGER,
+    cardLast4 TEXT,
 ${SYNC_COLUMNS_SQL},
     FOREIGN KEY (category) REFERENCES categories (id)
   );
@@ -321,6 +336,7 @@ export const CREATE_ACCOUNTS_TABLE = `
     dueDay INTEGER,
     closingDaysBefore INTEGER,
     creditLimitCents INTEGER,
+    cardNames TEXT,
     packageName TEXT,
     accountKey TEXT,
     openingBalanceCents INTEGER NOT NULL DEFAULT 0,
@@ -342,6 +358,10 @@ export const ACCOUNT_V9_COLUMNS: Array<[name: string, sql: string]> = [['network
 
 /** Colunas que o v10 acrescenta em `accounts`. */
 export const ACCOUNT_V10_COLUMNS: Array<[name: string, sql: string]> = [['closingDaysBefore', 'INTEGER']];
+
+/** Colunas que o v13 acrescenta. */
+export const TRANSACTION_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardLast4', 'TEXT']];
+export const ACCOUNT_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardNames', 'TEXT']];
 
 /** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
 export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
@@ -542,7 +562,7 @@ export const CREATE_INDEXES = `
 export type CategoryDraft = Omit<Category, 'id' | keyof SyncMeta>;
 
 /** Campos do v7 que um lançamento pode não ter: à vista, sem conta conhecida. */
-type OptionalTransactionFields = 'accountId' | 'installmentGroup' | 'installmentIndex' | 'installmentCount';
+type OptionalTransactionFields = 'accountId' | 'installmentGroup' | 'installmentIndex' | 'installmentCount' | 'cardLast4';
 export type TransactionDraft = Omit<Transaction, 'id' | keyof SyncMeta | OptionalTransactionFields> &
 	Partial<Pick<Transaction, OptionalTransactionFields>>;
 

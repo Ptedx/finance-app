@@ -47,6 +47,16 @@ const textMentionsBank = (text: string, bankName: string | null): boolean => {
 	return aliases.some((alias) => new RegExp(`(^|[^a-z0-9])${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(text));
 };
 
+/** Finais nomeados de uma conta (`cardNames`, JSON). Lido aqui sem depender de `cardNames.ts`. */
+const namedFinals = (account: Account): string[] => {
+	if (!account.cardNames) return [];
+	try {
+		return Object.keys(JSON.parse(account.cardNames) as Record<string, string>);
+	} catch {
+		return [];
+	}
+};
+
 export type NotificationTarget =
 	| { type: 'card'; account: Account }
 	| { type: 'new_card' }
@@ -88,7 +98,11 @@ export const pickNotificationTarget = (
 				sameBank(card.bankName, notification.appLabel)
 	);
 
-	const exact = (wallet ? cards : ofBank).find((card) => card.last4 === notification.cardLast4);
+	// O final do plástico ou de um virtual já nomeado: com dois cartões de crédito do mesmo
+	// banco (PF e PJ, por exemplo), é isso que decide a fatura.
+	const exact = (wallet ? cards : ofBank).find(
+		(card) => card.last4 === notification.cardLast4 || namedFinals(card).includes(notification.cardLast4 as string)
+	);
 	if (exact) return { type: 'card', account: exact };
 	if (ofBank.length === 1) return { type: 'card', account: ofBank[0] };
 	if (hint === 'credit' && !wallet && ofBank.length === 0) return { type: 'new_card' };

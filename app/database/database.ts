@@ -1,3 +1,4 @@
+import { planDebitCardConversions } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
@@ -49,6 +50,8 @@ import {
 	ACCOUNT_V8_COLUMNS,
 	ACCOUNT_V9_COLUMNS,
 	ACCOUNT_V10_COLUMNS,
+	ACCOUNT_V13_COLUMNS,
+	TRANSACTION_V13_COLUMNS,
 	DEFAULT_CLOSING_DAYS_BEFORE,
 	defaultRoleFor,
 	CAPTURE_V7_COLUMNS,
@@ -81,6 +84,7 @@ interface TransactionDB extends SyncColumnsDB {
 	installmentGroup: string | null;
 	installmentIndex: number | null;
 	installmentCount: number | null;
+	cardLast4: string | null;
 }
 
 interface AccountDB extends SyncColumnsDB {
@@ -97,6 +101,7 @@ interface AccountDB extends SyncColumnsDB {
 	dueDay: number | null;
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
+	cardNames: string | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -153,6 +158,7 @@ const convertTransaction = (transaction: TransactionDB): Transaction => ({
 	installmentGroup: transaction.installmentGroup ?? null,
 	installmentIndex: transaction.installmentIndex ?? null,
 	installmentCount: transaction.installmentCount ?? null,
+	cardLast4: transaction.cardLast4 ?? null,
 	...convertSyncMeta(transaction),
 });
 
@@ -170,6 +176,7 @@ const convertAccount = (account: AccountDB): Account => ({
 	dueDay: account.dueDay,
 	closingDaysBefore: account.closingDaysBefore ?? null,
 	creditLimitCents: account.creditLimitCents,
+	cardNames: account.cardNames ?? null,
 	packageName: account.packageName,
 	accountKey: account.accountKey,
 	openingBalanceCents: account.openingBalanceCents,
@@ -500,6 +507,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 10) await migrateCardCycleFromDueDay();
 	if (version < 11) await migrateCardCycleToClosingDay();
 	if (version < 12) await migrateCardPurchasesToRealCard();
+	if (version < 13) await migrateCardsPerPurchase();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -588,6 +596,72 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
 	);
 
 	console.log('Migrated card cycles to due day');
+};
+
+/**
+ * v12 -> v13: cada compra sabe qual cartão a fez, e débito vira cartão da conta.
+ *
+ * - `transactions.cardLast4` vem da captura que criou o lançamento (a transação ou todas
+ *   as parcelas do grupo). A fatura continua sendo da conta de crédito; o final serve para
+ *   ver quanto gastou cada cartão, físico ou virtual.
+ * - Um "cartão de crédito" cujo nome diz débito ("Débito Inter") nunca teve fatura: os
+ *   lançamentos vão para a conta corrente do mesmo banco, com o final do cartão, e o nome
+ *   fica como o nome do cartão de débito daquela conta. Pagamentos para ele não existiram.
+ */
+const migrateCardsPerPurchase = async (): Promise<void> => {
+	if (!(await tableExists('transactions')) || !(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of TRANSACTION_V13_COLUMNS) {
+		if (await tableHasColumn('transactions', name)) continue;
+		await db.execAsync(`ALTER TABLE transactions ADD COLUMN ${name} ${sql}`);
+	}
+	for (const [name, sql] of ACCOUNT_V13_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	const timestamp = nowTimestamp();
+	if (await tableExists('captures')) {
+		await db.runAsync(
+			`UPDATE transactions
+       SET cardLast4 = (
+             SELECT c.cardLast4 FROM captures c
+             WHERE c.cardLast4 IS NOT NULL AND (c.transactionId = transactions.id OR c.id = transactions.installmentGroup)
+             LIMIT 1
+           ),
+           updatedAt = ?, dirty = 1
+       WHERE cardLast4 IS NULL AND EXISTS (
+             SELECT 1 FROM captures c
+             WHERE c.cardLast4 IS NOT NULL AND (c.transactionId = transactions.id OR c.id = transactions.installmentGroup)
+           )`,
+			[timestamp]
+		);
+	}
+
+	const accounts = (await db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE deletedAt IS NULL')).map(convertAccount);
+	for (const plan of planDebitCardConversions(accounts)) {
+		const { card, checking } = plan;
+		await db.withTransactionAsync(async () => {
+			await db.runAsync(
+				`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1
+         WHERE accountId = ? AND deletedAt IS NULL`,
+				[checking.id, card.last4, timestamp, card.id]
+			);
+			if (await tableExists('captures')) {
+				await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [checking.id, card.id]);
+			}
+			await db.runAsync(
+				'UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL',
+				[timestamp, timestamp, card.id, card.id]
+			);
+			if (plan.cardNames !== checking.cardNames) {
+				await db.runAsync('UPDATE accounts SET cardNames = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [plan.cardNames, timestamp, checking.id]);
+			}
+			await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, card.id]);
+		});
+	}
+
+	console.log('Migrated card per purchase');
 };
 
 /**
@@ -915,8 +989,8 @@ export const addTransaction = async (
 		await db.runAsync(
 			`INSERT INTO transactions
          (id, amountCents, category, date, note, isIncome, accountId,
-          installmentGroup, installmentIndex, installmentCount, updatedAt, deletedAt, dirty)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+          installmentGroup, installmentIndex, installmentCount, cardLast4, updatedAt, deletedAt, dirty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
        ON CONFLICT (id) DO NOTHING`,
 			[
 				id,
@@ -929,6 +1003,7 @@ export const addTransaction = async (
 				transaction.installmentGroup ?? null,
 				transaction.installmentIndex ?? null,
 				transaction.installmentCount ?? null,
+				transaction.cardLast4 ?? null,
 				nowTimestamp(),
 			]
 		);
@@ -1097,6 +1172,7 @@ export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
 		closingDaysBefore:
 			isCard && account.closingDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
 		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
+		cardNames: account.cardNames ?? null,
 		packageName: account.packageName ?? null,
 		accountKey: account.accountKey ?? null,
 		sortOrder: account.sortOrder ?? 0,
@@ -1117,6 +1193,7 @@ const accountValues = (account: AccountDraft): Array<string | number | null> => 
 	account.dueDay,
 	account.closingDaysBefore,
 	account.creditLimitCents,
+	account.cardNames,
 	account.packageName,
 	account.accountKey,
 	account.openingBalanceCents,
@@ -1131,9 +1208,9 @@ export const addAccount = async (draft: AccountDraft, explicitId?: string): Prom
 	await db.runAsync(
 		`INSERT INTO accounts
        (name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-        closingDaysBefore, creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
         sortOrder, archived, id, updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[...accountValues(account), id, nowTimestamp()]
 	);
@@ -1146,7 +1223,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE accounts
      SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
-         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, packageName = ?, accountKey = ?,
+         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, packageName = ?, accountKey = ?,
          openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
          updatedAt = ?, dirty = 1
      WHERE id = ?`,
@@ -1175,12 +1252,14 @@ export const deleteAccount = async (id: string): Promise<void> => {
  * cartão de débito cadastrado como cartão: débito sai direto da conta, então o que foi
  * lançado nele pertence à conta.
  */
-export const moveAccountLedger = async (fromId: string, toId: string): Promise<void> => {
+export const moveAccountLedger = async (fromId: string, toId: string, cardLast4: string | null = null): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.withTransactionAsync(async () => {
+		// Lançamento sem final de cartão ganha o do cartão que está saindo: o histórico
+		// continua sabendo que foi aquele cartão.
 		await db.runAsync(
-			'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
-			[toId, timestamp, fromId]
+			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			[toId, cardLast4, timestamp, fromId]
 		);
 		await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
 	});
@@ -1403,6 +1482,15 @@ export const deleteTransfer = async (id: string): Promise<void> => {
  * acompanha, ou ainda não identificada) casa com qualquer coisa. É o que impede o
  * pagamento da fatura de virar duas transferências quando a conta e o cartão avisam.
  */
+/** Nomes dos cartões de uma conta (`cardNames`, JSON). */
+export const setAccountCardNames = async (accountId: string, cardNames: string | null): Promise<void> => {
+	await db.runAsync('UPDATE accounts SET cardNames = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		cardNames,
+		nowTimestamp(),
+		accountId,
+	]);
+};
+
 /** Lápide em todas as transferências que entram ou saem de uma conta. */
 export const deleteTransfersOf = async (accountId: string): Promise<void> => {
 	const timestamp = nowTimestamp();
@@ -2012,6 +2100,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			dueDay: row.dueDay,
 			closingDaysBefore: row.closingDaysBefore ?? null,
 			creditLimitCents: row.creditLimitCents,
+			cardNames: row.cardNames ?? null,
 			packageName: row.packageName,
 			accountKey: row.accountKey,
 			openingBalanceCents: row.openingBalanceCents,
@@ -2032,6 +2121,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			installmentGroup: row.installmentGroup ?? null,
 			installmentIndex: row.installmentIndex ?? null,
 			installmentCount: row.installmentCount ?? null,
+			cardLast4: row.cardLast4 ?? null,
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
@@ -2206,16 +2296,16 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			await db.runAsync(
 				`INSERT INTO accounts
            (id, name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-            closingDaysBefore, creditLimitCents, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
             sortOrder, archived, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, kind = excluded.kind, role = excluded.role,
            envelopeMonthlyCents = excluded.envelopeMonthlyCents, network = excluded.network,
            bankName = excluded.bankName,
            color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
            dueDay = excluded.dueDay, closingDaysBefore = excluded.closingDaysBefore,
-           creditLimitCents = excluded.creditLimitCents,
+           creditLimitCents = excluded.creditLimitCents, cardNames = excluded.cardNames,
            packageName = excluded.packageName, accountKey = excluded.accountKey,
            openingBalanceCents = excluded.openingBalanceCents,
            openingBalanceDate = excluded.openingBalanceDate, sortOrder = excluded.sortOrder,
@@ -2235,6 +2325,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.dueDay,
 					row.closingDaysBefore ?? null,
 					row.creditLimitCents,
+					row.cardNames ?? null,
 					row.packageName,
 					row.accountKey,
 					row.openingBalanceCents,
@@ -2253,13 +2344,14 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			await db.runAsync(
 				`INSERT INTO transactions
            (id, amountCents, category, date, note, isIncome, accountId,
-            installmentGroup, installmentIndex, installmentCount, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            installmentGroup, installmentIndex, installmentCount, cardLast4, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            amountCents = excluded.amountCents, category = excluded.category,
            date = excluded.date, note = excluded.note, isIncome = excluded.isIncome,
            accountId = excluded.accountId, installmentGroup = excluded.installmentGroup,
            installmentIndex = excluded.installmentIndex, installmentCount = excluded.installmentCount,
+           cardLast4 = excluded.cardLast4,
            updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
 				[
 					row.id,
@@ -2272,6 +2364,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.installmentGroup ?? null,
 					row.installmentIndex ?? null,
 					row.installmentCount ?? null,
+					row.cardLast4 ?? null,
 					row.updatedAt,
 					row.deletedAt,
 				]

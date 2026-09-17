@@ -44,6 +44,8 @@ export interface WireTransaction extends WireMeta {
 	installmentGroup?: string | null;
 	installmentIndex?: number | null;
 	installmentCount?: number | null;
+	/** v13; opcional na chegada de um servidor anterior. */
+	cardLast4?: string | null;
 }
 
 export interface WireAccount extends WireMeta {
@@ -63,6 +65,8 @@ export interface WireAccount extends WireMeta {
 	/** v10; opcional na chegada de um servidor anterior. */
 	closingDaysBefore?: number | null;
 	creditLimitCents: number | null;
+	/** v13: nomes dos cartões por final, em JSON. */
+	cardNames?: string | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;

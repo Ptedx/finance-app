@@ -4,8 +4,11 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
+import DebitCardFace from '../components/cards/DebitCardFace';
 import { Button } from '../components/cards/formParts';
 import { useAccounts } from '../contexts/AccountsContext';
+import { usePeriod } from '../contexts/PeriodContext';
+import { getMonthName } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 
 /**
@@ -15,7 +18,8 @@ import { formatCents } from '../utils/money';
 const CardsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, creditCards, cardSummaries, cardsTotals } = useAccounts();
+	const { accounts, creditCards, debitCards, cardSummaries, cardsTotals } = useAccounts();
+	const { selectedMonth } = usePeriod();
 	const archived = accounts.filter((account) => account.kind === 'credit_card' && account.archived);
 
 	return (
@@ -64,6 +68,26 @@ const CardsScreen = () => {
 						onPress={() => router.push({ pathname: '/cards/[id]', params: { id: card.id } })}
 					/>
 				))}
+
+				{debitCards.length > 0 ? (
+					<>
+						<Text style={styles.sectionTitle} accessibilityRole="header">
+							{t('cards.debit.sectionTitle')}
+						</Text>
+						<Text style={styles.empty}>{t('cards.debit.sectionHint')}</Text>
+						{debitCards.map((card, index) => (
+							<DebitCardFace
+								key={card.key}
+								card={card}
+								monthLabel={getMonthName(selectedMonth)}
+								position={{ index, total: debitCards.length }}
+								onPress={() =>
+									router.push({ pathname: '/cards/debit/[accountId]/[last4]', params: { accountId: card.account.id, last4: card.last4 } })
+								}
+							/>
+						))}
+					</>
+				) : null}
 
 				{archived.length > 0 ? (
 					<>

@@ -155,6 +155,8 @@ model Transaction {
   installmentGroup String?
   installmentIndex Int?
   installmentCount Int?
+  /// Final do cartão que fez a compra (v13).
+  cardLast4        String?
   updatedAt   DateTime
   /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
   /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
@@ -240,6 +242,8 @@ model Account {
   dueDay              Int?
   /// Dias entre o fechamento e o vencimento (v10).
   closingDaysBefore   Int?
+  /// Nomes dos cartões da conta por final, JSON (v13).
+  cardNames           String?
   creditLimitCents    BigInt?
   packageName         String?
   accountKey          String?

@@ -12,10 +12,13 @@ import {
 	View,
 	type ViewToken,
 } from 'react-native';
-import { useAccounts } from '../../contexts/AccountsContext';
+import { type DebitCard, useAccounts } from '../../contexts/AccountsContext';
+import { usePeriod } from '../../contexts/PeriodContext';
+import { getMonthName } from '../../utils/dateUtils';
 import type { Account } from '../../database/schema';
 import { formatCents } from '../../utils/money';
 import CardFace from './CardFace';
+import DebitCardFace from './DebitCardFace';
 
 /**
  * "Cartões" na tela inicial: os cartões como na carteira, um ao lado do outro.
@@ -38,17 +41,24 @@ const GAP = 12;
 const PEEK = 28;
 const ACCENT = '#15E8FE';
 
-type Item = { type: 'card'; card: Account } | { type: 'add' };
+type Item = { type: 'card'; card: Account } | { type: 'debit'; card: DebitCard } | { type: 'add' };
 
 const CardsSection: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { width } = useWindowDimensions();
-	const { creditCards, cardSummaries, cardsTotals, isLoading } = useAccounts();
+	const { creditCards, debitCards, cardSummaries, cardsTotals, isLoading } = useAccounts();
+	const { selectedMonth } = usePeriod();
 	const [activeIndex, setActiveIndex] = useState(0);
 
 	const cardWidth = Math.max(260, width - GUTTER * 2 - PEEK);
-	const items: Item[] = [...creditCards.map((card) => ({ type: 'card' as const, card })), { type: 'add' }];
+	// Crédito primeiro (é onde há fatura e prazo), depois os de débito, que só mostram o gasto.
+	const items: Item[] = [
+		...creditCards.map((card) => ({ type: 'card' as const, card })),
+		...debitCards.map((card) => ({ type: 'debit' as const, card })),
+		{ type: 'add' },
+	];
+	const cardCount = creditCards.length + debitCards.length;
 
 	const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
 		const first = viewableItems.find((item) => item.isViewable);
@@ -62,7 +72,7 @@ const CardsSection: React.FC = () => {
 
 	if (isLoading) return null;
 
-	const hasCards = creditCards.length > 0;
+	const hasCards = cardCount > 0;
 
 	return (
 		<View style={styles.section}>
@@ -83,7 +93,7 @@ const CardsSection: React.FC = () => {
 				) : null}
 			</View>
 
-			{hasCards ? (
+			{creditCards.length > 0 ? (
 				<View
 					style={styles.totals}
 					accessible
@@ -123,7 +133,7 @@ const CardsSection: React.FC = () => {
 					<FlatList
 						data={items}
 						horizontal
-						keyExtractor={(item) => (item.type === 'card' ? item.card.id : 'add')}
+						keyExtractor={(item) => (item.type === 'card' ? item.card.id : item.type === 'debit' ? item.card.key : 'add')}
 						showsHorizontalScrollIndicator={false}
 						snapToInterval={cardWidth + GAP}
 						snapToAlignment="start"
@@ -139,8 +149,21 @@ const CardsSection: React.FC = () => {
 									card={item.card}
 									summary={cardSummaries.get(item.card.id)}
 									onPress={() => openCard(item.card)}
-									position={{ index, total: creditCards.length }}
+									position={{ index, total: cardCount }}
 									style={{ width: cardWidth, marginRight: GAP }}
+								/>
+							) : item.type === 'debit' ? (
+								<DebitCardFace
+									card={item.card}
+									monthLabel={getMonthName(selectedMonth)}
+									position={{ index, total: cardCount }}
+									style={{ width: cardWidth, marginRight: GAP }}
+									onPress={() =>
+										router.push({
+											pathname: '/cards/debit/[accountId]/[last4]',
+											params: { accountId: item.card.account.id, last4: item.card.last4 },
+										})
+									}
 								/>
 							) : (
 								<Pressable
@@ -158,7 +181,7 @@ const CardsSection: React.FC = () => {
 					<View style={styles.dots} accessible={false} importantForAccessibility="no-hide-descendants">
 						{items.map((item, index) => (
 							<View
-								key={item.type === 'card' ? item.card.id : 'add'}
+								key={item.type === 'card' ? item.card.id : item.type === 'debit' ? item.card.key : 'add'}
 								style={[styles.dot, index === activeIndex && styles.dotActive]}
 							/>
 						))}

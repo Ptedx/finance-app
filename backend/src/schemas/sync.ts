@@ -69,6 +69,8 @@ export const transactionSchema = z.object({
 	installmentGroup: z.string().min(1).max(64).nullish(),
 	installmentIndex: z.number().int().min(1).max(999).nullish(),
 	installmentCount: z.number().int().min(1).max(999).nullish(),
+	/** v13: final do cartão que fez a compra. */
+	cardLast4: z.string().max(8).nullish(),
 	...syncMeta,
 });
 
@@ -89,6 +91,8 @@ export const accountSchema = z.object({
 	/** v10: dias entre fechamento e vencimento. Opcional para aparelhos anteriores. */
 	closingDaysBefore: z.number().int().min(1).max(20).nullish(),
 	creditLimitCents: amountCents.nullish(),
+	/** v13: nomes dos cartões por final, JSON. */
+	cardNames: z.string().max(4000).nullish(),
 	packageName: z.string().max(200).nullish(),
 	accountKey: z.string().max(200).nullish(),
 	openingBalanceCents: amountCents,
