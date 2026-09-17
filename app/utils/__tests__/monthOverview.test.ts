@@ -80,6 +80,7 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 				fundedCents: 100_000,
 				spentCents: 70_000,
 				monthlyCents: 100_000,
+				costCents: 100_000,
 				targetCents: 100_000,
 				remainingCents: 30_000,
 			},
@@ -229,5 +230,40 @@ describe('envelope: o teto vem do dinheiro que está na conta', () => {
 		expect(
 			envelope({ startBalanceCents: 0, transfersInCents: 100_000, transfersOutCents: 60_000, expenseCents: 0, endBalanceCents: 40_000 })
 		).toMatchObject({ targetCents: 40_000, fundedCents: 40_000, remainingCents: 40_000 });
+	});
+});
+
+describe('envelope é custo fixo do mês', () => {
+	const month = (overrides: Partial<AccountMonthActivity>) =>
+		buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', role: 'main', incomeCents: 0, expenseCents: 0 }),
+				activity({
+					accountId: 'inter',
+					name: 'Inter PF',
+					role: 'envelope',
+					envelopeMonthlyCents: 100_000,
+					...overrides,
+				}),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+
+	it('conta os R$ 1.000 mesmo quando a transferência não foi registrada', () => {
+		// O dinheiro saiu da conta principal para o envelope: é gasto do mês, tenha sido
+		// usado lá dentro ou não.
+		expect(month({ transfersInCents: 0, expenseCents: 84_020, startBalanceCents: 100_000, endBalanceCents: 15_980 })).toMatchObject({
+			envelopeFundingCents: 100_000,
+			totalSpendCents: 100_000,
+			leftoverCents: -100_000,
+		});
+	});
+
+	it('gastar menos no envelope não reduz o custo do mês', () => {
+		expect(month({ transfersInCents: 100_000, expenseCents: 0 }).totalSpendCents).toBe(100_000);
+	});
+
+	it('num mês em que entrou mais que o combinado, vale o que entrou', () => {
+		expect(month({ transfersInCents: 130_000, expenseCents: 0 }).envelopeFundingCents).toBe(130_000);
 	});
 });

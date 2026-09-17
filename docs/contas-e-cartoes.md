@@ -143,6 +143,11 @@ A barra "gastou X de Y" não usa mais o valor combinado como teto fixo:
   (`envelopeMonthlyCents`) ou o que já está na conta, o que for maior — é o caso de quem
   começou a usar o app com o dinheiro do mês já lá.
 - **X** = o que saiu de dentro do envelope no mês; o que sobra é o saldo real da conta.
+- No gasto do mês, o envelope **custa o combinado** (ou o que entrou, se foi mais), menos
+  o que voltou para outras contas suas: o dinheiro sai da principal todo mês, tenha sido
+  gasto lá dentro ou não. Gastar menos não faz o mês custar menos — faz sobrar no envelope.
+- **Reserva fica fora do "Em caixa"**: não é dinheiro para pagar a fatura. Aparece como
+  "Guardado" nos totais das contas, e o fôlego dos relatórios continua contando com ela.
 
 ### Acertar uma conta com o banco
 

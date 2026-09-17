@@ -11,7 +11,6 @@
 
 import type { Account } from '../database/schema';
 
-/** Quanto o cartão deve: o saldo negativo lido ao contrário; um saldo positivo é crédito. */
 /**
  * O lançamento que falta para o gasto do mês numa conta bater com o que o usuário informou.
  *
@@ -38,14 +37,21 @@ export const spendingAdjustment = (
 	return { amountCents: Math.abs(difference), isIncome: difference < 0 };
 };
 
+/** Quanto o cartão deve: o saldo negativo lido ao contrário; um saldo positivo é crédito. */
 export const owedCents = (balanceCents: number): number => Math.max(0, -balanceCents);
 
 export interface AccountsOverview {
-	/** Soma do que não é cartão, sem as arquivadas, mais os lançamentos sem conta. */
+	/**
+	 * O dinheiro disponível para pagar contas: contas que não são cartão nem reserva, mais
+	 * os lançamentos sem conta. A reserva fica de fora de propósito — ela não vai ser usada
+	 * para pagar a fatura, e contá-la aqui faria parecer que sim.
+	 */
 	cashCents: number;
+	/** O que está guardado nas reservas. Dinheiro seu, mas fora do caixa. */
+	savedCents: number;
 	/** Soma do que os cartões devem, sem os arquivados. */
 	cardsOwedCents: number;
-	/** Caixa menos cartões. */
+	/** Caixa menos cartões, sem contar a reserva. */
 	netCents: number;
 }
 
@@ -55,16 +61,18 @@ export const summarizeAccounts = (
 	unassignedNetCents: number
 ): AccountsOverview => {
 	let cashCents = unassignedNetCents;
+	let savedCents = 0;
 	let cardsOwedCents = 0;
 
 	for (const account of accounts) {
 		if (account.archived) continue;
 		const balance = balances.get(account.id) ?? account.openingBalanceCents;
 		if (account.kind === 'credit_card') cardsOwedCents += owedCents(balance);
+		else if (account.role === 'reserve') savedCents += balance;
 		else cashCents += balance;
 	}
 
-	return { cashCents, cardsOwedCents, netCents: cashCents - cardsOwedCents };
+	return { cashCents, savedCents, cardsOwedCents, netCents: cashCents - cardsOwedCents };
 };
 
-export default { owedCents, summarizeAccounts };
+export default { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts };

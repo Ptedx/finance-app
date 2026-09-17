@@ -53,7 +53,9 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 	// Com contas cadastradas, a reserva é o caixa delas (âncoras do banco + movimento),
 	// não a soma cega dos lançamentos; sem contas, o saldo do livro continua valendo.
 	const { activeAccounts, overview } = useAccounts();
-	const liquidCents = activeAccounts.length > 0 ? overview.cashCents : balanceCents;
+	// O fôlego conta com a reserva: ela fica fora do "Em caixa" porque não paga a fatura do
+	// mês, mas é exatamente o dinheiro que sustentaria os custos fixos se a renda parasse.
+	const liquidCents = activeAccounts.length > 0 ? overview.cashCents + overview.savedCents : balanceCents;
 	const { transactions: recurring } = useRecurringTransactions();
 	const { selectedMonth, selectedYear } = usePeriod();
 

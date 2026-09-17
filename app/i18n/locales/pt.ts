@@ -327,6 +327,7 @@ const pt = {
 		unassignedHint: 'Lançamentos sem conta definida',
 		unassignedAction: 'Toque para movê-los para uma conta',
 		afterCards: 'Depois das faturas',
+		saved: 'Guardado (fora do caixa)',
 		groupAccounts: 'Contas',
 		groupCards: 'Cartões',
 		addCard: 'Adicionar cartão de crédito',

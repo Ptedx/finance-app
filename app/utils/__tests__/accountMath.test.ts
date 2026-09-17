@@ -51,6 +51,7 @@ describe('summarizeAccounts', () => {
 		]);
 		expect(summarizeAccounts(accounts, balances, 1500)).toEqual({
 			cashCents: 351500,
+			savedCents: 0,
 			cardsOwedCents: 45000,
 			netCents: 306500,
 		});
@@ -106,5 +107,32 @@ describe('acertar a conta: "já gastei" e "ainda tenho" são o mesmo dinheiro', 
 		// Sair do campo arredonda sem mudar o valor.
 		expect(finaliseAmountInput('845,2')).toBe('845,20');
 		expect(parseAmountToCents(finaliseAmountInput('1.000'))).toBe(100_000);
+	});
+});
+
+describe('reserva fora do "Em caixa"', () => {
+	it('o investimento não entra no caixa nem no depois das faturas, e aparece como guardado', () => {
+		const accounts = [
+			account({ id: 'nu', role: 'main' }),
+			account({ id: 'mp', name: 'Investimentos MP', kind: 'savings', role: 'reserve' }),
+			account({ id: 'card', kind: 'credit_card', role: 'card' }),
+		];
+		const balances = new Map([
+			['nu', 50_000],
+			['mp', 700_000],
+			['card', -380_000],
+		]);
+
+		expect(summarizeAccounts(accounts, balances, 0)).toEqual({
+			cashCents: 50_000,
+			savedCents: 700_000,
+			cardsOwedCents: 380_000,
+			netCents: -330_000,
+		});
+	});
+
+	it('reserva arquivada não conta em lugar nenhum', () => {
+		const accounts = [account({ id: 'mp', kind: 'savings', role: 'reserve', archived: true })];
+		expect(summarizeAccounts(accounts, new Map([['mp', 700_000]]), 0)).toMatchObject({ cashCents: 0, savedCents: 0 });
 	});
 });

@@ -336,6 +336,7 @@ account: {
 		unassignedHint: 'Movimenti senza un conto',
 		unassignedAction: 'Tocca per spostarli in un conto',
 		afterCards: 'Dopo gli estratti',
+		saved: 'Da parte (fuori cassa)',
 		groupAccounts: 'Conti',
 		groupCards: 'Carte',
 		addCard: 'Aggiungi una carta di credito',

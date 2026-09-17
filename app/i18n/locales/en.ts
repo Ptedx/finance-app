@@ -332,6 +332,7 @@ account: {
 		unassignedHint: 'Entries without an account',
 		unassignedAction: 'Tap to move them to an account',
 		afterCards: 'After card bills',
+		saved: 'Saved (not in cash)',
 		groupAccounts: 'Accounts',
 		groupCards: 'Cards',
 		addCard: 'Add a credit card',

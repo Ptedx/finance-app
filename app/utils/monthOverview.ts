@@ -62,6 +62,11 @@ export interface EnvelopeMonth {
 	fundedCents: number;
 	/** O que saiu de dentro do envelope: compras no débito e Pix daqui. */
 	spentCents: number;
+	/**
+	 * O que este envelope custa ao mês: o combinado (ou o que entrou, se foi mais), menos o
+	 * que voltou para outras contas suas. É isto que entra no gasto do mês.
+	 */
+	costCents: number;
 	/** Valor combinado por mês, quando informado. */
 	monthlyCents: number | null;
 	/**
@@ -124,7 +129,12 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				// para a principal pagar a fatura não é gasto do envelope: a fatura já conta no
 				// cartão. Sem descontar, o mesmo dinheiro contava duas vezes.
 				const funded = account.transfersInCents - account.transfersOutCents;
-				envelopeFundingCents += funded;
+				// O envelope custa o combinado todo mês, tenha sido gasto lá dentro ou não: o
+				// dinheiro sai da conta principal e fica lá. Entrou mais que o combinado? Vale o que
+				// entrou. O que voltou para outra conta sua desconta — senão, pagar a fatura com
+				// dinheiro do envelope contaria duas vezes.
+				const cost = Math.max(account.envelopeMonthlyCents ?? 0, account.transfersInCents) - account.transfersOutCents;
+				envelopeFundingCents += cost;
 				const carried = Math.max(0, account.startBalanceCents ?? 0);
 				const monthly = account.envelopeMonthlyCents ?? null;
 				const spent = Math.max(0, account.expenseCents - account.incomeCents);
@@ -137,6 +147,7 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 					accountId: account.accountId,
 					name: account.name,
 					fundedCents: funded,
+					costCents: cost,
 					spentCents: spent,
 					monthlyCents: monthly,
 					targetCents: target,

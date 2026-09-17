@@ -126,7 +126,13 @@ const AccountsOverview: React.FC = () => {
 						<View
 							style={styles.totals}
 							accessible
-							accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
+							accessibilityLabel={[
+								`${t('accounts.cash')} ${formatCents(overview.cashCents)}`,
+								`${t('accounts.afterCards')} ${formatCents(overview.netCents)}`,
+								overview.savedCents > 0 ? `${t('accounts.saved')} ${formatCents(overview.savedCents)}` : null,
+							]
+								.filter(Boolean)
+								.join('. ')}
 						>
 							<View style={styles.total}>
 								<Text style={styles.totalLabel}>{t('accounts.cash')}</Text>
@@ -136,6 +142,12 @@ const AccountsOverview: React.FC = () => {
 								<Text style={styles.totalLabel}>{t('accounts.afterCards')}</Text>
 								<Text style={[styles.totalValue, overview.netCents < 0 && styles.negative]}>{formatCents(overview.netCents)}</Text>
 							</View>
+							{overview.savedCents > 0 ? (
+								<View style={styles.total}>
+									<Text style={styles.totalLabel}>{t('accounts.saved')}</Text>
+									<Text style={styles.totalValue}>{formatCents(overview.savedCents)}</Text>
+								</View>
+							) : null}
 						</View>
 
 						{bankAccounts.map((account) => (
