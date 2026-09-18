@@ -1,5 +1,6 @@
 # Stage 1: Build
-FROM node:20-alpine AS builder
+# Node 22: a CLI do Prisma 7 (@prisma/streams-local) exige >= 22.
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -13,7 +14,9 @@ COPY prisma ./prisma/
 # `prisma generate` e o `migrate deploy` precisam dele — daí ele entrar na imagem.
 COPY prisma.config.ts ./
 
-RUN npm ci
+# O cache do npm some na mesma camada: sem isso ele fica gravado na imagem de build e
+# no cache do BuildKit da VM, que é o que encheu o disco ("ENOSPC" no `npm ci`).
+RUN npm ci --no-audit --no-fund && npm cache clean --force
 RUN npx prisma generate
 
 COPY tsconfig.json ./
@@ -21,8 +24,14 @@ COPY src ./src
 
 RUN npm run build
 
+# Só o que roda em produção vai para a imagem final. `prisma` (o `migrate deploy` do CMD)
+# e `dotenv` (lido por src/lib/env.ts e pelo prisma.config.ts) são dependências de
+# runtime; TypeScript, tsx e os @types ficam para trás. O client gerado pelo
+# `prisma generate` mora em node_modules/.prisma e sobrevive ao prune.
+RUN npm prune --omit=dev && npm cache clean --force
+
 # Stage 2: Production
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
