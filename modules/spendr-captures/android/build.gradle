@@ -1,0 +1,17 @@
+// Módulo local do Expo: o serviço que lê as notificações dos bancos.
+// Mesmo esqueleto dos módulos oficiais do SDK 55 (ver node_modules/expo-sharing).
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.spendrcaptures'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.spendrcaptures"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

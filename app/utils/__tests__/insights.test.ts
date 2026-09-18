@@ -1,9 +1,13 @@
+import { buildHealthIndicators, type HealthInput } from '../healthScore';
 import {
+	buildGoalInsights,
 	buildInsights,
 	computeWealthMetrics,
 	type Insight,
+	mergeInsights,
 	type WealthSnapshot,
 } from '../insights';
+import { buildRetirementReadModel, type RetirementInput } from '../retirement';
 
 const snapshotOf = (overrides: Partial<WealthSnapshot> = {}): WealthSnapshot => ({
 	month: 6,
@@ -185,5 +189,83 @@ describe('buildInsights', () => {
 
 		expect(insights.length).toBeGreaterThan(1);
 		expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+	});
+});
+
+describe('buildGoalInsights', () => {
+	const R = (reais: number) => reais * 100;
+	const retirement = (overrides: Partial<RetirementInput> = {}) =>
+		buildRetirementReadModel({
+			goal: { targetMonthlyCents: R(10_000), reinvestBp: 2_500, expectedYieldBp: 1_000, outsideCapitalCents: 0 },
+			trackedCapitalCents: R(20_000),
+			monthlyContributionCents: R(3_000),
+			realizedYield12mCents: null,
+			averageCapital12mCents: null,
+			asOfMonth: '2026-09',
+			...overrides,
+		});
+	const health = (overrides: Partial<HealthInput> = {}) =>
+		buildHealthIndicators({
+			savingsRateBp: 2_500,
+			neededSavingsRateBp: null,
+			liquidCents: R(30_000),
+			averageMonthlySpendCents: R(5_000),
+			fixedCostBp: 3_000,
+			cardOwedCents: R(1_000),
+			averageMonthlyIncomeCents: R(14_000),
+			limitUsagePercent: 20,
+			currentSpendCents: R(2_500),
+			elapsedBp: 5_000,
+			...overrides,
+		});
+
+	it('sem meta: convida a definir uma', () => {
+		expect(idsOf(buildGoalInsights(null, health(), []))).toEqual(['goal-unset']);
+	});
+
+	it('no ritmo: chega em até 20 anos', () => {
+		const [insight] = buildGoalInsights(retirement(), health(), []);
+		expect(insight).toMatchObject({ id: 'goal-on-track', severity: 'positive' });
+		expect(insight.params.years).toBeDefined();
+		expect(String(insight.params.month)).toMatch(/\d{4}$/);
+	});
+
+	it('devagar demais: diz quanto faltaria por mês para 20 anos', () => {
+		const [insight] = buildGoalInsights(retirement({ monthlyContributionCents: R(100) }), health(), []);
+		expect(insight).toMatchObject({ id: 'goal-needs-more', severity: 'attention', params: { years: 20 } });
+		expect(insight.params.needed).not.toBe('—');
+	});
+
+	it('sem aporte nenhum', () => {
+		expect(idsOf(buildGoalInsights(retirement({ trackedCapitalCents: 0, monthlyContributionCents: 0 }), health(), []))).toEqual(['goal-no-contribution']);
+	});
+
+	it('já chegou', () => {
+		expect(idsOf(buildGoalInsights(retirement({ trackedCapitalCents: R(2_000_000) }), health(), []))).toEqual(['goal-reached']);
+	});
+
+	it('rendimento observado bem abaixo do esperado', () => {
+		const ids = idsOf(buildGoalInsights(retirement({ realizedYield12mCents: R(300), averageCapital12mCents: R(10_000) }), health(), []));
+		expect(ids).toContain('reserve-yield-low');
+		// 6% contra 10% esperados ainda não é metade: silêncio.
+		expect(idsOf(buildGoalInsights(retirement({ realizedYield12mCents: R(600), averageCapital12mCents: R(10_000) }), health(), []))).not.toContain('reserve-yield-low');
+	});
+
+	it('a grade só fala quando está no vermelho', () => {
+		const ids = idsOf(buildGoalInsights(null, health({ cardOwedCents: R(10_000), currentSpendCents: R(5_000) }), []));
+		expect(ids).toEqual(['card-load-heavy', 'spending-above-pace', 'goal-unset']);
+	});
+
+	it('receita repetida vem primeiro, com o valor e as datas', () => {
+		const [insight] = buildGoalInsights(retirement(), health(), [
+			{ amountCents: R(15_000), accountId: 'nu', ids: ['a', 'b'], dates: ['2026-09-20', '2026-09-22'] },
+		]);
+		expect(insight).toMatchObject({ id: 'income-possibly-duplicated', severity: 'critical', params: { first: '2026-09-20', second: '2026-09-22' } });
+	});
+
+	it('mergeInsights ordena por urgência', () => {
+		const merged = mergeInsights(buildGoalInsights(retirement(), health(), []), buildInsights(computeWealthMetrics(snapshotOf())));
+		const order = { critical: 0, attention: 1, positive: 2, neutral: 3 };
+		for (let i = 1; i < merged.length; i += 1) expect(order[merged[i].severity]).toBeGreaterThanOrEqual(order[merged[i - 1].severity]);
 	});
 });

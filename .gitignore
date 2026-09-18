@@ -71,3 +71,11 @@ build.sh
 # Build outputs
 *.apk
 *.aab
+
+# Modulos Expo locais (modules/*/android) sao codigo-fonte, nao a pasta gerada pelo
+# prebuild: a regra "android/" acima os esconderia do git. Re-inclui a pasta e volta a
+# ignorar so o que o Gradle gera dentro dela.
+!modules/*/android/
+modules/*/android/build/
+modules/*/android/.cxx/
+modules/*/android/.gradle/

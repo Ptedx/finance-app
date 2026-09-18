@@ -5,12 +5,15 @@ import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import {
+	accountSchema,
 	budgetSchema,
 	categorySchema,
 	pullQuerySchema,
 	pushBodySchema,
 	recurringTransactionSchema,
+	retirementGoalSchema,
 	transactionSchema,
+	transferSchema,
 } from '../schemas/sync.js';
 
 /**
@@ -20,9 +23,20 @@ import {
  * o ponto de encontro. Quem tem o `updatedAt` mais recente vence, e apagar é escrever
  * `deletedAt` — nunca remover a linha, senão um aparelho que estava offline reenviaria
  * o registro achando que ele é novo.
+ *
+ * Seis coleções: categorias, contas, lançamentos, recorrências, orçamentos e
+ * transferências. Contas e transferências chegaram no v7 do app; um aparelho anterior
+ * simplesmente não as manda nem as lê.
  */
 
-type Collection = 'categories' | 'transactions' | 'recurringTransactions' | 'budgets';
+type Collection =
+	| 'categories'
+	| 'accounts'
+	| 'transactions'
+	| 'recurringTransactions'
+	| 'budgets'
+	| 'transfers'
+	| 'retirementGoals';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -65,12 +79,16 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		take: env.syncPageSize,
 	});
 
-	const [categories, transactions, recurringTransactions, budgets] = await Promise.all([
-		prisma.category.findMany(page(cursor.categories)),
-		prisma.transaction.findMany(page(cursor.transactions)),
-		prisma.recurringTransaction.findMany(page(cursor.recurringTransactions)),
-		prisma.budget.findMany(page(cursor.budgets)),
-	]);
+	const [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals] =
+		await Promise.all([
+			prisma.category.findMany(page(cursor.categories)),
+			prisma.account.findMany(page(cursor.accounts)),
+			prisma.transaction.findMany(page(cursor.transactions)),
+			prisma.recurringTransaction.findMany(page(cursor.recurringTransactions)),
+			prisma.budget.findMany(page(cursor.budgets)),
+			prisma.transfer.findMany(page(cursor.transfers)),
+			prisma.retirementGoal.findMany(page(cursor.retirementGoals)),
+		]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
 	// Cabe num `number` sem perda: o teto de MAX_AMOUNT_CENTS fica bem abaixo de 2^53.
@@ -85,6 +103,30 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
+		accounts: accounts.map((row) => ({
+			id: row.id,
+			name: row.name,
+			kind: row.kind,
+			role: row.role,
+			envelopeMonthlyCents: row.envelopeMonthlyCents === null ? null : Number(row.envelopeMonthlyCents),
+			network: row.network,
+			bankName: row.bankName,
+			color: row.color,
+			last4: row.last4,
+			closingDay: row.closingDay,
+			dueDay: row.dueDay,
+			closingDaysBefore: row.closingDaysBefore,
+			cardNames: row.cardNames,
+			creditLimitCents: row.creditLimitCents === null ? null : Number(row.creditLimitCents),
+			packageName: row.packageName,
+			accountKey: row.accountKey,
+			openingBalanceCents: Number(row.openingBalanceCents),
+			openingBalanceDate: row.openingBalanceDate,
+			sortOrder: row.sortOrder,
+			archived: row.archived,
+			updatedAt: row.updatedAt.toISOString(),
+			deletedAt: iso(row.deletedAt),
+		})),
 		transactions: transactions.map((row) => ({
 			id: row.id,
 			amountCents: Number(row.amountCents),
@@ -92,6 +134,11 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			date: row.date,
 			note: row.note,
 			isIncome: row.isIncome,
+			accountId: row.accountId,
+			installmentGroup: row.installmentGroup,
+			installmentIndex: row.installmentIndex,
+			installmentCount: row.installmentCount,
+			cardLast4: row.cardLast4,
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
@@ -119,6 +166,25 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
+		transfers: transfers.map((row) => ({
+			id: row.id,
+			fromAccountId: row.fromAccountId,
+			toAccountId: row.toAccountId,
+			amountCents: Number(row.amountCents),
+			date: row.date,
+			note: row.note,
+			updatedAt: row.updatedAt.toISOString(),
+			deletedAt: iso(row.deletedAt),
+		})),
+		retirementGoals: retirementGoals.map((row) => ({
+			id: row.id,
+			targetMonthlyCents: Number(row.targetMonthlyCents),
+			reinvestBp: row.reinvestBp,
+			expectedYieldBp: row.expectedYieldBp,
+			outsideCapitalCents: Number(row.outsideCapitalCents),
+			updatedAt: row.updatedAt.toISOString(),
+			deletedAt: iso(row.deletedAt),
+		})),
 	};
 
 	/**
@@ -131,9 +197,12 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 
 	const nextCursor = {
 		categories: advance(categories, cursor.categories),
+		accounts: advance(accounts, cursor.accounts),
 		transactions: advance(transactions, cursor.transactions),
 		recurringTransactions: advance(recurringTransactions, cursor.recurringTransactions),
 		budgets: advance(budgets, cursor.budgets),
+		transfers: advance(transfers, cursor.transfers),
+		retirementGoals: advance(retirementGoals, cursor.retirementGoals),
 	};
 
 	res.json({
@@ -141,7 +210,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		/** O cliente guarda isto e devolve no próximo pull. */
 		cursor: nextCursor,
 		/** Verdadeiro enquanto houver mais para buscar: o cliente repete o pull. */
-		hasMore: [categories, transactions, recurringTransactions, budgets].some(
+		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals].some(
 			(rows) => rows.length === env.syncPageSize
 		),
 		changes,
@@ -213,6 +282,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const rejected: RejectedRow[] = [];
 
 	const categories = partitionRows('categories', changes.categories, categorySchema, rejected);
+	const accounts = partitionRows('accounts', changes.accounts, accountSchema, rejected);
 	const transactions = partitionRows(
 		'transactions',
 		changes.transactions,
@@ -226,6 +296,8 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 		rejected
 	);
 	const budgets = partitionRows('budgets', changes.budgets, budgetSchema, rejected);
+	const transfers = partitionRows('transfers', changes.transfers, transferSchema, rejected);
+	const retirementGoals = partitionRows('retirementGoals', changes.retirementGoals, retirementGoalSchema, rejected);
 
 	let applied = 0;
 
@@ -258,6 +330,57 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				};
 
 				await tx.category.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
+			}
+
+			// --- Contas -------------------------------------------------------------
+			// `accountId` nos lançamentos não é FK nem é verificado: a conta é criada
+			// pelo app na primeira notificação e vem na mesma remessa ou antes; e um
+			// lançamento com conta que o servidor não conhece continua válido — a tela
+			// mostra "sem conta" até ela chegar.
+			for (const row of accounts) {
+				const current = await tx.account.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'accounts', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				// Aparelho anterior ao papel: o padrão pelo tipo, o mesmo que o app aplica.
+				const defaultRole =
+					row.kind === 'credit_card' ? 'card' : row.kind === 'savings' || row.kind === 'investment' ? 'reserve' : 'main';
+				const data = {
+					name: row.name,
+					kind: row.kind,
+					role: row.role ?? defaultRole,
+					envelopeMonthlyCents: row.envelopeMonthlyCents == null ? null : BigInt(row.envelopeMonthlyCents),
+					network: row.network ?? null,
+					bankName: row.bankName ?? null,
+					color: row.color,
+					last4: row.last4 ?? null,
+					closingDay: row.closingDay ?? null,
+					dueDay: row.dueDay ?? null,
+					closingDaysBefore: row.closingDaysBefore ?? null,
+					cardNames: row.cardNames ?? null,
+					creditLimitCents: row.creditLimitCents == null ? null : BigInt(row.creditLimitCents),
+					packageName: row.packageName ?? null,
+					accountKey: row.accountKey ?? null,
+					openingBalanceCents: BigInt(row.openingBalanceCents),
+					openingBalanceDate: row.openingBalanceDate,
+					sortOrder: row.sortOrder,
+					archived: row.archived,
+					updatedAt: new Date(row.updatedAt),
+					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+				};
+
+				await tx.account.upsert({
 					where: { userId_id: { userId, id: row.id } },
 					create: { id: row.id, userId, ...data },
 					update: data,
@@ -314,6 +437,11 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					date: row.date,
 					note: row.note ?? null,
 					isIncome: row.isIncome,
+					accountId: row.accountId ?? null,
+					installmentGroup: row.installmentGroup ?? null,
+					installmentIndex: row.installmentIndex ?? null,
+					installmentCount: row.installmentCount ?? null,
+					cardLast4: row.cardLast4 ?? null,
 					updatedAt: new Date(row.updatedAt),
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
@@ -384,6 +512,65 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				};
 
 				await tx.budget.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
+			}
+
+			// --- Meta de aposentadoria -------------------------------------------
+			for (const row of retirementGoals) {
+				const current = await tx.retirementGoal.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'retirementGoals', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = {
+					targetMonthlyCents: BigInt(row.targetMonthlyCents),
+					reinvestBp: row.reinvestBp,
+					expectedYieldBp: row.expectedYieldBp,
+					outsideCapitalCents: BigInt(row.outsideCapitalCents),
+					updatedAt: new Date(row.updatedAt),
+					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+				};
+
+				await tx.retirementGoal.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
+			}
+
+			// --- Transferências ---------------------------------------------------
+			for (const row of transfers) {
+				const current = await tx.transfer.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'transfers', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = {
+					fromAccountId: row.fromAccountId ?? null,
+					toAccountId: row.toAccountId ?? null,
+					amountCents: BigInt(row.amountCents),
+					date: row.date,
+					note: row.note ?? null,
+					updatedAt: new Date(row.updatedAt),
+					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+				};
+
+				await tx.transfer.upsert({
 					where: { userId_id: { userId, id: row.id } },
 					create: { id: row.id, userId, ...data },
 					update: data,

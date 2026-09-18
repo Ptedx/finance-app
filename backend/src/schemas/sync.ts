@@ -50,7 +50,7 @@ export const categorySchema = z.object({
 	 * Recusar a remessa inteira por um campo que o servidor sabe preencher deixaria esse
 	 * aparelho preso, sem caminho de saída a não ser atualizar o app.
 	 */
-	nature: z.enum(['essential', 'discretionary']).nullish(),
+	nature: z.enum(['essential', 'discretionary', 'passthrough']).nullish(),
 	...syncMeta,
 });
 
@@ -61,6 +61,54 @@ export const transactionSchema = z.object({
 	date: calendarDate,
 	note: z.string().max(2000).nullish(),
 	isIncome: z.boolean(),
+	/**
+	 * Campos do v7 (conta de origem e parcelamento). Opcionais pelo mesmo motivo de
+	 * `nature`: um aparelho anterior a eles continua sincronizando.
+	 */
+	accountId: z.string().min(1).max(64).nullish(),
+	installmentGroup: z.string().min(1).max(64).nullish(),
+	installmentIndex: z.number().int().min(1).max(999).nullish(),
+	installmentCount: z.number().int().min(1).max(999).nullish(),
+	/** v13: final do cartão que fez a compra. */
+	cardLast4: z.string().max(8).nullish(),
+	...syncMeta,
+});
+
+export const accountSchema = z.object({
+	id: z.string().min(1).max(64),
+	name: z.string().min(1).max(100),
+	kind: z.enum(['checking', 'savings', 'investment', 'cash', 'credit_card']),
+	/** v8. Opcional: um aparelho anterior ao papel não o manda; o servidor resolve pelo tipo. */
+	role: z.enum(['main', 'card', 'envelope', 'reserve', 'external']).nullish(),
+	envelopeMonthlyCents: amountCents.nullish(),
+	/** v9: bandeira do cartão. Opcional para aparelhos anteriores. */
+	network: z.enum(['visa', 'mastercard', 'elo', 'amex', 'hipercard']).nullish(),
+	bankName: z.string().max(100).nullish(),
+	color: z.string().min(1).max(32),
+	last4: z.string().max(8).nullish(),
+	closingDay: z.number().int().min(1).max(31).nullish(),
+	dueDay: z.number().int().min(1).max(31).nullish(),
+	/** v10: dias entre fechamento e vencimento. Opcional para aparelhos anteriores. */
+	closingDaysBefore: z.number().int().min(1).max(20).nullish(),
+	creditLimitCents: amountCents.nullish(),
+	/** v13: nomes dos cartões por final, JSON. */
+	cardNames: z.string().max(4000).nullish(),
+	packageName: z.string().max(200).nullish(),
+	accountKey: z.string().max(200).nullish(),
+	openingBalanceCents: amountCents,
+	openingBalanceDate: calendarDate,
+	sortOrder: z.number().int().min(0).max(100000),
+	archived: z.boolean(),
+	...syncMeta,
+});
+
+export const transferSchema = z.object({
+	id: z.string().min(1).max(64),
+	fromAccountId: z.string().min(1).max(64).nullish(),
+	toAccountId: z.string().min(1).max(64).nullish(),
+	amountCents,
+	date: calendarDate,
+	note: z.string().max(2000).nullish(),
 	...syncMeta,
 });
 
@@ -88,6 +136,16 @@ export const budgetSchema = z.object({
 	...syncMeta,
 });
 
+/** A meta de aposentadoria (v14 do app): uma linha por usuário, de id fixo. */
+export const retirementGoalSchema = z.object({
+	id: z.string().min(1).max(64),
+	targetMonthlyCents: amountCents.min(0),
+	reinvestBp: z.number().int().min(0).max(10_000),
+	expectedYieldBp: z.number().int().min(0).max(10_000),
+	outsideCapitalCents: amountCents.min(0),
+	...syncMeta,
+});
+
 /**
  * Corpo do push — só o envelope.
  *
@@ -108,11 +166,22 @@ export const pushBodySchema = z.object({
 	changes: z
 		.object({
 			categories: rows(),
+			accounts: rows(),
 			transactions: rows(),
 			recurringTransactions: rows(),
 			budgets: rows(),
+			transfers: rows(),
+			retirementGoals: rows(),
 		})
-		.default({ categories: [], transactions: [], recurringTransactions: [], budgets: [] }),
+		.default({
+			categories: [],
+			accounts: [],
+			transactions: [],
+			recurringTransactions: [],
+			budgets: [],
+			transfers: [],
+			retirementGoals: [],
+		}),
 });
 
 /**
@@ -131,6 +200,11 @@ export const cursorSchema = z.object({
 	transactions: z.number().int().nonnegative().default(0),
 	recurringTransactions: z.number().int().nonnegative().default(0),
 	budgets: z.number().int().nonnegative().default(0),
+	// Coleções do v7: um cursor guardado antes delas chega sem os campos e parte do zero.
+	accounts: z.number().int().nonnegative().default(0),
+	transfers: z.number().int().nonnegative().default(0),
+	// Coleção do v14, idem.
+	retirementGoals: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -138,6 +212,9 @@ const EMPTY_CURSOR = {
 	transactions: 0,
 	recurringTransactions: 0,
 	budgets: 0,
+	accounts: 0,
+	transfers: 0,
+	retirementGoals: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -159,7 +236,10 @@ export const pullQuerySchema = z.object({
 export type SyncCursor = z.infer<typeof cursorSchema>;
 
 export type CategoryPayload = z.infer<typeof categorySchema>;
+export type AccountPayload = z.infer<typeof accountSchema>;
+export type TransferPayload = z.infer<typeof transferSchema>;
 export type TransactionPayload = z.infer<typeof transactionSchema>;
 export type RecurringTransactionPayload = z.infer<typeof recurringTransactionSchema>;
 export type BudgetPayload = z.infer<typeof budgetSchema>;
+export type RetirementGoalPayload = z.infer<typeof retirementGoalSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

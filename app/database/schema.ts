@@ -11,8 +11,16 @@ export type CategoryType = 'expense' | 'income';
  * e nunca é lida. O padrão é `discretionary` de propósito: classificar um gasto como
  * essencial é uma afirmação do usuário, e assumi-la por ele inflaria as "necessidades" de
  * quem nunca abriu a tela.
+ *
+ * `passthrough` (repasse) é dinheiro que só passou pela conta: entrou como receita e
+ * saiu para quem era de direito. Uma despesa nessa natureza não é gasto — ela desconta
+ * da receita. É o caso de quem recebe R$ 15.000 e repassa R$ 6.000: a renda é R$ 9.000,
+ * e contar os R$ 6.000 como gasto inflaria receita e despesa ao mesmo tempo.
  */
-export type CategoryNature = 'essential' | 'discretionary';
+export type CategoryNature = 'essential' | 'discretionary' | 'passthrough';
+
+/** Todas as naturezas, na ordem em que a tela de categorias as oferece. */
+export const CATEGORY_NATURES: CategoryNature[] = ['essential', 'discretionary', 'passthrough'];
 
 /**
  * Bookkeeping every synchronisable row carries.
@@ -61,6 +69,109 @@ export interface Transaction extends SyncMeta {
 	date: string;
 	note: string;
 	isIncome: boolean;
+	/** A conta ou cartão de onde saiu (ou entrou). Nulo em lançamentos antigos ou sem origem. */
+	accountId: string | null;
+	/**
+	 * Parcela de uma compra parcelada: todas as parcelas compartilham `installmentGroup`,
+	 * `installmentIndex` vai de 1 a `installmentCount`. Nulos numa compra à vista.
+	 */
+	installmentGroup: string | null;
+	installmentIndex: number | null;
+	installmentCount: number | null;
+	/**
+	 * Final do cartão que fez a compra (físico ou virtual, crédito ou débito). A fatura é da
+	 * conta; o cartão é para saber quem gastou. Nulo quando não se sabe.
+	 */
+	cardLast4: string | null;
+}
+
+export type AccountKind = 'checking' | 'savings' | 'investment' | 'cash' | 'credit_card';
+
+/**
+ * O papel da conta na sua vida financeira — é o que decide como o mês é calculado.
+ *
+ * - `main`: onde a renda cai. Pix e débito saindo daqui são gastos do mês.
+ * - `card`: compras contam no mês da compra, parcela a parcela; pagar a fatura é
+ *   transferência, não gasto.
+ * - `envelope`: conta de gastos com valor fixo por mês. O que se manda para ela é o
+ *   gasto do mês; o que acontece lá dentro é detalhe e não soma de novo. A sobra fica
+ *   na conta como recompensa.
+ * - `reserve`: dinheiro guardado. O que entra é poupança, não gasto; rendimento é
+ *   receita de investimento.
+ * - `external`: uma conta que o app conhece mas não acompanha (a PJ, por exemplo):
+ *   o que ela manda para a principal é receita.
+ */
+export type AccountRole = 'main' | 'card' | 'envelope' | 'reserve' | 'external';
+
+/** O papel que uma conta nova recebe pelo tipo, até o usuário dizer o contrário. */
+export const defaultRoleFor = (kind: AccountKind): AccountRole => {
+	if (kind === 'credit_card') return 'card';
+	if (kind === 'savings' || kind === 'investment') return 'reserve';
+	return 'main';
+};
+
+/**
+ * Uma conta ou cartão. É o que dá saldo por conta e fatura por cartão na tela inicial.
+ *
+ * O saldo é calculado, nunca guardado: `openingBalanceCents` é o saldo **no fim de**
+ * `openingBalanceDate` (a âncora), e tudo datado depois soma ou subtrai. Ajustar o
+ * saldo é mover a âncora, não reescrever lançamentos. Num cartão o saldo é negativo
+ * quando há fatura em aberto — a mesma fórmula serve, só a leitura muda.
+ *
+ * `packageName` e `last4` ligam a conta às notificações (app do banco + final do
+ * cartão); `accountKey` liga ao extrato OFX (`banco:conta`). Contas são criadas
+ * sozinhas na primeira notificação ou import de cada origem.
+ */
+export interface Account extends SyncMeta {
+	id: string;
+	name: string;
+	kind: AccountKind;
+	role: AccountRole;
+	/** Quanto entra por mês num envelope, para a barra "gastou X de Y". Só `envelope`. */
+	envelopeMonthlyCents: number | null;
+	bankName: string | null;
+	color: string;
+	last4: string | null;
+	/** Bandeira do cartão (`visa`, `mastercard`, `elo`, `amex`, `hipercard`). Só cartões. */
+	network: string | null;
+	/** Dia do mês em que a fatura fecha. Define o ciclo e o nome da fatura. Só cartões. */
+	closingDay: number | null;
+	/** Informativo: dia do mês em que costuma vencer (fechamento + N). O ciclo não usa. */
+	dueDay: number | null;
+	/**
+	 * Dias entre o fechamento e o vencimento (Nubank: 7). O vencimento real é o fechamento
+	 * mais isso, no próximo dia útil. Só cartões.
+	 */
+	closingDaysBefore: number | null;
+	creditLimitCents: number | null;
+	/**
+	 * Nomes dos cartões desta conta, por final, em JSON (`{"6422": "iFood/99"}`). Numa conta
+	 * de crédito são os cartões físico e virtuais que caem na mesma fatura; numa conta
+	 * corrente, os cartões de débito. Ler e gravar por `utils/cardNames.ts`.
+	 */
+	cardNames: string | null;
+	packageName: string | null;
+	accountKey: string | null;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	sortOrder: number;
+	archived: boolean;
+}
+
+/**
+ * Dinheiro trocando de bolso: entre duas contas suas, ou entre uma conta sua e uma
+ * que o app não acompanha (`null` de um dos lados). Nunca é receita nem despesa, por
+ * isso vive fora de `transactions` — relatórios, exportação e listas não mudam.
+ * Pagar a fatura do cartão é uma transferência da conta para o cartão.
+ */
+export interface Transfer extends SyncMeta {
+	id: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	/** `YYYY-MM-DD`. */
+	date: string;
+	note: string;
 }
 
 export interface RecurringTransaction extends SyncMeta {
@@ -106,15 +217,38 @@ export const DATABASE_NAME = 'spendr.db';
  * 3 — every table gains `updatedAt` / `deletedAt` / `dirty`, so rows can be synced.
  * 4 — budgets move out of AsyncStorage into a table, and `sync_state` is created.
  * 5 — categories gain `nature`, so expenses split into needs and wants.
+ * 6 — `captures` and `merchant_rules` are created: the review inbox for bank
+ *     notifications and what the app has learned about each merchant.
+ * 7 — `accounts` and `transfers` are created; transactions gain `accountId` and the
+ *     installment columns; captures gain `accountId` and `transferId`.
+ * 8 — accounts gain `role` (how the month is computed) and `envelopeMonthlyCents`.
+ * 9 — accounts gain `network` (card brand); cards are normalised so a card is always
+ *     `kind = credit_card` and `role = card`, and nothing else is.
+ * 10 — accounts gain `closingDaysBefore`: the card cycle comes from the due day (moved
+ *     to the next business day) minus that many days, instead of a fixed closing day.
+ * 11 — the cycle is anchored on the closing day again (the bank's invoice is named by
+ *     the month it closes in); `closingDaysBefore` is the gap to the due date. Cards
+ *     saved with only a due day get the closing day derived from it.
+ * 12 — no column changes: card purchases filed by the old notification rules (one card
+ *     per virtual card number, "Compra aprovada" on the checking account) are moved to
+ *     the real card.
+ * 13 — transactions gain `cardLast4` (which physical/virtual/debit card made the purchase,
+ *     backfilled from captures); accounts gain `cardNames`. A "card" whose name says
+ *     debit becomes a debit card of its bank's checking account.
+ * 14 — `retirement_goals` is created (the financial-independence goal, one synced row).
+ *     Categories gain the `passthrough` nature (no column change).
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 14;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
 	'categories',
+	'accounts',
 	'transactions',
 	'recurring_transactions',
 	'budgets',
+	'transfers',
+	'retirement_goals',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -180,8 +314,78 @@ export const CREATE_TRANSACTIONS_TABLE = `
     date TEXT NOT NULL,
     note TEXT,
     isIncome INTEGER NOT NULL DEFAULT 0,
+    accountId TEXT,
+    installmentGroup TEXT,
+    installmentIndex INTEGER,
+    installmentCount INTEGER,
+    cardLast4 TEXT,
 ${SYNC_COLUMNS_SQL},
     FOREIGN KEY (category) REFERENCES categories (id)
+  );
+`;
+
+/** Colunas que o v7 acrescenta em `transactions`; a migração adiciona uma a uma. */
+export const TRANSACTION_V7_COLUMNS: Array<[name: string, sql: string]> = [
+	['accountId', 'TEXT'],
+	['installmentGroup', 'TEXT'],
+	['installmentIndex', 'INTEGER'],
+	['installmentCount', 'INTEGER'],
+];
+
+export const CREATE_ACCOUNTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'checking',
+    role TEXT NOT NULL DEFAULT 'main',
+    envelopeMonthlyCents INTEGER,
+    network TEXT,
+    bankName TEXT,
+    color TEXT NOT NULL DEFAULT '#15E8FE',
+    last4 TEXT,
+    closingDay INTEGER,
+    dueDay INTEGER,
+    closingDaysBefore INTEGER,
+    creditLimitCents INTEGER,
+    cardNames TEXT,
+    packageName TEXT,
+    accountKey TEXT,
+    openingBalanceCents INTEGER NOT NULL DEFAULT 0,
+    openingBalanceDate TEXT NOT NULL,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/** Colunas que o v8 acrescenta em `accounts`. */
+export const ACCOUNT_V8_COLUMNS: Array<[name: string, sql: string]> = [
+	['role', "TEXT NOT NULL DEFAULT 'main'"],
+	['envelopeMonthlyCents', 'INTEGER'],
+];
+
+/** Colunas que o v9 acrescenta em `accounts`. */
+export const ACCOUNT_V9_COLUMNS: Array<[name: string, sql: string]> = [['network', 'TEXT']];
+
+/** Colunas que o v10 acrescenta em `accounts`. */
+export const ACCOUNT_V10_COLUMNS: Array<[name: string, sql: string]> = [['closingDaysBefore', 'INTEGER']];
+
+/** Colunas que o v13 acrescenta. */
+export const TRANSACTION_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardLast4', 'TEXT']];
+export const ACCOUNT_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardNames', 'TEXT']];
+
+/** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
+export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
+
+export const CREATE_TRANSFERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS transfers (
+    id TEXT PRIMARY KEY NOT NULL,
+    fromAccountId TEXT,
+    toAccountId TEXT,
+    amountCents INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    note TEXT,
+${SYNC_COLUMNS_SQL}
   );
 `;
 
@@ -220,6 +424,39 @@ ${SYNC_COLUMNS_SQL}
 `;
 
 /**
+ * A meta de aposentadoria: uma linha por usuário, com id fixo.
+ *
+ * O id fixo é o que torna a sincronização trivial: dois aparelhos editando a meta
+ * disputam a mesma linha e o "última escrita vence" do sync resolve sozinho, sem
+ * índice parcial nem deduplicação. Limpar a meta é uma lápide; definir de novo
+ * ressuscita a mesma linha.
+ */
+export const RETIREMENT_GOAL_ID = 'retirement';
+
+export interface RetirementGoalRow extends SyncMeta {
+	id: string;
+	/** A renda passiva desejada por mês, líquida. */
+	targetMonthlyCents: number;
+	/** Margem reinvestida sobre a renda desejada, em pontos-base (2.500 = +25%). */
+	reinvestBp: number;
+	/** Rentabilidade esperada ao ano, em pontos-base (1.000 = 10%). */
+	expectedYieldBp: number;
+	/** Investimentos que o app não acompanha. */
+	outsideCapitalCents: number;
+}
+
+export const CREATE_RETIREMENT_GOALS_TABLE = `
+  CREATE TABLE IF NOT EXISTS retirement_goals (
+    id TEXT PRIMARY KEY NOT NULL,
+    targetMonthlyCents INTEGER NOT NULL,
+    reinvestBp INTEGER NOT NULL DEFAULT 2500,
+    expectedYieldBp INTEGER NOT NULL DEFAULT 1000,
+    outsideCapitalCents INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
  * `sync_state` holds the pull cursor. It is a table rather than an AsyncStorage key so
  * that advancing the cursor and applying the rows it covers happen in one SQLite
  * transaction — a cursor saved without its data would silently skip those changes forever.
@@ -232,10 +469,122 @@ export const CREATE_SYNC_STATE_TABLE = `
 `;
 
 /**
+ * A notificação de banco capturada e o que o app decidiu sobre ela.
+ *
+ * **Local, nunca sincronizada.** O que sobe para o servidor é a transação que o
+ * usuário confirma; a caixa de entrada é o rascunho de cada aparelho. O texto bruto
+ * (`title`, `text`) fica guardado de propósito: se o parser errar, dá para corrigir a
+ * regra e reprocessar sem ter perdido nada.
+ *
+ * `status`: pending (a revisar), confirmed (virou transação), dismissed (o usuário
+ * descartou), duplicate (era o mesmo aviso de outro app), transfer (troca de bolso
+ * entre contas próprias), ignored (fatura paga, aplicação, regra de ignorar).
+ * `question`: quando pendente, a pergunta que o item faz — duplicate ou transfer —
+ * sempre apontando para `relatedId`.
+ */
+export interface Capture {
+	id: string;
+	fingerprint: string;
+	packageName: string;
+	appLabel: string;
+	title: string;
+	text: string;
+	/** Instante ISO 8601 em que a notificação foi publicada. */
+	postedAt: string;
+	amountCents: number;
+	direction: 'in' | 'out';
+	kind: string;
+	counterparty: string | null;
+	merchantKey: string | null;
+	cardLast4: string | null;
+	status: 'pending' | 'confirmed' | 'dismissed' | 'duplicate' | 'transfer' | 'ignored';
+	question: 'duplicate' | 'transfer' | null;
+	relatedId: string | null;
+	suggestedCategory: string | null;
+	transactionId: string | null;
+	autoConfirmed: boolean;
+	/** Por que saiu do jogo (own_name, rule, invoice_payment, investment…), para o histórico. */
+	reason: string | null;
+	/** A conta ou cartão de origem, resolvida pela fonte (app + final do cartão, ou conta do OFX). */
+	accountId: string | null;
+	/** A transferência criada quando o item é troca de bolso ou pagamento de fatura. */
+	transferId: string | null;
+	/** Quantas parcelas, quando a compra é parcelada. Nulo à vista. */
+	installments: number | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Colunas que o v7 acrescenta em `captures`. */
+export const CAPTURE_V7_COLUMNS: Array<[name: string, sql: string]> = [
+	['accountId', 'TEXT'],
+	['transferId', 'TEXT'],
+	['installments', 'INTEGER'],
+];
+
+/**
+ * O que o app aprendeu sobre um estabelecimento ou pessoa (`merchantKey`, ver
+ * `merchantKeyOf`). Também local: é um hábito deste usuário neste aparelho.
+ */
+export interface MerchantRule {
+	merchantKey: string;
+	categoryId: string | null;
+	treatAs: 'transaction' | 'transfer' | 'ignore';
+	confirmations: number;
+	updatedAt: string;
+}
+
+export const CREATE_CAPTURES_TABLE = `
+  CREATE TABLE IF NOT EXISTS captures (
+    id TEXT PRIMARY KEY NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE,
+    packageName TEXT NOT NULL,
+    appLabel TEXT NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    postedAt TEXT NOT NULL,
+    amountCents INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    counterparty TEXT,
+    merchantKey TEXT,
+    cardLast4 TEXT,
+    status TEXT NOT NULL,
+    question TEXT,
+    relatedId TEXT,
+    suggestedCategory TEXT,
+    transactionId TEXT,
+    autoConfirmed INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    accountId TEXT,
+    transferId TEXT,
+    installments INTEGER,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  );
+`;
+
+export const CREATE_MERCHANT_RULES_TABLE = `
+  CREATE TABLE IF NOT EXISTS merchant_rules (
+    merchantKey TEXT PRIMARY KEY NOT NULL,
+    categoryId TEXT,
+    treatAs TEXT NOT NULL DEFAULT 'transaction',
+    confirmations INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT NOT NULL
+  );
+`;
+
+/**
  * Queries filter by date range constantly; without these they are full scans.
  * The `dirty` indexes keep the push's "what changed?" scan off the full table.
  */
 export const CREATE_INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status, postedAt);
+  CREATE INDEX IF NOT EXISTS idx_captures_posted ON captures (postedAt);
+  CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (accountId, date);
+  CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers (date);
+  CREATE INDEX IF NOT EXISTS idx_accounts_dirty ON accounts (dirty);
+  CREATE INDEX IF NOT EXISTS idx_transfers_dirty ON transfers (dirty);
   CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
   CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions (category);
   CREATE INDEX IF NOT EXISTS idx_recurring_next_due ON recurring_transactions (active, nextDue);
@@ -243,6 +592,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_transactions_dirty ON transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_recurring_dirty ON recurring_transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_budgets_dirty ON budgets (dirty);
+  CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -255,7 +605,16 @@ export const CREATE_INDEXES = `
  * last-write-wins comparison.
  */
 export type CategoryDraft = Omit<Category, 'id' | keyof SyncMeta>;
-export type TransactionDraft = Omit<Transaction, 'id' | keyof SyncMeta>;
+
+/** Campos do v7 que um lançamento pode não ter: à vista, sem conta conhecida. */
+type OptionalTransactionFields = 'accountId' | 'installmentGroup' | 'installmentIndex' | 'installmentCount' | 'cardLast4';
+export type TransactionDraft = Omit<Transaction, 'id' | keyof SyncMeta | OptionalTransactionFields> &
+	Partial<Pick<Transaction, OptionalTransactionFields>>;
+
+export type AccountDraft = Omit<Account, 'id' | keyof SyncMeta>;
+export type AccountEdit = AccountDraft & { id: string };
+export type TransferDraft = Omit<Transfer, 'id' | keyof SyncMeta>;
+export type TransferEdit = TransferDraft & { id: string };
 export type RecurringTransactionDraft = Omit<
 	RecurringTransaction,
 	'id' | 'lastProcessed' | 'nextDue' | keyof SyncMeta
@@ -346,6 +705,17 @@ export const DEFAULT_CATEGORIES: CategorySeed[] = [
 		nature: 'discretionary',
 	},
 
+	// Money that only passed through: received on behalf of someone else and sent on.
+	// Expenses here reduce income instead of counting as spending.
+	{
+		id: 'passthrough',
+		name: 'Pass-through',
+		color: '#8A8A8A',
+		icon: 'swap-horizontal',
+		type: 'expense',
+		nature: 'passthrough',
+	},
+
 	// Income categories. These ids were referenced throughout the app but had never
 	// actually been seeded, so the income category list was always empty. `nature` is
 	// carried for uniformity and never read on this side of the ledger.
@@ -421,6 +791,11 @@ export default {
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_BUDGETS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
+	CREATE_CAPTURES_TABLE,
+	CREATE_MERCHANT_RULES_TABLE,
+	CREATE_ACCOUNTS_TABLE,
+	CREATE_TRANSFERS_TABLE,
 	CREATE_INDEXES,
+	CREATE_RETIREMENT_GOALS_TABLE,
 	DEFAULT_CATEGORIES,
 };

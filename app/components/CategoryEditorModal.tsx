@@ -11,12 +11,15 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
-import type {
-	Category,
-	CategoryDraft,
-	CategoryNature,
-	CategoryType,
-} from '../database/schema';
+import { CATEGORY_NATURES, type Category, type CategoryDraft, type CategoryNature, type CategoryType } from '../database/schema';
+
+/** Rótulo de cada natureza, na tela. */
+const NATURE_LABEL: Record<CategoryNature, string> = {
+	essential: 'Essential',
+	discretionary: 'Discretionary',
+	passthrough: 'Pass-through',
+};
+
 
 interface CategoryEditorModalProps {
 	isVisible: boolean;
@@ -167,7 +170,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 						<View style={styles.sectionContainer}>
 							<Text style={styles.label}>Nature</Text>
 							<View style={styles.typeRow}>
-								{(['essential', 'discretionary'] as CategoryNature[]).map((option) => (
+								{CATEGORY_NATURES.map((option) => (
 									<TouchableOpacity
 										key={option}
 										style={[styles.typeOption, nature === option && styles.selectedTypeOption]}
@@ -179,14 +182,15 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 												nature === option && styles.selectedTypeOptionText,
 											]}
 										>
-											{option === 'essential' ? 'Essential' : 'Discretionary'}
+											{NATURE_LABEL[option]}
 										</Text>
 									</TouchableOpacity>
 								))}
 							</View>
 							<Text style={styles.helperText}>
 								Essentials are what you have to pay to live; the rest is a choice. This is what
-								splits your spending into needs and wants.
+								splits your spending into needs and wants. Pass-through is money that only
+								passed by you: it comes off your income instead of counting as spending.
 							</Text>
 						</View>
 					)}

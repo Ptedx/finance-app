@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
 	getPeriodSummary,
@@ -49,6 +50,12 @@ export interface WealthMetricsResult {
 
 export const useWealthMetrics = (): WealthMetricsResult => {
 	const { periodTotals, balanceCents, monthlyData, categoryTotals, categories } = useTransactions();
+	// Com contas cadastradas, a reserva é o caixa delas (âncoras do banco + movimento),
+	// não a soma cega dos lançamentos; sem contas, o saldo do livro continua valendo.
+	const { activeAccounts, overview } = useAccounts();
+	// O fôlego conta com a reserva: ela fica fora do "Em caixa" porque não paga a fatura do
+	// mês, mas é exatamente o dinheiro que sustentaria os custos fixos se a renda parasse.
+	const liquidCents = activeAccounts.length > 0 ? overview.cashCents + overview.savedCents : balanceCents;
 	const { transactions: recurring } = useRecurringTransactions();
 	const { selectedMonth, selectedYear } = usePeriod();
 
@@ -96,9 +103,12 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 
 		return categoryTotals.expenses.reduce<ExpenseTotalsByNature>(
 			(split, total) => {
+				const nature = natureById.get(total.categoryId);
+				// Repasse não é necessidade nem desejo: nem chegou a ser gasto.
+				if (nature === 'passthrough') return split;
 				// Categoria desconhecida — apagada, por exemplo — conta como supérflua, o
 				// mesmo padrão da coluna: uma despesa não classificada não vira necessidade.
-				if (natureById.get(total.categoryId) === 'essential') {
+				if (nature === 'essential') {
 					split.essentialCents += total.totalCents;
 				} else {
 					split.discretionaryCents += total.totalCents;
@@ -122,7 +132,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			month: selectedYear === getCurrentYear() ? selectedMonth : 12,
 			periodTotals,
 			previousPeriodTotals: previous?.totals ?? null,
-			liquidCents: balanceCents,
+			liquidCents,
 			recurring,
 			expenseTotalsByNature,
 			categoryTotals: categoryTotals.expenses,
@@ -136,7 +146,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			selectedYear,
 			periodTotals,
 			previous,
-			balanceCents,
+			liquidCents,
 			recurring,
 			expenseTotalsByNature,
 			categoryTotals.expenses,

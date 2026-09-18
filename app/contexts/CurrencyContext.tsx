@@ -3,7 +3,9 @@ import { getLocales } from 'expo-localization';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
+import i18n, { appLanguage } from '../i18n';
 import { configureDateLocale } from '../utils/dateUtils';
+import { resolveFormatLocale } from '../utils/locale';
 import { configureMoney } from '../utils/money';
 import { STORAGE_KEYS } from '../utils/storageUtils';
 
@@ -46,12 +48,15 @@ const detectDeviceCurrency = (): Currency => {
 	}
 };
 
-/** The device's language tag, which drives number and date formatting. */
-const detectDeviceLocale = (): string => {
+/**
+ * O locale de números e datas: o idioma do app com a região do aparelho quando combina.
+ * Um aparelho em português sempre vê "R$ 1.234,50" e "22/07", mesmo com região dos EUA.
+ */
+const detectFormatLocale = (): string => {
 	try {
-		return getLocales()[0]?.languageTag ?? 'en-US';
+		return resolveFormatLocale(getLocales()[0]?.languageTag, i18n.language || appLanguage);
 	} catch {
-		return 'en-US';
+		return resolveFormatLocale(null, i18n.language || appLanguage);
 	}
 };
 
@@ -78,9 +83,9 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		const loadCurrency = async () => {
 			// Number and date formatting follow the device, so a Brazilian phone sees
 			// "R$ 1.234,50" and "22 de julho" rather than the hardcoded en-US shapes.
-			const deviceLocale = detectDeviceLocale();
-			configureMoney({ locale: deviceLocale });
-			configureDateLocale(deviceLocale);
+			const formatLocale = detectFormatLocale();
+			configureMoney({ locale: formatLocale });
+			configureDateLocale(formatLocale);
 
 			try {
 				const savedCurrency = await AsyncStorage.getItem(STORAGE_KEYS.selectedCurrency);

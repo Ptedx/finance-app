@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -12,7 +13,8 @@ import { formatFullDate } from '../utils/dateUtils';
 export default function TransactionDetailScreen() {
 	const { id } = useLocalSearchParams();
 	const router = useRouter();
-	const { transactions, categories, removeTransaction } = useTransactions();
+	const { t } = useTranslation();
+	const { transactions, categories, removeTransaction, removeInstallmentGroup } = useTransactions();
 	const [transaction, setTransaction] = useState<Transaction | null>(null);
 	// biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
 	const [category, setCategory] = useState<any>(null);
@@ -46,23 +48,33 @@ export default function TransactionDetailScreen() {
 	const handleDelete = () => {
 		if (!transaction) return;
 
+		const run = (action: () => Promise<void>) => async () => {
+			try {
+				await action();
+				router.back();
+			} catch (error) {
+				console.error('Failed to delete transaction:', error);
+			}
+		};
+
+		// Parcela: apagar só uma deixa as outras inflando as faturas futuras. As duas opções
+		// ficam explícitas.
+		const group = transaction.installmentGroup;
+		if (group) {
+			Alert.alert(t('transactionDelete.installmentTitle'), t('transactionDelete.installmentBody', { count: transaction.installmentCount ?? 0 }), [
+				{ text: t('transactionDelete.cancel'), style: 'cancel' },
+				{ text: t('transactionDelete.onlyThis'), onPress: run(() => removeTransaction(transaction.id)) },
+				{ text: t('transactionDelete.allInstallments'), style: 'destructive', onPress: run(() => removeInstallmentGroup(group)) },
+			]);
+			return;
+		}
+
 		Alert.alert(
-			transaction.isIncome ? 'Delete Income' : 'Delete Expense',
-			`Are you sure you want to delete this ${transaction.isIncome ? 'income' : 'expense'}? This action cannot be undone.`,
+			transaction.isIncome ? t('transactionDelete.incomeTitle') : t('transactionDelete.expenseTitle'),
+			t('transactionDelete.body'),
 			[
-				{ text: 'Cancel', style: 'cancel' },
-				{
-					text: 'Delete',
-					style: 'destructive',
-					onPress: async () => {
-						try {
-							await removeTransaction(transaction.id);
-							router.back();
-						} catch (error) {
-							console.error('Failed to delete transaction:', error);
-						}
-					},
-				},
+				{ text: t('transactionDelete.cancel'), style: 'cancel' },
+				{ text: t('transactionDelete.confirm'), style: 'destructive', onPress: run(() => removeTransaction(transaction.id)) },
 			]
 		);
 	};

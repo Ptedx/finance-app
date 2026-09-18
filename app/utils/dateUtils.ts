@@ -10,10 +10,19 @@
  * in local time, and `toISOString()` is never used to derive one.
  */
 
-let locale = 'en-US';
+import { languageOf, monthLong, monthShort } from './locale';
+
+const holder = globalThis as { __spendrDateLocale?: string };
+
+/**
+ * Guardado também no objeto global: quando só este módulo é recarregado (Fast Refresh,
+ * atualização do JS), ele volta com o locale já configurado em vez de cair no inglês.
+ */
+let locale = holder.__spendrDateLocale ?? 'en-US';
 
 export const configureDateLocale = (nextLocale: string): void => {
 	locale = nextLocale;
+	holder.__spendrDateLocale = nextLocale;
 };
 
 /** Parses a `YYYY-MM-DD` string as local midnight, not UTC midnight. */
@@ -50,18 +59,51 @@ export const todayISO = (): string => getISODate(new Date());
  */
 export const nowTimestamp = (): string => new Date().toISOString();
 
-export const formatDate = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, {
-		month: 'short',
-		day: 'numeric',
-	});
+/**
+ * Datas por tabela, não por `Intl`: o formato fica igual em qualquer motor JS e em
+ * qualquer região do aparelho. Português e italiano escrevem dia antes do mês.
+ */
+const parts = (dateString: string): { year: number; month: number; day: number } => {
+	const date = parseISODate(dateString);
+	return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
+};
 
-export const formatFullDate = (dateString: string): string =>
-	parseISODate(dateString).toLocaleDateString(locale, {
-		year: 'numeric',
-		month: 'long',
-		day: 'numeric',
-	});
+const two = (value: number): string => String(value).padStart(2, '0');
+
+/** '16 set' no pt-BR, 'Sep 16' no en-US. */
+export const formatDate = (dateString: string): string => {
+	const { month, day } = parts(dateString);
+	const language = languageOf(locale);
+	return language === 'en' ? `${monthShort(language, month)} ${day}` : `${day} ${monthShort(language, month)}`;
+};
+
+/** '16/09' no pt-BR, '09/16' no en-US: dia e mês com dois dígitos, na ordem do idioma. */
+export const formatDayMonth = (dateString: string): string => {
+	const { month, day } = parts(dateString);
+	return languageOf(locale) === 'en' ? `${two(month)}/${two(day)}` : `${two(day)}/${two(month)}`;
+};
+
+/** '16/09/2026' no pt-BR. */
+export const formatShortDate = (dateString: string): string => {
+	const { year } = parts(dateString);
+	return `${formatDayMonth(dateString)}/${year}`;
+};
+
+/** Nome do mês por extenso ('setembro'). */
+export const formatMonthLong = (dateString: string): string => monthLong(languageOf(locale), parts(dateString).month);
+
+/** Mês abreviado ('set'), para rótulos curtos como as abas de fatura. */
+export const formatMonthShort = (dateString: string): string => monthShort(languageOf(locale), parts(dateString).month);
+
+/** '16 de setembro de 2026', 'September 16, 2026', '16 settembre 2026'. */
+export const formatFullDate = (dateString: string): string => {
+	const { year, month, day } = parts(dateString);
+	const language = languageOf(locale);
+	const name = monthLong(language, month);
+	if (language === 'pt') return `${day} de ${name} de ${year}`;
+	if (language === 'it') return `${day} ${name} ${year}`;
+	return `${name} ${day}, ${year}`;
+};
 
 /** Number of days in a month. `month` is 1-12. */
 export const lastDayOfMonth = (year: number, month: number): number =>
@@ -116,8 +158,31 @@ export const getMonthRange = (
 	endDate: getISODate(new Date(year, month, 0)),
 });
 
-export const getMonthName = (month: number): string =>
-	new Date(2000, month - 1, 1).toLocaleString(locale, { month: 'long' });
+export const getMonthName = (month: number): string => monthLong(languageOf(locale), month);
+
+/**
+ * Chave de mês (`YYYY-MM`) de uma data ISO. É a mesma chave que nomeia a fatura do
+ * cartão e agrupa as séries dos relatórios.
+ */
+export const monthKeyOf = (dateString: string): string => dateString.slice(0, 7);
+
+/** Anda `delta` meses (negativo volta) numa chave `YYYY-MM`, atravessando o ano. */
+export const shiftMonthKey = (key: string, delta: number): string => {
+	const [year, month] = key.split('-').map(Number);
+	const index = year * 12 + (month - 1) + delta;
+	const nextYear = Math.floor(index / 12);
+	const nextMonth = ((index % 12) + 12) % 12;
+	return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`;
+};
+
+/** Primeiro e último dia do mês de uma chave `YYYY-MM`. */
+export const monthKeyRange = (key: string): { startDate: string; endDate: string } => {
+	const [year, month] = key.split('-').map(Number);
+	return getMonthRange(month, year);
+};
+
+/** Nome do mês de uma chave `YYYY-MM`, no idioma do app. */
+export const monthKeyName = (key: string): string => getMonthName(Number(key.slice(5, 7)));
 
 export const getCurrentMonthName = (): string =>
 	getMonthName(new Date().getMonth() + 1).toUpperCase();
@@ -139,6 +204,10 @@ export default {
 	addYearsClamped,
 	getCurrentMonthRange,
 	getMonthRange,
+	monthKeyOf,
+	shiftMonthKey,
+	monthKeyRange,
+	monthKeyName,
 	getMonthName,
 	getCurrentMonthName,
 	getCurrentYear,

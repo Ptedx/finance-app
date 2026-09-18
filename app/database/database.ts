@@ -1,3 +1,5 @@
+import { planDebitCardConversions } from '../utils/cardNames';
+import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
@@ -13,14 +15,18 @@ import {
 import { STORAGE_KEYS } from '../utils/storageUtils';
 import {
 	type Budget,
+	type Capture,
 	type Category,
 	type CategoryDraft,
 	type CategoryEdit,
 	type CategoryType,
 	CREATE_BUDGETS_TABLE,
+	CREATE_CAPTURES_TABLE,
 	CREATE_CATEGORIES_TABLE,
 	CREATE_INDEXES,
+	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
+	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
@@ -30,16 +36,39 @@ import {
 	type RecurringTransaction,
 	type RecurringTransactionDraft,
 	type RecurringTransactionEdit,
+	RETIREMENT_GOAL_ID,
+	type RetirementGoalRow,
 	SCHEMA_VERSION,
 	SYNCED_TABLES,
 	type SyncedTable,
 	type Transaction,
 	type TransactionDraft,
 	type TransactionEdit,
+	type Account,
+	type AccountDraft,
+	type AccountEdit,
+	type Transfer,
+	type TransferDraft,
+	type TransferEdit,
+	ACCOUNT_V8_COLUMNS,
+	ACCOUNT_V9_COLUMNS,
+	ACCOUNT_V10_COLUMNS,
+	ACCOUNT_V13_COLUMNS,
+	TRANSACTION_V13_COLUMNS,
+	DEFAULT_CLOSING_DAYS_BEFORE,
+	defaultRoleFor,
+	CAPTURE_V7_COLUMNS,
+	CREATE_ACCOUNTS_TABLE,
+	CREATE_TRANSFERS_TABLE,
+	TRANSACTION_V7_COLUMNS,
 } from './schema';
 import type { SyncChanges } from '../sync/types';
 
-const db = SQLite.openDatabaseSync(DATABASE_NAME);
+/**
+ * O único handle do banco. Exportado para módulos irmãos (`captures.ts`) que têm suas
+ * próprias tabelas; telas e contexts continuam passando pelas funções deste arquivo.
+ */
+export const db = SQLite.openDatabaseSync(DATABASE_NAME);
 
 interface SyncColumnsDB {
 	updatedAt: string;
@@ -54,6 +83,43 @@ interface TransactionDB extends SyncColumnsDB {
 	date: string;
 	note: string;
 	isIncome: number;
+	accountId: string | null;
+	installmentGroup: string | null;
+	installmentIndex: number | null;
+	installmentCount: number | null;
+	cardLast4: string | null;
+}
+
+interface AccountDB extends SyncColumnsDB {
+	id: string;
+	name: string;
+	kind: Account['kind'];
+	role: Account['role'];
+	envelopeMonthlyCents: number | null;
+	network: string | null;
+	bankName: string | null;
+	color: string;
+	last4: string | null;
+	closingDay: number | null;
+	dueDay: number | null;
+	closingDaysBefore: number | null;
+	creditLimitCents: number | null;
+	cardNames: string | null;
+	packageName: string | null;
+	accountKey: string | null;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	sortOrder: number;
+	archived: number;
+}
+
+interface TransferDB extends SyncColumnsDB {
+	id: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	date: string;
+	note: string | null;
 }
 
 interface RecurringTransactionDB extends SyncColumnsDB {
@@ -78,6 +144,14 @@ interface BudgetDB extends SyncColumnsDB {
 	amountCents: number;
 }
 
+interface RetirementGoalDB extends SyncColumnsDB {
+	id: string;
+	targetMonthlyCents: number;
+	reinvestBp: number;
+	expectedYieldBp: number;
+	outsideCapitalCents: number;
+}
+
 /** Sync bookkeeping as the app sees it: `dirty` stays on the row, `deletedAt` unwraps. */
 const convertSyncMeta = (row: SyncColumnsDB) => ({
 	updatedAt: row.updatedAt,
@@ -91,7 +165,46 @@ const convertTransaction = (transaction: TransactionDB): Transaction => ({
 	date: transaction.date,
 	note: transaction.note,
 	isIncome: Boolean(transaction.isIncome),
+	accountId: transaction.accountId ?? null,
+	installmentGroup: transaction.installmentGroup ?? null,
+	installmentIndex: transaction.installmentIndex ?? null,
+	installmentCount: transaction.installmentCount ?? null,
+	cardLast4: transaction.cardLast4 ?? null,
 	...convertSyncMeta(transaction),
+});
+
+const convertAccount = (account: AccountDB): Account => ({
+	id: account.id,
+	name: account.name,
+	kind: account.kind,
+	role: account.role ?? defaultRoleFor(account.kind),
+	envelopeMonthlyCents: account.envelopeMonthlyCents ?? null,
+	network: account.network ?? null,
+	bankName: account.bankName,
+	color: account.color,
+	last4: account.last4,
+	closingDay: account.closingDay,
+	dueDay: account.dueDay,
+	closingDaysBefore: account.closingDaysBefore ?? null,
+	creditLimitCents: account.creditLimitCents,
+	cardNames: account.cardNames ?? null,
+	packageName: account.packageName,
+	accountKey: account.accountKey,
+	openingBalanceCents: account.openingBalanceCents,
+	openingBalanceDate: account.openingBalanceDate,
+	sortOrder: account.sortOrder,
+	archived: Boolean(account.archived),
+	...convertSyncMeta(account),
+});
+
+const convertTransfer = (transfer: TransferDB): Transfer => ({
+	id: transfer.id,
+	fromAccountId: transfer.fromAccountId,
+	toAccountId: transfer.toAccountId,
+	amountCents: transfer.amountCents,
+	date: transfer.date,
+	note: transfer.note ?? '',
+	...convertSyncMeta(transfer),
 });
 
 const convertRecurringTransaction = (
@@ -398,8 +511,303 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 3) await migrateSyncColumns();
 	if (version < 4) await migrateBudgetsFromStorage();
 	if (version < 5) await migrateCategoryNature();
+	if (version < 6) await migrateCaptureTables();
+	if (version < 7) await migrateAccounts();
+	if (version < 8) await migrateAccountRoles();
+	if (version < 9) await migrateCardsApart();
+	if (version < 10) await migrateCardCycleFromDueDay();
+	if (version < 11) await migrateCardCycleToClosingDay();
+	if (version < 12) await migrateCardPurchasesToRealCard();
+	if (version < 13) await migrateCardsPerPurchase();
+	if (version < 14) await migrateRetirementGoals();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+};
+
+/**
+ * v7 -> v8: o papel de cada conta e o valor mensal do envelope.
+ *
+ * Contas já existentes ganham o papel pelo tipo — cartão é `card`, poupança e
+ * investimento são `reserve`, o resto é `main` — o mesmo padrão de uma conta nova.
+ * O usuário muda depois na tela da conta.
+ */
+/**
+ * v8 -> v9: cartões separados de contas, e a bandeira do cartão.
+ *
+ * Normaliza `kind` e `role`: papel "cartão" vira tipo cartão de crédito, e vice-versa.
+ * Uma conta corrente marcada com papel "cartão" guardava o que o usuário digitou como
+ * **saldo** positivo; num cartão o mesmo número significa **valor a pagar**, que na
+ * âncora é negativo. O sinal é invertido nesses casos, e só neles. As linhas mexidas
+ * ficam sujas com `updatedAt` novo, para a correção subir no próximo sync.
+ */
+const migrateCardsApart = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of ACCOUNT_V9_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		`UPDATE accounts
+     SET kind = 'credit_card',
+         openingBalanceCents = CASE WHEN openingBalanceCents > 0 THEN -openingBalanceCents ELSE openingBalanceCents END,
+         updatedAt = ?, dirty = 1
+     WHERE role = 'card' AND kind <> 'credit_card'`,
+		[timestamp]
+	);
+	await db.runAsync(
+		`UPDATE accounts SET role = 'card', updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND role <> 'card'`,
+		[timestamp]
+	);
+
+	console.log('Migrated cards apart from accounts');
+};
+
+/**
+ * v9 -> v10: o ciclo do cartão sai do vencimento.
+ *
+ * Bancos brasileiros fecham a fatura um número fixo de dias antes do vencimento (o
+ * Nubank, 7), e o vencimento pula para o próximo dia útil. Um dia fixo de fechamento
+ * erra nos meses em que o vencimento anda. Cartões com fechamento e vencimento
+ * informados ganham a distância entre eles; só com fechamento, vencimento 7 dias
+ * depois. Distâncias fora de 1..20 viram 7, o padrão do mercado.
+ */
+const migrateCardCycleFromDueDay = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of ACCOUNT_V10_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		`UPDATE accounts
+     SET dueDay = CASE WHEN closingDay + 7 > 30 THEN closingDay + 7 - 30 ELSE closingDay + 7 END,
+         closingDaysBefore = 7, updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NOT NULL AND dueDay IS NULL`,
+		[timestamp]
+	);
+	await db.runAsync(
+		`UPDATE accounts
+     SET closingDaysBefore = CASE
+           WHEN (CASE WHEN dueDay > closingDay THEN dueDay - closingDay ELSE dueDay + 30 - closingDay END) BETWEEN 1 AND 20
+             THEN (CASE WHEN dueDay > closingDay THEN dueDay - closingDay ELSE dueDay + 30 - closingDay END)
+           ELSE 7 END,
+         updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NOT NULL AND closingDaysBefore IS NULL`,
+		[timestamp]
+	);
+	await db.runAsync(
+		`UPDATE accounts SET closingDaysBefore = 7, updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND dueDay IS NOT NULL AND closingDaysBefore IS NULL`,
+		[timestamp]
+	);
+
+	console.log('Migrated card cycles to due day');
+};
+
+/**
+ * v12 -> v13: cada compra sabe qual cartão a fez, e débito vira cartão da conta.
+ *
+ * - `transactions.cardLast4` vem da captura que criou o lançamento (a transação ou todas
+ *   as parcelas do grupo). A fatura continua sendo da conta de crédito; o final serve para
+ *   ver quanto gastou cada cartão, físico ou virtual.
+ * - Um "cartão de crédito" cujo nome diz débito ("Débito Inter") nunca teve fatura: os
+ *   lançamentos vão para a conta corrente do mesmo banco, com o final do cartão, e o nome
+ *   fica como o nome do cartão de débito daquela conta. Pagamentos para ele não existiram.
+ */
+/** v13 -> v14: the financial-independence goal gets its own synced table. */
+const migrateRetirementGoals = async (): Promise<void> => {
+	await db.execAsync(CREATE_RETIREMENT_GOALS_TABLE);
+};
+
+const migrateCardsPerPurchase = async (): Promise<void> => {
+	if (!(await tableExists('transactions')) || !(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of TRANSACTION_V13_COLUMNS) {
+		if (await tableHasColumn('transactions', name)) continue;
+		await db.execAsync(`ALTER TABLE transactions ADD COLUMN ${name} ${sql}`);
+	}
+	for (const [name, sql] of ACCOUNT_V13_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	const timestamp = nowTimestamp();
+	if (await tableExists('captures')) {
+		await db.runAsync(
+			`UPDATE transactions
+       SET cardLast4 = (
+             SELECT c.cardLast4 FROM captures c
+             WHERE c.cardLast4 IS NOT NULL AND (c.transactionId = transactions.id OR c.id = transactions.installmentGroup)
+             LIMIT 1
+           ),
+           updatedAt = ?, dirty = 1
+       WHERE cardLast4 IS NULL AND EXISTS (
+             SELECT 1 FROM captures c
+             WHERE c.cardLast4 IS NOT NULL AND (c.transactionId = transactions.id OR c.id = transactions.installmentGroup)
+           )`,
+			[timestamp]
+		);
+	}
+
+	const accounts = (await db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE deletedAt IS NULL')).map(convertAccount);
+	for (const plan of planDebitCardConversions(accounts)) {
+		const { card, checking } = plan;
+		await db.withTransactionAsync(async () => {
+			await db.runAsync(
+				`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1
+         WHERE accountId = ? AND deletedAt IS NULL`,
+				[checking.id, card.last4, timestamp, card.id]
+			);
+			if (await tableExists('captures')) {
+				await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [checking.id, card.id]);
+			}
+			await db.runAsync(
+				'UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL',
+				[timestamp, timestamp, card.id, card.id]
+			);
+			if (plan.cardNames !== checking.cardNames) {
+				await db.runAsync('UPDATE accounts SET cardNames = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [plan.cardNames, timestamp, checking.id]);
+			}
+			await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, card.id]);
+		});
+	}
+
+	console.log('Migrated card per purchase');
+};
+
+/**
+ * v11 -> v12: compras de cartão registradas pelas regras antigas vão para o cartão certo.
+ * A decisão é de `planLedgerRepair` (puro, testado); aqui só se aplica. Tudo o que muda
+ * fica sujo, para subir no próximo sync.
+ */
+const migrateCardPurchasesToRealCard = async (): Promise<void> => {
+	if (!(await tableExists('accounts')) || !(await tableExists('captures'))) return;
+
+	const accounts = (await db.getAllAsync<AccountDB>('SELECT * FROM accounts')).map(convertAccount);
+	const captures = await db.getAllAsync<Omit<Capture, 'autoConfirmed'> & { autoConfirmed: number }>(
+		"SELECT * FROM captures WHERE cardLast4 IS NOT NULL AND status IN ('pending', 'confirmed')"
+	);
+	const plan = planLedgerRepair(
+		accounts,
+		captures.map((row) => ({ ...row, autoConfirmed: Boolean(row.autoConfirmed) }))
+	);
+	if (plan.mergeCards.length === 0 && plan.moveCaptures.length === 0) return;
+
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		for (const { fromId, toId } of plan.mergeCards) {
+			await db.runAsync(
+				'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
+			await db.runAsync(
+				'UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync(
+				'UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL',
+				[toId, timestamp, fromId]
+			);
+			await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, fromId]);
+		}
+		for (const { captureId, transactionId, toId } of plan.moveCaptures) {
+			await db.runAsync('UPDATE captures SET accountId = ? WHERE id = ?', [toId, captureId]);
+			await db.runAsync(
+				'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL',
+				[toId, timestamp, transactionId ?? '', captureId]
+			);
+		}
+	});
+
+	console.log(`Repaired card purchases: ${plan.mergeCards.length} cards merged, ${plan.moveCaptures.length} purchases moved`);
+};
+
+/**
+ * v10 -> v11: o ciclo volta a partir do dia de fechamento.
+ *
+ * O banco dá nome à fatura pelo mês em que ela fecha, e o usuário conhece o dia do
+ * fechamento. Cartões salvos na v10 só com vencimento ganham o fechamento derivado dele
+ * (vencimento menos a distância, voltando para o mês anterior quando passa do dia 1).
+ * Quem já tinha fechamento continua com ele.
+ */
+const migrateCardCycleToClosingDay = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	await db.runAsync(
+		`UPDATE accounts
+     SET closingDay = CASE
+           WHEN dueDay - COALESCE(closingDaysBefore, 7) >= 1 THEN dueDay - COALESCE(closingDaysBefore, 7)
+           ELSE dueDay - COALESCE(closingDaysBefore, 7) + 30 END,
+         closingDaysBefore = COALESCE(closingDaysBefore, 7),
+         updatedAt = ?, dirty = 1
+     WHERE kind = 'credit_card' AND closingDay IS NULL AND dueDay IS NOT NULL`,
+		[nowTimestamp()]
+	);
+
+	console.log('Migrated card cycles to closing day');
+};
+
+const migrateAccountRoles = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	for (const [name, sql] of ACCOUNT_V8_COLUMNS) {
+		if (await tableHasColumn('accounts', name)) continue;
+		await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+	}
+
+	await db.execAsync(`
+    UPDATE accounts SET role = CASE
+      WHEN kind = 'credit_card' THEN 'card'
+      WHEN kind IN ('savings', 'investment') THEN 'reserve'
+      ELSE 'main'
+    END
+    WHERE role = 'main';
+  `);
+
+	console.log('Migrated accounts to roles');
+};
+
+/**
+ * v6 -> v7: contas e cartões.
+ *
+ * `accounts` e `transfers` nascem vazias; as contas são criadas sozinhas conforme as
+ * notificações e extratos chegam, e os lançamentos antigos ficam sem conta
+ * (`accountId` NULL), o que a tela mostra como "sem conta" em vez de inventar uma.
+ * As colunas novas são todas anuláveis, então o ALTER é aceito e nada é reescrito.
+ */
+const migrateAccounts = async (): Promise<void> => {
+	await db.execAsync(`${CREATE_ACCOUNTS_TABLE}${CREATE_TRANSFERS_TABLE}`);
+
+	for (const [table, columns] of [
+		['transactions', TRANSACTION_V7_COLUMNS],
+		['captures', CAPTURE_V7_COLUMNS],
+	] as const) {
+		if (!(await tableExists(table))) continue;
+		for (const [name, sql] of columns) {
+			if (await tableHasColumn(table, name)) continue;
+			await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${name} ${sql}`);
+		}
+	}
+
+	console.log('Migrated to accounts and transfers');
+};
+
+/**
+ * v5 -> v6: a caixa de entrada de notificações e as regras por estabelecimento.
+ *
+ * Tabelas novas, sem dado a converter: o passo existe para a versão do schema contar a
+ * história completa, e o `CREATE TABLE IF NOT EXISTS` da inicialização faria o mesmo.
+ */
+const migrateCaptureTables = async (): Promise<void> => {
+	await db.execAsync(`${CREATE_CAPTURES_TABLE}${CREATE_MERCHANT_RULES_TABLE}`);
+	console.log('Created capture inbox tables');
 };
 
 const runInitDatabase = async (): Promise<void> => {
@@ -416,6 +824,11 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_RECURRING_TRANSACTIONS_TABLE}
       ${CREATE_BUDGETS_TABLE}
       ${CREATE_SYNC_STATE_TABLE}
+      ${CREATE_CAPTURES_TABLE}
+      ${CREATE_MERCHANT_RULES_TABLE}
+      ${CREATE_ACCOUNTS_TABLE}
+      ${CREATE_TRANSFERS_TABLE}
+      ${CREATE_RETIREMENT_GOALS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -592,8 +1005,10 @@ export const addTransaction = async (
 	const id = explicitId ?? generateUniqueId();
 	try {
 		await db.runAsync(
-			`INSERT INTO transactions (id, amountCents, category, date, note, isIncome, updatedAt, deletedAt, dirty)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)
+			`INSERT INTO transactions
+         (id, amountCents, category, date, note, isIncome, accountId,
+          installmentGroup, installmentIndex, installmentCount, cardLast4, updatedAt, deletedAt, dirty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
        ON CONFLICT (id) DO NOTHING`,
 			[
 				id,
@@ -602,6 +1017,11 @@ export const addTransaction = async (
 				transaction.date,
 				transaction.note,
 				transaction.isIncome ? 1 : 0,
+				transaction.accountId ?? null,
+				transaction.installmentGroup ?? null,
+				transaction.installmentIndex ?? null,
+				transaction.installmentCount ?? null,
+				transaction.cardLast4 ?? null,
 				nowTimestamp(),
 			]
 		);
@@ -661,9 +1081,13 @@ export const getTransactionsByDateRange = async (
 
 export const updateTransaction = async (transaction: TransactionEdit): Promise<void> => {
 	try {
+		// `accountId` só muda quando a edição diz qual é; `undefined` preserva o atual.
+		// As colunas de parcela nunca mudam numa edição: são da compra, não da parcela.
 		await db.runAsync(
 			`UPDATE transactions
-       SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ?, updatedAt = ?, dirty = 1
+       SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ?,
+           accountId = CASE WHEN ? THEN ? ELSE accountId END,
+           updatedAt = ?, dirty = 1
        WHERE id = ?`,
 			[
 				transaction.amountCents,
@@ -671,6 +1095,8 @@ export const updateTransaction = async (transaction: TransactionEdit): Promise<v
 				transaction.date,
 				transaction.note,
 				transaction.isIncome ? 1 : 0,
+				transaction.accountId === undefined ? 0 : 1,
+				transaction.accountId ?? null,
 				nowTimestamp(),
 				transaction.id,
 			]
@@ -696,12 +1122,512 @@ export const deleteTransaction = async (id: string): Promise<void> => {
 };
 
 // ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+export const getAccounts = async (): Promise<Account[]> => {
+	const rows = await db.getAllAsync<AccountDB>(
+		'SELECT * FROM accounts WHERE deletedAt IS NULL ORDER BY sortOrder ASC, name ASC'
+	);
+	return rows.map(convertAccount);
+};
+
+export const getAccount = async (id: string): Promise<Account | null> => {
+	const row = await db.getFirstAsync<AccountDB>('SELECT * FROM accounts WHERE id = ?', [id]);
+	return row ? convertAccount(row) : null;
+};
+
+/** A conta ligada a um app do banco e, para cartões, ao final do cartão. */
+export const findAccountBySource = async (
+	packageName: string,
+	last4: string | null
+): Promise<Account | null> => {
+	const row = last4
+		? await db.getFirstAsync<AccountDB>(
+				'SELECT * FROM accounts WHERE packageName = ? AND last4 = ? AND deletedAt IS NULL',
+				[packageName, last4]
+			)
+		: await db.getFirstAsync<AccountDB>(
+				"SELECT * FROM accounts WHERE packageName = ? AND last4 IS NULL AND kind <> 'credit_card' AND deletedAt IS NULL",
+				[packageName]
+			);
+	return row ? convertAccount(row) : null;
+};
+
+/** A conta ligada a uma conta de extrato OFX (`banco:conta`). */
+export const findAccountByKey = async (accountKey: string): Promise<Account | null> => {
+	const row = await db.getFirstAsync<AccountDB>(
+		'SELECT * FROM accounts WHERE accountKey = ? AND deletedAt IS NULL',
+		[accountKey]
+	);
+	return row ? convertAccount(row) : null;
+};
+
+/**
+ * Cartão é cartão e conta é conta: `kind = credit_card` e `role = card` andam juntos,
+ * sempre. Antes as duas coisas eram escolhidas em campos separados, e um "cartão" salvo
+ * como conta corrente aparecia com saldo em vez de limite. Toda gravação passa por aqui.
+ * Também completa campos que backups e aparelhos antigos não trazem.
+ */
+export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
+	const isCard = account.kind === 'credit_card' || account.role === 'card';
+	const kind = isCard ? 'credit_card' : account.kind;
+	const role = isCard
+		? 'card'
+		: account.role && account.role !== 'card'
+			? account.role
+			: defaultRoleFor(kind);
+	return {
+		...account,
+		kind,
+		role,
+		envelopeMonthlyCents: role === 'envelope' ? (account.envelopeMonthlyCents ?? null) : null,
+		network: isCard ? (account.network ?? null) : null,
+		bankName: account.bankName ?? null,
+		last4: account.last4 ?? null,
+		closingDay: isCard ? (account.closingDay ?? null) : null,
+		dueDay: isCard ? (account.dueDay ?? null) : null,
+		closingDaysBefore:
+			isCard && account.closingDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
+		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
+		cardNames: account.cardNames ?? null,
+		packageName: account.packageName ?? null,
+		accountKey: account.accountKey ?? null,
+		sortOrder: account.sortOrder ?? 0,
+		archived: Boolean(account.archived),
+	};
+};
+
+const accountValues = (account: AccountDraft): Array<string | number | null> => [
+	account.name,
+	account.kind,
+	account.role,
+	account.envelopeMonthlyCents,
+	account.network,
+	account.bankName,
+	account.color,
+	account.last4,
+	account.closingDay,
+	account.dueDay,
+	account.closingDaysBefore,
+	account.creditLimitCents,
+	account.cardNames,
+	account.packageName,
+	account.accountKey,
+	account.openingBalanceCents,
+	account.openingBalanceDate,
+	account.sortOrder,
+	account.archived ? 1 : 0,
+];
+
+export const addAccount = async (draft: AccountDraft, explicitId?: string): Promise<string> => {
+	const id = explicitId ?? generateUniqueId();
+	const account = normalizeAccountDraft(draft);
+	await db.runAsync(
+		`INSERT INTO accounts
+       (name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
+        closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        sortOrder, archived, id, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO NOTHING`,
+		[...accountValues(account), id, nowTimestamp()]
+	);
+	return id;
+};
+
+export const updateAccount = async (edit: AccountEdit): Promise<void> => {
+	const { id, ...draft } = edit;
+	const account = normalizeAccountDraft(draft);
+	await db.runAsync(
+		`UPDATE accounts
+     SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
+         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, packageName = ?, accountKey = ?,
+         openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
+         updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[...accountValues(account), nowTimestamp(), id]
+	);
+};
+
+/** Lápide, como nas demais tabelas sincronizadas. Os lançamentos ficam "sem conta". */
+export const deleteAccount = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+			timestamp,
+			timestamp,
+			id,
+		]);
+		await db.runAsync(
+			'UPDATE transactions SET accountId = NULL, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			[timestamp, id]
+		);
+	});
+};
+
+/**
+ * Leva os lançamentos e capturas de uma conta para outra. Serve para desfazer um
+ * cartão de débito cadastrado como cartão: débito sai direto da conta, então o que foi
+ * lançado nele pertence à conta.
+ */
+export const moveAccountLedger = async (fromId: string, toId: string, cardLast4: string | null = null): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		// Lançamento sem final de cartão ganha o do cartão que está saindo: o histórico
+		// continua sabendo que foi aquele cartão.
+		await db.runAsync(
+			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			[toId, cardLast4, timestamp, fromId]
+		);
+		await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
+	});
+};
+
+/**
+ * Leva o que uma captura pôs no livro — a transação, ou todas as parcelas do grupo — para
+ * outra conta. Usado quando o aviso do banco revela o cartão de uma compra que o Samsung
+ * Pay avisou antes.
+ */
+export const reassignCaptureLedger = async (
+	transactionId: string | null,
+	installmentGroup: string,
+	accountId: string | null
+): Promise<void> => {
+	await db.runAsync(
+		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL',
+		[accountId, nowTimestamp(), transactionId ?? '', installmentGroup]
+	);
+};
+
+/** O que passou por uma conta num intervalo, nas quatro direções. Tudo em centavos. */
+export interface AccountActivity {
+	incomeCents: number;
+	expenseCents: number;
+	/** Parte de `expenseCents` em categorias de repasse (`nature = 'passthrough'`). */
+	passThroughCents: number;
+	transfersInCents: number;
+	transfersOutCents: number;
+}
+
+export const getAccountActivity = async (
+	accountId: string,
+	startDate: string,
+	endDate: string
+): Promise<AccountActivity> => {
+	const [tx, transfers] = await Promise.all([
+		db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
+			`SELECT
+         COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+       FROM transactions t
+       LEFT JOIN categories c ON c.id = t.category
+       WHERE t.accountId = ? AND t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
+			[accountId, startDate, endDate]
+		),
+		db.getFirstAsync<{ inbound: number; outbound: number }>(
+			`SELECT
+         COALESCE(SUM(CASE WHEN toAccountId = ? THEN amountCents ELSE 0 END), 0) AS inbound,
+         COALESCE(SUM(CASE WHEN fromAccountId = ? THEN amountCents ELSE 0 END), 0) AS outbound
+       FROM transfers
+       WHERE (toAccountId = ? OR fromAccountId = ?) AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+			[accountId, accountId, accountId, accountId, startDate, endDate]
+		),
+	]);
+
+	return {
+		incomeCents: tx?.income ?? 0,
+		expenseCents: tx?.expense ?? 0,
+		passThroughCents: tx?.passThrough ?? 0,
+		transfersInCents: transfers?.inbound ?? 0,
+		transfersOutCents: transfers?.outbound ?? 0,
+	};
+};
+
+/**
+ * Saldo de cada conta no fim de `asOfDate`: a âncora mais tudo que veio depois dela.
+ * Uma só consulta para todas as contas; a tela inicial chama isto a cada recarga.
+ */
+export const getAccountBalances = async (asOfDate: string): Promise<Map<string, number>> => {
+	const rows = await db.getAllAsync<{ accountId: string; balanceCents: number }>(
+		`SELECT a.id AS accountId,
+            a.openingBalanceCents
+            + COALESCE((SELECT SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE -t.amountCents END)
+                        FROM transactions t
+                        WHERE t.accountId = a.id AND t.deletedAt IS NULL
+                          AND t.date > a.openingBalanceDate AND t.date <= ?), 0)
+            - COALESCE((SELECT SUM(x.amountCents) FROM transfers x
+                        WHERE x.fromAccountId = a.id AND x.deletedAt IS NULL
+                          AND x.date > a.openingBalanceDate AND x.date <= ?), 0)
+            + COALESCE((SELECT SUM(x.amountCents) FROM transfers x
+                        WHERE x.toAccountId = a.id AND x.deletedAt IS NULL
+                          AND x.date > a.openingBalanceDate AND x.date <= ?), 0) AS balanceCents
+     FROM accounts a
+     WHERE a.deletedAt IS NULL`,
+		[asOfDate, asOfDate, asOfDate]
+	);
+	return new Map(rows.map((row) => [row.accountId, row.balanceCents]));
+};
+
+/** Receita e despesa dos lançamentos sem conta num período. */
+export const getUnassignedPeriodSummary = async (
+	startDate: string,
+	endDate: string
+): Promise<{ incomeCents: number; expenseCents: number; passThroughCents: number }> => {
+	const row = await db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
+		`SELECT
+       COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+       COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+       COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+     FROM transactions t
+     LEFT JOIN categories c ON c.id = t.category
+     WHERE t.accountId IS NULL AND t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
+		[startDate, endDate]
+	);
+	return { incomeCents: row?.income ?? 0, expenseCents: row?.expense ?? 0, passThroughCents: row?.passThrough ?? 0 };
+};
+
+/**
+ * Valor cheio das compras **feitas** num cartão no período: as à vista datadas nele,
+ * mais o total de cada compra parcelada cuja primeira parcela cai nele. É a métrica
+ * "quanto comprei este mês", diferente de "quanto cai na fatura".
+ */
+export const getCardPurchasesOriginated = async (
+	accountId: string,
+	startDate: string,
+	endDate: string
+): Promise<number> => {
+	const [single, groups] = await Promise.all([
+		db.getFirstAsync<{ total: number }>(
+			`SELECT COALESCE(SUM(amountCents), 0) AS total FROM transactions
+       WHERE accountId = ? AND isIncome = 0 AND installmentGroup IS NULL
+         AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+			[accountId, startDate, endDate]
+		),
+		db.getFirstAsync<{ total: number }>(
+			`SELECT COALESCE(SUM(t.amountCents), 0) AS total FROM transactions t
+       WHERE t.accountId = ? AND t.isIncome = 0 AND t.deletedAt IS NULL
+         AND t.installmentGroup IN (
+           SELECT installmentGroup FROM transactions
+           WHERE accountId = ? AND installmentIndex = 1 AND date BETWEEN ? AND ? AND deletedAt IS NULL
+         )`,
+			[accountId, accountId, startDate, endDate]
+		),
+	]);
+	return (single?.total ?? 0) + (groups?.total ?? 0);
+};
+
+/** Dá uma conta a todos os lançamentos que não têm nenhuma. Devolve quantos mudaram. */
+export const assignUnassignedTransactions = async (accountId: string): Promise<number> => {
+	const result = await db.runAsync(
+		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId IS NULL AND deletedAt IS NULL',
+		[accountId, nowTimestamp()]
+	);
+	return result.changes;
+};
+
+/** Receita menos despesa dos lançamentos sem conta, até `asOfDate`. */
+export const getUnassignedNet = async (asOfDate: string): Promise<number> => {
+	const row = await db.getFirstAsync<{ net: number }>(
+		`SELECT COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE -amountCents END), 0) AS net
+     FROM transactions WHERE accountId IS NULL AND date <= ? AND deletedAt IS NULL`,
+		[asOfDate]
+	);
+	return row?.net ?? 0;
+};
+
+/**
+ * "Meu saldo agora é X": move a âncora para ontem, com o valor que faz o saldo de hoje
+ * bater com X depois de somar o que já aconteceu hoje. Lançamentos que entrarem mais
+ * tarde hoje continuam somando por cima, porque são datados depois da âncora.
+ */
+/** Âncora explícita: o saldo (num cartão, negativo = deve) no fim de `date`. */
+export const setAccountAnchor = async (accountId: string, balanceCents: number, date: string): Promise<void> => {
+	await db.runAsync(
+		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[balanceCents, date, nowTimestamp(), accountId]
+	);
+};
+
+export const setAccountBalanceToday = async (accountId: string, balanceCents: number): Promise<void> => {
+	const today = todayISO();
+	const activity = await getAccountActivity(accountId, today, today);
+	const todayNet =
+		activity.incomeCents - activity.expenseCents + activity.transfersInCents - activity.transfersOutCents;
+
+	await db.runAsync(
+		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[balanceCents - todayNet, addDays(today, -1), nowTimestamp(), accountId]
+	);
+};
+
+// ---------------------------------------------------------------------------
+// Transfers
+// ---------------------------------------------------------------------------
+
+export const addTransfer = async (transfer: TransferDraft, explicitId?: string): Promise<string> => {
+	const id = explicitId ?? generateUniqueId();
+	await db.runAsync(
+		`INSERT INTO transfers (id, fromAccountId, toAccountId, amountCents, date, note, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO NOTHING`,
+		[id, transfer.fromAccountId, transfer.toAccountId, transfer.amountCents, transfer.date, transfer.note, nowTimestamp()]
+	);
+	return id;
+};
+
+export const updateTransfer = async (transfer: TransferEdit): Promise<void> => {
+	await db.runAsync(
+		`UPDATE transfers SET fromAccountId = ?, toAccountId = ?, amountCents = ?, date = ?, note = ?,
+       updatedAt = ?, dirty = 1
+     WHERE id = ?`,
+		[transfer.fromAccountId, transfer.toAccountId, transfer.amountCents, transfer.date, transfer.note, nowTimestamp(), transfer.id]
+	);
+};
+
+export const getTransfer = async (id: string): Promise<Transfer | null> => {
+	const row = await db.getFirstAsync<TransferDB>('SELECT * FROM transfers WHERE id = ?', [id]);
+	return row ? convertTransfer(row) : null;
+};
+
+export const deleteTransfer = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync('UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		timestamp,
+		timestamp,
+		id,
+	]);
+};
+
+/**
+ * Uma transferência viva que já registra este movimento: mesmo valor, poucos dias de
+ * diferença, e os lados conhecidos batem — um lado nulo (conta que o app não
+ * acompanha, ou ainda não identificada) casa com qualquer coisa. É o que impede o
+ * pagamento da fatura de virar duas transferências quando a conta e o cartão avisam.
+ */
+/** Nomes dos cartões de uma conta (`cardNames`, JSON). */
+export const setAccountCardNames = async (accountId: string, cardNames: string | null): Promise<void> => {
+	await db.runAsync('UPDATE accounts SET cardNames = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		cardNames,
+		nowTimestamp(),
+		accountId,
+	]);
+};
+
+/** Lápide em todas as transferências que entram ou saem de uma conta. */
+export const deleteTransfersOf = async (accountId: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		'UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL',
+		[timestamp, timestamp, accountId, accountId]
+	);
+};
+
+/** Um pagamento para o cartão, de mesmo valor e perto da data, venha de qual conta vier. */
+export const findCardPayment = async (cardId: string, amountCents: number, date: string, windowDays: number): Promise<Transfer | null> => {
+	const row = await db.getFirstAsync<TransferDB>(
+		`SELECT * FROM transfers
+     WHERE toAccountId = ? AND amountCents = ? AND date BETWEEN ? AND ? AND deletedAt IS NULL
+     ORDER BY date DESC LIMIT 1`,
+		[cardId, amountCents, addDays(date, -windowDays), addDays(date, windowDays)]
+	);
+	return row ? convertTransfer(row) : null;
+};
+
+export const findLiveTransfer = async (match: {
+	amountCents: number;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	dateFrom: string;
+	dateTo: string;
+}): Promise<Transfer | null> => {
+	const row = await db.getFirstAsync<TransferDB>(
+		`SELECT * FROM transfers
+     WHERE amountCents = ? AND date BETWEEN ? AND ? AND deletedAt IS NULL
+       AND (fromAccountId IS NULL OR ? IS NULL OR fromAccountId = ?)
+       AND (toAccountId IS NULL OR ? IS NULL OR toAccountId = ?)
+       AND ((? IS NOT NULL AND fromAccountId = ?) OR (? IS NOT NULL AND toAccountId = ?))
+     ORDER BY date DESC LIMIT 1`,
+		[
+			match.amountCents,
+			match.dateFrom,
+			match.dateTo,
+			match.fromAccountId,
+			match.fromAccountId,
+			match.toAccountId,
+			match.toAccountId,
+			match.fromAccountId,
+			match.fromAccountId,
+			match.toAccountId,
+			match.toAccountId,
+		]
+	);
+	return row ? convertTransfer(row) : null;
+};
+
+/** Apaga (com lápide) todas as parcelas de uma compra parcelada. */
+export const deleteTransactionsInGroup = async (installmentGroup: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync(
+		'UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE installmentGroup = ? AND deletedAt IS NULL',
+		[timestamp, timestamp, installmentGroup]
+	);
+};
+
+/** Dá conta a um lançamento que ainda não tem: o extrato sabe de onde ele saiu. */
+export const assignTransactionAccount = async (id: string, accountId: string): Promise<void> => {
+	await db.runAsync(
+		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND accountId IS NULL',
+		[accountId, nowTimestamp(), id]
+	);
+};
+
+/** Todos os lançamentos vivos de uma conta ou cartão, inclusive parcelas futuras. */
+export const getAccountTransactions = async (accountId: string): Promise<Transaction[]> => {
+	const rows = await db.getAllAsync<TransactionDB>(
+		'SELECT * FROM transactions WHERE accountId = ? AND deletedAt IS NULL ORDER BY date DESC',
+		[accountId]
+	);
+	return rows.map(convertTransaction);
+};
+
+/** Transferências vivas que entram ou saem de uma conta ou cartão. */
+export const getAccountTransfers = async (accountId: string): Promise<Transfer[]> => {
+	const rows = await db.getAllAsync<TransferDB>(
+		'SELECT * FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL ORDER BY date DESC',
+		[accountId, accountId]
+	);
+	return rows.map(convertTransfer);
+};
+
+export const getTransfers = async (): Promise<Transfer[]> => {
+	const rows = await db.getAllAsync<TransferDB>(
+		'SELECT * FROM transfers WHERE deletedAt IS NULL ORDER BY date DESC'
+	);
+	return rows.map(convertTransfer);
+};
+
+export const getTransfersByDateRange = async (startDate: string, endDate: string): Promise<Transfer[]> => {
+	const rows = await db.getAllAsync<TransferDB>(
+		'SELECT * FROM transfers WHERE date BETWEEN ? AND ? AND deletedAt IS NULL ORDER BY date DESC',
+		[startDate, endDate]
+	);
+	return rows.map(convertTransfer);
+};
+
+// ---------------------------------------------------------------------------
 // Aggregates
 // ---------------------------------------------------------------------------
 
 export interface PeriodSummary {
+	/** Receita líquida: o que entrou menos os repasses. */
 	incomeCents: number;
+	/** Gasto sem os repasses. */
 	expenseCents: number;
+	/** O que só passou pela conta (categorias de repasse): fora da receita e do gasto. */
+	passThroughCents: number;
 	/** Income minus expenses **within the period**. */
 	netCents: number;
 }
@@ -717,19 +1643,23 @@ export const getPeriodSummary = async (
 	endDate: string
 ): Promise<PeriodSummary> => {
 	try {
-		const row = await db.getFirstAsync<{ income: number; expense: number }>(
+		const row = await db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
 			`SELECT
-         COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
-         COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
-       FROM transactions
-       WHERE date BETWEEN ? AND ? AND deletedAt IS NULL`,
+         COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+       FROM transactions t
+       LEFT JOIN categories c ON c.id = t.category
+       WHERE t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
 			[startDate, endDate]
 		);
 
-		const incomeCents = row?.income ?? 0;
-		const expenseCents = row?.expense ?? 0;
+		// Um repasse entrou e saiu sem ser seu: fica fora dos dois lados.
+		const passThroughCents = row?.passThrough ?? 0;
+		const incomeCents = (row?.income ?? 0) - passThroughCents;
+		const expenseCents = (row?.expense ?? 0) - passThroughCents;
 
-		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+		return { incomeCents, expenseCents, passThroughCents, netCents: incomeCents - expenseCents };
 	} catch (error) {
 		console.error('Error computing period summary:', error);
 		throw error;
@@ -822,6 +1752,89 @@ export const getMonthlyTransactions = async (
 		console.error('Error fetching monthly transactions:', error);
 		throw error;
 	}
+};
+
+// ---------------------------------------------------------------------------
+// Monthly aggregates for the reports
+// ---------------------------------------------------------------------------
+
+/** Receita, despesa e repasse de cada conta por mês (`accountId` nulo = sem conta). */
+export interface MonthAccountActivityRow {
+	/** `YYYY-MM`. */
+	month: string;
+	accountId: string | null;
+	incomeCents: number;
+	expenseCents: number;
+	passThroughCents: number;
+}
+
+/**
+ * Uma consulta para o histórico inteiro: os relatórios montam um quadro do mês por mês
+ * a partir daqui em vez de repetir `getAccountActivity` conta a conta, mês a mês.
+ * `GROUP BY accountId` junta as linhas sem conta numa só, que é o que se quer.
+ */
+export const getMonthlyAccountActivity = (startDate: string, endDate: string): Promise<MonthAccountActivityRow[]> =>
+	db.getAllAsync<MonthAccountActivityRow>(
+		`SELECT substr(t.date, 1, 7) AS month,
+            t.accountId,
+            COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS incomeCents,
+            COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expenseCents,
+            COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThroughCents
+     FROM transactions t
+     LEFT JOIN categories c ON c.id = t.category
+     WHERE t.date BETWEEN ? AND ? AND t.deletedAt IS NULL
+     GROUP BY month, t.accountId
+     ORDER BY month ASC`,
+		[startDate, endDate]
+	);
+
+/** O que entrou e saiu de cada conta por transferência, por mês. */
+export interface MonthTransferActivityRow {
+	month: string;
+	accountId: string;
+	inCents: number;
+	outCents: number;
+}
+
+export const getMonthlyTransferActivity = (startDate: string, endDate: string): Promise<MonthTransferActivityRow[]> =>
+	db.getAllAsync<MonthTransferActivityRow>(
+		`SELECT month, accountId, SUM(inCents) AS inCents, SUM(outCents) AS outCents FROM (
+       SELECT substr(date, 1, 7) AS month, toAccountId AS accountId, amountCents AS inCents, 0 AS outCents
+       FROM transfers WHERE toAccountId IS NOT NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL
+       UNION ALL
+       SELECT substr(date, 1, 7) AS month, fromAccountId AS accountId, 0 AS inCents, amountCents AS outCents
+       FROM transfers WHERE fromAccountId IS NOT NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL
+     )
+     GROUP BY month, accountId
+     ORDER BY month ASC`,
+		[startDate, endDate, startDate, endDate]
+	);
+
+export interface MonthCategoryTotalRow {
+	month: string;
+	categoryId: string;
+	totalCents: number;
+}
+
+export const getMonthlyCategoryTotals = (startDate: string, endDate: string, transactionType: 'income' | 'expense'): Promise<MonthCategoryTotalRow[]> =>
+	db.getAllAsync<MonthCategoryTotalRow>(
+		`SELECT substr(date, 1, 7) AS month, category AS categoryId, SUM(amountCents) AS totalCents
+     FROM transactions
+     WHERE date BETWEEN ? AND ? AND deletedAt IS NULL AND isIncome = ?
+     GROUP BY month, category
+     ORDER BY month ASC`,
+		[startDate, endDate, transactionType === 'income' ? 1 : 0]
+	);
+
+/** Todas as linhas vivas de um conjunto de contas — as faturas de vários meses saem daqui. */
+export const getTransactionsForAccounts = async (accountIds: string[]): Promise<Transaction[]> => {
+	if (accountIds.length === 0) return [];
+	const placeholders = accountIds.map(() => '?').join(', ');
+	const rows = await db.getAllAsync<TransactionDB>(
+		`SELECT * FROM transactions WHERE accountId IN (${placeholders}) AND deletedAt IS NULL ORDER BY date ASC`,
+		accountIds
+	);
+	return rows.map(convertTransaction);
 };
 
 // ---------------------------------------------------------------------------
@@ -1076,7 +2089,62 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
        WHERE deletedAt IS NULL`,
 			[rate, timestamp]
 		);
+		await db.runAsync(
+			`UPDATE retirement_goals
+       SET targetMonthlyCents = CAST(ROUND(targetMonthlyCents * ?) AS INTEGER),
+           outsideCapitalCents = CAST(ROUND(outsideCapitalCents * ?) AS INTEGER),
+           updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, rate, timestamp]
+		);
 	});
+};
+
+// ---------------------------------------------------------------------------
+// Retirement goal
+// ---------------------------------------------------------------------------
+
+export type RetirementGoalDraft = Omit<RetirementGoalRow, 'id' | 'updatedAt' | 'deletedAt'>;
+
+const convertRetirementGoal = (row: RetirementGoalDB): RetirementGoalRow => ({
+	id: row.id,
+	targetMonthlyCents: row.targetMonthlyCents,
+	reinvestBp: row.reinvestBp,
+	expectedYieldBp: row.expectedYieldBp,
+	outsideCapitalCents: row.outsideCapitalCents,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** A meta de aposentadoria, ou nula enquanto o usuário não definiu (ou limpou) uma. */
+export const getRetirementGoal = async (): Promise<RetirementGoalRow | null> => {
+	const row = await db.getFirstAsync<RetirementGoalDB>(
+		'SELECT * FROM retirement_goals WHERE id = ? AND deletedAt IS NULL',
+		[RETIREMENT_GOAL_ID]
+	);
+	return row ? convertRetirementGoal(row) : null;
+};
+
+/** Define (ou redefine) a meta. Uma meta limpa antes volta à vida na mesma linha. */
+export const setRetirementGoal = async (draft: RetirementGoalDraft): Promise<void> => {
+	await db.runAsync(
+		`INSERT INTO retirement_goals (id, targetMonthlyCents, reinvestBp, expectedYieldBp, outsideCapitalCents, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO UPDATE SET
+       targetMonthlyCents = excluded.targetMonthlyCents, reinvestBp = excluded.reinvestBp,
+       expectedYieldBp = excluded.expectedYieldBp, outsideCapitalCents = excluded.outsideCapitalCents,
+       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+		[RETIREMENT_GOAL_ID, draft.targetMonthlyCents, draft.reinvestBp, draft.expectedYieldBp, draft.outsideCapitalCents, nowTimestamp()]
+	);
+};
+
+export const clearRetirementGoal = async (): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync('UPDATE retirement_goals SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [
+		timestamp,
+		timestamp,
+		RETIREMENT_GOAL_ID,
+	]);
 };
 
 // ---------------------------------------------------------------------------
@@ -1153,11 +2221,14 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, transactions, recurring, budgets] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
 		),
+		db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
+			limit,
+		]),
 		db.getAllAsync<TransactionDB>(
 			'SELECT * FROM transactions WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -1170,6 +2241,12 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			'SELECT * FROM budgets WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
 		),
+		db.getAllAsync<TransferDB>('SELECT * FROM transfers WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
+			limit,
+		]),
+		db.getAllAsync<RetirementGoalDB>('SELECT * FROM retirement_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
+			limit,
+		]),
 	]);
 
 	return {
@@ -1183,6 +2260,30 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt ?? null,
 		})),
+		accounts: accounts.map((row) => ({
+			id: row.id,
+			name: row.name,
+			kind: row.kind,
+			role: row.role ?? 'main',
+			envelopeMonthlyCents: row.envelopeMonthlyCents ?? null,
+			network: row.network ?? null,
+			bankName: row.bankName,
+			color: row.color,
+			last4: row.last4,
+			closingDay: row.closingDay,
+			dueDay: row.dueDay,
+			closingDaysBefore: row.closingDaysBefore ?? null,
+			creditLimitCents: row.creditLimitCents,
+			cardNames: row.cardNames ?? null,
+			packageName: row.packageName,
+			accountKey: row.accountKey,
+			openingBalanceCents: row.openingBalanceCents,
+			openingBalanceDate: row.openingBalanceDate,
+			sortOrder: row.sortOrder,
+			archived: Boolean(row.archived),
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 		transactions: transactions.map((row) => ({
 			id: row.id,
 			amountCents: row.amountCents,
@@ -1190,6 +2291,21 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			date: row.date,
 			note: row.note ?? null,
 			isIncome: Boolean(row.isIncome),
+			accountId: row.accountId ?? null,
+			installmentGroup: row.installmentGroup ?? null,
+			installmentIndex: row.installmentIndex ?? null,
+			installmentCount: row.installmentCount ?? null,
+			cardLast4: row.cardLast4 ?? null,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+		transfers: transfers.map((row) => ({
+			id: row.id,
+			fromAccountId: row.fromAccountId,
+			toAccountId: row.toAccountId,
+			amountCents: row.amountCents,
+			date: row.date,
+			note: row.note ?? null,
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
@@ -1217,6 +2333,15 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		retirementGoals: retirementGoals.map((row) => ({
+			id: row.id,
+			targetMonthlyCents: row.targetMonthlyCents,
+			reinvestBp: row.reinvestBp,
+			expectedYieldBp: row.expectedYieldBp,
+			outsideCapitalCents: row.outsideCapitalCents,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 	};
 };
 
@@ -1240,9 +2365,12 @@ export const countDirtyRows = async (): Promise<number> => {
 export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 	const byTable: Array<[SyncedTable, Array<{ id: string; updatedAt: string }>]> = [
 		['categories', changes.categories],
+		['accounts', changes.accounts ?? []],
 		['transactions', changes.transactions],
 		['recurring_transactions', changes.recurringTransactions],
 		['budgets', changes.budgets],
+		['transfers', changes.transfers ?? []],
+		['retirement_goals', changes.retirementGoals ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -1345,15 +2473,69 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
+		// Contas antes dos lançamentos, pelo mesmo motivo das categorias.
+		for (const row of changes.accounts ?? []) {
+			if (await isStale('accounts', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO accounts
+           (id, name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
+            closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            sortOrder, archived, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           name = excluded.name, kind = excluded.kind, role = excluded.role,
+           envelopeMonthlyCents = excluded.envelopeMonthlyCents, network = excluded.network,
+           bankName = excluded.bankName,
+           color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
+           dueDay = excluded.dueDay, closingDaysBefore = excluded.closingDaysBefore,
+           creditLimitCents = excluded.creditLimitCents, cardNames = excluded.cardNames,
+           packageName = excluded.packageName, accountKey = excluded.accountKey,
+           openingBalanceCents = excluded.openingBalanceCents,
+           openingBalanceDate = excluded.openingBalanceDate, sortOrder = excluded.sortOrder,
+           archived = excluded.archived, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[
+					row.id,
+					row.name,
+					row.kind,
+					row.role ?? 'main',
+					row.envelopeMonthlyCents ?? null,
+					row.network ?? null,
+					row.bankName,
+					row.color,
+					row.last4,
+					row.closingDay,
+					row.dueDay,
+					row.closingDaysBefore ?? null,
+					row.creditLimitCents,
+					row.cardNames ?? null,
+					row.packageName,
+					row.accountKey,
+					row.openingBalanceCents,
+					row.openingBalanceDate,
+					row.sortOrder,
+					row.archived ? 1 : 0,
+					row.updatedAt,
+					row.deletedAt,
+				]
+			);
+		}
+
 		for (const row of changes.transactions) {
 			if (await isStale('transactions', row.id, row.updatedAt)) continue;
 
 			await db.runAsync(
-				`INSERT INTO transactions (id, amountCents, category, date, note, isIncome, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+				`INSERT INTO transactions
+           (id, amountCents, category, date, note, isIncome, accountId,
+            installmentGroup, installmentIndex, installmentCount, cardLast4, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            amountCents = excluded.amountCents, category = excluded.category,
            date = excluded.date, note = excluded.note, isIncome = excluded.isIncome,
+           accountId = excluded.accountId, installmentGroup = excluded.installmentGroup,
+           installmentIndex = excluded.installmentIndex, installmentCount = excluded.installmentCount,
+           cardLast4 = excluded.cardLast4,
            updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
 				[
 					row.id,
@@ -1362,6 +2544,34 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.date,
 					row.note ?? '',
 					row.isIncome ? 1 : 0,
+					row.accountId ?? null,
+					row.installmentGroup ?? null,
+					row.installmentIndex ?? null,
+					row.installmentCount ?? null,
+					row.cardLast4 ?? null,
+					row.updatedAt,
+					row.deletedAt,
+				]
+			);
+		}
+
+		for (const row of changes.transfers ?? []) {
+			if (await isStale('transfers', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO transfers (id, fromAccountId, toAccountId, amountCents, date, note, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           fromAccountId = excluded.fromAccountId, toAccountId = excluded.toAccountId,
+           amountCents = excluded.amountCents, date = excluded.date, note = excluded.note,
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[
+					row.id,
+					row.fromAccountId,
+					row.toAccountId,
+					row.amountCents,
+					row.date,
+					row.note ?? '',
 					row.updatedAt,
 					row.deletedAt,
 				]
@@ -1427,6 +2637,21 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				[row.id, row.year, row.month, row.amountCents, row.updatedAt, row.deletedAt]
 			);
 		}
+
+		// A meta tem id fixo: o upsert é o merge inteiro.
+		for (const row of changes.retirementGoals ?? []) {
+			if (await isStale('retirement_goals', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO retirement_goals (id, targetMonthlyCents, reinvestBp, expectedYieldBp, outsideCapitalCents, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           targetMonthlyCents = excluded.targetMonthlyCents, reinvestBp = excluded.reinvestBp,
+           expectedYieldBp = excluded.expectedYieldBp, outsideCapitalCents = excluded.outsideCapitalCents,
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.targetMonthlyCents, row.reinvestBp, row.expectedYieldBp, row.outsideCapitalCents, row.updatedAt, row.deletedAt]
+			);
+		}
 	});
 };
 
@@ -1484,7 +2709,7 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets']) {
+			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -1501,6 +2726,13 @@ export const resetDatabase = async (): Promise<void> => {
 
 export default {
 	initDatabase,
+	getMonthlyAccountActivity,
+	getMonthlyTransferActivity,
+	getMonthlyCategoryTotals,
+	getTransactionsForAccounts,
+	getRetirementGoal,
+	setRetirementGoal,
+	clearRetirementGoal,
 	getCategories,
 	getCategoriesByType,
 	addCategory,
@@ -1526,6 +2758,32 @@ export default {
 	setBudget,
 	clearBudget,
 	getDirtyChanges,
+	getAccounts,
+	getAccount,
+	findAccountBySource,
+	findAccountByKey,
+	addAccount,
+	updateAccount,
+	deleteAccount,
+	getAccountActivity,
+	getAccountBalances,
+	getUnassignedNet,
+	getUnassignedPeriodSummary,
+	getCardPurchasesOriginated,
+	assignUnassignedTransactions,
+	setAccountBalanceToday,
+	addTransfer,
+	updateTransfer,
+	getTransfer,
+	deleteTransfer,
+	findLiveTransfer,
+	deleteTransactionsInGroup,
+	assignTransactionAccount,
+	getTransfers,
+	getAccountTransactions,
+	getAccountTransfers,
+	normalizeAccountDraft,
+	getTransfersByDateRange,
 	countDirtyRows,
 	markChangesClean,
 	hasCategory,

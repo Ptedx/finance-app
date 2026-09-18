@@ -1,0 +1,209 @@
+/**
+ * O quadro do mês por papel de conta: "quanto gastei de verdade e quanto sobrou".
+ *
+ * A fatura do cartão não é o gasto do mês. O gasto do mês é a soma de três coisas que
+ * saem de lugares diferentes: as compras no cartão (parcela a parcela, no mês em que
+ * caem), o Pix e o débito da conta principal, e o que foi mandado para os envelopes
+ * de gastos. O que vai para a reserva não é gasto, é poupança. Um pagamento de fatura
+ * é transferência e não entra em lugar nenhum — senão o cartão contaria duas vezes.
+ *
+ * Puro: recebe o movimento de cada conta no período (já somado pelo banco) e compõe.
+ */
+
+import type { AccountKind, AccountRole } from '../database/schema';
+
+export interface AccountMonthActivity {
+	accountId: string;
+	name: string;
+	kind: AccountKind;
+	role: AccountRole;
+	/** Receitas lançadas na conta no período. */
+	incomeCents: number;
+	/** Despesas lançadas na conta no período (no cartão, as parcelas que caem no mês). */
+	expenseCents: number;
+	/**
+	 * Parte de `expenseCents` em categorias de repasse: dinheiro que entrou e foi passado
+	 * adiante. Desconta da receita em vez de contar como gasto. Só lido em contas
+	 * principais e nos lançamentos sem conta.
+	 */
+	passThroughCents?: number;
+	transfersInCents: number;
+	transfersOutCents: number;
+	/**
+	 * Só cartões: soma das faturas que **fecham** no período. É a métrica principal —
+	 * o que sai do bolso. Nulo quando o cartão não tem fechamento informado.
+	 */
+	invoiceCents?: number | null;
+	/** Só cartões: valor cheio das compras **feitas** no período, parceladas ou não. */
+	purchasesOriginatedCents?: number;
+	envelopeMonthlyCents?: number | null;
+	/** Saldo da conta na véspera do período: no envelope, é o que sobrou do mês anterior. */
+	startBalanceCents?: number;
+	/** Saldo da conta hoje (ou no fim do período, se ele já passou). */
+	endBalanceCents?: number;
+}
+
+export interface MonthOverviewInput {
+	accounts: AccountMonthActivity[];
+	/** Lançamentos sem conta no período: contam como se fossem da principal. */
+	unassigned: { incomeCents: number; expenseCents: number; passThroughCents?: number };
+}
+
+export interface CardMonth {
+	accountId: string;
+	name: string;
+	/**
+	 * A fatura deste mês (a que fecha nele), com parcelas e a "fatura atual" informada. Sem
+	 * fechamento no cartão, as compras e parcelas datadas no mês, menos estornos.
+	 */
+	spendCents: number;
+	/** O que foi comprado neste mês, valor cheio — a métrica secundária. */
+	purchasesCents: number;
+}
+
+export interface EnvelopeMonth {
+	accountId: string;
+	name: string;
+	/** O que entrou no envelope no mês (menos o que saiu para outras contas suas). */
+	fundedCents: number;
+	/** O que saiu de dentro do envelope: compras no débito e Pix daqui. */
+	spentCents: number;
+	/**
+	 * O que este envelope custa ao mês: o combinado (ou o que entrou, se foi mais), menos o
+	 * que voltou para outras contas suas. É isto que entra no gasto do mês.
+	 */
+	costCents: number;
+	/** Valor combinado por mês, quando informado. */
+	monthlyCents: number | null;
+	/**
+	 * O teto da barra: o que sobrou do mês anterior mais o que entrou neste mês. Sobraram
+	 * R$ 100 e entraram R$ 1.000? O mês tem R$ 1.100 para gastar. Enquanto o dinheiro do
+	 * mês não entrou, vale o combinado (`monthlyCents`) mais a sobra.
+	 */
+	targetCents: number;
+	/** O que ainda há na conta: é o número que o banco mostra. */
+	remainingCents: number;
+}
+
+export interface MonthOverview {
+	/** Receita líquida: o que entrou menos o que só passou pela conta (repasses). */
+	incomeCents: number;
+	/** O que entrou antes de descontar os repasses. */
+	grossIncomeCents: number;
+	/** O que foi repassado adiante: nem receita, nem gasto. */
+	passThroughCents: number;
+	cardSpendCents: number;
+	cardPurchasesCents: number;
+	mainSpendCents: number;
+	envelopeFundingCents: number;
+	totalSpendCents: number;
+	/** Entrou na reserva menos o que saiu dela. */
+	savedCents: number;
+	/** Rendimento das reservas: receita, mas de outra natureza. */
+	yieldCents: number;
+	/** Receita menos gasto total. O que foi guardado sai daqui. */
+	leftoverCents: number;
+	/** Pontos-base de (receita − gasto) / receita; nulo sem receita. */
+	savingsRateBp: number | null;
+	cards: CardMonth[];
+	envelopes: EnvelopeMonth[];
+}
+
+export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => {
+	// Um repasse é receita que não era sua: sai da receita e sai do gasto.
+	const unassignedPassThrough = input.unassigned.passThroughCents ?? 0;
+	let grossIncomeCents = input.unassigned.incomeCents;
+	let passThroughCents = unassignedPassThrough;
+	let incomeCents = input.unassigned.incomeCents - unassignedPassThrough;
+	let mainSpendCents = input.unassigned.expenseCents - unassignedPassThrough;
+	let cardSpendCents = 0;
+	let cardPurchasesCents = 0;
+	let envelopeFundingCents = 0;
+	let savedCents = 0;
+	let yieldCents = 0;
+	const cards: CardMonth[] = [];
+	const envelopes: EnvelopeMonth[] = [];
+
+	for (const account of input.accounts) {
+		switch (account.role) {
+			case 'main': {
+				const passThrough = account.passThroughCents ?? 0;
+				grossIncomeCents += account.incomeCents;
+				passThroughCents += passThrough;
+				incomeCents += account.incomeCents - passThrough;
+				mainSpendCents += account.expenseCents - passThrough;
+				break;
+			}
+			case 'card': {
+				const spend = Math.max(0, account.invoiceCents ?? account.expenseCents - account.incomeCents);
+				const purchases = account.purchasesOriginatedCents ?? 0;
+				cardSpendCents += spend;
+				cardPurchasesCents += purchases;
+				cards.push({ accountId: account.accountId, name: account.name, spendCents: spend, purchasesCents: purchases });
+				break;
+			}
+			case 'envelope': {
+				// O que entrou menos o que saiu para outras contas suas. Mandar R$ 600 do envelope
+				// para a principal pagar a fatura não é gasto do envelope: a fatura já conta no
+				// cartão. Sem descontar, o mesmo dinheiro contava duas vezes.
+				const funded = account.transfersInCents - account.transfersOutCents;
+				// O envelope custa o combinado todo mês, tenha sido gasto lá dentro ou não: o
+				// dinheiro sai da conta principal e fica lá. Entrou mais que o combinado? Vale o que
+				// entrou. O que voltou para outra conta sua desconta — senão, pagar a fatura com
+				// dinheiro do envelope contaria duas vezes.
+				const cost = Math.max(account.envelopeMonthlyCents ?? 0, account.transfersInCents) - account.transfersOutCents;
+				envelopeFundingCents += cost;
+				const carried = Math.max(0, account.startBalanceCents ?? 0);
+				const monthly = account.envelopeMonthlyCents ?? null;
+				const spent = Math.max(0, account.expenseCents - account.incomeCents);
+				// O teto sai do dinheiro de verdade: o que sobrou do mês anterior mais o que entrou
+				// neste mês. Enquanto o envio do mês não aparece como transferência, vale o combinado
+				// — ou o que já está na conta, se for mais (é o caso de quem começou a usar o app com
+				// o dinheiro do mês já lá).
+				const target = funded > 0 ? carried + funded : Math.max(carried, monthly ?? 0);
+				envelopes.push({
+					accountId: account.accountId,
+					name: account.name,
+					fundedCents: funded,
+					costCents: cost,
+					spentCents: spent,
+					monthlyCents: monthly,
+					targetCents: target,
+					remainingCents: account.endBalanceCents ?? Math.max(0, target - spent),
+				});
+				break;
+			}
+			case 'reserve': {
+				savedCents += account.transfersInCents - account.transfersOutCents;
+				yieldCents += account.incomeCents;
+				break;
+			}
+			case 'external':
+				// Não acompanhada: o que ela manda para a principal já chegou lá como receita.
+				break;
+		}
+	}
+
+	const totalSpendCents = cardSpendCents + mainSpendCents + envelopeFundingCents;
+	const leftoverCents = incomeCents - totalSpendCents;
+	const savingsRateBp = incomeCents > 0 ? Math.round((leftoverCents / incomeCents) * 10_000) : null;
+
+	return {
+		incomeCents,
+		grossIncomeCents,
+		passThroughCents,
+		cardSpendCents,
+		cardPurchasesCents,
+		mainSpendCents,
+		envelopeFundingCents,
+		totalSpendCents,
+		savedCents,
+		yieldCents,
+		leftoverCents,
+		savingsRateBp,
+		cards,
+		envelopes,
+	};
+};
+
+export default { buildMonthOverview };

@@ -40,7 +40,11 @@ import {
 	savingsRateDelta,
 	savingsRateTrend,
 } from './metrics';
+import { monthKeyName } from './dateUtils';
+import type { HealthIndicator } from './healthScore';
 import { type Cents, formatCents } from './money';
+import type { DuplicateIncome } from './reportSeries';
+import type { RetirementReadModel } from './retirement';
 
 // ---------------------------------------------------------------------------
 // Read-model
@@ -144,7 +148,16 @@ export type InsightId =
 	| 'runway-thin'
 	| 'runway-solid'
 	| 'needs-over-target'
-	| 'category-jump';
+	| 'category-jump'
+	| 'goal-unset'
+	| 'goal-reached'
+	| 'goal-on-track'
+	| 'goal-needs-more'
+	| 'goal-no-contribution'
+	| 'reserve-yield-low'
+	| 'card-load-heavy'
+	| 'spending-above-pace'
+	| 'income-possibly-duplicated';
 
 export interface Insight {
 	/** Estável entre execuções: chave de tradução na UI, chave de deduplicação no bot. */
@@ -336,10 +349,133 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 };
 
+// ---------------------------------------------------------------------------
+// Insights da meta, da saúde e da renda
+// ---------------------------------------------------------------------------
+
+/** O horizonte de referência para "está no ritmo?": chegar em até 20 anos. */
+export const GOAL_ON_TRACK_YEARS = 20;
+
+/** Rendimento observado abaixo da metade do esperado merece uma frase. */
+export const LOW_REALIZED_YIELD_RATIO = 0.5;
+
+const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : years.toFixed(1));
+
+const monthText = (key: string): string => `${monthKeyName(key)} ${key.slice(0, 4)}`;
+
+/**
+ * As frases sobre a meta de aposentadoria, a grade de saúde e a renda contada duas
+ * vezes. Separadas de `buildInsights` porque os insumos vêm de outro lugar (a meta, o
+ * histórico de meses, a lista do mês); quem monta a tela junta as duas listas.
+ */
+export const buildGoalInsights = (retirement: RetirementReadModel | null, health: HealthIndicator[], duplicates: DuplicateIncome[]): Insight[] => {
+	const insights: Insight[] = [];
+
+	// --- Receita possivelmente duplicada: antes de tudo, porque distorce o resto ------
+	for (const duplicate of duplicates) {
+		insights.push({
+			id: 'income-possibly-duplicated',
+			severity: 'critical',
+			title: `${formatCents(duplicate.amountCents)} came in twice (${duplicate.dates[0]} and ${duplicate.dates[1]}). If it is the same money, delete one.`,
+			params: { amount: formatCents(duplicate.amountCents), first: duplicate.dates[0], second: duplicate.dates[1] },
+			valueCents: duplicate.amountCents,
+		});
+	}
+
+	// --- A meta -----------------------------------------------------------------------
+	if (retirement === null) {
+		insights.push({
+			id: 'goal-unset',
+			severity: 'neutral',
+			title: 'Set a retirement goal to see how far you are from living off your investments.',
+			params: {},
+		});
+	} else {
+		const { reach } = retirement;
+		const horizon = retirement.contributionByHorizon.find((h) => h.years === GOAL_ON_TRACK_YEARS)?.monthlyCents ?? null;
+		if (reach.kind === 'reached') {
+			insights.push({
+				id: 'goal-reached',
+				severity: 'positive',
+				title: `Your capital already covers ${formatCents(retirement.requiredMonthlyCents)} a month. You are there.`,
+				params: { amount: formatCents(retirement.requiredMonthlyCents) },
+				valueCents: retirement.capitalCents,
+			});
+		} else if (reach.kind === 'eta' && reach.years <= GOAL_ON_TRACK_YEARS) {
+			insights.push({
+				id: 'goal-on-track',
+				severity: 'positive',
+				title: `Saving ${formatCents(retirement.monthlyContributionCents)} a month, you reach your goal in ${yearsText(reach.years)} years (${monthText(reach.month)}).`,
+				params: { amount: formatCents(retirement.monthlyContributionCents), years: yearsText(reach.years), month: monthText(reach.month) },
+				valueCents: retirement.monthlyContributionCents,
+				months: reach.months,
+			});
+		} else if (reach.kind === 'never' && reach.reason === 'no-contribution') {
+			insights.push({
+				id: 'goal-no-contribution',
+				severity: 'attention',
+				title: 'Nothing has gone into your reserve in the last months, so the goal is not getting closer.',
+				params: { amount: horizon === null ? '—' : formatCents(horizon), years: GOAL_ON_TRACK_YEARS },
+				valueCents: horizon ?? undefined,
+			});
+		} else if (reach.kind !== 'never' || reach.reason !== 'no-yield') {
+			insights.push({
+				id: 'goal-needs-more',
+				severity: 'attention',
+				title: `To get there in ${GOAL_ON_TRACK_YEARS} years you would need ${horizon === null ? '—' : formatCents(horizon)} a month; you are saving ${formatCents(Math.max(0, retirement.monthlyContributionCents))}.`,
+				params: {
+					needed: horizon === null ? '—' : formatCents(horizon),
+					amount: formatCents(Math.max(0, retirement.monthlyContributionCents)),
+					years: GOAL_ON_TRACK_YEARS,
+				},
+				valueCents: horizon ?? undefined,
+			});
+		}
+
+		if (retirement.realizedYieldBp !== null && retirement.realizedYieldBp < retirement.expectedYieldBp * LOW_REALIZED_YIELD_RATIO) {
+			insights.push({
+				id: 'reserve-yield-low',
+				severity: 'attention',
+				title: `Your reserve yielded ${percentText(retirement.realizedYieldBp)} in the last 12 months, against the ${percentText(retirement.expectedYieldBp)} you expect.`,
+				params: { realized: percentText(retirement.realizedYieldBp), expected: percentText(retirement.expectedYieldBp) },
+				basisPoints: retirement.realizedYieldBp,
+			});
+		}
+	}
+
+	// --- A grade de saúde: só o que está no vermelho e ainda não tem frase ------------
+	for (const indicator of health) {
+		if (indicator.status !== 'bad') continue;
+		if (indicator.id === 'card-load') {
+			insights.push({
+				id: 'card-load-heavy',
+				severity: 'critical',
+				title: `Your card invoices add up to ${indicator.params.percent} of a month's income.`,
+				params: indicator.params,
+				basisPoints: indicator.value ?? undefined,
+			});
+		} else if (indicator.id === 'spending-trend') {
+			insights.push({
+				id: 'spending-above-pace',
+				severity: 'attention',
+				title: `You are spending ${indicator.params.percent} above your usual pace for this point of the month.`,
+				params: indicator.params,
+				basisPoints: indicator.value ?? undefined,
+			});
+		}
+	}
+
+	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+};
+
+/** Junta as duas listas numa só, da mais urgente para a menos. */
+export const mergeInsights = (...lists: Insight[][]): Insight[] =>
+	lists.flat().sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
  * default e um modulo quebrado do ponto de vista dele. Este export existe so para
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de metrics.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { computeWealthMetrics, buildInsights };
+export default { computeWealthMetrics, buildInsights, buildGoalInsights, mergeInsights };

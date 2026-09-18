@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import { useAuth } from '../contexts/AuthContext';
+import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
@@ -29,6 +30,7 @@ import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import * as biometricUtils from '../utils/biometricUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import * as notificationUtils from '../utils/notificationUtils';
+import { StatementImportError } from '../utils/statementImport';
 import { resetAsyncStorage } from '../utils/storageUtils';
 
 const SettingsScreen = () => {
@@ -40,6 +42,52 @@ const SettingsScreen = () => {
 	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { authenticate } = useBiometricAuth();
+	const {
+		supported: captureSupported,
+		enabled: captureEnabled,
+		pendingCount: capturePending,
+		openSettings: openCaptureSettings,
+		importStatement,
+	} = useCaptures();
+	const [isImportingStatement, setIsImportingStatement] = useState(false);
+
+	/**
+	 * Extrato OFX: nada entra no livro sem revisão. O resumo diz quantas linhas o app
+	 * já conhecia, quantas foram para a caixa de entrada e quantas ficaram de fora.
+	 */
+	const handleImportStatement = async () => {
+		try {
+			setIsImportingStatement(true);
+			const result = await importStatement();
+			if (!result) return;
+
+			const s = result.summary;
+			const toReview = s.pending + s.questions;
+			const body = t('captures.import.summary', {
+				total: s.total,
+				known: s.skippedExisting + s.matchedCaptures + s.matchedTransactions,
+				review: toReview,
+				auto: s.autoConfirmed,
+				ignored: s.ignored + s.transfers,
+			});
+			Alert.alert(
+				t('captures.import.title'),
+				body,
+				toReview > 0
+					? [
+							{ text: t('settings.ok') },
+							{ text: t('captures.import.review'), onPress: () => router.push('/inbox') },
+						]
+					: [{ text: t('settings.ok') }]
+			);
+		} catch (error) {
+			console.error('Error importing statement:', error);
+			const code = error instanceof StatementImportError ? error.code : 'failed';
+			Alert.alert(t('captures.import.failedTitle'), t(`captures.import.error_${code}`));
+		} finally {
+			setIsImportingStatement(false);
+		}
+	};
 
 	const [_darkMode, _setDarkMode] = useState(true);
 	const [notifications, setNotifications] = useState(true);
@@ -331,6 +379,8 @@ const SettingsScreen = () => {
 							/>
 						)
 					)}
+					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
+					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards/index'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),
@@ -391,12 +441,42 @@ const SettingsScreen = () => {
 						isImporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
 					)}
 					{renderSettingsItem(
+						'document-text-outline',
+						t('captures.import.item'),
+						handleImportStatement,
+						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+					)}
+					{renderSettingsItem(
 						'trash-outline',
 						t('settings.resetAllData'),
 						handleResetData,
 						isResetting ? <ActivityIndicator size="small" color="#FF6B6B" /> : undefined
 					)}
 				</View>
+
+				{/* Captura automática: ligar o acesso a notificações e abrir a revisão.
+				    Ligar é do sistema, não do app — o item leva para a tela do Android. */}
+				{captureSupported && (
+					<View style={styles.section}>
+						<Text style={styles.sectionTitle}>{t('captures.settingsSection')}</Text>
+						{renderSettingsItem(
+							'notifications-circle-outline',
+							t('captures.settingsCapture'),
+							openCaptureSettings,
+							<Text style={captureEnabled ? styles.accountStatus : styles.settingUnavailableText}>
+								{captureEnabled ? t('captures.statusOn') : t('captures.statusOff')}
+							</Text>
+						)}
+						{renderSettingsItem(
+							'checkmark-done-outline',
+							t('captures.settingsReview'),
+							() => router.push('/inbox'),
+							capturePending > 0 ? (
+								<Text style={styles.accountStatus}>{capturePending}</Text>
+							) : undefined
+						)}
+					</View>
+				)}
 
 				{/* About */}
 				<View style={styles.section}>

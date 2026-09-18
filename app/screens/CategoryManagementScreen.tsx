@@ -12,7 +12,15 @@ import {
 } from 'react-native';
 import CategoryEditorModal from '../components/CategoryEditorModal';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Category, CategoryDraft } from '../database/schema';
+import { CATEGORY_NATURES, type Category, type CategoryDraft, type CategoryNature } from '../database/schema';
+
+/** Rótulo de cada natureza, na tela. */
+const NATURE_LABEL: Record<CategoryNature, string> = {
+	essential: 'Essential',
+	discretionary: 'Discretionary',
+	passthrough: 'Pass-through',
+};
+
 
 const CategoryManagementScreen = () => {
 	const { categories, addCategory, updateCategory, deleteCategory } = useTransactions();
@@ -70,7 +78,7 @@ const CategoryManagementScreen = () => {
 				color: category.color,
 				icon: category.icon,
 				type: category.type,
-				nature: category.nature === 'essential' ? 'discretionary' : 'essential',
+				nature: CATEGORY_NATURES[(CATEGORY_NATURES.indexOf(category.nature) + 1) % CATEGORY_NATURES.length],
 			});
 		} catch (_error) {
 			Alert.alert('Error', 'Failed to update category. Please try again.');
@@ -118,7 +126,11 @@ const CategoryManagementScreen = () => {
 						<TouchableOpacity
 							style={[
 								styles.natureChip,
-								item.nature === 'essential' ? styles.essentialChip : styles.discretionaryChip,
+								item.nature === 'essential'
+									? styles.essentialChip
+									: item.nature === 'passthrough'
+										? styles.passThroughChip
+										: styles.discretionaryChip,
 							]}
 							onPress={() => handleToggleNature(item)}
 						>
@@ -127,10 +139,12 @@ const CategoryManagementScreen = () => {
 									styles.natureChipText,
 									item.nature === 'essential'
 										? styles.essentialChipText
-										: styles.discretionaryChipText,
+										: item.nature === 'passthrough'
+											? styles.passThroughChipText
+											: styles.discretionaryChipText,
 								]}
 							>
-								{item.nature === 'essential' ? 'Essential' : 'Discretionary'}
+								{NATURE_LABEL[item.nature]}
 							</Text>
 						</TouchableOpacity>
 					)}
@@ -231,6 +245,10 @@ const styles = StyleSheet.create({
 		backgroundColor: 'transparent',
 		borderColor: 'rgba(255, 255, 255, 0.2)',
 	},
+	passThroughChip: {
+		backgroundColor: 'rgba(255, 204, 92, 0.12)',
+		borderColor: 'rgba(255, 204, 92, 0.5)',
+	},
 	natureChipText: {
 		fontSize: 10,
 		fontWeight: '600',
@@ -240,6 +258,9 @@ const styles = StyleSheet.create({
 	},
 	discretionaryChipText: {
 		color: 'rgba(255, 255, 255, 0.5)',
+	},
+	passThroughChipText: {
+		color: '#FFCC5C',
 	},
 	container: {
 		flex: 1,
