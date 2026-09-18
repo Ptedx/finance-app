@@ -45,6 +45,7 @@ export const draftOf = (debt: Debt): DebtDraft => ({
 	installmentsTotal: debt.installmentsTotal,
 	dueDay: debt.dueDay,
 	rateBp: debt.rateBp,
+	feeCents: debt.feeCents,
 	adminFeeBp: debt.adminFeeBp,
 	accountId: debt.accountId,
 	category: debt.category,

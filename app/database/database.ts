@@ -57,6 +57,8 @@ import {
 	ACCOUNT_V9_COLUMNS,
 	ACCOUNT_V10_COLUMNS,
 	ACCOUNT_V13_COLUMNS,
+	ACCOUNT_V16_COLUMNS,
+	DEBT_V16_COLUMNS,
 	TRANSACTION_V13_COLUMNS,
 	DEFAULT_CLOSING_DAYS_BEFORE,
 	defaultRoleFor,
@@ -108,6 +110,7 @@ interface AccountDB extends SyncColumnsDB {
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
 	cardNames: string | null;
+	yieldCdiBp: number | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -159,6 +162,7 @@ interface DebtDB extends SyncColumnsDB {
 	installmentsTotal: number;
 	dueDay: number;
 	rateBp: number;
+	feeCents: number;
 	adminFeeBp: number | null;
 	accountId: string | null;
 	category: string | null;
@@ -210,6 +214,7 @@ const convertAccount = (account: AccountDB): Account => ({
 	closingDaysBefore: account.closingDaysBefore ?? null,
 	creditLimitCents: account.creditLimitCents,
 	cardNames: account.cardNames ?? null,
+	yieldCdiBp: account.yieldCdiBp ?? null,
 	packageName: account.packageName,
 	accountKey: account.accountKey,
 	openingBalanceCents: account.openingBalanceCents,
@@ -543,6 +548,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 13) await migrateCardsPerPurchase();
 	if (version < 14) await migrateRetirementGoals();
 	if (version < 15) await migrateDebts();
+	if (version < 16) await migrateYieldAndFees();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -643,6 +649,29 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
  *   lançamentos vão para a conta corrente do mesmo banco, com o final do cartão, e o nome
  *   fica como o nome do cartão de débito daquela conta. Pagamentos para ele não existiram.
  */
+/**
+ * v15 -> v16: contas ganham quanto do CDI rendem; dívidas ganham os encargos da parcela.
+ *
+ * E todas as dívidas voltam a ficar sujas: um servidor sem a coleção `debts` descartava as
+ * dívidas em silêncio enquanto o app as marcava como enviadas. Reenviar é inofensivo — o
+ * upsert do servidor é idempotente — e o motor agora só envia o que o servidor conhece.
+ */
+const migrateYieldAndFees = async (): Promise<void> => {
+	if (await tableExists('accounts')) {
+		for (const [name, sql] of ACCOUNT_V16_COLUMNS) {
+			if (await tableHasColumn('accounts', name)) continue;
+			await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+		}
+	}
+	if (await tableExists('debts')) {
+		for (const [name, sql] of DEBT_V16_COLUMNS) {
+			if (await tableHasColumn('debts', name)) continue;
+			await db.execAsync(`ALTER TABLE debts ADD COLUMN ${name} ${sql}`);
+		}
+		await db.runAsync('UPDATE debts SET dirty = 1');
+	}
+};
+
 /** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
 const migrateDebts = async (): Promise<void> => {
 	await db.execAsync(CREATE_DEBTS_TABLE);
@@ -1220,6 +1249,7 @@ export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
 			isCard && account.closingDay ? (account.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE) : null,
 		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
 		cardNames: account.cardNames ?? null,
+		yieldCdiBp: isCard ? null : (account.yieldCdiBp ?? null),
 		packageName: account.packageName ?? null,
 		accountKey: account.accountKey ?? null,
 		sortOrder: account.sortOrder ?? 0,
@@ -1241,6 +1271,7 @@ const accountValues = (account: AccountDraft): Array<string | number | null> => 
 	account.closingDaysBefore,
 	account.creditLimitCents,
 	account.cardNames,
+	account.yieldCdiBp ?? null,
 	account.packageName,
 	account.accountKey,
 	account.openingBalanceCents,
@@ -1255,9 +1286,9 @@ export const addAccount = async (draft: AccountDraft, explicitId?: string): Prom
 	await db.runAsync(
 		`INSERT INTO accounts
        (name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-        closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, packageName, accountKey, openingBalanceCents, openingBalanceDate,
         sortOrder, archived, id, updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[...accountValues(account), id, nowTimestamp()]
 	);
@@ -1270,7 +1301,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE accounts
      SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
-         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, packageName = ?, accountKey = ?,
+         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, yieldCdiBp = ?, packageName = ?, accountKey = ?,
          openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
          updatedAt = ?, dirty = 1
      WHERE id = ?`,
@@ -2153,6 +2184,7 @@ const convertDebt = (row: DebtDB): Debt => ({
 	installmentsTotal: row.installmentsTotal,
 	dueDay: row.dueDay,
 	rateBp: row.rateBp,
+	feeCents: row.feeCents ?? 0,
 	adminFeeBp: row.adminFeeBp ?? null,
 	accountId: row.accountId ?? null,
 	category: row.category ?? null,
@@ -2179,6 +2211,7 @@ const DEBT_COLUMNS = [
 	'installmentsTotal',
 	'dueDay',
 	'rateBp',
+	'feeCents',
 	'adminFeeBp',
 	'accountId',
 	'category',
@@ -2391,6 +2424,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			closingDaysBefore: row.closingDaysBefore ?? null,
 			creditLimitCents: row.creditLimitCents,
 			cardNames: row.cardNames ?? null,
+			yieldCdiBp: row.yieldCdiBp ?? null,
 			packageName: row.packageName,
 			accountKey: row.accountKey,
 			openingBalanceCents: row.openingBalanceCents,
@@ -2470,6 +2504,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			installmentsTotal: row.installmentsTotal,
 			dueDay: row.dueDay,
 			rateBp: row.rateBp,
+			feeCents: row.feeCents ?? 0,
 			adminFeeBp: row.adminFeeBp ?? null,
 			accountId: row.accountId ?? null,
 			category: row.category ?? null,
@@ -2678,16 +2713,16 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			await db.runAsync(
 				`INSERT INTO accounts
            (id, name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-            closingDaysBefore, creditLimitCents, cardNames, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, packageName, accountKey, openingBalanceCents, openingBalanceDate,
             sortOrder, archived, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, kind = excluded.kind, role = excluded.role,
            envelopeMonthlyCents = excluded.envelopeMonthlyCents, network = excluded.network,
            bankName = excluded.bankName,
            color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
            dueDay = excluded.dueDay, closingDaysBefore = excluded.closingDaysBefore,
-           creditLimitCents = excluded.creditLimitCents, cardNames = excluded.cardNames,
+           creditLimitCents = excluded.creditLimitCents, cardNames = excluded.cardNames, yieldCdiBp = excluded.yieldCdiBp,
            packageName = excluded.packageName, accountKey = excluded.accountKey,
            openingBalanceCents = excluded.openingBalanceCents,
            openingBalanceDate = excluded.openingBalanceDate, sortOrder = excluded.sortOrder,
@@ -2708,6 +2743,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.closingDaysBefore ?? null,
 					row.creditLimitCents,
 					row.cardNames ?? null,
+					row.yieldCdiBp ?? null,
 					row.packageName,
 					row.accountKey,
 					row.openingBalanceCents,
@@ -2865,6 +2901,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				row.installmentsTotal,
 				row.dueDay,
 				row.rateBp,
+				row.feeCents ?? 0,
 				row.adminFeeBp ?? null,
 				row.accountId ?? null,
 				row.category ?? null,

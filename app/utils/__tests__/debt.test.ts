@@ -5,6 +5,8 @@ import {
 	debtMonthLines,
 	debtStateOn,
 	dueDatesAfter,
+	effectiveRateBp,
+	installmentFeeCents,
 	impliedRateBp,
 	installmentInRecurring,
 	monthlyRateOf,
@@ -256,5 +258,40 @@ describe('efeito no mês e no futuro', () => {
 
 	it('dívida quitada não entra no resumo', () => {
 		expect(summarizeDebts([{ id: 'x', name: 'X', terms: car({ balanceCents: 0 }) }], '2026-09-05')).toMatchObject({ balanceCents: 0, weightedRateBp: null, releases: [] });
+	});
+});
+
+describe('encargos na parcela: a taxa do contrato e o custo efetivo', () => {
+	// O caso do usuário: contrato a 1,8% ao mês; a parcela cobra mais que isso por causa de
+	// seguro e tarifas, e estimar a taxa só pela parcela dava 2,43%.
+	const monthly18 = annualRateBpOf(0.018);
+	const pure = priceInstallmentCents(R(40_000), monthlyRateOf(monthly18), 36);
+	const charged = pure + R(180);
+	const withFee = (): DebtTerms => ({ system: 'price', balanceCents: R(40_000), balanceDate: '2026-09-01', installmentCents: charged, remaining: 36, dueDay: 10, rateBp: monthly18, feeCents: R(180) });
+
+	it('os encargos são a parcela cobrada menos a que a taxa do contrato daria', () => {
+		expect(installmentFeeCents({ system: 'price', balanceCents: R(40_000), installmentCents: charged, remaining: 36, rateBp: monthly18 })).toBe(R(180));
+		expect(installmentFeeCents({ system: 'price', balanceCents: R(40_000), installmentCents: pure - R(50), remaining: 36, rateBp: monthly18 })).toBe(-R(50));
+		expect(installmentFeeCents({ system: 'none', balanceCents: R(1), installmentCents: R(1), remaining: 1, rateBp: 500 })).toBe(0);
+	});
+
+	it('com encargos, o cronograma ainda quita no prazo e cobra a parcela do banco', () => {
+		const schedule = buildSchedule(withFee());
+		expect(schedule.entries).toHaveLength(36);
+		expect(schedule.entries[0].installmentCents).toBe(charged);
+		expect(schedule.entries[35].balanceCents).toBe(0);
+		// Juros são só os do contrato; os encargos não amortizam.
+		expect(schedule.totalPaidCents - schedule.totalInterestCents - R(40_000)).toBeCloseTo(R(180) * 36, -2);
+	});
+
+	it('o custo efetivo com encargos é maior que a taxa do contrato; sem encargos, é a própria', () => {
+		expect(effectiveRateBp(withFee(), '2026-09-05')).toBeGreaterThan(monthly18);
+		expect(effectiveRateBp({ ...withFee(), installmentCents: pure, feeCents: 0 }, '2026-09-05')).toBe(monthly18);
+	});
+
+	it('reduzir o prazo também corta os encargos das parcelas que somem', () => {
+		const withFees = simulateExtraPayment(withFee(), '2026-09-05', R(5_000), 'shorten');
+		const without = simulateExtraPayment({ ...withFee(), installmentCents: pure, feeCents: 0 }, '2026-09-05', R(5_000), 'shorten');
+		expect(withFees?.savedCents).toBeGreaterThan(without?.savedCents ?? Infinity);
 	});
 });

@@ -29,9 +29,27 @@ souber. O outro sai da mesma conta:
 | **Consórcio** | fixa, sobe com o reajuste no aniversário | sem juros: a "taxa" é o reajuste informado |
 
 A taxa aceita "ao mês" ou "ao ano" (financiamento de carro costuma ser cotado ao mês). A
-tela mostra na hora a taxa implícita, a data de quitação e os juros que faltam, para
-conferir com o banco. Se os valores não fecham (parcela que não paga o saldo), ela avisa
-antes de salvar.
+tela mostra na hora a taxa, a data de quitação e os juros que faltam, para conferir com o
+banco. Se os valores não fecham (parcela que não paga o saldo), ela avisa antes de salvar.
+
+### Taxa do contrato e encargos
+
+A parcela que o banco cobra quase sempre traz **seguro e tarifas** além de juros e
+amortização. Por isso a taxa estimada só pela parcela sai **mais alta** que a do contrato
+(o caso real: contrato a 1,8% ao mês, estimativa de 2,43%). Com saldo **e** taxa
+informados, o app separa as duas coisas:
+
+```
+encargos = parcela cobrada − parcela que a taxa do contrato daria
+```
+
+O cronograma usa a taxa do contrato para os juros e soma os encargos a cada parcela (eles
+não amortizam). Só com o saldo, a taxa é estimada e a tela diz que é estimativa; só com a
+taxa, o saldo é que é estimado.
+
+O **veredito** compara o investimento com o **custo efetivo** — a taxa que iguala o saldo
+de hoje às parcelas que faltam, com os encargos —, porque antecipar deixa de pagar juros
+**e** encargos. Sem encargos, é a própria taxa do contrato.
 
 ## O saldo é uma âncora
 

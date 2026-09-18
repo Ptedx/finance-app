@@ -10,7 +10,7 @@ import AmortizeSheet from '../components/debts/AmortizeSheet';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
-import { debtStateOn, termsOf, worthPayingOff } from '../utils/debt';
+import { debtStateOn, effectiveRateBp, monthlyRateOf, termsOf, worthPayingOff } from '../utils/debt';
 import { formatCents } from '../utils/money';
 import { formatPercentBp } from '../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
@@ -49,7 +49,9 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	}
 
 	const isConsortium = debt.kind === 'consortium';
-	const verdict = worthPayingOff({ debtRateBp: debt.rateBp, investmentYieldBp });
+	// Antecipar deixa de pagar juros e encargos: o custo que vale é o efetivo.
+	const costBp = effectiveRateBp(termsOf(debt), today);
+	const verdict = worthPayingOff({ debtRateBp: costBp, investmentYieldBp });
 	const paid = Math.max(0, debt.installmentsTotal - state.remaining);
 	const progress = debt.installmentsTotal > 0 ? Math.min(100, Math.round((paid / debt.installmentsTotal) * 100)) : 0;
 	const rows = expanded ? state.upcoming : state.upcoming.slice(0, COLLAPSED_ROWS);
@@ -101,8 +103,15 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 					<Text style={styles.muted}>
 						{isConsortium
 							? t('debts.detail.adjustmentRate', { rate: formatPercentBp(debt.rateBp) })
-							: t('debts.detail.rate', { rate: formatPercentBp(debt.rateBp), system: t(`debts.system.${debt.system}`) })}
+							: t('debts.detail.rate', {
+									monthly: formatPercentBp(Math.round(monthlyRateOf(debt.rateBp) * 10_000), 2),
+									rate: formatPercentBp(debt.rateBp),
+									system: t(`debts.system.${debt.system}`),
+								})}
 					</Text>
+					{!isConsortium && debt.feeCents > 0 ? (
+						<Text style={styles.muted}>{t('debts.detail.fee', { amount: formatCents(debt.feeCents), cost: formatPercentBp(costBp) })}</Text>
+					) : null}
 				</View>
 
 				{!debt.archived && state.amortizes ? (
@@ -110,13 +119,13 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('debts.verdict.title')}
 						</Text>
-						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(debt.rateBp), gross: formatPercentBp(investmentYieldBp), net: formatPercentBp(verdict.netYieldBp) })}`}>
+						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(costBp), gross: formatPercentBp(investmentYieldBp), net: formatPercentBp(verdict.netYieldBp) })}`}>
 							<Ionicons name={VERDICT_ICON[verdict.verdict]} size={22} color={VERDICT_COLOR[verdict.verdict]} />
 							<Text style={[styles.verdict, { color: VERDICT_COLOR[verdict.verdict] }]}>{t(`debts.verdict.${verdict.verdict}`)}</Text>
 						</View>
 						<Text style={styles.body}>
 							{t(isConsortium ? 'debts.verdict.whyConsortium' : 'debts.verdict.why', {
-								debt: formatPercentBp(debt.rateBp),
+								debt: formatPercentBp(costBp),
 								gross: formatPercentBp(investmentYieldBp),
 								net: formatPercentBp(verdict.netYieldBp),
 							})}

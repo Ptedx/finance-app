@@ -15,7 +15,17 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
   parcela) e o veredito "amortizar ou investir" contra o rendimento líquido da meta.
 - Relatórios: seção de dívidas, parcelas no "Já comprometido" (sem somar de novo o que já é
   recorrência) e o cenário "se as parcelas virarem aporte ao quitar" na projeção.
-- Banco local v15 (tabela `debts`), sincronizada. Detalhes: [docs/dividas.md](docs/dividas.md).
+- Dívidas: **taxa do contrato editável** (ao mês ou ao ano) junto com o saldo; o que a
+  parcela cobra a mais vira "seguro e tarifas", e o veredito usa o custo efetivo.
+- Contas que **rendem um % do CDI** (ex.: 120%): o saldo soma o rendimento estimado por dia
+  útil, com a taxa CDI do Banco Central.
+- Acertar o saldo de uma reserva/investimento: um campo só, sem lançar despesa (antes a
+  folha recalculava um "gasto" e o lançava).
+- Sync: só envia as coleções que o servidor conhece (antes, um servidor sem dívidas as
+  descartava em silêncio e o app as marcava como enviadas); as dívidas voltam a ser
+  enviadas. O servidor ganha o gatilho de `serverSeq` que faltava em `retirement_goals`
+  e `debts` — sem ele, editar a meta ou uma dívida não chegava aos outros aparelhos.
+- Banco local v15 (tabela `debts`) e v16 (CDI nas contas, encargos nas dívidas), sincronizados. Detalhes: [docs/dividas.md](docs/dividas.md).
 - Ajustes mostram a versão real do app instalado.
 - O sync guarda o cursor por versão do banco: voltar para a 1.0 e depois para a 1.1
   não perde as dívidas criadas em outro aparelho no meio-tempo.

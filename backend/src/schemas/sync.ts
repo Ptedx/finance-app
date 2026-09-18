@@ -93,6 +93,7 @@ export const accountSchema = z.object({
 	creditLimitCents: amountCents.nullish(),
 	/** v13: nomes dos cartões por final, JSON. */
 	cardNames: z.string().max(4000).nullish(),
+	yieldCdiBp: z.number().int().min(0).max(100_000).nullish(),
 	packageName: z.string().max(200).nullish(),
 	accountKey: z.string().max(200).nullish(),
 	openingBalanceCents: amountCents,
@@ -149,6 +150,7 @@ export const debtSchema = z.object({
 	installmentsTotal: z.number().int().min(0).max(600),
 	dueDay: z.number().int().min(1).max(31),
 	rateBp: z.number().int().min(0).max(100_000),
+	feeCents: amountCents.min(0).nullish(),
 	adminFeeBp: z.number().int().min(0).max(10_000).nullish(),
 	accountId: z.string().min(1).max(64).nullish(),
 	category: z.string().min(1).max(64).nullish(),

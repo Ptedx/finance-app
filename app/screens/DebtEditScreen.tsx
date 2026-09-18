@@ -16,6 +16,7 @@ import {
 	DEFAULT_CONSORTIUM_ADJUSTMENT_BP,
 	debtStateOn,
 	impliedRateBp,
+	installmentFeeCents,
 	MAX_SCHEDULE_MONTHS,
 	monthlyRateOf,
 	principalFromRateCents,
@@ -28,16 +29,16 @@ import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/pe
  * Cadastrar ou corrigir uma dívida.
  *
  * Pede só o que está no boleto ou no app do banco: a parcela, quantas faltam, o dia do
- * vencimento — e **o saldo devedor ou a taxa**, o que o usuário souber. O outro sai da
- * mesma conta (tabela Price, SAC) e aparece na hora, junto com a data de quitação e os
- * juros que ainda faltam, para conferir com o banco antes de salvar.
+ * vencimento, o saldo devedor e a taxa do contrato — os dois últimos, o que o usuário
+ * souber. Com os dois, a diferença entre a parcela cobrada e a que a taxa daria vira
+ * "seguro e tarifas": é o caso comum, e é por isso que estimar a taxa só pela parcela sai
+ * mais alto que a do contrato. Com um só, o outro é estimado e a tela diz que é estimativa.
  *
  * Salvar ancora a dívida em hoje: os valores digitados são os de hoje. Numa dívida já
  * cadastrada, os campos já vêm com o saldo e o prazo projetados para hoje, então salvar
  * sem mexer não muda nada.
  */
 
-type Known = 'balance' | 'rate';
 type RatePeriod = 'month' | 'year';
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
@@ -57,7 +58,6 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const [remaining, setRemaining] = useState('');
 	const [total, setTotal] = useState('');
 	const [dueDay, setDueDay] = useState('');
-	const [known, setKnown] = useState<Known>('balance');
 	const [balance, setBalance] = useState('');
 	const [rate, setRate] = useState('');
 	const [ratePeriod, setRatePeriod] = useState<RatePeriod>('month');
@@ -78,10 +78,10 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 		setRemaining(String(state.remaining));
 		setTotal(String(existing.installmentsTotal));
 		setDueDay(String(existing.dueDay));
-		setKnown('balance');
 		setBalance(centsToDisplayInput(state.balanceCents));
-		setRate(bpToPercentInput(existing.rateBp));
-		setRatePeriod('year');
+		// Financiamento se fala ao mês: a taxa abre como no contrato.
+		setRate(bpToPercentInput(Math.round(monthlyRateOf(existing.rateBp) * 10_000)));
+		setRatePeriod('month');
 		if (existing.kind === 'consortium') setAdjustment(bpToPercentInput(existing.rateBp));
 		setAdminFee(existing.adminFeeBp !== null ? bpToPercentInput(existing.adminFeeBp) : '');
 		setAccountId(existing.accountId);
@@ -102,23 +102,39 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 		return ratePeriod === 'month' ? annualRateBpOf(bp / 10_000) : bp;
 	})();
 
-	/** O que a tela deriva: o saldo e a taxa que valem, e se a conta fecha. */
-	const derived = useMemo(() => {
+	/**
+	 * O que a tela deriva: o saldo, a taxa e os encargos que valem, e de onde cada um veio.
+	 * `rateBp` nulo = os números não fecham (a parcela não paga o saldo nessa taxa).
+	 */
+	const derived = useMemo((): { balanceCents: number; rateBp: number | null; feeCents: number; estimated: 'rate' | 'balance' | null } | null => {
 		if (installmentCents === null || installmentCents <= 0 || !validRemaining) return null;
 		if (isConsortium) {
 			const rateBp = percentInputToBp(adjustment, 100) ?? 0;
 			const typed = balance.trim() === '' ? null : parseAmountToCents(balance);
-			return { balanceCents: typed ?? installmentCents * remainingCount, rateBp };
+			return { balanceCents: typed ?? installmentCents * remainingCount, rateBp, feeCents: 0, estimated: null };
 		}
-		if (known === 'balance') {
-			const balanceCents = parseAmountToCents(balance);
-			if (balanceCents === null || balanceCents <= 0) return null;
+		const balanceCents = balance.trim() === '' ? null : parseAmountToCents(balance);
+		const hasBalance = balanceCents !== null && balanceCents > 0;
+
+		if (hasBalance && typedRateBp !== null) {
+			// Os dois: o que a parcela cobra além da taxa é seguro e tarifa.
+			const fee = installmentFeeCents({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount, rateBp: typedRateBp });
+			const tolerance = Math.max(100, Math.round(installmentCents * 0.005));
+			if (fee < -tolerance) return { balanceCents, rateBp: null, feeCents: 0, estimated: null };
+			return { balanceCents, rateBp: typedRateBp, feeCents: fee > tolerance ? fee : 0, estimated: null };
+		}
+		if (hasBalance) {
 			const rateBp = impliedRateBp({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount });
-			return rateBp === null ? { balanceCents, rateBp: null } : { balanceCents, rateBp };
+			return { balanceCents, rateBp, feeCents: 0, estimated: 'rate' };
 		}
 		if (typedRateBp === null) return null;
-		return { balanceCents: principalFromRateCents({ system: effectiveSystem, installmentCents, remaining: remainingCount, rateBp: typedRateBp }), rateBp: typedRateBp };
-	}, [installmentCents, validRemaining, isConsortium, adjustment, balance, remainingCount, known, effectiveSystem, typedRateBp]);
+		return {
+			balanceCents: principalFromRateCents({ system: effectiveSystem, installmentCents, remaining: remainingCount, rateBp: typedRateBp }),
+			rateBp: typedRateBp,
+			feeCents: 0,
+			estimated: 'balance',
+		};
+	}, [installmentCents, validRemaining, isConsortium, adjustment, balance, remainingCount, effectiveSystem, typedRateBp]);
 
 	const preview = useMemo(() => {
 		if (!derived || derived.rateBp === null || !validDueDay || installmentCents === null) return null;
@@ -130,6 +146,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 			remaining: remainingCount,
 			dueDay: dueDayNumber,
 			rateBp: derived.rateBp,
+			feeCents: derived.feeCents,
 		});
 		return { schedule, rateBp: derived.rateBp, balanceCents: derived.balanceCents };
 	}, [derived, validDueDay, installmentCents, effectiveSystem, today, remainingCount, dueDayNumber]);
@@ -139,15 +156,16 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 		if (derived.rateBp === null) return t('debts.edit.previewInconsistent');
 		if (!preview) return null;
 		const lines: string[] = [];
-		if (!isConsortium && known === 'balance') {
+		if (!isConsortium) {
 			lines.push(
-				t('debts.edit.previewRate', {
+				t(derived.estimated === 'rate' ? 'debts.edit.previewRateEstimated' : 'debts.edit.previewRate', {
 					monthly: formatPercentBp(Math.round(monthlyRateOf(preview.rateBp) * 10_000), 2),
 					yearly: formatPercentBp(preview.rateBp),
 				})
 			);
+			if (derived.estimated === 'balance') lines.push(t('debts.edit.previewBalance', { amount: formatCents(preview.balanceCents) }));
+			if (derived.feeCents > 0) lines.push(t('debts.edit.previewFee', { amount: formatCents(derived.feeCents) }));
 		}
-		if (!isConsortium && known === 'rate') lines.push(t('debts.edit.previewBalance', { amount: formatCents(preview.balanceCents) }));
 		if (preview.schedule.payoffDate) {
 			lines.push(
 				t(isConsortium ? 'debts.edit.previewPayoffConsortium' : 'debts.edit.previewPayoff', {
@@ -194,6 +212,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 			installmentsTotal: totalCount,
 			dueDay: dueDayNumber,
 			rateBp: derived.rateBp,
+			feeCents: derived.feeCents,
 			adminFeeBp: isConsortium ? adminFeeBp : null,
 			accountId,
 		};
@@ -359,45 +378,34 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 						</>
 					) : (
 						<>
-							<ChipGroup<Known>
-								label={t('debts.edit.known')}
-								options={[
-									{ value: 'balance', label: t('debts.edit.knownBalance') },
-									{ value: 'rate', label: t('debts.edit.knownRate') },
-								]}
-								selected={known}
-								onSelect={setKnown}
+							<Field
+								label={t('debts.edit.balance')}
+								hint={t('debts.edit.balanceHint')}
+								optionalLabel={t('debts.edit.optional')}
+								value={balance}
+								onChangeText={(text) => setBalance(formatAmountInput(text))}
+								onBlur={() => setBalance(balance.trim() === '' ? '' : finaliseAmountInput(balance))}
+								keyboardType="decimal-pad"
+								selectTextOnFocus
 							/>
-							{known === 'balance' ? (
-								<Field
-									label={t('debts.edit.balance')}
-									hint={t('debts.edit.balanceHint')}
-									value={balance}
-									onChangeText={(text) => setBalance(formatAmountInput(text))}
-									onBlur={() => setBalance(finaliseAmountInput(balance))}
-									keyboardType="decimal-pad"
-									selectTextOnFocus
-								/>
-							) : (
-								<>
-									<Field
-										label={t('debts.edit.rate')}
-										value={rate}
-										onChangeText={setRate}
-										keyboardType="decimal-pad"
-										selectTextOnFocus
-									/>
-									<ChipGroup<RatePeriod>
-										label={t('debts.edit.ratePeriod')}
-										options={[
-											{ value: 'month', label: t('debts.edit.perMonth') },
-											{ value: 'year', label: t('debts.edit.perYear') },
-										]}
-										selected={ratePeriod}
-										onSelect={setRatePeriod}
-									/>
-								</>
-							)}
+							<Field
+								label={t('debts.edit.rate')}
+								hint={t('debts.edit.rateHint')}
+								optionalLabel={t('debts.edit.optional')}
+								value={rate}
+								onChangeText={setRate}
+								keyboardType="decimal-pad"
+								selectTextOnFocus
+							/>
+							<ChipGroup<RatePeriod>
+								label={t('debts.edit.ratePeriod')}
+								options={[
+									{ value: 'month', label: t('debts.edit.perMonth') },
+									{ value: 'year', label: t('debts.edit.perYear') },
+								]}
+								selected={ratePeriod}
+								onSelect={setRatePeriod}
+							/>
 						</>
 					)}
 

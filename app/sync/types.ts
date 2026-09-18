@@ -67,6 +67,8 @@ export interface WireAccount extends WireMeta {
 	creditLimitCents: number | null;
 	/** v13: nomes dos cartões por final, em JSON. */
 	cardNames?: string | null;
+	/** v16: quanto do CDI a conta rende, em pontos-base. */
+	yieldCdiBp?: number | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -128,6 +130,8 @@ export interface WireDebt extends WireMeta {
 	installmentsTotal: number;
 	dueDay: number;
 	rateBp: number;
+	/** v16: seguro e tarifas dentro da parcela. */
+	feeCents?: number;
 	adminFeeBp: number | null;
 	accountId: string | null;
 	category: string | null;
@@ -193,6 +197,24 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	transfers: 7,
 	retirementGoals: 14,
 	debts: 15,
+};
+
+/**
+ * Só o que o servidor conhece. Um servidor mais antigo que o app descarta em silêncio as
+ * coleções que não conhece (o zod tira chaves desconhecidas) e responde como se tivesse
+ * gravado — e o app marcava essas linhas como enviadas, perdidas para sempre. As coleções
+ * que o servidor conhece são as do cursor que ele devolve no pull; o resto fica fora da
+ * remessa e continua marcado para subir quando ele passar a conhecer.
+ *
+ * Sem nenhum pull ainda (`known` nulo), tudo vai, como antes.
+ */
+export const onlyKnownCollections = (changes: SyncChanges, known: Set<string> | null): SyncChanges => {
+	if (!known) return changes;
+	const filtered = { ...changes } as Record<string, unknown[] | undefined>;
+	for (const key of Object.keys(filtered)) {
+		if (!known.has(key)) filtered[key] = [];
+	}
+	return filtered as unknown as SyncChanges;
 };
 
 /**

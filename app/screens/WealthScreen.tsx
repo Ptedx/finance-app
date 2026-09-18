@@ -9,7 +9,8 @@ import { useDebts } from '../contexts/DebtsContext';
 import type { Debt } from '../database/schema';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { netWorth } from '../utils/accountMath';
-import { worthPayingOff } from '../utils/debt';
+import { effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
+import { todayISO } from '../utils/dateUtils';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
 
 /**
@@ -48,7 +49,10 @@ const WealthScreen = () => {
 
 	// O rendimento contra o qual cada dívida é comparada: o da meta, ou 10% sem meta.
 	const yieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
-	const verdictOf = useCallback((debt: Debt) => worthPayingOff({ debtRateBp: debt.rateBp, investmentYieldBp: yieldBp }).verdict, [yieldBp]);
+	const verdictOf = useCallback(
+		(debt: Debt) => worthPayingOff({ debtRateBp: effectiveRateBp(termsOf(debt), todayISO()), investmentYieldBp: yieldBp }).verdict,
+		[yieldBp]
+	);
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);

@@ -16,7 +16,7 @@ import {
 } from '../database/database';
 import type { CardEntry } from '../utils/cardMath';
 import { monthKeyOf, monthsBetweenKeys, shiftMonthKey, todayISO } from '../utils/dateUtils';
-import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, termsOf, worthPayingOff } from '../utils/debt';
+import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
 import { buildHealthIndicators, type HealthIndicator } from '../utils/healthScore';
 import { buildDebtInsights, buildGoalInsights, type Insight, mergeInsights, type WealthMetrics } from '../utils/insights';
 import { FULL_BASIS_POINTS } from '../utils/metrics';
@@ -301,7 +301,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 					installmentCents: state.next?.installmentCents ?? debt.installmentCents,
 					payoffDate: state.payoffDate,
 					rateBp: debt.rateBp,
-					verdict: worthPayingOff({ debtRateBp: debt.rateBp, investmentYieldBp }).verdict,
+					verdict: worthPayingOff({ debtRateBp: effectiveRateBp(termsOf(debt), todayISO()), investmentYieldBp }).verdict,
 				};
 			}),
 		[activeDebts, investmentYieldBp]
@@ -329,7 +329,10 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 	const debtInsights = useMemo(
 		() =>
 			buildDebtInsights(
-				activeDebts.map((debt) => ({ id: debt.id, name: debt.name, rateBp: debt.rateBp, ...worthPayingOff({ debtRateBp: debt.rateBp, investmentYieldBp }) }))
+				activeDebts.map((debt) => {
+					const costBp = effectiveRateBp(termsOf(debt), todayISO());
+					return { id: debt.id, name: debt.name, rateBp: costBp, ...worthPayingOff({ debtRateBp: costBp, investmentYieldBp }) };
+				})
 			),
 		[activeDebts, investmentYieldBp]
 	);

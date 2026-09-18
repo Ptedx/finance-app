@@ -50,8 +50,14 @@ export interface DebtTerms {
 	remaining: number;
 	/** Dia do vencimento, 1-31 (encolhe nos meses curtos). */
 	dueDay: number;
-	/** Custo efetivo ao ano, em pontos-base: juros (Price/SAC) ou reajuste (consórcio). */
+	/** Taxa de juros do contrato ao ano, em pontos-base; no consórcio, o reajuste anual. */
 	rateBp: number;
+	/**
+	 * Seguro e tarifas dentro de cada parcela (zero quando não há). A parcela que o banco
+	 * cobra é juros + amortização + isto; é por isso que a taxa estimada só pela parcela
+	 * sai maior que a do contrato.
+	 */
+	feeCents?: number;
 }
 
 export interface ScheduleEntry {
@@ -127,14 +133,15 @@ type PaymentRule =
  * O motor dos três sistemas: anda mês a mês a partir do saldo até zerar. A última parcela
  * absorve o arredondamento, então o saldo sempre termina em zero exato.
  */
-const runSchedule = (balanceCents: Cents, balanceDate: string, dueDay: number, rateBp: number, rule: PaymentRule): DebtSchedule => {
+const runSchedule = (balanceCents: Cents, balanceDate: string, dueDay: number, rateBp: number, rule: PaymentRule, feeCents = 0): DebtSchedule => {
+	const fee = rule.system === 'none' ? 0 : Math.max(0, Math.round(safe(feeCents)));
 	const i = rule.system === 'none' ? 0 : monthlyRateOf(rateBp);
 	const adjustment = rule.system === 'none' ? Math.max(0, safe(rateBp)) / FULL_BASIS_POINTS : 0;
 	let balance = Math.max(0, Math.round(safe(balanceCents)));
 	if (balance === 0) return { entries: [], totalPaidCents: 0, totalInterestCents: 0, payoffDate: balanceDate, amortizes: true };
 
-	// Na Price, parcela que não cobre os juros do primeiro mês nunca quita.
-	if (rule.system === 'price' && rule.installmentCents <= Math.round(balance * i)) {
+	// Na Price, parcela que (sem os encargos) não cobre os juros do primeiro mês nunca quita.
+	if (rule.system === 'price' && rule.installmentCents - fee <= Math.round(balance * i)) {
 		return { entries: [], totalPaidCents: 0, totalInterestCents: 0, payoffDate: null, amortizes: false };
 	}
 	if ((rule.system === 'price' || rule.system === 'none') && rule.installmentCents <= 0) {
@@ -164,14 +171,15 @@ const runSchedule = (balanceCents: Cents, balanceDate: string, dueDay: number, r
 			interest = Math.round(balance * i);
 		}
 
-		let payment: Cents = rule.system === 'sac' ? rule.amortizationCents + interest : installment;
+		let payment: Cents = rule.system === 'sac' ? rule.amortizationCents + interest + fee : installment;
 
-		const owedNow = rule.system === 'none' ? balance : balance + interest;
+		// Os encargos saem de cada parcela e não amortizam nada.
+		const owedNow = rule.system === 'none' ? balance : balance + interest + fee;
 		// Centavos de arredondamento não viram uma parcela a mais: como faz o banco, o resíduo
 		// pequeno entra nesta parcela.
 		const residualTolerance = Math.max(100, Math.round(payment * 0.01));
 		if (payment >= owedNow || owedNow - payment <= residualTolerance) payment = owedNow;
-		const amortization = rule.system === 'none' ? payment : payment - interest;
+		const amortization = rule.system === 'none' ? payment : payment - interest - fee;
 
 		balance -= amortization;
 		totalPaid += payment;
@@ -197,7 +205,7 @@ const ruleOf = (terms: DebtTerms): PaymentRule => {
 };
 
 /** Os termos de uma dívida guardada. */
-export const termsOf = (debt: Pick<Debt, 'system' | 'openingBalanceCents' | 'openingBalanceDate' | 'installmentCents' | 'remainingAtOpening' | 'dueDay' | 'rateBp'>): DebtTerms => ({
+export const termsOf = (debt: Pick<Debt, 'system' | 'openingBalanceCents' | 'openingBalanceDate' | 'installmentCents' | 'remainingAtOpening' | 'dueDay' | 'rateBp' | 'feeCents'>): DebtTerms => ({
 	system: debt.system,
 	balanceCents: debt.openingBalanceCents,
 	balanceDate: debt.openingBalanceDate,
@@ -205,11 +213,12 @@ export const termsOf = (debt: Pick<Debt, 'system' | 'openingBalanceCents' | 'ope
 	remaining: debt.remainingAtOpening,
 	dueDay: debt.dueDay,
 	rateBp: debt.rateBp,
+	feeCents: debt.feeCents,
 });
 
 /** O cronograma inteiro a partir da âncora. */
 export const buildSchedule = (terms: DebtTerms): DebtSchedule =>
-	runSchedule(terms.balanceCents, terms.balanceDate, terms.dueDay, terms.rateBp, ruleOf(terms));
+	runSchedule(terms.balanceCents, terms.balanceDate, terms.dueDay, terms.rateBp, ruleOf(terms), terms.feeCents);
 
 export interface DebtState {
 	/** Saldo devedor hoje: a âncora menos o que venceu até hoje. */
@@ -289,6 +298,31 @@ export const principalFromRateCents = ({ system, installmentCents, remaining, ra
 	return Math.round((installmentCents * (1 - (1 + i) ** -remaining)) / i);
 };
 
+/**
+ * Os encargos da parcela: o que ela cobra além do que a taxa do contrato pede. Price: a
+ * parcela menos a parcela pura da taxa. SAC: a primeira parcela menos amortização e juros.
+ * Negativo quando a parcela é menor do que a taxa exigiria — os números não fecham.
+ */
+export const installmentFeeCents = ({ system, balanceCents, installmentCents, remaining, rateBp }: { system: AmortizationSystem; balanceCents: Cents; installmentCents: Cents; remaining: number; rateBp: number }): Cents => {
+	if (system === 'none' || balanceCents <= 0 || remaining <= 0) return 0;
+	const i = monthlyRateOf(rateBp);
+	if (system === 'sac') return installmentCents - Math.ceil(balanceCents / remaining) - Math.round(balanceCents * i);
+	return installmentCents - priceInstallmentCents(balanceCents, i, remaining);
+};
+
+/**
+ * O custo efetivo da dívida hoje, ao ano: a taxa que iguala o saldo de hoje às parcelas
+ * que faltam, **com os encargos**. É o que antecipar deixa de pagar, então é contra ele
+ * que o investimento é comparado. Sem encargos, é a própria taxa do contrato; no consórcio,
+ * o reajuste.
+ */
+export const effectiveRateBp = (terms: DebtTerms, today: string): number => {
+	if (terms.system === 'none' || !terms.feeCents) return terms.rateBp;
+	const state = debtStateOn(terms, today);
+	if (!state.next || state.remaining <= 0) return terms.rateBp;
+	return impliedRateBp({ system: terms.system, balanceCents: state.balanceCents, installmentCents: state.next.installmentCents, remaining: state.remaining }) ?? terms.rateBp;
+};
+
 // ---------------------------------------------------------------------------
 // Amortizar: quanto se economiza
 // ---------------------------------------------------------------------------
@@ -318,7 +352,8 @@ export const simulateExtraPayment = (terms: DebtTerms, today: string, extraCents
 	if (!state.amortizes || state.balanceCents <= 0 || extraCents <= 0) return null;
 
 	const extra = Math.min(Math.round(extraCents), state.balanceCents);
-	const before = runSchedule(state.balanceCents, today, terms.dueDay, terms.rateBp, currentRule(terms, state));
+	const fee = terms.feeCents ?? 0;
+	const before = runSchedule(state.balanceCents, today, terms.dueDay, terms.rateBp, currentRule(terms, state), fee);
 	const newBalance = state.balanceCents - extra;
 	const n = before.entries.length;
 
@@ -327,13 +362,13 @@ export const simulateExtraPayment = (terms: DebtTerms, today: string, extraCents
 		const amortization = (currentRule(terms, state) as { amortizationCents: Cents }).amortizationCents;
 		rule = { system: 'sac', amortizationCents: mode === 'shorten' ? amortization : Math.ceil(newBalance / Math.max(1, n)) };
 	} else if (terms.system === 'price') {
-		rule = { system: 'price', installmentCents: mode === 'shorten' ? terms.installmentCents : priceInstallmentCents(newBalance, monthlyRateOf(terms.rateBp), n) };
+		rule = { system: 'price', installmentCents: mode === 'shorten' ? terms.installmentCents : priceInstallmentCents(newBalance, monthlyRateOf(terms.rateBp), n) + fee };
 	} else {
 		const current = state.next?.installmentCents ?? terms.installmentCents;
 		rule = { system: 'none', installmentCents: mode === 'shorten' ? current : Math.ceil(newBalance / Math.max(1, n)) };
 	}
 
-	const after = runSchedule(newBalance, today, terms.dueDay, terms.rateBp, rule);
+	const after = runSchedule(newBalance, today, terms.dueDay, terms.rateBp, rule, fee);
 	return {
 		monthsSaved: Math.max(0, n - after.entries.length),
 		savedCents: Math.max(0, before.totalPaidCents - (after.totalPaidCents + extra)),

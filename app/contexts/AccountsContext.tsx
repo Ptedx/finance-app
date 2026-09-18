@@ -45,6 +45,8 @@ import { parseCardNames, withCardName } from '../utils/cardNames';
 import { addDays, getISODate, todayISO } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
+import { type CdiRate, loadCachedCdi, refreshCdi } from '../api/cdi';
+import { accruedYieldCents, type YieldFlow } from '../utils/yield';
 import { usePeriod } from './PeriodContext';
 import { useTransactions } from './TransactionsContext';
 
@@ -95,7 +97,12 @@ interface AccountsContextType {
 	debitCards: DebitCard[];
 	/** Só as não arquivadas, contas e cartões — para seletores de lançamento. */
 	activeAccounts: Account[];
+	/** Saldo de hoje por conta — nas contas que rendem, já com o rendimento estimado. */
 	balances: Map<string, number>;
+	/** Rendimento estimado desde a última âncora, por conta que rende (ver utils/yield.ts). */
+	accruedYield: Map<string, number>;
+	/** A taxa CDI em uso, do Banco Central; nula enquanto nenhuma foi obtida. */
+	cdi: CdiRate | null;
 	/** Resumo de cada cartão (ativo ou arquivado). */
 	cardSummaries: Map<string, CardSummary>;
 	/** Somas de todos os cartões ativos. */
@@ -184,7 +191,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const { startDate, endDate } = usePeriod();
 
 	const [accounts, setAccounts] = useState<Account[]>([]);
-	const [balances, setBalances] = useState<Map<string, number>>(new Map());
+	// Saldo registrado (âncora + movimentos). O exposto soma o rendimento estimado.
+	const [rawBalances, setBalances] = useState<Map<string, number>>(new Map());
+	const [yieldInputs, setYieldInputs] = useState<Map<string, { anchorCents: number; anchorDate: string; flows: YieldFlow[]; percentOfCdiBp: number }>>(new Map());
+	const [cdi, setCdi] = useState<CdiRate | null>(null);
 	const [cardSummaries, setCardSummaries] = useState<Map<string, CardSummary>>(new Map());
 	const [month, setMonth] = useState<MonthOverview | null>(null);
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
@@ -219,6 +229,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			]);
 
 			const nextSummaries = new Map<string, CardSummary>();
+			const nextYieldInputs = new Map<string, { anchorCents: number; anchorDate: string; flows: YieldFlow[]; percentOfCdiBp: number }>();
 			const activity: AccountMonthActivity[] = [];
 
 			for (const account of list) {
@@ -241,6 +252,25 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					startBalanceCents: startBalances.get(account.id) ?? 0,
 					endBalanceCents: endBalances.get(account.id) ?? 0,
 				});
+
+				// Conta que rende: a âncora e o que entrou e saiu depois dela, para estimar o
+				// rendimento até hoje.
+				if (!isCard && (account.yieldCdiBp ?? 0) > 0) {
+					const [ownTransactions, ownTransfers] = await Promise.all([getAccountTransactions(account.id), getAccountTransfers(account.id)]);
+					const flows: YieldFlow[] = [
+						...ownTransactions.map((tx) => ({ date: tx.date, cents: tx.isIncome ? tx.amountCents : -tx.amountCents })),
+						...ownTransfers.map((transfer) => ({
+							date: transfer.date,
+							cents: transfer.toAccountId === account.id ? transfer.amountCents : -transfer.amountCents,
+						})),
+					].filter((flow) => flow.date > account.openingBalanceDate);
+					nextYieldInputs.set(account.id, {
+						anchorCents: account.openingBalanceCents,
+						anchorDate: account.openingBalanceDate,
+						flows,
+						percentOfCdiBp: account.yieldCdiBp ?? 0,
+					});
+				}
 
 				if (!isCard) continue;
 				const cardActivity = activity[activity.length - 1];
@@ -274,6 +304,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			if (mine !== generation.current) return;
 			setAccounts(list);
 			setBalances(nextBalances);
+			setYieldInputs(nextYieldInputs);
 			setCardSummaries(nextSummaries);
 			setUnassignedNetCents(unassigned);
 			setPeriodTransfers(transfersInPeriod);
@@ -294,13 +325,39 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, [refresh, transactions]);
 
 	// Voltar ao app recalcula: o dia pode ter virado (fechamento, vencimento) e o sync pode
-	// ter trazido pagamentos ou compras de outro aparelho.
+	// ter trazido pagamentos ou compras de outro aparelho. O CDI também é conferido.
 	useEffect(() => {
 		const subscription = AppState.addEventListener('change', (state) => {
-			if (state === 'active') void refresh();
+			if (state !== 'active') return;
+			void refresh();
+			void refreshCdi().then((next) => next && setCdi(next));
 		});
 		return () => subscription.remove();
 	}, [refresh]);
+
+	// O CDI guardado vale na hora; o do Banco Central chega em seguida, se for mais novo.
+	useEffect(() => {
+		void loadCachedCdi().then((cached) => cached && setCdi((current) => current ?? cached));
+		void refreshCdi().then((next) => next && setCdi(next));
+	}, []);
+
+	/** O rendimento estimado de cada conta que rende, até ontem, no CDI em uso. */
+	const accruedYield = useMemo(() => {
+		const result = new Map<string, number>();
+		if (!cdi) return result;
+		const today = todayISO();
+		for (const [accountId, input] of yieldInputs) {
+			result.set(accountId, accruedYieldCents({ ...input, today, cdiAnnualBp: cdi.annualBp }));
+		}
+		return result;
+	}, [yieldInputs, cdi]);
+
+	const balances = useMemo(() => {
+		if (accruedYield.size === 0) return rawBalances;
+		const next = new Map(rawBalances);
+		for (const [accountId, cents] of accruedYield) next.set(accountId, (next.get(accountId) ?? 0) + cents);
+		return next;
+	}, [rawBalances, accruedYield]);
 
 	const createAccount = useCallback(
 		async (draft: AccountDraft) => {
@@ -545,6 +602,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			debitCards,
 			activeAccounts,
 			balances,
+			accruedYield,
+			cdi,
 			cardSummaries,
 			cardsTotals,
 			overview,
@@ -572,6 +631,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			debitCards,
 			activeAccounts,
 			balances,
+			accruedYield,
+			cdi,
 			cardSummaries,
 			cardsTotals,
 			overview,

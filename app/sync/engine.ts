@@ -15,7 +15,7 @@ import {
 import { SCHEMA_VERSION } from '../database/schema';
 import { nowTimestamp } from '../utils/dateUtils';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
-import { countChanges, EMPTY_CURSOR, inheritCursor, type RejectedRow, type SyncCursor } from './types';
+import { countChanges, EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncCursor } from './types';
 
 /**
  * Motor de sincronização.
@@ -41,6 +41,19 @@ const LEGACY_CURSOR_KEY = 'pullCursor';
 /** Versão do banco da última versão que usava a chave antiga. */
 const LEGACY_CURSOR_SCHEMA = 14;
 const LAST_SYNCED_KEY = 'lastSyncedAt';
+/** As coleções que o servidor conhece, lidas das chaves do cursor que ele devolve no pull. */
+const SERVER_COLLECTIONS_KEY = 'serverCollections';
+
+const readServerCollections = async (): Promise<Set<string> | null> => {
+	const stored = await getSyncState(SERVER_COLLECTIONS_KEY);
+	if (!stored) return null;
+	try {
+		const list = JSON.parse(stored);
+		return Array.isArray(list) ? new Set(list.map(String)) : null;
+	} catch {
+		return null;
+	}
+};
 
 /**
  * Quantas linhas cabem numa remessa. Tem que ser <= ao SYNC_PAGE_SIZE do servidor,
@@ -161,6 +174,7 @@ export const pullAll = async (): Promise<number> => {
 
 		await applyPulledChanges(response.changes);
 		await setSyncState(CURSOR_KEY, JSON.stringify(response.cursor));
+		await setSyncState(SERVER_COLLECTIONS_KEY, JSON.stringify(Object.keys(response.cursor)));
 
 		cursor = response.cursor;
 		received += countChanges(response.changes);
@@ -241,9 +255,10 @@ export const pushAll = async (): Promise<number> => {
 	// Categorias já reenviadas nesta rodada. Uma segunda rejeição da mesma categoria
 	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
 	const resentCategories = new Set<string>();
+	const known = await readServerCollections();
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
-		const changes = await getDirtyChanges(PAGE_SIZE);
+		const changes = onlyKnownCollections(await getDirtyChanges(PAGE_SIZE), known);
 		const pending = countChanges(changes);
 
 		if (pending === 0) break;

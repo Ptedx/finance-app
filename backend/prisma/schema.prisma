@@ -248,6 +248,8 @@ model Account {
   closingDaysBefore   Int?
   /// Nomes dos cartões da conta por final, JSON (v13).
   cardNames           String?
+  /// Quanto do CDI a conta rende, em pontos-base (12000 = 120%). Nulo quando não rende.
+  yieldCdiBp          Int?
   creditLimitCents    BigInt?
   packageName         String?
   accountKey          String?
@@ -356,6 +358,8 @@ model Debt {
   installmentsTotal   Int
   dueDay              Int
   rateBp              Int
+  /// Seguro e tarifas dentro da parcela.
+  feeCents            BigInt    @default(0)
   adminFeeBp          Int?
   accountId           String?
   category            String?
