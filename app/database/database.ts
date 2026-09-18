@@ -2481,6 +2481,67 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 	};
 };
 
+/** O que este aparelho tem, para comparar com a conta antes de decidir o que sobe. */
+export interface LocalDataCounts {
+	transactions: number;
+	recurringTransactions: number;
+	budgets: number;
+	accounts: number;
+	transfers: number;
+	debts: number;
+	customCategories: number;
+	total: number;
+}
+
+/**
+ * As linhas vivas deste aparelho que são dados do usuário. As categorias padrão ficam de
+ * fora: todo aparelho nasce com elas, então não dizem que há algo a proteger.
+ */
+export const countLocalData = async (): Promise<LocalDataCounts> => {
+	const defaultIds = DEFAULT_CATEGORIES.map((category) => category.id);
+	const placeholders = defaultIds.map(() => '?').join(', ');
+	const row = await db.getFirstAsync<Omit<LocalDataCounts, 'total'>>(
+		`SELECT
+       (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL) AS transactions,
+       (SELECT COUNT(*) FROM recurring_transactions WHERE deletedAt IS NULL) AS recurringTransactions,
+       (SELECT COUNT(*) FROM budgets WHERE deletedAt IS NULL) AS budgets,
+       (SELECT COUNT(*) FROM accounts WHERE deletedAt IS NULL) AS accounts,
+       (SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL) AS transfers,
+       (SELECT COUNT(*) FROM debts WHERE deletedAt IS NULL) AS debts,
+       (SELECT COUNT(*) FROM categories WHERE deletedAt IS NULL AND id NOT IN (${placeholders})) AS customCategories`,
+		defaultIds
+	);
+	const counts = {
+		transactions: row?.transactions ?? 0,
+		recurringTransactions: row?.recurringTransactions ?? 0,
+		budgets: row?.budgets ?? 0,
+		accounts: row?.accounts ?? 0,
+		transfers: row?.transfers ?? 0,
+		debts: row?.debts ?? 0,
+		customCategories: row?.customCategories ?? 0,
+	};
+	return { ...counts, total: Object.values(counts).reduce((sum, value) => sum + value, 0) };
+};
+
+/** Todos os ids de uma tabela sincronizada, apagados inclusive. */
+export const getSyncedIds = async (table: SyncedTable): Promise<Set<string>> => {
+	const rows = await db.getAllAsync<{ id: string }>(`SELECT id FROM ${table}`);
+	return new Set(rows.map((row) => row.id));
+};
+
+/**
+ * Regrava todas as linhas sincronizadas com um carimbo e as marca para subir. É o passo
+ * de "este aparelho é a verdade": com o carimbo depois de tudo o que a conta tem, cada
+ * linha daqui vence a da conta no último-escreve-vence.
+ */
+export const stampEverything = async (timestamp: string): Promise<void> => {
+	await db.withTransactionAsync(async () => {
+		for (const table of SYNCED_TABLES) {
+			await db.runAsync(`UPDATE ${table} SET updatedAt = ?, dirty = 1`, [timestamp]);
+		}
+	});
+};
+
 /** Quantas linhas ainda faltam subir. Alimenta o indicador de status do sync. */
 export const countDirtyRows = async (): Promise<number> => {
 	const subqueries = SYNCED_TABLES.map(
@@ -2897,6 +2958,9 @@ export default {
 	addDebt,
 	updateDebt,
 	deleteDebt,
+	countLocalData,
+	getSyncedIds,
+	stampEverything,
 	getMonthlyAccountActivity,
 	getMonthlyTransferActivity,
 	getMonthlyCategoryTotals,

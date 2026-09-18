@@ -3,14 +3,18 @@ import {
 	applyPulledChanges,
 	countDirtyRows,
 	getDirtyChanges,
+	getSyncedIds,
 	getSyncState,
 	hasCategory,
 	markCategoryDirty,
 	markChangesClean,
 	reassignToUncategorized,
 	setSyncState,
+	stampEverything,
 } from '../database/database';
 import { SCHEMA_VERSION } from '../database/schema';
+import { nowTimestamp } from '../utils/dateUtils';
+import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
 import { countChanges, EMPTY_CURSOR, inheritCursor, type RejectedRow, type SyncCursor } from './types';
 
 /**
@@ -78,6 +82,67 @@ export const resetCursor = async (): Promise<void> => {
 };
 
 export const getLastSyncedAt = async (): Promise<string | null> => getSyncState(LAST_SYNCED_KEY);
+
+/** O que sobrou de uma substituição: linhas da conta que o servidor não deixou apagar. */
+export interface ReplaceResult {
+	/** Linhas da conta apagadas porque não existiam neste aparelho. */
+	removed: number;
+	/** Linhas que o servidor recusou apagar (validação mudou desde que foram gravadas). */
+	notRemoved: number;
+}
+
+/**
+ * "Subir deste aparelho": a conta passa a ter exatamente o que este aparelho tem.
+ * O desenho está em `sync/replace.ts`; aqui é a execução:
+ *
+ *  1. Lê a conta inteira, sem gravar nada aqui.
+ *  2. Sobe como lápide o que só a conta tem.
+ *  3. Carimba tudo deste aparelho depois de qualquer linha da conta e sobe.
+ *  4. Refaz o cursor e puxa, para as lápides chegarem aqui também.
+ *
+ * Interromper no meio é seguro: as lápides já aceitas ficam, e o resto do aparelho
+ * continua marcado para subir no próximo sync.
+ */
+export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
+	const pages = [];
+	let cursor: SyncCursor = EMPTY_CURSOR;
+	// Sem o teto de páginas do sync normal: a foto da conta precisa estar inteira.
+	for (let page = 0; page < 10_000; page += 1) {
+		const response = await api.pull(cursor);
+		pages.push(response.changes);
+		cursor = response.cursor;
+		if (!response.hasMore) break;
+	}
+	const server = mergePages(pages);
+
+	const localIds = {} as Record<Collection, Set<string>>;
+	for (const collection of COLLECTIONS) {
+		localIds[collection] = await getSyncedIds(TABLE_OF[collection] as Parameters<typeof getSyncedIds>[0]);
+	}
+
+	const stamp = replacementStamp(server, nowTimestamp());
+	const tombstones = tombstonesFor(server, localIds, stamp);
+
+	let removed = 0;
+	let notRemoved = 0;
+	for (const chunk of chunkChanges(tombstones, PAGE_SIZE)) {
+		const response = await api.push(chunk);
+		removed += response.applied;
+		notRemoved += response.rejected.length;
+		for (const row of response.rejected) {
+			console.warn(`Substituição: o servidor não apagou ${row.collection}/${row.id} (${row.reason}${row.message ? `: ${row.message}` : ''})`);
+		}
+	}
+
+	await stampEverything(stamp);
+	await pushAll();
+
+	await resetCursor();
+	await pullAll();
+	await setSyncState(LAST_SYNCED_KEY, nowTimestamp());
+
+	return { removed, notRemoved };
+};
 
 /**
  * Traz tudo o que mudou no servidor desde o último cursor.

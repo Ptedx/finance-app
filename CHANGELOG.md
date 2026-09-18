@@ -17,6 +17,16 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
 - O sync guarda o cursor por versão do banco: voltar para a 1.0 e depois para a 1.1
   não perde as dívidas criadas em outro aparelho no meio-tempo.
 
+## [1.0.2] — 2026-09-18 — hotfix do login
+
+Branch `hotfix/1.0.2` sobre a v1.0.1. Instala por cima da 1.0 sem perder dados.
+
+- Login numa conta que já tem dados: escolher entre **subir deste aparelho** (a conta passa
+  a ter só o que está no aparelho), **puxar da conta** ou **juntar os dois**, vendo o que
+  cada lado tem. Antes, só havia juntar (que trazia a história antiga da conta de volta)
+  ou descartar o aparelho, e um aparelho já sincronizado era mesclado sem pergunta.
+- Sem mudança no servidor.
+
 ## [1.0.1] — 2026-09-18 — a versão estável
 
 Tag `v1.0.1`. APK: build EAS `preview` do commit `8ca0929`, cópia local em
