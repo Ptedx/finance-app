@@ -17,6 +17,7 @@ import {
 	getCardPurchasesOriginated,
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
+	getTransfersByDateRange,
 	moveAccountLedger,
 	setAccountCardNames,
 	setAccountAnchor,
@@ -24,7 +25,7 @@ import {
 	updateAccount,
 } from '../database/database';
 import { getPendingCaptures } from '../database/captures';
-import type { Account, AccountDraft, AccountEdit, Capture } from '../database/schema';
+import type { Account, AccountDraft, AccountEdit, Capture, Transfer } from '../database/schema';
 import * as syncQueue from '../sync/queue';
 import { type AccountsOverview, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
 import {
@@ -117,6 +118,8 @@ interface AccountsContextType {
 	adjustAccountMonth: (id: string, input: { spentCents: number; balanceCents: number }) => Promise<void>;
 	/** Gasto do período em cada conta (despesas menos receitas), para preencher o acerto. */
 	periodSpentByAccount: Map<string, number>;
+	/** Transferências do período: dinheiro trocando de bolso, que a lista de lançamentos mostra. */
+	periodTransfers: Transfer[];
 	/**
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
 	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`).
@@ -186,6 +189,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [month, setMonth] = useState<MonthOverview | null>(null);
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [periodSpentByAccount, setPeriodSpentByAccount] = useState<Map<string, number>>(new Map());
+	const [periodTransfers, setPeriodTransfers] = useState<Transfer[]>([]);
 	// Lido dentro do acerto sem virar dependência dele.
 	const periodSpentRef = useRef(periodSpentByAccount);
 	periodSpentRef.current = periodSpentByAccount;
@@ -202,7 +206,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
 			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
 			const periodEnd = endDate < today ? endDate : today;
-			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures, startBalances, endBalances] = await Promise.all([
+			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures, startBalances, endBalances, transfersInPeriod] =
+				await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
 				getUnassignedNet(today),
@@ -210,6 +215,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				getPendingCaptures(),
 				getAccountBalances(addDays(startDate, -1)),
 				getAccountBalances(periodEnd),
+				getTransfersByDateRange(startDate, endDate),
 			]);
 
 			const nextSummaries = new Map<string, CardSummary>();
@@ -269,6 +275,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setBalances(nextBalances);
 			setCardSummaries(nextSummaries);
 			setUnassignedNetCents(unassigned);
+			setPeriodTransfers(transfersInPeriod);
 			setPeriodSpentByAccount(
 				new Map(activity.map((item) => [item.accountId, Math.max(0, item.expenseCents - item.incomeCents)]))
 			);
@@ -542,13 +549,14 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			overview,
 			month,
 			unassignedNetCents,
+			periodSpentByAccount,
+			periodTransfers,
 			isLoading,
 			refresh,
 			createAccount,
 			saveAccount,
 			removeAccount,
 			adjustAccountMonth,
-			periodSpentByAccount,
 			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,
@@ -568,13 +576,14 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			overview,
 			month,
 			unassignedNetCents,
+			periodSpentByAccount,
+			periodTransfers,
 			isLoading,
 			refresh,
 			createAccount,
 			saveAccount,
 			removeAccount,
 			adjustAccountMonth,
-			periodSpentByAccount,
 			adjustCardInvoices,
 			recordCardPayment,
 			addExistingInstallments,

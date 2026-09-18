@@ -6,10 +6,11 @@ import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, Text, T
 import { SafeAreaView } from 'react-native-safe-area-context';
 import PeriodSelector from '../components/PeriodSelector';
 import TransactionItem from '../components/TransactionItem';
+import TransferItem from '../components/TransferItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Transaction } from '../database/schema';
+import type { Account, Transaction, Transfer } from '../database/schema';
 import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 
@@ -39,18 +40,25 @@ const EXPENSE = '#FF6B6B';
 
 type Kind = 'all' | 'income' | 'expense';
 
+/**
+ * A lista mistura lançamentos e transferências. Transferência não é gasto nem receita —
+ * entra para a conta não parecer parada quando o que passa por ela é dinheiro trocando de
+ * bolso (mandar para o envelope, pagar a fatura) — e por isso fica fora dos totais.
+ */
+type Row = { type: 'transaction'; id: string; date: string; transaction: Transaction } | { type: 'transfer'; id: string; date: string; transfer: Transfer };
+
 interface DaySection {
 	title: string;
 	date: string;
 	totalCents: number;
-	data: Transaction[];
+	data: Row[];
 }
 
 const TransactionListScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { transactions, categories, isLoading, refreshData } = useTransactions();
-	const { activeAccounts } = useAccounts();
+	const { accounts, activeAccounts, periodTransfers } = useAccounts();
 	const { startDate, endDate, selectedMonth } = usePeriod();
 
 	const [refreshing, setRefreshing] = useState(false);
@@ -78,41 +86,66 @@ const TransactionListScreen = () => {
 		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
 	}, [inPeriod]);
 
-	const filtered = useMemo(() => {
+	const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
+
+	const filtered = useMemo<Row[]>(() => {
 		const term = search.trim().toLocaleLowerCase();
-		return inPeriod.filter((transaction) => {
-			if (kind === 'income' && !transaction.isIncome) return false;
-			if (kind === 'expense' && transaction.isIncome) return false;
-			if (accountId && transaction.accountId !== accountId) return false;
-			if (!term) return true;
-			const note = transaction.note?.toLocaleLowerCase() ?? '';
-			return note.includes(term) || (categoryNames.get(transaction.category) ?? '').includes(term);
-		});
-	}, [inPeriod, kind, accountId, search, categoryNames]);
+
+		const rows: Row[] = inPeriod
+			.filter((transaction) => {
+				if (kind === 'income' && !transaction.isIncome) return false;
+				if (kind === 'expense' && transaction.isIncome) return false;
+				if (accountId && transaction.accountId !== accountId) return false;
+				if (!term) return true;
+				const note = transaction.note?.toLocaleLowerCase() ?? '';
+				return note.includes(term) || (categoryNames.get(transaction.category) ?? '').includes(term);
+			})
+			.map((transaction) => ({ type: 'transaction' as const, id: transaction.id, date: transaction.date, transaction }));
+
+		// "Entradas" e "Saídas" falam de receita e despesa; transferência não é nem uma nem
+		// outra, então só aparece em "Tudo".
+		if (kind === 'all') {
+			for (const transfer of periodTransfers) {
+				if (accountId && transfer.fromAccountId !== accountId && transfer.toAccountId !== accountId) continue;
+				if (term) {
+					const names = [transfer.note, accountsById.get(transfer.fromAccountId ?? '')?.name, accountsById.get(transfer.toAccountId ?? '')?.name]
+						.filter(Boolean)
+						.join(' ')
+						.toLocaleLowerCase();
+					if (!names.includes(term)) continue;
+				}
+				rows.push({ type: 'transfer', id: `transfer:${transfer.id}`, date: transfer.date, transfer });
+			}
+		}
+
+		return rows;
+	}, [inPeriod, periodTransfers, kind, accountId, search, categoryNames, accountsById]);
 
 	const sections = useMemo<DaySection[]>(() => {
 		const today = todayISO();
 		const yesterday = addDays(today, -1);
 		const byDay = new Map<string, DaySection>();
 
-		for (const transaction of [...filtered].sort((a, b) => b.date.localeCompare(a.date))) {
-			let day = byDay.get(transaction.date);
+		for (const row of [...filtered].sort((a, b) => b.date.localeCompare(a.date) || a.type.localeCompare(b.type))) {
+			let day = byDay.get(row.date);
 			if (!day) {
 				day = {
-					date: transaction.date,
+					date: row.date,
 					title:
-						transaction.date === today
+						row.date === today
 							? t('transactionsList.today')
-							: transaction.date === yesterday
+							: row.date === yesterday
 								? t('transactionsList.yesterday')
-								: formatFullDate(transaction.date),
+								: formatFullDate(row.date),
 					totalCents: 0,
 					data: [],
 				};
-				byDay.set(transaction.date, day);
+				byDay.set(row.date, day);
 			}
-			day.totalCents += transaction.isIncome ? transaction.amountCents : -transaction.amountCents;
-			day.data.push(transaction);
+			if (row.type === 'transaction') {
+				day.totalCents += row.transaction.isIncome ? row.transaction.amountCents : -row.transaction.amountCents;
+			}
+			day.data.push(row);
 		}
 
 		return [...byDay.values()];
@@ -140,6 +173,17 @@ const TransactionListScreen = () => {
 		setAccountId(null);
 		setSearch('');
 	};
+
+	const accountOptions = useMemo<Account[]>(() => {
+		const moved = new Set<string>();
+		for (const transaction of inPeriod) if (transaction.accountId) moved.add(transaction.accountId);
+		for (const transfer of periodTransfers) {
+			if (transfer.fromAccountId) moved.add(transfer.fromAccountId);
+			if (transfer.toAccountId) moved.add(transfer.toAccountId);
+		}
+		// Oferecer uma conta parada no mês só levaria a uma lista vazia.
+		return activeAccounts.filter((account) => moved.has(account.id) || account.id === accountId);
+	}, [inPeriod, periodTransfers, activeAccounts, accountId]);
 
 	const kinds: Array<{ value: Kind; label: string }> = [
 		{ value: 'all', label: t('transactionsList.filterAll') },
@@ -214,7 +258,7 @@ const TransactionListScreen = () => {
 				})}
 			</View>
 
-			{activeAccounts.length > 1 ? (
+			{accountOptions.length > 1 ? (
 				<ScrollView
 					horizontal
 					showsHorizontalScrollIndicator={false}
@@ -222,7 +266,7 @@ const TransactionListScreen = () => {
 					accessibilityRole="radiogroup"
 					accessibilityLabel={t('transactionsList.accountLabel')}
 				>
-					{[{ id: null as string | null, name: t('transactionsList.allAccounts'), color: ACCENT }, ...activeAccounts].map(
+					{[{ id: null as string | null, name: t('transactionsList.allAccounts'), color: ACCENT }, ...accountOptions].map(
 						(account) => {
 							const selected = accountId === account.id;
 							return (
@@ -257,9 +301,11 @@ const TransactionListScreen = () => {
 			<Text style={styles.emptyText}>
 				{isLoading
 					? t('transactionsList.loading')
-					: isFiltered
-						? t('transactionsList.emptyFiltered')
-						: t('transactionsList.emptyPeriod', { month: getMonthName(selectedMonth) })}
+					: accountId && kind === 'all' && !search.trim()
+						? t('transactionsList.emptyAccount', { account: accountsById.get(accountId)?.name ?? '' })
+						: isFiltered
+							? t('transactionsList.emptyFiltered')
+							: t('transactionsList.emptyPeriod', { month: getMonthName(selectedMonth) })}
 			</Text>
 			{!isLoading && isFiltered ? (
 				<Pressable
@@ -286,7 +332,13 @@ const TransactionListScreen = () => {
 			<SectionList
 				sections={sections}
 				keyExtractor={(item) => item.id}
-				renderItem={({ item }) => <TransactionItem transaction={item} onPress={openTransaction} />}
+				renderItem={({ item }) =>
+					item.type === 'transaction' ? (
+						<TransactionItem transaction={item.transaction} onPress={openTransaction} />
+					) : (
+						<TransferItem transfer={item.transfer} accountsById={accountsById} />
+					)
+				}
 				renderSectionHeader={({ section }) => (
 					<View
 						style={styles.dayHeader}
