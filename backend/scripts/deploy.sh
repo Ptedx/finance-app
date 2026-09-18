@@ -92,12 +92,54 @@ cmd_write_env() {
   echo ".env escrito ($(wc -l < .env) linhas)"
 }
 
+# Espaco livre, em MB, no disco onde o Docker guarda imagens e cache de build.
+espaco_livre_mb() {
+  raiz=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+  [ -d "$raiz" ] || raiz=/
+  df -Pm "$raiz" | awk 'NR==2 {print $4}'
+}
+
+# Um build precisa de folga para o `npm ci` (Prisma 7 + TypeScript passam de 1 GB
+# descompactados) e para as camadas novas antes de as antigas sairem.
+MIN_LIVRE_MB="${MIN_LIVRE_MB:-3072}"
+
+# Libera disco antes do build. O que enchia a VM era o cache do BuildKit: cada deploy
+# deixava uma camada nova de `npm ci`, e `docker image prune` nao toca nele. So mexe em
+# cache de build e em imagens soltas -- nunca em volumes (o Postgres mora num) nem em
+# imagens de containers de outros projetos da VM.
+liberar_disco() {
+  echo "Livre antes: $(espaco_livre_mb) MB"
+  docker builder prune -f --filter 'until=72h' > /dev/null 2>&1 || true
+  docker image prune -f > /dev/null 2>&1 || true
+
+  if [ "$(espaco_livre_mb)" -lt "$MIN_LIVRE_MB" ]; then
+    # Ainda apertado: vai o cache de build inteiro. O proximo build fica mais lento,
+    # mas termina -- que e o que importa num deploy.
+    echo "Menos de ${MIN_LIVRE_MB} MB livres; limpando todo o cache de build"
+    docker builder prune -af > /dev/null 2>&1 || true
+  fi
+
+  livre=$(espaco_livre_mb)
+  echo "Livre para o build: ${livre} MB"
+  if [ "$livre" -lt "$MIN_LIVRE_MB" ]; then
+    echo "ERRO: so ${livre} MB livres mesmo apos limpar o Docker (minimo ${MIN_LIVRE_MB} MB)."
+    echo "      O que ocupa o disco:"
+    df -h /
+    docker system df || true
+    echo "      Libere espaco na VM (logs, outros projetos) ou aumente o disco."
+    exit 1
+  fi
+}
+
 cmd_up() {
   echo "==> Build e subida dos containers"
+  liberar_disco
   # Sem `down`: o compose recria so os servicos cujo build mudou, entao o Postgres nao
   # cai a cada deploy. As migrations rodam sozinhas na subida (prisma migrate deploy).
   docker compose up -d --build
+  # A imagem anterior da API vira "solta" assim que a nova sobe: sai aqui.
   docker image prune -f > /dev/null 2>&1 || true
+  echo "Livre depois do deploy: $(espaco_livre_mb) MB"
 }
 
 cmd_wait_health() {
