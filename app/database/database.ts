@@ -26,6 +26,7 @@ import {
 	CREATE_INDEXES,
 	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
+	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
@@ -35,6 +36,8 @@ import {
 	type RecurringTransaction,
 	type RecurringTransactionDraft,
 	type RecurringTransactionEdit,
+	RETIREMENT_GOAL_ID,
+	type RetirementGoalRow,
 	SCHEMA_VERSION,
 	SYNCED_TABLES,
 	type SyncedTable,
@@ -139,6 +142,14 @@ interface BudgetDB extends SyncColumnsDB {
 	year: number;
 	month: number;
 	amountCents: number;
+}
+
+interface RetirementGoalDB extends SyncColumnsDB {
+	id: string;
+	targetMonthlyCents: number;
+	reinvestBp: number;
+	expectedYieldBp: number;
+	outsideCapitalCents: number;
 }
 
 /** Sync bookkeeping as the app sees it: `dirty` stays on the row, `deletedAt` unwraps. */
@@ -508,6 +519,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 11) await migrateCardCycleToClosingDay();
 	if (version < 12) await migrateCardPurchasesToRealCard();
 	if (version < 13) await migrateCardsPerPurchase();
+	if (version < 14) await migrateRetirementGoals();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -608,6 +620,11 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
  *   lançamentos vão para a conta corrente do mesmo banco, com o final do cartão, e o nome
  *   fica como o nome do cartão de débito daquela conta. Pagamentos para ele não existiram.
  */
+/** v13 -> v14: the financial-independence goal gets its own synced table. */
+const migrateRetirementGoals = async (): Promise<void> => {
+	await db.execAsync(CREATE_RETIREMENT_GOALS_TABLE);
+};
+
 const migrateCardsPerPurchase = async (): Promise<void> => {
 	if (!(await tableExists('transactions')) || !(await tableExists('accounts'))) return;
 
@@ -811,6 +828,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_MERCHANT_RULES_TABLE}
       ${CREATE_ACCOUNTS_TABLE}
       ${CREATE_TRANSFERS_TABLE}
+      ${CREATE_RETIREMENT_GOALS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -1285,6 +1303,8 @@ export const reassignCaptureLedger = async (
 export interface AccountActivity {
 	incomeCents: number;
 	expenseCents: number;
+	/** Parte de `expenseCents` em categorias de repasse (`nature = 'passthrough'`). */
+	passThroughCents: number;
 	transfersInCents: number;
 	transfersOutCents: number;
 }
@@ -1295,12 +1315,14 @@ export const getAccountActivity = async (
 	endDate: string
 ): Promise<AccountActivity> => {
 	const [tx, transfers] = await Promise.all([
-		db.getFirstAsync<{ income: number; expense: number }>(
+		db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
 			`SELECT
-         COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
-         COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
-       FROM transactions
-       WHERE accountId = ? AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+         COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+       FROM transactions t
+       LEFT JOIN categories c ON c.id = t.category
+       WHERE t.accountId = ? AND t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
 			[accountId, startDate, endDate]
 		),
 		db.getFirstAsync<{ inbound: number; outbound: number }>(
@@ -1316,6 +1338,7 @@ export const getAccountActivity = async (
 	return {
 		incomeCents: tx?.income ?? 0,
 		expenseCents: tx?.expense ?? 0,
+		passThroughCents: tx?.passThrough ?? 0,
 		transfersInCents: transfers?.inbound ?? 0,
 		transfersOutCents: transfers?.outbound ?? 0,
 	};
@@ -1350,16 +1373,18 @@ export const getAccountBalances = async (asOfDate: string): Promise<Map<string, 
 export const getUnassignedPeriodSummary = async (
 	startDate: string,
 	endDate: string
-): Promise<{ incomeCents: number; expenseCents: number }> => {
-	const row = await db.getFirstAsync<{ income: number; expense: number }>(
+): Promise<{ incomeCents: number; expenseCents: number; passThroughCents: number }> => {
+	const row = await db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
 		`SELECT
-       COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
-       COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
-     FROM transactions
-     WHERE accountId IS NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
+       COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+       COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+       COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+     FROM transactions t
+     LEFT JOIN categories c ON c.id = t.category
+     WHERE t.accountId IS NULL AND t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
 		[startDate, endDate]
 	);
-	return { incomeCents: row?.income ?? 0, expenseCents: row?.expense ?? 0 };
+	return { incomeCents: row?.income ?? 0, expenseCents: row?.expense ?? 0, passThroughCents: row?.passThrough ?? 0 };
 };
 
 /**
@@ -1597,8 +1622,12 @@ export const getTransfersByDateRange = async (startDate: string, endDate: string
 // ---------------------------------------------------------------------------
 
 export interface PeriodSummary {
+	/** Receita líquida: o que entrou menos os repasses. */
 	incomeCents: number;
+	/** Gasto sem os repasses. */
 	expenseCents: number;
+	/** O que só passou pela conta (categorias de repasse): fora da receita e do gasto. */
+	passThroughCents: number;
 	/** Income minus expenses **within the period**. */
 	netCents: number;
 }
@@ -1614,19 +1643,23 @@ export const getPeriodSummary = async (
 	endDate: string
 ): Promise<PeriodSummary> => {
 	try {
-		const row = await db.getFirstAsync<{ income: number; expense: number }>(
+		const row = await db.getFirstAsync<{ income: number; expense: number; passThrough: number }>(
 			`SELECT
-         COALESCE(SUM(CASE WHEN isIncome = 1 THEN amountCents ELSE 0 END), 0) AS income,
-         COALESCE(SUM(CASE WHEN isIncome = 0 THEN amountCents ELSE 0 END), 0) AS expense
-       FROM transactions
-       WHERE date BETWEEN ? AND ? AND deletedAt IS NULL`,
+         COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS income,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expense,
+         COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThrough
+       FROM transactions t
+       LEFT JOIN categories c ON c.id = t.category
+       WHERE t.date BETWEEN ? AND ? AND t.deletedAt IS NULL`,
 			[startDate, endDate]
 		);
 
-		const incomeCents = row?.income ?? 0;
-		const expenseCents = row?.expense ?? 0;
+		// Um repasse entrou e saiu sem ser seu: fica fora dos dois lados.
+		const passThroughCents = row?.passThrough ?? 0;
+		const incomeCents = (row?.income ?? 0) - passThroughCents;
+		const expenseCents = (row?.expense ?? 0) - passThroughCents;
 
-		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+		return { incomeCents, expenseCents, passThroughCents, netCents: incomeCents - expenseCents };
 	} catch (error) {
 		console.error('Error computing period summary:', error);
 		throw error;
@@ -1719,6 +1752,89 @@ export const getMonthlyTransactions = async (
 		console.error('Error fetching monthly transactions:', error);
 		throw error;
 	}
+};
+
+// ---------------------------------------------------------------------------
+// Monthly aggregates for the reports
+// ---------------------------------------------------------------------------
+
+/** Receita, despesa e repasse de cada conta por mês (`accountId` nulo = sem conta). */
+export interface MonthAccountActivityRow {
+	/** `YYYY-MM`. */
+	month: string;
+	accountId: string | null;
+	incomeCents: number;
+	expenseCents: number;
+	passThroughCents: number;
+}
+
+/**
+ * Uma consulta para o histórico inteiro: os relatórios montam um quadro do mês por mês
+ * a partir daqui em vez de repetir `getAccountActivity` conta a conta, mês a mês.
+ * `GROUP BY accountId` junta as linhas sem conta numa só, que é o que se quer.
+ */
+export const getMonthlyAccountActivity = (startDate: string, endDate: string): Promise<MonthAccountActivityRow[]> =>
+	db.getAllAsync<MonthAccountActivityRow>(
+		`SELECT substr(t.date, 1, 7) AS month,
+            t.accountId,
+            COALESCE(SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE 0 END), 0) AS incomeCents,
+            COALESCE(SUM(CASE WHEN t.isIncome = 0 THEN t.amountCents ELSE 0 END), 0) AS expenseCents,
+            COALESCE(SUM(CASE WHEN t.isIncome = 0 AND c.nature = 'passthrough' THEN t.amountCents ELSE 0 END), 0) AS passThroughCents
+     FROM transactions t
+     LEFT JOIN categories c ON c.id = t.category
+     WHERE t.date BETWEEN ? AND ? AND t.deletedAt IS NULL
+     GROUP BY month, t.accountId
+     ORDER BY month ASC`,
+		[startDate, endDate]
+	);
+
+/** O que entrou e saiu de cada conta por transferência, por mês. */
+export interface MonthTransferActivityRow {
+	month: string;
+	accountId: string;
+	inCents: number;
+	outCents: number;
+}
+
+export const getMonthlyTransferActivity = (startDate: string, endDate: string): Promise<MonthTransferActivityRow[]> =>
+	db.getAllAsync<MonthTransferActivityRow>(
+		`SELECT month, accountId, SUM(inCents) AS inCents, SUM(outCents) AS outCents FROM (
+       SELECT substr(date, 1, 7) AS month, toAccountId AS accountId, amountCents AS inCents, 0 AS outCents
+       FROM transfers WHERE toAccountId IS NOT NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL
+       UNION ALL
+       SELECT substr(date, 1, 7) AS month, fromAccountId AS accountId, 0 AS inCents, amountCents AS outCents
+       FROM transfers WHERE fromAccountId IS NOT NULL AND date BETWEEN ? AND ? AND deletedAt IS NULL
+     )
+     GROUP BY month, accountId
+     ORDER BY month ASC`,
+		[startDate, endDate, startDate, endDate]
+	);
+
+export interface MonthCategoryTotalRow {
+	month: string;
+	categoryId: string;
+	totalCents: number;
+}
+
+export const getMonthlyCategoryTotals = (startDate: string, endDate: string, transactionType: 'income' | 'expense'): Promise<MonthCategoryTotalRow[]> =>
+	db.getAllAsync<MonthCategoryTotalRow>(
+		`SELECT substr(date, 1, 7) AS month, category AS categoryId, SUM(amountCents) AS totalCents
+     FROM transactions
+     WHERE date BETWEEN ? AND ? AND deletedAt IS NULL AND isIncome = ?
+     GROUP BY month, category
+     ORDER BY month ASC`,
+		[startDate, endDate, transactionType === 'income' ? 1 : 0]
+	);
+
+/** Todas as linhas vivas de um conjunto de contas — as faturas de vários meses saem daqui. */
+export const getTransactionsForAccounts = async (accountIds: string[]): Promise<Transaction[]> => {
+	if (accountIds.length === 0) return [];
+	const placeholders = accountIds.map(() => '?').join(', ');
+	const rows = await db.getAllAsync<TransactionDB>(
+		`SELECT * FROM transactions WHERE accountId IN (${placeholders}) AND deletedAt IS NULL ORDER BY date ASC`,
+		accountIds
+	);
+	return rows.map(convertTransaction);
 };
 
 // ---------------------------------------------------------------------------
@@ -1973,7 +2089,62 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
        WHERE deletedAt IS NULL`,
 			[rate, timestamp]
 		);
+		await db.runAsync(
+			`UPDATE retirement_goals
+       SET targetMonthlyCents = CAST(ROUND(targetMonthlyCents * ?) AS INTEGER),
+           outsideCapitalCents = CAST(ROUND(outsideCapitalCents * ?) AS INTEGER),
+           updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, rate, timestamp]
+		);
 	});
+};
+
+// ---------------------------------------------------------------------------
+// Retirement goal
+// ---------------------------------------------------------------------------
+
+export type RetirementGoalDraft = Omit<RetirementGoalRow, 'id' | 'updatedAt' | 'deletedAt'>;
+
+const convertRetirementGoal = (row: RetirementGoalDB): RetirementGoalRow => ({
+	id: row.id,
+	targetMonthlyCents: row.targetMonthlyCents,
+	reinvestBp: row.reinvestBp,
+	expectedYieldBp: row.expectedYieldBp,
+	outsideCapitalCents: row.outsideCapitalCents,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** A meta de aposentadoria, ou nula enquanto o usuário não definiu (ou limpou) uma. */
+export const getRetirementGoal = async (): Promise<RetirementGoalRow | null> => {
+	const row = await db.getFirstAsync<RetirementGoalDB>(
+		'SELECT * FROM retirement_goals WHERE id = ? AND deletedAt IS NULL',
+		[RETIREMENT_GOAL_ID]
+	);
+	return row ? convertRetirementGoal(row) : null;
+};
+
+/** Define (ou redefine) a meta. Uma meta limpa antes volta à vida na mesma linha. */
+export const setRetirementGoal = async (draft: RetirementGoalDraft): Promise<void> => {
+	await db.runAsync(
+		`INSERT INTO retirement_goals (id, targetMonthlyCents, reinvestBp, expectedYieldBp, outsideCapitalCents, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO UPDATE SET
+       targetMonthlyCents = excluded.targetMonthlyCents, reinvestBp = excluded.reinvestBp,
+       expectedYieldBp = excluded.expectedYieldBp, outsideCapitalCents = excluded.outsideCapitalCents,
+       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+		[RETIREMENT_GOAL_ID, draft.targetMonthlyCents, draft.reinvestBp, draft.expectedYieldBp, draft.outsideCapitalCents, nowTimestamp()]
+	);
+};
+
+export const clearRetirementGoal = async (): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync('UPDATE retirement_goals SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [
+		timestamp,
+		timestamp,
+		RETIREMENT_GOAL_ID,
+	]);
 };
 
 // ---------------------------------------------------------------------------
@@ -2050,7 +2221,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -2071,6 +2242,9 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			[limit]
 		),
 		db.getAllAsync<TransferDB>('SELECT * FROM transfers WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
+			limit,
+		]),
+		db.getAllAsync<RetirementGoalDB>('SELECT * FROM retirement_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
 			limit,
 		]),
 	]);
@@ -2159,6 +2333,15 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		retirementGoals: retirementGoals.map((row) => ({
+			id: row.id,
+			targetMonthlyCents: row.targetMonthlyCents,
+			reinvestBp: row.reinvestBp,
+			expectedYieldBp: row.expectedYieldBp,
+			outsideCapitalCents: row.outsideCapitalCents,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 	};
 };
 
@@ -2187,6 +2370,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['recurring_transactions', changes.recurringTransactions],
 		['budgets', changes.budgets],
 		['transfers', changes.transfers ?? []],
+		['retirement_goals', changes.retirementGoals ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -2453,6 +2637,21 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				[row.id, row.year, row.month, row.amountCents, row.updatedAt, row.deletedAt]
 			);
 		}
+
+		// A meta tem id fixo: o upsert é o merge inteiro.
+		for (const row of changes.retirementGoals ?? []) {
+			if (await isStale('retirement_goals', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO retirement_goals (id, targetMonthlyCents, reinvestBp, expectedYieldBp, outsideCapitalCents, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           targetMonthlyCents = excluded.targetMonthlyCents, reinvestBp = excluded.reinvestBp,
+           expectedYieldBp = excluded.expectedYieldBp, outsideCapitalCents = excluded.outsideCapitalCents,
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.targetMonthlyCents, row.reinvestBp, row.expectedYieldBp, row.outsideCapitalCents, row.updatedAt, row.deletedAt]
+			);
+		}
 	});
 };
 
@@ -2510,7 +2709,7 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts']) {
+			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -2527,6 +2726,13 @@ export const resetDatabase = async (): Promise<void> => {
 
 export default {
 	initDatabase,
+	getMonthlyAccountActivity,
+	getMonthlyTransferActivity,
+	getMonthlyCategoryTotals,
+	getTransactionsForAccounts,
+	getRetirementGoal,
+	setRetirementGoal,
+	clearRetirementGoal,
 	getCategories,
 	getCategoriesByType,
 	addCategory,

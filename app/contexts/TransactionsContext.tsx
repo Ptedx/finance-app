@@ -83,7 +83,7 @@ interface TransactionsContextType {
 	deleteCategory: (categoryId: string) => Promise<void>;
 }
 
-const EMPTY_SUMMARY: PeriodSummary = { incomeCents: 0, expenseCents: 0, netCents: 0 };
+const EMPTY_SUMMARY: PeriodSummary = { incomeCents: 0, expenseCents: 0, passThroughCents: 0, netCents: 0 };
 
 export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 	const { startDate, endDate } = usePeriod();

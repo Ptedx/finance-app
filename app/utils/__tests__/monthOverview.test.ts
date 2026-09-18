@@ -267,3 +267,41 @@ describe('envelope é custo fixo do mês', () => {
 		expect(month({ transfersInCents: 130_000, expenseCents: 0 }).envelopeFundingCents).toBe(130_000);
 	});
 });
+
+describe('repasse: dinheiro que só passou pela conta', () => {
+	it('desconta da receita e não é gasto', () => {
+		// Dois Pix entraram (5.000 + 15.000) e 6.000 foram repassados: a renda é 14.000 e o
+		// repasse não aparece no gasto — senão receita e despesa inflariam juntas.
+		const month = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', role: 'main', incomeCents: 2_000_000, expenseCents: 700_000, passThroughCents: 600_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(month).toMatchObject({
+			grossIncomeCents: 2_000_000,
+			passThroughCents: 600_000,
+			incomeCents: 1_400_000,
+			mainSpendCents: 100_000,
+			totalSpendCents: 100_000,
+			leftoverCents: 1_300_000,
+		});
+		expect(month.savingsRateBp).toBe(Math.round((1_300_000 / 1_400_000) * 10_000));
+	});
+
+	it('vale também para lançamentos sem conta', () => {
+		const month = buildMonthOverview({
+			accounts: [],
+			unassigned: { incomeCents: 100_000, expenseCents: 30_000, passThroughCents: 30_000 },
+		});
+		expect(month).toMatchObject({ incomeCents: 70_000, totalSpendCents: 0, passThroughCents: 30_000 });
+	});
+
+	it('sem repasse nada muda', () => {
+		const month = buildMonthOverview({
+			accounts: [activity({ accountId: 'nu', role: 'main', incomeCents: 100_000, expenseCents: 40_000 })],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(month).toMatchObject({ grossIncomeCents: 100_000, incomeCents: 100_000, passThroughCents: 0, mainSpendCents: 40_000 });
+	});
+});

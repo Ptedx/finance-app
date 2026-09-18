@@ -50,7 +50,7 @@ export const categorySchema = z.object({
 	 * Recusar a remessa inteira por um campo que o servidor sabe preencher deixaria esse
 	 * aparelho preso, sem caminho de saída a não ser atualizar o app.
 	 */
-	nature: z.enum(['essential', 'discretionary']).nullish(),
+	nature: z.enum(['essential', 'discretionary', 'passthrough']).nullish(),
 	...syncMeta,
 });
 
@@ -136,6 +136,16 @@ export const budgetSchema = z.object({
 	...syncMeta,
 });
 
+/** A meta de aposentadoria (v14 do app): uma linha por usuário, de id fixo. */
+export const retirementGoalSchema = z.object({
+	id: z.string().min(1).max(64),
+	targetMonthlyCents: amountCents.min(0),
+	reinvestBp: z.number().int().min(0).max(10_000),
+	expectedYieldBp: z.number().int().min(0).max(10_000),
+	outsideCapitalCents: amountCents.min(0),
+	...syncMeta,
+});
+
 /**
  * Corpo do push — só o envelope.
  *
@@ -161,6 +171,7 @@ export const pushBodySchema = z.object({
 			recurringTransactions: rows(),
 			budgets: rows(),
 			transfers: rows(),
+			retirementGoals: rows(),
 		})
 		.default({
 			categories: [],
@@ -169,6 +180,7 @@ export const pushBodySchema = z.object({
 			recurringTransactions: [],
 			budgets: [],
 			transfers: [],
+			retirementGoals: [],
 		}),
 });
 
@@ -191,6 +203,8 @@ export const cursorSchema = z.object({
 	// Coleções do v7: um cursor guardado antes delas chega sem os campos e parte do zero.
 	accounts: z.number().int().nonnegative().default(0),
 	transfers: z.number().int().nonnegative().default(0),
+	// Coleção do v14, idem.
+	retirementGoals: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -200,6 +214,7 @@ const EMPTY_CURSOR = {
 	budgets: 0,
 	accounts: 0,
 	transfers: 0,
+	retirementGoals: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -226,4 +241,5 @@ export type TransferPayload = z.infer<typeof transferSchema>;
 export type TransactionPayload = z.infer<typeof transactionSchema>;
 export type RecurringTransactionPayload = z.infer<typeof recurringTransactionSchema>;
 export type BudgetPayload = z.infer<typeof budgetSchema>;
+export type RetirementGoalPayload = z.infer<typeof retirementGoalSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

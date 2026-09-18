@@ -1,561 +1,71 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { Stack, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-	Dimensions,
-	RefreshControl,
-	SafeAreaView,
-	ScrollView,
-	StyleSheet,
-	Switch,
-	Text,
-	TouchableOpacity,
-	View,
-} from 'react-native';
-import { LineChart, PieChart } from 'react-native-chart-kit';
-import SavingsRateCard from '../components/SavingsRateCard';
+import { Pressable, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import PeriodSelector from '../components/PeriodSelector';
+import CategoryRanking from '../components/reports/CategoryRanking';
+import CommittedSection from '../components/reports/CommittedSection';
+import FreedomHero from '../components/reports/FreedomHero';
+import GoalSheet from '../components/reports/GoalSheet';
+import HealthGrid from '../components/reports/HealthGrid';
+import InsightsList from '../components/reports/InsightsList';
+import ProjectionChart from '../components/reports/ProjectionChart';
+import RangeChips from '../components/reports/RangeChips';
+import { ACCENT, reportStyles } from '../components/reports/reportStyles';
+import SourceRanking from '../components/reports/SourceRanking';
+import TrendBars from '../components/reports/TrendBars';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { useWealthMetrics } from '../hooks/useWealthMetrics';
+import { type TrendRange, useReportsData } from '../hooks/useReportsData';
+import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { getMonthName } from '../utils/dateUtils';
 import { exportFinancialReport } from '../utils/exportUtils';
-import type { Insight, InsightSeverity } from '../utils/insights';
-import { NEEDS_WANTS_SAVINGS_TARGET } from '../utils/metrics';
-import { formatCents } from '../utils/money';
-
-const { width } = Dimensions.get('window');
-
-/** Fallback for a total whose category has since been deleted. */
-const UNKNOWN_CATEGORY = { name: 'Uncategorized' };
 
 /**
- * Slice palettes for the category pies.
+ * Relatórios: a tela de decisão.
  *
- * Each side of the ledger gets its own hue family so the two charts read at a glance —
- * red for money going out, green for money coming in. A category's own colour is not
- * used here: those are chosen for identity in the pickers and say nothing about which
- * side of the ledger a slice belongs to, so an expense pie could come out mostly green.
+ * A Home diz o que aconteceu neste mês; aqui a pergunta é "estou no caminho?". De cima
+ * para baixo: a meta de liberdade financeira (quão perto, quando chega, quanto guardar),
+ * a saúde financeira em cinco indicadores, o histórico de meses, a projeção do capital,
+ * onde o dinheiro foi (categorias e origens), o que já está comprometido para os
+ * próximos meses e as frases que os números sustentam.
  *
- * Both ramps are single-hue with monotone lightness and validated against the #1E1E1E
- * chart surface for step separation and contrast (dataviz ordinal checks).
+ * Fina de propósito: cada seção é um componente e cada número vem de um módulo puro,
+ * via `useReportsData`.
  */
-const EXPENSE_SLICE_COLORS = ['#FFC9C7', '#FF9C99', '#F8756F', '#E5484D', '#BC383D'];
-const INCOME_SLICE_COLORS = ['#C6F6D5', '#92E6B4', '#5FD394', '#30A46C', '#1D7A4E'];
-
-/** Aggregated tail, kept visually recessive so it never competes with a real category. */
-const OTHER_SLICE_COLOR = '#8A8A8A';
-
-/**
- * As três fatias do 50/30/20.
- *
- * Necessidades em azul frio (custo de existir, nem bom nem ruim), desejos em âmbar
- * (escolha, o lugar onde há margem de manobra) e poupança em verde, que é a mesma cor com
- * que o app já marca dinheiro que entra. As três se distinguem em monocromia e no tema
- * escuro do app — a barra empilhada não tem legenda embutida.
- */
-const NEEDS_COLOR = '#4DACF7';
-const WANTS_COLOR = '#FFCC5C';
-const SAVINGS_COLOR = '#4CAF50';
-
-/** Cor do marcador de cada insight, por urgência. */
-const SEVERITY_COLOR: Record<InsightSeverity, string> = {
-	critical: '#FF6B6B',
-	attention: '#FFCC5C',
-	positive: '#4CAF50',
-	neutral: '#8A8A8A',
-};
-
-/**
- * A pie stops being readable past about six wedges, and neither ramp carries more than
- * five distinguishable steps. Anything beyond that is summed into "Other" rather than
- * cycling the palette, which would paint two categories the same shade.
- */
-const MAX_SLICES = EXPENSE_SLICE_COLORS.length;
-
 const ReportsScreen = () => {
-	const {
-		categoryTotals,
-		monthlyData,
-		categories,
-		periodTotals,
-		isLoading,
-		refreshData,
-		currentPeriodTransactions,
-	} = useTransactions();
-	const { selectedMonthName, selectedYear } = usePeriod();
-	const { metrics, insights } = useWealthMetrics();
 	const { t } = useTranslation();
-
+	const router = useRouter();
+	const { selectedMonth, selectedYear } = usePeriod();
+	const { currentPeriodTransactions, categories, monthlyData, categoryTotals } = useTransactions();
+	const { goal, save: saveGoal, clear: clearGoal } = useRetirementGoal();
+	const [range, setRange] = useState<TrendRange>(6);
+	const [goalSheetOpen, setGoalSheetOpen] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
-	const [showExpenses, setShowExpenses] = useState(true);
-	const [showIncomes, setShowIncomes] = useState(true);
-	const [expenseChartError, setExpenseChartError] = useState(false);
-	const [incomeChartError, setIncomeChartError] = useState(false);
-	const [trendChartError, setTrendChartError] = useState(false);
-	const [savingsChartError, setSavingsChartError] = useState(false);
 
-	/**
-	 * Turns category totals into the two views of the same data.
-	 *
-	 * `slices` is capped and folded for the pie, which stops being readable past about
-	 * six wedges. `breakdown` keeps every category, because it is a labelled list with
-	 * no colour budget — folding it would hide detail for no benefit. Rows past the cap
-	 * carry the same neutral grey as the "Other" wedge they were folded into.
-	 */
-	const buildCategoryViews = useCallback(
-		(totals: typeof categoryTotals.expenses, palette: string[]) => {
-			const named = totals
-				.filter((item) => item && Number.isFinite(item.totalCents) && item.totalCents > 0)
-				.map((item) => ({
-					categoryId: item.categoryId,
-					name: (categories.find((c) => c.id === item.categoryId) ?? UNKNOWN_CATEGORY).name,
-					amountCents: item.totalCents,
-				}))
-				.sort((a, b) => b.amountCents - a.amountCents);
-
-			const shown = named.slice(0, MAX_SLICES);
-			const tail = named.slice(MAX_SLICES);
-
-			// Palette steps are handed out in a stable order — by category id, not by this
-			// period's ranking — so a category keeps the same shade from month to month.
-			// Colouring by rank would repaint every slice whenever the amounts shuffled.
-			const colourOrder = [...shown]
-				.sort((a, b) => a.categoryId.localeCompare(b.categoryId))
-				.map((item) => item.categoryId);
-
-			const colourOf = (categoryId: string) => {
-				const slot = colourOrder.indexOf(categoryId);
-				return slot === -1 ? OTHER_SLICE_COLOR : palette[slot % palette.length];
-			};
-
-			const breakdown = named.map((item) => ({
-				key: item.categoryId,
-				name: item.name,
-				amountCents: item.amountCents,
-				color: colourOf(item.categoryId),
-			}));
-
-			const slices = shown.map((item) => ({
-				name: item.name,
-				amountCents: item.amountCents,
-				// react-native-chart-kit sizes slices from this field; it only needs to be
-				// proportional, so major units keep the numbers readable.
-				amount: item.amountCents / 100,
-				color: colourOf(item.categoryId),
-				legendFontColor: '#FFFFFF',
-				legendFontSize: 12,
-			}));
-
-			if (tail.length > 0) {
-				const tailCents = tail.reduce((sum, item) => sum + item.amountCents, 0);
-				slices.push({
-					name: t('reports.otherCategories', { count: tail.length }),
-					amountCents: tailCents,
-					amount: tailCents / 100,
-					color: OTHER_SLICE_COLOR,
-					legendFontColor: '#FFFFFF',
-					legendFontSize: 12,
-				});
-			}
-
-			return { slices, breakdown };
-		},
-		[categories, t]
-	);
-
-	const expenseViews = useMemo(
-		() => buildCategoryViews(categoryTotals.expenses, EXPENSE_SLICE_COLORS),
-		[categoryTotals.expenses, buildCategoryViews]
-	);
-
-	const incomeViews = useMemo(
-		() => buildCategoryViews(categoryTotals.incomes, INCOME_SLICE_COLORS),
-		[categoryTotals.incomes, buildCategoryViews]
-	);
-
-	const expensesPieChartData = expenseViews.slices;
-	const incomesPieChartData = incomeViews.slices;
-
-	/**
-	 * Both series now always carry twelve months, so point N of the income line and
-	 * point N of the expense line refer to the same month. Previously the database
-	 * returned only months that had rows, and the two lines were plotted against each
-	 * other's months whenever their activity differed.
-	 */
-	const lineChartData = useMemo(() => {
-		const byMonth = (data: typeof monthlyData.expenses) =>
-			[...data].sort((a, b) => a.month - b.month).map((entry) => entry.totalCents / 100);
-
-		return {
-			labels: Array.from({ length: 12 }, (_, i) => getMonthName(i + 1).substring(0, 3)),
-			datasets: [
-				{
-					data: byMonth(monthlyData.expenses),
-					// Mid step of the expense ramp, so the trend lines and the pies agree.
-					color: () => EXPENSE_SLICE_COLORS[3],
-					strokeWidth: 2,
-				},
-				{
-					data: byMonth(monthlyData.incomes),
-					color: () => INCOME_SLICE_COLORS[3],
-					strokeWidth: 2,
-				},
-			],
-			legend: [t('reports.expenses'), t('reports.incomes')],
-		};
-	}, [monthlyData.expenses, monthlyData.incomes, t]);
-
-	/**
-	 * A taxa de poupança mês a mês, em porcentagem.
-	 *
-	 * `savingsRateTrend` já devolve doze entradas, então o ponto N desta linha e o ponto N
-	 * das linhas de receita/despesa acima falam do mesmo mês. Meses sem renda não têm taxa
-	 * e entram como zero — é o que o chart-kit aceita desenhar —, e a legenda embaixo do
-	 * gráfico diz isso em vez de deixar o zero passar por "não poupou nada".
-	 */
-	const savingsTrendData = useMemo(
-		() => ({
-			labels: Array.from({ length: 12 }, (_, i) => getMonthName(i + 1).substring(0, 3)),
-			datasets: [
-				{
-					data: metrics.trend.map((entry) => (entry.rate.basisPoints ?? 0) / 100),
-					color: () => '#15E8FE',
-					strokeWidth: 2,
-				},
-			],
-		}),
-		[metrics.trend]
-	);
-
-	const hasSavingsTrend = useMemo(
-		() => metrics.trend.some((entry) => entry.rate.basisPoints !== null),
-		[metrics.trend]
-	);
-
-	const chartConfig = useMemo(
-		() => ({
-			backgroundGradientFrom: '#1E1E1E',
-			backgroundGradientTo: '#1E1E1E',
-			decimalPlaces: 0,
-			color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-			labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-			style: { borderRadius: 16 },
-			propsForDots: { r: '6', strokeWidth: '2', stroke: '#5E5CE6' },
-		}),
-		[]
-	);
+	const data = useReportsData(range, goal);
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
-			await refreshData();
-			setExpenseChartError(false);
-			setIncomeChartError(false);
-			setTrendChartError(false);
-			setSavingsChartError(false);
-		} catch (error) {
-			console.error('Refresh error:', error);
+			await data.refresh();
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData]);
+	}, [data.refresh]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	const renderExpensePieChart = useCallback(() => {
-		if (expenseChartError) {
-			return <Text style={styles.errorText}>{t('reports.errorExpenseChart')}</Text>;
-		}
-		if (expensesPieChartData.length === 0) {
-			return <Text style={styles.emptyText}>{t('reports.noExpenseData')}</Text>;
-		}
+	const handleExport = useCallback(async () => {
 		try {
-			return (
-				<View style={styles.chartContainer}>
-					<PieChart
-						data={expensesPieChartData}
-						width={width - 32}
-						height={200}
-						chartConfig={chartConfig}
-						accessor="amount"
-						backgroundColor="transparent"
-						paddingLeft="15"
-						// A legenda embutida do chart-kit imprime o numero cru do acessor
-						// ("1500.5 Education"). O detalhamento logo abaixo ja lista as mesmas
-						// categorias com o valor formatado e a porcentagem, entao ela so
-						// duplicava a informacao em formato pior.
-						hasLegend={false}
-						absolute
-					/>
-				</View>
-			);
-		} catch (error) {
-			console.error('Error rendering expense chart:', error);
-			setExpenseChartError(true);
-			return <Text style={styles.errorText}>{t('reports.renderErrorExpense')}</Text>;
-		}
-	}, [expensesPieChartData, chartConfig, expenseChartError, width, t]);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	const renderIncomePieChart = useCallback(() => {
-		if (incomeChartError) {
-			return <Text style={styles.errorText}>{t('reports.errorIncomeChart')}</Text>;
-		}
-		if (incomesPieChartData.length === 0) {
-			return <Text style={styles.emptyText}>{t('reports.noIncomeData')}</Text>;
-		}
-		try {
-			return (
-				<View style={styles.chartContainer}>
-					<PieChart
-						data={incomesPieChartData}
-						width={width - 32}
-						height={200}
-						chartConfig={chartConfig}
-						accessor="amount"
-						backgroundColor="transparent"
-						paddingLeft="15"
-						// A legenda embutida do chart-kit imprime o numero cru do acessor
-						// ("1500.5 Education"). O detalhamento logo abaixo ja lista as mesmas
-						// categorias com o valor formatado e a porcentagem, entao ela so
-						// duplicava a informacao em formato pior.
-						hasLegend={false}
-						absolute
-					/>
-				</View>
-			);
-		} catch (error) {
-			console.error('Error rendering income chart:', error);
-			setIncomeChartError(true);
-			return <Text style={styles.errorText}>{t('reports.renderErrorIncome')}</Text>;
-		}
-	}, [incomesPieChartData, chartConfig, incomeChartError, width, t]);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	const renderTrendChart = useCallback(() => {
-		if (trendChartError) {
-			return <Text style={styles.errorText}>{t('reports.errorTrendChart')}</Text>;
-		}
-		const hasExpenses = monthlyData.expenses.some((item) => item && item.totalCents > 0);
-		const hasIncomes = monthlyData.incomes.some((item) => item && item.totalCents > 0);
-		if (!hasExpenses && !hasIncomes) {
-			return <Text style={styles.emptyText}>{t('reports.noTrendData')}</Text>;
-		}
-		try {
-			return (
-				<View style={styles.chartContainer}>
-					<LineChart
-						data={lineChartData}
-						width={width - 32}
-						height={220}
-						chartConfig={chartConfig}
-						bezier
-						style={{ marginVertical: 8, borderRadius: 16 }}
-						fromZero
-					/>
-				</View>
-			);
-		} catch (error) {
-			console.error('Error rendering trend chart:', error);
-			setTrendChartError(true);
-			return <Text style={styles.errorText}>{t('reports.renderErrorTrend')}</Text>;
-		}
-	}, [
-		lineChartData,
-		chartConfig,
-		trendChartError,
-		monthlyData.expenses,
-		monthlyData.incomes,
-		width,
-		t,
-	]);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	const renderSavingsTrendChart = useCallback(() => {
-		if (savingsChartError) {
-			return <Text style={styles.errorText}>{t('wealth.errorSavingsChart')}</Text>;
-		}
-		if (!hasSavingsTrend) {
-			return <Text style={styles.emptyText}>{t('wealth.noSavingsTrendData')}</Text>;
-		}
-		try {
-			return (
-				<View style={styles.chartContainer}>
-					<LineChart
-						data={savingsTrendData}
-						width={width - 32}
-						height={200}
-						chartConfig={chartConfig}
-						bezier
-						style={{ marginVertical: 8, borderRadius: 16 }}
-						yAxisSuffix="%"
-					/>
-					<Text style={styles.chartCaption}>{t('wealth.savingsTrendCaption')}</Text>
-				</View>
-			);
-		} catch (error) {
-			console.error('Error rendering savings rate chart:', error);
-			setSavingsChartError(true);
-			return <Text style={styles.errorText}>{t('wealth.renderErrorSavings')}</Text>;
-		}
-	}, [savingsTrendData, hasSavingsTrend, chartConfig, savingsChartError, width, t]);
-
-	/**
-	 * A barra empilhada do 50/30/20.
-	 *
-	 * Desenhada com Views em vez de um gráfico: são três fatias que somam exatamente 100%
-	 * por construção (ver `needsWantsSavingsSplit`), e uma barra de proporções não precisa
-	 * de eixo nem de biblioteca. Poupança negativa não tem largura — um mês no vermelho
-	 * mostra necessidades e desejos ocupando a barra inteira, que é a leitura correta.
-	 */
-	const renderNeedsWantsSavings = useCallback(() => {
-		const { split } = metrics;
-
-		if (split.needsBasisPoints === null) {
-			return <Text style={styles.emptyText}>{t('wealth.noSplitData')}</Text>;
-		}
-
-		const rows = [
-			{
-				key: 'needs',
-				label: t('wealth.needs'),
-				color: NEEDS_COLOR,
-				cents: split.needsCents,
-				basisPoints: split.needsBasisPoints ?? 0,
-				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.needsBasisPoints,
-			},
-			{
-				key: 'wants',
-				label: t('wealth.wants'),
-				color: WANTS_COLOR,
-				cents: split.wantsCents,
-				basisPoints: split.wantsBasisPoints ?? 0,
-				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.wantsBasisPoints,
-			},
-			{
-				key: 'savings',
-				label: t('wealth.savings'),
-				color: SAVINGS_COLOR,
-				cents: split.savingsCents,
-				basisPoints: split.savingsBasisPoints ?? 0,
-				targetBasisPoints: NEEDS_WANTS_SAVINGS_TARGET.savingsBasisPoints,
-			},
-		];
-
-		return (
-			<>
-				<View style={styles.splitBar}>
-					{rows.map((row) => (
-						<View
-							key={row.key}
-							style={{
-								width: `${Math.max(row.basisPoints, 0) / 100}%`,
-								backgroundColor: row.color,
-							}}
-						/>
-					))}
-				</View>
-
-				{rows.map((row) => (
-					<View key={row.key} style={styles.categoryBreakdownItem}>
-						<View style={styles.categoryLabelContainer}>
-							<View style={[styles.categoryColorDot, { backgroundColor: row.color }]} />
-							<Text style={styles.categoryLabel}>{row.label}</Text>
-						</View>
-						<View style={styles.categoryAmountContainer}>
-							<Text style={styles.categoryAmount}>{formatCents(row.cents)}</Text>
-							<Text style={styles.categoryPercentage}>
-								{Math.round(row.basisPoints / 100)}% ·{' '}
-								{t('wealth.target', { percent: row.targetBasisPoints / 100 })}
-							</Text>
-						</View>
-					</View>
-				))}
-			</>
-		);
-	}, [metrics, t]);
-
-	/**
-	 * Os mesmos objetos que o chatbot vai consumir, renderizados como cartões discretos.
-	 * A frase preferida é a tradução por `id`; `title` é o texto que o próprio módulo
-	 * montou e serve de fallback quando não há chave para aquele insight.
-	 */
-	const renderInsights = useCallback(
-		(items: Insight[]) => {
-			if (items.length === 0) {
-				return <Text style={styles.emptyText}>{t('wealth.noInsights')}</Text>;
-			}
-
-			return items.map((insight) => (
-				<View key={insight.id} style={styles.insightRow}>
-					<View
-						style={[styles.insightDot, { backgroundColor: SEVERITY_COLOR[insight.severity] }]}
-					/>
-					<Text style={styles.insightText}>
-						{t(`wealth.insights.${insight.id}`, {
-							...insight.params,
-							defaultValue: insight.title,
-						})}
-					</Text>
-				</View>
-			));
-		},
-		[t]
-	);
-
-	const renderCategoryBreakdown = useCallback(
-		(
-			data: Array<{ key: string; color: string; name: string; amountCents: number }>,
-			totalCents: number,
-			emptyMessage: string,
-			type: string
-		) => {
-			if (data.length === 0) {
-				return <Text style={styles.emptyText}>{emptyMessage}</Text>;
-			}
-			return data.map((item) => (
-				<View key={`${type}-${item.key}`} style={styles.categoryBreakdownItem}>
-					<View style={styles.categoryLabelContainer}>
-						<View style={[styles.categoryColorDot, { backgroundColor: item.color }]} />
-						<Text style={styles.categoryLabel}>{item.name}</Text>
-					</View>
-					<View style={styles.categoryAmountContainer}>
-						<Text style={styles.categoryAmount}>{formatCents(item.amountCents)}</Text>
-						<Text style={styles.categoryPercentage}>
-							{((item.amountCents / (totalCents || 1)) * 100).toFixed(1)}%
-						</Text>
-					</View>
-				</View>
-			));
-		},
-		[]
-	);
-
-	const handleExportReports = useCallback(async () => {
-		try {
-			const periodName = `${selectedMonthName}_${selectedYear}`;
-			await exportFinancialReport(
-				currentPeriodTransactions,
-				categories,
-				monthlyData,
-				categoryTotals,
-				periodName,
-				selectedYear
-			);
+			await exportFinancialReport(currentPeriodTransactions, categories, monthlyData, categoryTotals, getMonthName(selectedMonth), selectedYear);
 		} catch (error) {
 			console.error('Error exporting reports:', error);
 		}
-	}, [
-		selectedMonthName,
-		selectedYear,
-		currentPeriodTransactions,
-		categories,
-		monthlyData,
-		categoryTotals,
-	]);
+	}, [currentPeriodTransactions, categories, monthlyData, categoryTotals, selectedMonth, selectedYear]);
 
-	const handleToggleExpenses = useCallback(() => setShowExpenses((prev) => !prev), []);
-	const handleToggleIncomes = useCallback(() => setShowIncomes((prev) => !prev), []);
+	const openIncomes = useCallback(() => {
+		router.push({ pathname: '/(tabs)/transactions', params: { kind: 'income' } });
+	}, [router]);
 
 	return (
 		<SafeAreaView style={styles.container}>
@@ -568,147 +78,52 @@ const ReportsScreen = () => {
 				}}
 			/>
 
-			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle}>{t('reports.headerTitle')}</Text>
-				<Text style={styles.headerSubtitle}>{t('reports.headerSubtitle')}</Text>
-			</View>
-
-			<View style={styles.toggleContainer}>
-				<View style={styles.toggleOption}>
-					<Text style={styles.toggleLabel}>{t('reports.expenses')}</Text>
-					<Switch
-						value={showExpenses}
-						onValueChange={handleToggleExpenses}
-						trackColor={{ false: '#3e3e3e', true: 'rgba(255, 107, 107, 0.3)' }}
-						thumbColor={showExpenses ? '#FF6B6B' : '#f4f3f4'}
-					/>
+			<View style={styles.header}>
+				<View style={styles.headerText}>
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('reports.headerTitle')}
+					</Text>
+					<Text style={styles.headerSubtitle}>{t('reports.headerSubtitle')}</Text>
 				</View>
-				<View style={styles.toggleOption}>
-					<Text style={styles.toggleLabel}>{t('reports.incomes')}</Text>
-					<Switch
-						value={showIncomes}
-						onValueChange={handleToggleIncomes}
-						trackColor={{ false: '#3e3e3e', true: 'rgba(76, 175, 80, 0.3)' }}
-						thumbColor={showIncomes ? '#4CAF50' : '#f4f3f4'}
-					/>
-				</View>
+				<PeriodSelector />
 			</View>
 
 			<ScrollView
 				contentContainerStyle={styles.scrollContent}
 				showsVerticalScrollIndicator={false}
-				refreshControl={
-					<RefreshControl
-						refreshing={refreshing}
-						onRefresh={handleRefresh}
-						tintColor="#50E3C2"
-						colors={['#50E3C2']}
-					/>
-				}
+				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />}
 			>
-				{isLoading ? (
+				{data.isLoading ? (
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						{/* Taxa de poupança e fôlego: saíram da tela inicial, onde o "Este mês" já mostra quanto sobrou. */}
-							<SavingsRateCard />
+						<FreedomHero model={data.retirement} goal={goal} income={data.income} onEditGoal={() => setGoalSheetOpen(true)} />
 
-							{/* Summary Section */}
-						<View style={styles.sectionContainer}>
-							<Text style={styles.sectionTitle}>{t('reports.monthlySummary')}</Text>
-							<View style={styles.summaryContainer}>
-								<View style={styles.summaryItem}>
-									<Text style={styles.summaryLabel}>{t('reports.income')}</Text>
-									<Text style={[styles.summaryValue, styles.incomeValue]}>
-										{formatCents(periodTotals.incomeCents)}
-									</Text>
-								</View>
-								<View style={styles.summaryItem}>
-									<Text style={styles.summaryLabel}>{t('reports.expenses')}</Text>
-									<Text style={[styles.summaryValue, styles.expenseValue]}>
-										{formatCents(periodTotals.expenseCents)}
-									</Text>
-								</View>
-								<View style={styles.summaryItem}>
-									<Text style={styles.summaryLabel}>{t('reports.net')}</Text>
-									<Text
-										style={[
-											styles.summaryValue,
-											periodTotals.netCents >= 0 ? styles.incomeValue : styles.expenseValue,
-										]}
-									>
-										{formatCents(periodTotals.netCents)}
-									</Text>
-								</View>
-							</View>
+						<HealthGrid indicators={data.health} />
+
+						<View style={styles.rangeRow}>
+							<RangeChips value={range} onChange={setRange} />
 						</View>
+						<TrendBars series={data.series} />
 
-						{/* Savings rate over the year */}
-						<View style={styles.sectionContainer}>
-							<Text style={styles.sectionTitle}>{t('wealth.savingsTrendTitle')}</Text>
-							{renderSavingsTrendChart()}
-						</View>
+						{data.retirement && data.retirement.reach.kind !== 'reached' ? (
+							<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} />
+						) : null}
 
-						{/* Needs / wants / savings */}
-						<View style={styles.sectionContainer}>
-							<Text style={styles.sectionTitle}>{t('wealth.splitTitle')}</Text>
-							{renderNeedsWantsSavings()}
-						</View>
+						<CategoryRanking rows={data.categories} />
+						<SourceRanking rows={data.sources} />
+						<CommittedSection months={data.committed} />
+						<InsightsList insights={data.insights} onPress={openIncomes} />
 
-						{/* What the numbers are saying. Mesmo read-model do futuro chatbot. */}
-						<View style={styles.sectionContainer}>
-							<Text style={styles.sectionTitle}>{t('wealth.insightsTitle')}</Text>
-							{renderInsights(insights)}
-						</View>
-
-						{/* Expenses by Category */}
-						{showExpenses && (
-							<View style={styles.sectionContainer}>
-								<Text style={styles.sectionTitle}>{t('reports.expensesByCategory')}</Text>
-								{renderExpensePieChart()}
-								<View style={styles.categoryBreakdownContainer}>
-									{renderCategoryBreakdown(
-										expenseViews.breakdown,
-										periodTotals.expenseCents,
-										t('reports.noExpenseData'),
-										'expense'
-									)}
-								</View>
-							</View>
-						)}
-
-						{/* Income by Category */}
-						{showIncomes && (
-							<View style={styles.sectionContainer}>
-								<Text style={styles.sectionTitle}>{t('reports.incomeByCategory')}</Text>
-								{renderIncomePieChart()}
-								<View style={styles.categoryBreakdownContainer}>
-									{renderCategoryBreakdown(
-										incomeViews.breakdown,
-										periodTotals.incomeCents,
-										t('reports.noIncomeData'),
-										'income'
-									)}
-								</View>
-							</View>
-						)}
-
-						{/* Monthly Spending Trend */}
-						<View style={styles.sectionContainer}>
-							<Text style={styles.sectionTitle}>{t('reports.monthlyTrends')}</Text>
-							{renderTrendChart()}
-						</View>
-
-						{/* Export Options */}
-						<View style={styles.exportContainer}>
-							<TouchableOpacity style={styles.exportButton} onPress={handleExportReports}>
-								<Ionicons name="download-outline" size={20} color="#FFFFFF" />
-								<Text style={styles.exportButtonText}>{t('reports.exportReports')}</Text>
-							</TouchableOpacity>
-						</View>
+						<Pressable style={({ pressed }) => [styles.exportButton, pressed && reportStyles.pressed]} onPress={handleExport} accessibilityRole="button">
+							<Ionicons name="download-outline" size={20} color="#FFFFFF" />
+							<Text style={styles.exportText}>{t('reports.exportReports')}</Text>
+						</Pressable>
 					</>
 				)}
 			</ScrollView>
+
+			<GoalSheet visible={goalSheetOpen} goal={goal} onSave={saveGoal} onClear={clearGoal} onClose={() => setGoalSheetOpen(false)} />
 		</SafeAreaView>
 	);
 };
@@ -720,187 +135,54 @@ const styles = StyleSheet.create({
 		paddingTop: 60,
 		paddingBottom: 100,
 	},
-	headerContainer: {
+	header: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		gap: 12,
 		paddingHorizontal: 16,
 		paddingVertical: 12,
+	},
+	headerText: {
+		flex: 1,
 	},
 	headerTitle: {
 		fontSize: 24,
 		fontWeight: '700',
 		color: '#FFFFFF',
-		marginBottom: 4,
 	},
 	headerSubtitle: {
-		fontSize: 14,
+		fontSize: 13,
 		color: 'rgba(255, 255, 255, 0.7)',
-		marginBottom: 8,
-	},
-	toggleContainer: {
-		flexDirection: 'row',
-		justifyContent: 'space-around',
-		paddingVertical: 10,
-		marginHorizontal: 16,
-		marginBottom: 10,
-		backgroundColor: '#1E1E1E',
-		borderRadius: 8,
-	},
-	toggleOption: {
-		flexDirection: 'row',
-		alignItems: 'center',
-	},
-	toggleLabel: {
-		color: '#FFFFFF',
-		marginRight: 8,
-		fontSize: 16,
+		marginTop: 2,
 	},
 	scrollContent: {
 		padding: 16,
 		paddingBottom: 40,
 	},
-	sectionContainer: {
-		marginBottom: 24,
-		backgroundColor: '#1E1E1E',
-		borderRadius: 12,
-		padding: 16,
-	},
-	sectionTitle: {
-		fontSize: 18,
-		fontWeight: '600',
-		color: '#FFFFFF',
-		marginBottom: 16,
-	},
-	summaryContainer: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-	},
-	summaryItem: {
-		flex: 1,
-		alignItems: 'center',
-	},
-	summaryLabel: {
-		fontSize: 14,
-		color: 'rgba(255, 255, 255, 0.7)',
-		marginBottom: 8,
-	},
-	summaryValue: {
-		fontSize: 16,
-		fontWeight: '600',
-	},
-	incomeValue: {
-		color: '#4CAF50',
-	},
-	expenseValue: {
-		color: '#FF6B6B',
-	},
-	chartContainer: {
-		alignItems: 'center',
-		marginBottom: 16,
-	},
-	chartCaption: {
-		fontSize: 11,
-		color: 'rgba(255, 255, 255, 0.45)',
-		textAlign: 'center',
-		paddingHorizontal: 8,
-	},
-	splitBar: {
-		flexDirection: 'row',
-		height: 10,
-		borderRadius: 5,
-		overflow: 'hidden',
-		backgroundColor: 'rgba(255, 255, 255, 0.08)',
+	rangeRow: {
 		marginBottom: 12,
 	},
-	insightRow: {
-		flexDirection: 'row',
-		alignItems: 'flex-start',
-		paddingVertical: 8,
-		borderBottomWidth: 1,
-		borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-	},
-	insightDot: {
-		width: 8,
-		height: 8,
-		borderRadius: 4,
-		marginTop: 5,
-		marginRight: 10,
-	},
-	insightText: {
-		flex: 1,
-		fontSize: 14,
-		color: '#FFFFFF',
-		lineHeight: 20,
-	},
-	categoryBreakdownContainer: {
-		marginTop: 8,
-	},
-	categoryBreakdownItem: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-		alignItems: 'center',
-		paddingVertical: 8,
-		borderBottomWidth: 1,
-		borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-	},
-	categoryLabelContainer: {
-		flexDirection: 'row',
-		alignItems: 'center',
-	},
-	categoryColorDot: {
-		width: 12,
-		height: 12,
-		borderRadius: 6,
-		marginRight: 8,
-	},
-	categoryLabel: {
-		fontSize: 14,
-		color: '#FFFFFF',
-	},
-	categoryAmountContainer: {
-		alignItems: 'flex-end',
-	},
-	categoryAmount: {
-		fontSize: 14,
-		fontWeight: '600',
-		color: '#FFFFFF',
-	},
-	categoryPercentage: {
-		fontSize: 12,
-		color: 'rgba(255, 255, 255, 0.6)',
-	},
 	loadingText: {
-		color: 'rgba(255, 255, 255, 0.6)',
-		textAlign: 'center',
 		fontSize: 16,
-		marginTop: 40,
-	},
-	emptyText: {
-		color: 'rgba(255, 255, 255, 0.6)',
+		color: 'rgba(255, 255, 255, 0.7)',
 		textAlign: 'center',
-		fontSize: 14,
-		marginVertical: 20,
-	},
-	errorText: {
-		color: '#FF6B6B',
-		textAlign: 'center',
-		fontSize: 14,
-		marginVertical: 20,
-	},
-	exportContainer: {
-		alignItems: 'center',
-		marginTop: 8,
+		paddingVertical: 40,
 	},
 	exportButton: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		backgroundColor: 'rgba(255, 255, 255, 0.1)',
-		paddingHorizontal: 16,
-		paddingVertical: 12,
-		borderRadius: 8,
+		justifyContent: 'center',
+		gap: 8,
+		minHeight: 48,
+		borderRadius: 12,
+		backgroundColor: 'rgba(255, 255, 255, 0.08)',
+		marginTop: 4,
 	},
-	exportButtonText: {
+	exportText: {
+		fontSize: 15,
+		fontWeight: '600',
 		color: '#FFFFFF',
-		fontWeight: '500',
-		marginLeft: 8,
 	},
 });
 

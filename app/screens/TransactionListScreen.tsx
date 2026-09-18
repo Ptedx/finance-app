@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -62,12 +62,18 @@ const TransactionListScreen = () => {
 	const { startDate, endDate, selectedMonth } = usePeriod();
 
 	const [refreshing, setRefreshing] = useState(false);
-	const [kind, setKind] = useState<Kind>('all');
+	// Chegar por um link (o insight de receita repetida) já abre no filtro certo.
+	const params = useLocalSearchParams<{ kind?: string }>();
+	const [kind, setKind] = useState<Kind>(params.kind === 'income' || params.kind === 'expense' ? params.kind : 'all');
 	const [accountId, setAccountId] = useState<string | null>(null);
 	const [search, setSearch] = useState('');
 
 	const categoryNames = useMemo(
 		() => new Map(categories.map((category) => [category.id, category.name.toLocaleLowerCase()])),
+		[categories]
+	);
+	const passThroughCategories = useMemo(
+		() => new Set(categories.filter((category) => category.nature === 'passthrough').map((category) => category.id)),
 		[categories]
 	);
 
@@ -81,6 +87,9 @@ const TransactionListScreen = () => {
 		let expenseCents = 0;
 		for (const transaction of inPeriod) {
 			if (transaction.isIncome) incomeCents += transaction.amountCents;
+			// Repasse: entrou e foi adiante. Sai da receita e não é gasto — a mesma regra
+			// do "Este mês" da Home, para os totais baterem entre as telas.
+			else if (passThroughCategories.has(transaction.category)) incomeCents -= transaction.amountCents;
 			else expenseCents += transaction.amountCents;
 		}
 		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };

@@ -106,6 +106,15 @@ export interface WireBudget extends WireMeta {
 	amountCents: number;
 }
 
+/** A meta de aposentadoria: uma linha só, de id fixo. */
+export interface WireRetirementGoal extends WireMeta {
+	id: string;
+	targetMonthlyCents: number;
+	reinvestBp: number;
+	expectedYieldBp: number;
+	outsideCapitalCents: number;
+}
+
 export interface SyncChanges {
 	categories: WireCategory[];
 	transactions: WireTransaction[];
@@ -114,6 +123,8 @@ export interface SyncChanges {
 	/** Coleções do v7. Opcionais na chegada: um servidor anterior a elas não as manda. */
 	accounts?: WireAccount[];
 	transfers?: WireTransfer[];
+	/** Coleção do v14, opcional pelo mesmo motivo. */
+	retirementGoals?: WireRetirementGoal[];
 }
 
 /**
@@ -131,6 +142,7 @@ export interface SyncCursor {
 	budgets: number;
 	accounts: number;
 	transfers: number;
+	retirementGoals: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -140,6 +152,7 @@ export const EMPTY_CURSOR: SyncCursor = {
 	budgets: 0,
 	accounts: 0,
 	transfers: 0,
+	retirementGoals: 0,
 };
 
 export interface PullResponse {
@@ -197,6 +210,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	budgets: [],
 	accounts: [],
 	transfers: [],
+	retirementGoals: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -205,7 +219,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	changes.recurringTransactions.length +
 	changes.budgets.length +
 	(changes.accounts?.length ?? 0) +
-	(changes.transfers?.length ?? 0);
+	(changes.transfers?.length ?? 0) +
+	(changes.retirementGoals?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

@@ -47,7 +47,7 @@ Ajudar o investidor iniciante a visualizar o poder dos juros sobre juros no long
 - Definir expectativas realistas de tempo para a aposentadoria ou independência financeira.
 
 ### Funcionalidades Propostas
-- **Projetor de Liberdade Financeira:**
+- **Projetor de Liberdade Financeira:** *(feito: o hero e a projeção da tela de Relatórios — ver `docs/relatorios.md`)*
   - Inputs: Idade atual, idade de aposentadoria desejada, rentabilidade média anual esperada (ex: 10%), e valor do aporte mensal (que o app pode sugerir baseado no fluxo de caixa).
   - Output: Um gráfico de área (Snowball Effect) separando visualmente quanto do montante final foi tirado do próprio bolso e quanto foi gerado puramente pelos juros.
 
@@ -81,6 +81,6 @@ O estágio final da independência financeira, onde o dinheiro trabalha sozinho 
 ### Funcionalidades Propostas
 - **Radar de Renda Passiva:**
   - Aba exclusiva para registrar dividendos, rendimentos de CDBs/Tesouro, e aluguéis recebidos.
-- **Métrica de Cobertura de Custo de Vida:**
+- **Métrica de Cobertura de Custo de Vida:** *(feito em parte: "renda passiva hoje" contra a meta, e o rendimento observado das reservas)*
   - O app cruza automaticamente os *gastos fixos* registrados no fluxo de caixa com a média da *renda passiva* recebida nos últimos meses.
   - Exibe um termômetro: *"Sua renda passiva atual já cobre 25% do seu custo de vida."*

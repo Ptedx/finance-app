@@ -21,6 +21,12 @@ export interface AccountMonthActivity {
 	incomeCents: number;
 	/** Despesas lançadas na conta no período (no cartão, as parcelas que caem no mês). */
 	expenseCents: number;
+	/**
+	 * Parte de `expenseCents` em categorias de repasse: dinheiro que entrou e foi passado
+	 * adiante. Desconta da receita em vez de contar como gasto. Só lido em contas
+	 * principais e nos lançamentos sem conta.
+	 */
+	passThroughCents?: number;
 	transfersInCents: number;
 	transfersOutCents: number;
 	/**
@@ -40,7 +46,7 @@ export interface AccountMonthActivity {
 export interface MonthOverviewInput {
 	accounts: AccountMonthActivity[];
 	/** Lançamentos sem conta no período: contam como se fossem da principal. */
-	unassigned: { incomeCents: number; expenseCents: number };
+	unassigned: { incomeCents: number; expenseCents: number; passThroughCents?: number };
 }
 
 export interface CardMonth {
@@ -80,7 +86,12 @@ export interface EnvelopeMonth {
 }
 
 export interface MonthOverview {
+	/** Receita líquida: o que entrou menos o que só passou pela conta (repasses). */
 	incomeCents: number;
+	/** O que entrou antes de descontar os repasses. */
+	grossIncomeCents: number;
+	/** O que foi repassado adiante: nem receita, nem gasto. */
+	passThroughCents: number;
 	cardSpendCents: number;
 	cardPurchasesCents: number;
 	mainSpendCents: number;
@@ -99,8 +110,12 @@ export interface MonthOverview {
 }
 
 export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => {
-	let incomeCents = input.unassigned.incomeCents;
-	let mainSpendCents = input.unassigned.expenseCents;
+	// Um repasse é receita que não era sua: sai da receita e sai do gasto.
+	const unassignedPassThrough = input.unassigned.passThroughCents ?? 0;
+	let grossIncomeCents = input.unassigned.incomeCents;
+	let passThroughCents = unassignedPassThrough;
+	let incomeCents = input.unassigned.incomeCents - unassignedPassThrough;
+	let mainSpendCents = input.unassigned.expenseCents - unassignedPassThrough;
 	let cardSpendCents = 0;
 	let cardPurchasesCents = 0;
 	let envelopeFundingCents = 0;
@@ -112,8 +127,11 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 	for (const account of input.accounts) {
 		switch (account.role) {
 			case 'main': {
-				incomeCents += account.incomeCents;
-				mainSpendCents += account.expenseCents;
+				const passThrough = account.passThroughCents ?? 0;
+				grossIncomeCents += account.incomeCents;
+				passThroughCents += passThrough;
+				incomeCents += account.incomeCents - passThrough;
+				mainSpendCents += account.expenseCents - passThrough;
 				break;
 			}
 			case 'card': {
@@ -172,6 +190,8 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 
 	return {
 		incomeCents,
+		grossIncomeCents,
+		passThroughCents,
 		cardSpendCents,
 		cardPurchasesCents,
 		mainSpendCents,

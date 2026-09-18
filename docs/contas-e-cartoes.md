@@ -100,6 +100,16 @@ transferência, mesmo com a saída "você enviou para VINICIUS" (avisada pela PJ
 caixa de entrada; e essa saída, se já tinha virado transferência para fora, é
 neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
 
+### Repasse: dinheiro que só passou pela conta
+
+A renda pode chegar em dois Pix (R$ 5.000 e R$ 15.000) com uma parte a repassar
+(R$ 6.000). Sem cuidado o app leria R$ 20.000 de receita e R$ 6.000 de gasto. Por isso
+existe a natureza de categoria **repasse** (`passthrough`): uma despesa nela não é gasto,
+ela **desconta da receita**. A renda do mês vira R$ 14.000 e os R$ 6.000 não aparecem em
+lugar nenhum — nem no "Este mês", nem nos totais da lista, nem nos relatórios. Categorizar
+o Pix de repasse uma vez ensina a regra daquela contraparte; os próximos caem sozinhos.
+A categoria padrão "Pass-through" já vem com essa natureza.
+
 ### Lançamentos sem conta
 
 Os que entraram antes de existirem contas aparecem em "Sem conta" no painel; um toque

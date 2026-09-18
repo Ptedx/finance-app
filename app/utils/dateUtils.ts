@@ -160,6 +160,30 @@ export const getMonthRange = (
 
 export const getMonthName = (month: number): string => monthLong(languageOf(locale), month);
 
+/**
+ * Chave de mês (`YYYY-MM`) de uma data ISO. É a mesma chave que nomeia a fatura do
+ * cartão e agrupa as séries dos relatórios.
+ */
+export const monthKeyOf = (dateString: string): string => dateString.slice(0, 7);
+
+/** Anda `delta` meses (negativo volta) numa chave `YYYY-MM`, atravessando o ano. */
+export const shiftMonthKey = (key: string, delta: number): string => {
+	const [year, month] = key.split('-').map(Number);
+	const index = year * 12 + (month - 1) + delta;
+	const nextYear = Math.floor(index / 12);
+	const nextMonth = ((index % 12) + 12) % 12;
+	return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`;
+};
+
+/** Primeiro e último dia do mês de uma chave `YYYY-MM`. */
+export const monthKeyRange = (key: string): { startDate: string; endDate: string } => {
+	const [year, month] = key.split('-').map(Number);
+	return getMonthRange(month, year);
+};
+
+/** Nome do mês de uma chave `YYYY-MM`, no idioma do app. */
+export const monthKeyName = (key: string): string => getMonthName(Number(key.slice(5, 7)));
+
 export const getCurrentMonthName = (): string =>
 	getMonthName(new Date().getMonth() + 1).toUpperCase();
 
@@ -180,6 +204,10 @@ export default {
 	addYearsClamped,
 	getCurrentMonthRange,
 	getMonthRange,
+	monthKeyOf,
+	shiftMonthKey,
+	monthKeyRange,
+	monthKeyName,
 	getMonthName,
 	getCurrentMonthName,
 	getCurrentYear,

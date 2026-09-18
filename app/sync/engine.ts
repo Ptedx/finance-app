@@ -176,6 +176,7 @@ export const pushAll = async (): Promise<number> => {
 			),
 			budgets: changes.budgets.filter((r) => !rejected.has(`budgets:${r.id}`)),
 			transfers: (changes.transfers ?? []).filter((r) => !rejected.has(`transfers:${r.id}`)),
+			retirementGoals: (changes.retirementGoals ?? []).filter((r) => !rejected.has(`retirementGoals:${r.id}`)),
 		});
 
 		sent += response.applied;

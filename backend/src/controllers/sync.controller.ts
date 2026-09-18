@@ -11,6 +11,7 @@ import {
 	pullQuerySchema,
 	pushBodySchema,
 	recurringTransactionSchema,
+	retirementGoalSchema,
 	transactionSchema,
 	transferSchema,
 } from '../schemas/sync.js';
@@ -34,7 +35,8 @@ type Collection =
 	| 'transactions'
 	| 'recurringTransactions'
 	| 'budgets'
-	| 'transfers';
+	| 'transfers'
+	| 'retirementGoals';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -77,7 +79,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		take: env.syncPageSize,
 	});
 
-	const [categories, accounts, transactions, recurringTransactions, budgets, transfers] =
+	const [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals] =
 		await Promise.all([
 			prisma.category.findMany(page(cursor.categories)),
 			prisma.account.findMany(page(cursor.accounts)),
@@ -85,6 +87,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			prisma.recurringTransaction.findMany(page(cursor.recurringTransactions)),
 			prisma.budget.findMany(page(cursor.budgets)),
 			prisma.transfer.findMany(page(cursor.transfers)),
+			prisma.retirementGoal.findMany(page(cursor.retirementGoals)),
 		]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
@@ -173,6 +176,15 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
+		retirementGoals: retirementGoals.map((row) => ({
+			id: row.id,
+			targetMonthlyCents: Number(row.targetMonthlyCents),
+			reinvestBp: row.reinvestBp,
+			expectedYieldBp: row.expectedYieldBp,
+			outsideCapitalCents: Number(row.outsideCapitalCents),
+			updatedAt: row.updatedAt.toISOString(),
+			deletedAt: iso(row.deletedAt),
+		})),
 	};
 
 	/**
@@ -190,6 +202,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		recurringTransactions: advance(recurringTransactions, cursor.recurringTransactions),
 		budgets: advance(budgets, cursor.budgets),
 		transfers: advance(transfers, cursor.transfers),
+		retirementGoals: advance(retirementGoals, cursor.retirementGoals),
 	};
 
 	res.json({
@@ -197,7 +210,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		/** O cliente guarda isto e devolve no próximo pull. */
 		cursor: nextCursor,
 		/** Verdadeiro enquanto houver mais para buscar: o cliente repete o pull. */
-		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers].some(
+		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals].some(
 			(rows) => rows.length === env.syncPageSize
 		),
 		changes,
@@ -284,6 +297,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	);
 	const budgets = partitionRows('budgets', changes.budgets, budgetSchema, rejected);
 	const transfers = partitionRows('transfers', changes.transfers, transferSchema, rejected);
+	const retirementGoals = partitionRows('retirementGoals', changes.retirementGoals, retirementGoalSchema, rejected);
 
 	let applied = 0;
 
@@ -498,6 +512,35 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				};
 
 				await tx.budget.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
+			}
+
+			// --- Meta de aposentadoria -------------------------------------------
+			for (const row of retirementGoals) {
+				const current = await tx.retirementGoal.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'retirementGoals', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = {
+					targetMonthlyCents: BigInt(row.targetMonthlyCents),
+					reinvestBp: row.reinvestBp,
+					expectedYieldBp: row.expectedYieldBp,
+					outsideCapitalCents: BigInt(row.outsideCapitalCents),
+					updatedAt: new Date(row.updatedAt),
+					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+				};
+
+				await tx.retirementGoal.upsert({
 					where: { userId_id: { userId, id: row.id } },
 					create: { id: row.id, userId, ...data },
 					update: data,

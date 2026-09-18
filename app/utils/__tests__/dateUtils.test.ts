@@ -8,7 +8,10 @@ import {
 	getISODate,
 	getMonthRange,
 	lastDayOfMonth,
+	monthKeyOf,
+	monthKeyRange,
 	parseISODate,
+	shiftMonthKey,
 	todayISO,
 } from '../dateUtils';
 
@@ -138,5 +141,24 @@ describe('getMonthRange', () => {
 		[12, 2026, '2026-12-01', '2026-12-31'],
 	])('month %i of %i spans %s..%s', (month, year, startDate, endDate) => {
 		expect(getMonthRange(month, year)).toEqual({ startDate, endDate });
+	});
+});
+
+describe('chaves de mês', () => {
+	it('recorta a chave de uma data', () => {
+		expect(monthKeyOf('2026-09-17')).toBe('2026-09');
+	});
+
+	it('anda meses atravessando o ano, nos dois sentidos', () => {
+		expect(shiftMonthKey('2026-09', 1)).toBe('2026-10');
+		expect(shiftMonthKey('2026-12', 1)).toBe('2027-01');
+		expect(shiftMonthKey('2026-01', -1)).toBe('2025-12');
+		expect(shiftMonthKey('2026-03', -15)).toBe('2024-12');
+		expect(shiftMonthKey('2026-09', 0)).toBe('2026-09');
+	});
+
+	it('dá o primeiro e o último dia do mês', () => {
+		expect(monthKeyRange('2026-02')).toEqual({ startDate: '2026-02-01', endDate: '2026-02-28' });
+		expect(monthKeyRange('2024-02')).toEqual({ startDate: '2024-02-01', endDate: '2024-02-29' });
 	});
 });

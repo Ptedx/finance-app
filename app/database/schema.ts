@@ -11,8 +11,16 @@ export type CategoryType = 'expense' | 'income';
  * e nunca é lida. O padrão é `discretionary` de propósito: classificar um gasto como
  * essencial é uma afirmação do usuário, e assumi-la por ele inflaria as "necessidades" de
  * quem nunca abriu a tela.
+ *
+ * `passthrough` (repasse) é dinheiro que só passou pela conta: entrou como receita e
+ * saiu para quem era de direito. Uma despesa nessa natureza não é gasto — ela desconta
+ * da receita. É o caso de quem recebe R$ 15.000 e repassa R$ 6.000: a renda é R$ 9.000,
+ * e contar os R$ 6.000 como gasto inflaria receita e despesa ao mesmo tempo.
  */
-export type CategoryNature = 'essential' | 'discretionary';
+export type CategoryNature = 'essential' | 'discretionary' | 'passthrough';
+
+/** Todas as naturezas, na ordem em que a tela de categorias as oferece. */
+export const CATEGORY_NATURES: CategoryNature[] = ['essential', 'discretionary', 'passthrough'];
 
 /**
  * Bookkeeping every synchronisable row carries.
@@ -227,8 +235,10 @@ export const DATABASE_NAME = 'spendr.db';
  * 13 — transactions gain `cardLast4` (which physical/virtual/debit card made the purchase,
  *     backfilled from captures); accounts gain `cardNames`. A "card" whose name says
  *     debit becomes a debit card of its bank's checking account.
+ * 14 — `retirement_goals` is created (the financial-independence goal, one synced row).
+ *     Categories gain the `passthrough` nature (no column change).
  */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -238,6 +248,7 @@ export const SYNCED_TABLES = [
 	'recurring_transactions',
 	'budgets',
 	'transfers',
+	'retirement_goals',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -413,6 +424,39 @@ ${SYNC_COLUMNS_SQL}
 `;
 
 /**
+ * A meta de aposentadoria: uma linha por usuário, com id fixo.
+ *
+ * O id fixo é o que torna a sincronização trivial: dois aparelhos editando a meta
+ * disputam a mesma linha e o "última escrita vence" do sync resolve sozinho, sem
+ * índice parcial nem deduplicação. Limpar a meta é uma lápide; definir de novo
+ * ressuscita a mesma linha.
+ */
+export const RETIREMENT_GOAL_ID = 'retirement';
+
+export interface RetirementGoalRow extends SyncMeta {
+	id: string;
+	/** A renda passiva desejada por mês, líquida. */
+	targetMonthlyCents: number;
+	/** Margem reinvestida sobre a renda desejada, em pontos-base (2.500 = +25%). */
+	reinvestBp: number;
+	/** Rentabilidade esperada ao ano, em pontos-base (1.000 = 10%). */
+	expectedYieldBp: number;
+	/** Investimentos que o app não acompanha. */
+	outsideCapitalCents: number;
+}
+
+export const CREATE_RETIREMENT_GOALS_TABLE = `
+  CREATE TABLE IF NOT EXISTS retirement_goals (
+    id TEXT PRIMARY KEY NOT NULL,
+    targetMonthlyCents INTEGER NOT NULL,
+    reinvestBp INTEGER NOT NULL DEFAULT 2500,
+    expectedYieldBp INTEGER NOT NULL DEFAULT 1000,
+    outsideCapitalCents INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
  * `sync_state` holds the pull cursor. It is a table rather than an AsyncStorage key so
  * that advancing the cursor and applying the rows it covers happen in one SQLite
  * transaction — a cursor saved without its data would silently skip those changes forever.
@@ -548,6 +592,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_transactions_dirty ON transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_recurring_dirty ON recurring_transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_budgets_dirty ON budgets (dirty);
+  CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -660,6 +705,17 @@ export const DEFAULT_CATEGORIES: CategorySeed[] = [
 		nature: 'discretionary',
 	},
 
+	// Money that only passed through: received on behalf of someone else and sent on.
+	// Expenses here reduce income instead of counting as spending.
+	{
+		id: 'passthrough',
+		name: 'Pass-through',
+		color: '#8A8A8A',
+		icon: 'swap-horizontal',
+		type: 'expense',
+		nature: 'passthrough',
+	},
+
 	// Income categories. These ids were referenced throughout the app but had never
 	// actually been seeded, so the income category list was always empty. `nature` is
 	// carried for uniformity and never read on this side of the ledger.
@@ -740,5 +796,6 @@ export default {
 	CREATE_ACCOUNTS_TABLE,
 	CREATE_TRANSFERS_TABLE,
 	CREATE_INDEXES,
+	CREATE_RETIREMENT_GOALS_TABLE,
 	DEFAULT_CATEGORIES,
 };

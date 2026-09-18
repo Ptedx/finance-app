@@ -52,6 +52,7 @@ model User {
   transactions          Transaction[]
   recurringTransactions RecurringTransaction[]
   budgets               Budget[]
+  retirementGoals       RetirementGoal[]
   accounts              Account[]
   transfers             Transfer[]
   assets                Asset[]
@@ -96,6 +97,8 @@ enum CategoryType {
 enum CategoryNature {
   essential
   discretionary
+  /// Repasse: dinheiro que só passou pela conta. Desconta da receita, não é gasto.
+  passthrough
 }
 
 /// A PK é composta `(userId, id)`, e não um uuid do servidor.
@@ -313,6 +316,26 @@ model Budget {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("budgets")
+}
+
+/// A meta de aposentadoria (v14 do app): renda passiva desejada, margem reinvestida,
+/// rentabilidade esperada e capital fora do app. Uma linha por usuário, de id fixo
+/// ("retirement"), para que dois aparelhos disputem a mesma linha e o LWW resolva.
+model RetirementGoal {
+  id                  String
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetMonthlyCents  BigInt
+  reinvestBp          Int
+  expectedYieldBp     Int
+  outsideCapitalCents BigInt
+  updatedAt           DateTime
+  deletedAt           DateTime?
+  serverSeq           Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("retirement_goals")
 }
 
 // ============================================

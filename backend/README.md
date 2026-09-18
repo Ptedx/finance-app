@@ -75,7 +75,7 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
 | `GET` | `/health` | consulta o banco de propósito |
 
 `GET /api/sync/pull` sem cursor devolve tudo. O cursor é um objeto por coleção:
-`{"categories":15,"transactions":10,"recurringTransactions":0,"budgets":1}`.
+`{"categories":15,"transactions":10,"recurringTransactions":0,"budgets":1,"accounts":0,"transfers":0,"retirementGoals":0}`.
 
 ### Decisões que não são óbvias
 

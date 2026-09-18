@@ -103,9 +103,12 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 
 		return categoryTotals.expenses.reduce<ExpenseTotalsByNature>(
 			(split, total) => {
+				const nature = natureById.get(total.categoryId);
+				// Repasse não é necessidade nem desejo: nem chegou a ser gasto.
+				if (nature === 'passthrough') return split;
 				// Categoria desconhecida — apagada, por exemplo — conta como supérflua, o
 				// mesmo padrão da coluna: uma despesa não classificada não vira necessidade.
-				if (natureById.get(total.categoryId) === 'essential') {
+				if (nature === 'essential') {
 					split.essentialCents += total.totalCents;
 				} else {
 					split.discretionaryCents += total.totalCents;

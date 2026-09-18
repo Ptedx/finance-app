@@ -233,6 +233,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					role: account.archived ? 'external' : account.role,
 					incomeCents: period.incomeCents,
 					expenseCents: period.expenseCents,
+					passThroughCents: period.passThroughCents,
 					transfersInCents: period.transfersInCents,
 					transfersOutCents: period.transfersOutCents,
 					purchasesOriginatedCents: isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined,
