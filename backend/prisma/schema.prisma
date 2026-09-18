@@ -53,6 +53,7 @@ model User {
   recurringTransactions RecurringTransaction[]
   budgets               Budget[]
   retirementGoals       RetirementGoal[]
+  debts                 Debt[]
   accounts              Account[]
   transfers             Transfer[]
   assets                Asset[]
@@ -336,6 +337,37 @@ model RetirementGoal {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("retirement_goals")
+}
+
+/// Uma dívida (v15 do app): financiamento (Price/SAC), consórcio ou empréstimo. O saldo é
+/// uma âncora (saldo logo depois da última parcela paga, numa data); o de hoje é projetado
+/// no app. Texto livre em kind/system em vez de enum: acrescentar um tipo não vira migração.
+model Debt {
+  id                  String
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                String
+  kind                String
+  system              String
+  openingBalanceCents BigInt
+  openingBalanceDate  String    @db.VarChar(10)
+  installmentCents    BigInt
+  remainingAtOpening  Int
+  installmentsTotal   Int
+  dueDay              Int
+  rateBp              Int
+  adminFeeBp          Int?
+  accountId           String?
+  category            String?
+  archived            Boolean   @default(false)
+  sortOrder           Int       @default(0)
+  updatedAt           DateTime
+  deletedAt           DateTime?
+  serverSeq           Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("debts")
 }
 
 // ============================================

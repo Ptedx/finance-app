@@ -157,7 +157,9 @@ export type InsightId =
 	| 'reserve-yield-low'
 	| 'card-load-heavy'
 	| 'spending-above-pace'
-	| 'income-possibly-duplicated';
+	| 'income-possibly-duplicated'
+	| 'debt-pay-first'
+	| 'debt-keep-investing';
 
 export interface Insight {
 	/** Estável entre execuções: chave de tradução na UI, chave de deduplicação no bot. */
@@ -468,6 +470,52 @@ export const buildGoalInsights = (retirement: RetirementReadModel | null, health
 	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 };
 
+/** Uma dívida com o veredito já calculado (`worthPayingOff` em `utils/debt.ts`). */
+export interface DebtVerdictInput {
+	id: string;
+	name: string;
+	rateBp: number;
+	verdict: 'pay' | 'invest' | 'tie';
+	netYieldBp: number;
+	perThousandCents: Cents;
+}
+
+/**
+ * Uma frase por dívida em que a resposta é clara. Dívida mais cara que o investimento
+ * líquido: amortizar primeiro, com quanto cada R$ 1.000 rendem a mais. Mais barata: não
+ * vale antecipar, o dinheiro rende mais investido. Empate não merece frase.
+ */
+export const buildDebtInsights = (debts: DebtVerdictInput[]): Insight[] => {
+	const insights: Insight[] = [];
+	for (const debt of debts) {
+		const params = {
+			name: debt.name,
+			rate: percentText(debt.rateBp),
+			net: percentText(debt.netYieldBp),
+			amount: formatCents(Math.abs(debt.perThousandCents)),
+		};
+		if (debt.verdict === 'pay') {
+			insights.push({
+				id: 'debt-pay-first',
+				severity: 'attention',
+				title: `Paying ${debt.name} early beats investing: it costs ${params.rate} a year, investing yields ${params.net} after tax. Each R$ 1,000 is worth ${params.amount} a year more there.`,
+				params,
+				basisPoints: debt.rateBp,
+				valueCents: debt.perThousandCents,
+			});
+		} else if (debt.verdict === 'invest') {
+			insights.push({
+				id: 'debt-keep-investing',
+				severity: 'neutral',
+				title: `No need to pay ${debt.name} early: it costs ${params.rate} a year, less than the ${params.net} investing yields after tax.`,
+				params,
+				basisPoints: debt.rateBp,
+			});
+		}
+	}
+	return insights;
+};
+
 /** Junta as duas listas numa só, da mais urgente para a menos. */
 export const mergeInsights = (...lists: Insight[][]): Insight[] =>
 	lists.flat().sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
@@ -478,4 +526,4 @@ export const mergeInsights = (...lists: Insight[][]): Insight[] =>
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de metrics.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { computeWealthMetrics, buildInsights, buildGoalInsights, mergeInsights };
+export default { computeWealthMetrics, buildInsights, buildGoalInsights, buildDebtInsights, mergeInsights };

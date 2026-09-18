@@ -12,6 +12,7 @@ import { BudgetProvider } from './contexts/BudgetContext';
 import { AccountsProvider } from './contexts/AccountsContext';
 import { CapturesProvider } from './contexts/CapturesContext';
 import { CurrencyProvider } from './contexts/CurrencyContext';
+import { DebtsProvider } from './contexts/DebtsContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { PeriodProvider } from './contexts/PeriodContext';
 import { RecurringTransactionsProvider } from './contexts/RecurringTransactionsContext';
@@ -206,9 +207,11 @@ export default function RootLayout() {
 							    (o nome do usuário reconhece transferências para si mesmo). */}
 							<AccountsProvider>
 								<CapturesProvider>
+								<DebtsProvider>
 									<StatusBar style="light" />
 									<Slot />
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
+								</DebtsProvider>
 								</CapturesProvider>
 							</AccountsProvider>
 						</RecurringTransactionsProvider>

@@ -237,8 +237,10 @@ export const DATABASE_NAME = 'spendr.db';
  *     debit becomes a debit card of its bank's checking account.
  * 14 — `retirement_goals` is created (the financial-independence goal, one synced row).
  *     Categories gain the `passthrough` nature (no column change).
+ * 15 — `debts` is created (financing, consortium, loan). Additive only: the 1.0 app
+ *     opens a v15 database, runs no migration and ignores the table.
  */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -249,6 +251,7 @@ export const SYNCED_TABLES = [
 	'budgets',
 	'transfers',
 	'retirement_goals',
+	'debts',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -456,6 +459,70 @@ ${SYNC_COLUMNS_SQL}
   );
 `;
 
+/** Financiamento (carro, casa), consórcio ou empréstimo. */
+export type DebtKind = 'financing' | 'consortium' | 'loan';
+
+/** Price: parcela fixa. SAC: amortização fixa, parcela caindo. none: consórcio, sem juros. */
+export type AmortizationSystem = 'price' | 'sac' | 'none';
+
+/**
+ * Uma dívida de longo prazo.
+ *
+ * O saldo devedor é uma **âncora**, como o saldo das contas: `openingBalanceCents` é o que
+ * se devia logo depois da última parcela paga em `openingBalanceDate`, e o saldo de hoje é
+ * projetado pelo cronograma (`utils/debt.ts`). Amortizar move a âncora; nunca se guarda um
+ * saldo que envelhece.
+ */
+export interface Debt extends SyncMeta {
+	id: string;
+	name: string;
+	kind: DebtKind;
+	system: AmortizationSystem;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	/** Parcela na âncora: fixa na Price, a próxima na SAC, a atual no consórcio. */
+	installmentCents: number;
+	/** Parcelas que faltavam depois da âncora. */
+	remainingAtOpening: number;
+	/** Total de parcelas do contrato, para o "12 de 48". */
+	installmentsTotal: number;
+	dueDay: number;
+	/** Custo efetivo ao ano em pontos-base: juros, ou o reajuste anual no consórcio. */
+	rateBp: number;
+	/** Taxa de administração do consórcio, informativa. */
+	adminFeeBp: number | null;
+	/** De onde sai a parcela. */
+	accountId: string | null;
+	category: string | null;
+	/** Quitada: some da lista e dos relatórios, mas fica no histórico. */
+	archived: boolean;
+	sortOrder: number;
+}
+
+export type DebtDraft = Omit<Debt, 'id' | keyof SyncMeta>;
+
+export const CREATE_DEBTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS debts (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'financing',
+    system TEXT NOT NULL DEFAULT 'price',
+    openingBalanceCents INTEGER NOT NULL,
+    openingBalanceDate TEXT NOT NULL,
+    installmentCents INTEGER NOT NULL,
+    remainingAtOpening INTEGER NOT NULL,
+    installmentsTotal INTEGER NOT NULL,
+    dueDay INTEGER NOT NULL,
+    rateBp INTEGER NOT NULL DEFAULT 0,
+    adminFeeBp INTEGER,
+    accountId TEXT,
+    category TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
 /**
  * `sync_state` holds the pull cursor. It is a table rather than an AsyncStorage key so
  * that advancing the cursor and applying the rows it covers happen in one SQLite
@@ -593,6 +660,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_recurring_dirty ON recurring_transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_budgets_dirty ON budgets (dirty);
   CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
+  CREATE INDEX IF NOT EXISTS idx_debts_dirty ON debts (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -797,5 +865,6 @@ export default {
 	CREATE_TRANSFERS_TABLE,
 	CREATE_INDEXES,
 	CREATE_RETIREMENT_GOALS_TABLE,
+	CREATE_DEBTS_TABLE,
 	DEFAULT_CATEGORIES,
 };

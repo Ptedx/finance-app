@@ -6,8 +6,13 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
 
 ## [1.1.0] — em desenvolvimento (branch `develop`)
 
-- Dívidas: financiamento e consórcio, saldo devedor, data de quitação, simulador de
-  amortização e o veredito "amortizar ou investir".
+- Dívidas (Ajustes → Dívidas): financiamento (Price e SAC), consórcio e empréstimo. Cadastro
+  pelo que está no boleto — a taxa ou o saldo saem da parcela —, saldo devedor projetado,
+  data de quitação, juros que faltam, cronograma, simulador de amortização (reduzir prazo ou
+  parcela) e o veredito "amortizar ou investir" contra o rendimento líquido da meta.
+- Relatórios: seção de dívidas, parcelas no "Já comprometido" (sem somar de novo o que já é
+  recorrência) e o cenário "se as parcelas virarem aporte ao quitar" na projeção.
+- Banco local v15 (tabela `debts`), sincronizada. Detalhes: [docs/dividas.md](docs/dividas.md).
 - Ajustes mostram a versão real do app instalado.
 - O sync guarda o cursor por versão do banco: voltar para a 1.0 e depois para a 1.1
   não perde as dívidas criadas em outro aparelho no meio-tempo.

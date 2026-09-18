@@ -6,9 +6,11 @@ import {
 	MAX_HORIZON_MONTHS,
 	monthlyRate,
 	monthsToReach,
+	monthsToReachStepped,
 	passiveIncomeCents,
 	progressBp,
 	projectCapital,
+	projectCapitalStepped,
 	realizedYieldBp,
 	requiredCapitalCents,
 	requiredMonthlyCents,
@@ -228,5 +230,37 @@ describe('o quadro inteiro', () => {
 	it('rendimento observado entra quando há histórico', () => {
 		const model = buildRetirementReadModel(input({ realizedYield12mCents: R(900), averageCapital12mCents: R(10_000) }));
 		expect(model.realizedYieldBp).toBe(900);
+	});
+});
+
+describe('aporte em degraus: a parcela vira aporte quando a dívida quita', () => {
+	const rate = monthlyRate(1_000);
+
+	it('sem degraus, bate com a projeção e a conta de hoje', () => {
+		const flat = projectCapital({ capitalCents: R(20_000), contributionCents: R(3_000), monthlyRate: rate, months: 120 });
+		const stepped = projectCapitalStepped({ capitalCents: R(20_000), contributionCents: R(3_000), monthlyRate: rate, months: 120, steps: [] });
+		expect(stepped.map((p) => p.monthOffset)).toEqual(flat.map((p) => p.monthOffset));
+		stepped.forEach((point, index) => expect(Math.abs(point.totalCents - flat[index].totalCents)).toBeLessThanOrEqual(1));
+		const required = R(1_500_000);
+		expect(monthsToReachStepped({ capitalCents: R(20_000), contributionCents: R(3_000), monthlyRate: rate, steps: [], requiredCapitalCents: required })).toBe(
+			monthsToReach({ capitalCents: R(20_000), contributionCents: R(3_000), monthlyRate: rate, requiredCapitalCents: required })
+		);
+	});
+
+	it('o degrau só vale a partir do mês dele', () => {
+		const points = projectCapitalStepped({ capitalCents: 0, contributionCents: R(100), monthlyRate: 0, months: 4, steps: [{ fromMonth: 3, addCents: R(50) }] });
+		expect(points.map((p) => p.contributedCents)).toEqual([0, R(100), R(200), R(350), R(500)]);
+	});
+
+	it('com a parcela virando aporte, a meta chega antes', () => {
+		const base = { capitalCents: R(20_000), contributionCents: R(3_000), monthlyRate: rate, requiredCapitalCents: R(1_500_000) };
+		const without = monthsToReachStepped({ ...base, steps: [] }) as number;
+		const withDebtFreed = monthsToReachStepped({ ...base, steps: [{ fromMonth: 36, addCents: R(1_500) }] }) as number;
+		expect(withDebtFreed).toBeLessThan(without);
+	});
+
+	it('já chegou é zero; sem capital necessário é nulo', () => {
+		expect(monthsToReachStepped({ capitalCents: R(10), contributionCents: 0, monthlyRate: rate, steps: [], requiredCapitalCents: R(5) })).toBe(0);
+		expect(monthsToReachStepped({ capitalCents: 0, contributionCents: R(1), monthlyRate: rate, steps: [], requiredCapitalCents: null })).toBeNull();
 	});
 });

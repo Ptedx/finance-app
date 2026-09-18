@@ -28,7 +28,7 @@ const CommittedSection: React.FC<{ months: CommittedMonth[] }> = ({ months }) =>
 				months.map((month) => {
 					const name = `${monthKeyName(month.month)} ${month.month.slice(0, 4)}`;
 					return (
-						<View key={month.month} style={styles.month} accessible accessibilityLabel={`${name}: ${t('reports.committed.total')} ${formatCents(month.totalCents)}. ${t('reports.committed.cards')} ${formatCents(month.cardCents)}, ${t('reports.committed.fixed')} ${formatCents(month.fixedCents)}.`}>
+						<View key={month.month} style={styles.month} accessible accessibilityLabel={`${name}: ${t('reports.committed.total')} ${formatCents(month.totalCents)}. ${t('reports.committed.cards')} ${formatCents(month.cardCents)}, ${t('reports.committed.fixed')} ${formatCents(month.fixedCents)}.${month.debts.map((debt) => ` ${debt.inFixedCost ? t('reports.committed.debtInFixed', { name: debt.name }) : debt.name} ${formatCents(debt.cents)}.`).join('')}`}>
 							<View style={styles.monthHeader}>
 								<Text style={styles.monthName}>{name}</Text>
 								<Text style={reportStyles.rowValue}>{formatCents(month.totalCents)}</Text>
@@ -37,6 +37,14 @@ const CommittedSection: React.FC<{ months: CommittedMonth[] }> = ({ months }) =>
 								<View key={card.accountId} style={styles.line}>
 									<Text style={styles.lineLabel}>{card.name}</Text>
 									<Text style={styles.lineValue}>{formatCents(card.cents)}</Text>
+								</View>
+							))}
+							{month.debts.map((debt) => (
+								<View key={debt.debtId} style={styles.line}>
+									<Text style={styles.lineLabel}>
+										{debt.inFixedCost ? t('reports.committed.debtInFixed', { name: debt.name }) : debt.name}
+									</Text>
+									<Text style={[styles.lineValue, debt.inFixedCost && styles.lineMuted]}>{formatCents(debt.cents)}</Text>
 								</View>
 							))}
 							{month.fixedCents > 0 ? (
@@ -80,6 +88,9 @@ const styles = StyleSheet.create({
 	lineLabel: {
 		fontSize: 13,
 		color: 'rgba(255, 255, 255, 0.7)',
+	},
+	lineMuted: {
+		color: 'rgba(255, 255, 255, 0.5)',
 	},
 	lineValue: {
 		fontSize: 13,

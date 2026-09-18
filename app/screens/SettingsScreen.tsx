@@ -382,6 +382,7 @@ const SettingsScreen = () => {
 					)}
 					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
 					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards/index'))}
+					{renderSettingsItem('trending-down-outline', t('debts.screenTitle'), () => router.push('/debts/index'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),

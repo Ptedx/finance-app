@@ -10,7 +10,8 @@ import {
 	reassignToUncategorized,
 	setSyncState,
 } from '../database/database';
-import { countChanges, EMPTY_CURSOR, type RejectedRow, type SyncCursor } from './types';
+import { SCHEMA_VERSION } from '../database/schema';
+import { countChanges, EMPTY_CURSOR, inheritCursor, type RejectedRow, type SyncCursor } from './types';
 
 /**
  * Motor de sincronização.
@@ -21,7 +22,20 @@ import { countChanges, EMPTY_CURSOR, type RejectedRow, type SyncCursor } from '.
  * visível porque as linhas continuam marcadas até subirem.
  */
 
-const CURSOR_KEY = 'pullCursor';
+/**
+ * O cursor do pull, guardado **por versão do banco**.
+ *
+ * Voltar para uma versão anterior do app é uma operação prevista (docs/versionamento.md).
+ * A versão anterior grava o cursor inteiro que o servidor devolve — inclusive o de coleções
+ * que ela não conhece e cujas linhas ela descarta. Se esta versão lesse esse cursor, as
+ * linhas descartadas nunca mais chegariam. Por isso cada versão tem sua chave, e ao nascer
+ * ela herda do cursor antigo só as coleções que a versão anterior já conhecia.
+ */
+const CURSOR_KEY = `pullCursor@${SCHEMA_VERSION}`;
+/** A chave de antes do cursor por versão (a 1.0 grava aqui). */
+const LEGACY_CURSOR_KEY = 'pullCursor';
+/** Versão do banco da última versão que usava a chave antiga. */
+const LEGACY_CURSOR_SCHEMA = 14;
 const LAST_SYNCED_KEY = 'lastSyncedAt';
 
 /**
@@ -39,22 +53,28 @@ const PAGE_SIZE = 500;
  */
 const MAX_PAGES = 40;
 
-const readCursor = async (): Promise<SyncCursor> => {
-	const stored = await getSyncState(CURSOR_KEY);
-	if (!stored) return EMPTY_CURSOR;
-
+const parseCursor = (stored: string | null): SyncCursor | null => {
+	if (!stored) return null;
 	try {
 		return { ...EMPTY_CURSOR, ...(JSON.parse(stored) as Partial<SyncCursor>) };
 	} catch {
 		// Cursor corrompido: um sync completo é lento mas correto, e o
 		// last-write-wins garante que nada local seja atropelado no caminho.
 		console.warn('Cursor de sync ilegível, recomeçando do zero');
-		return EMPTY_CURSOR;
+		return null;
 	}
+};
+
+const readCursor = async (): Promise<SyncCursor> => {
+	const own = parseCursor(await getSyncState(CURSOR_KEY));
+	if (own) return own;
+	const legacy = parseCursor(await getSyncState(LEGACY_CURSOR_KEY));
+	return legacy ? inheritCursor(legacy, LEGACY_CURSOR_SCHEMA) : EMPTY_CURSOR;
 };
 
 export const resetCursor = async (): Promise<void> => {
 	await setSyncState(CURSOR_KEY, null);
+	await setSyncState(LEGACY_CURSOR_KEY, null);
 };
 
 export const getLastSyncedAt = async (): Promise<string | null> => getSyncState(LAST_SYNCED_KEY);
@@ -177,6 +197,7 @@ export const pushAll = async (): Promise<number> => {
 			budgets: changes.budgets.filter((r) => !rejected.has(`budgets:${r.id}`)),
 			transfers: (changes.transfers ?? []).filter((r) => !rejected.has(`transfers:${r.id}`)),
 			retirementGoals: (changes.retirementGoals ?? []).filter((r) => !rejected.has(`retirementGoals:${r.id}`)),
+			debts: (changes.debts ?? []).filter((r) => !rejected.has(`debts:${r.id}`)),
 		});
 
 		sent += response.applied;

@@ -26,6 +26,7 @@ import {
 	CREATE_INDEXES,
 	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
+	CREATE_DEBTS_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
@@ -36,6 +37,8 @@ import {
 	type RecurringTransaction,
 	type RecurringTransactionDraft,
 	type RecurringTransactionEdit,
+	type Debt,
+	type DebtDraft,
 	RETIREMENT_GOAL_ID,
 	type RetirementGoalRow,
 	SCHEMA_VERSION,
@@ -142,6 +145,25 @@ interface BudgetDB extends SyncColumnsDB {
 	year: number;
 	month: number;
 	amountCents: number;
+}
+
+interface DebtDB extends SyncColumnsDB {
+	id: string;
+	name: string;
+	kind: Debt['kind'];
+	system: Debt['system'];
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	installmentCents: number;
+	remainingAtOpening: number;
+	installmentsTotal: number;
+	dueDay: number;
+	rateBp: number;
+	adminFeeBp: number | null;
+	accountId: string | null;
+	category: string | null;
+	archived: number;
+	sortOrder: number;
 }
 
 interface RetirementGoalDB extends SyncColumnsDB {
@@ -520,6 +542,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 12) await migrateCardPurchasesToRealCard();
 	if (version < 13) await migrateCardsPerPurchase();
 	if (version < 14) await migrateRetirementGoals();
+	if (version < 15) await migrateDebts();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -620,6 +643,11 @@ const migrateCardCycleFromDueDay = async (): Promise<void> => {
  *   lançamentos vão para a conta corrente do mesmo banco, com o final do cartão, e o nome
  *   fica como o nome do cartão de débito daquela conta. Pagamentos para ele não existiram.
  */
+/** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
+const migrateDebts = async (): Promise<void> => {
+	await db.execAsync(CREATE_DEBTS_TABLE);
+};
+
 /** v13 -> v14: the financial-independence goal gets its own synced table. */
 const migrateRetirementGoals = async (): Promise<void> => {
 	await db.execAsync(CREATE_RETIREMENT_GOALS_TABLE);
@@ -829,6 +857,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_ACCOUNTS_TABLE}
       ${CREATE_TRANSFERS_TABLE}
       ${CREATE_RETIREMENT_GOALS_TABLE}
+      ${CREATE_DEBTS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -2097,7 +2126,93 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
        WHERE deletedAt IS NULL`,
 			[rate, rate, timestamp]
 		);
+		await db.runAsync(
+			`UPDATE debts
+       SET openingBalanceCents = CAST(ROUND(openingBalanceCents * ?) AS INTEGER),
+           installmentCents = CAST(ROUND(installmentCents * ?) AS INTEGER),
+           updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL`,
+			[rate, rate, timestamp]
+		);
 	});
+};
+
+// ---------------------------------------------------------------------------
+// Debts
+// ---------------------------------------------------------------------------
+
+const convertDebt = (row: DebtDB): Debt => ({
+	id: row.id,
+	name: row.name,
+	kind: row.kind,
+	system: row.system,
+	openingBalanceCents: row.openingBalanceCents,
+	openingBalanceDate: row.openingBalanceDate,
+	installmentCents: row.installmentCents,
+	remainingAtOpening: row.remainingAtOpening,
+	installmentsTotal: row.installmentsTotal,
+	dueDay: row.dueDay,
+	rateBp: row.rateBp,
+	adminFeeBp: row.adminFeeBp ?? null,
+	accountId: row.accountId ?? null,
+	category: row.category ?? null,
+	archived: Boolean(row.archived),
+	sortOrder: row.sortOrder,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** As dívidas vivas, quitadas inclusive (a tela separa). */
+export const getDebts = async (): Promise<Debt[]> => {
+	const rows = await db.getAllAsync<DebtDB>('SELECT * FROM debts WHERE deletedAt IS NULL ORDER BY archived ASC, sortOrder ASC, name ASC');
+	return rows.map(convertDebt);
+};
+
+const DEBT_COLUMNS = [
+	'name',
+	'kind',
+	'system',
+	'openingBalanceCents',
+	'openingBalanceDate',
+	'installmentCents',
+	'remainingAtOpening',
+	'installmentsTotal',
+	'dueDay',
+	'rateBp',
+	'adminFeeBp',
+	'accountId',
+	'category',
+	'archived',
+	'sortOrder',
+] as const;
+
+const debtValues = (draft: DebtDraft) =>
+	DEBT_COLUMNS.map((column) => {
+		const value = draft[column];
+		return typeof value === 'boolean' ? (value ? 1 : 0) : (value ?? null);
+	});
+
+export const addDebt = async (draft: DebtDraft): Promise<string> => {
+	const id = generateUniqueId();
+	await db.runAsync(
+		`INSERT INTO debts (id, ${DEBT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+     VALUES (?, ${DEBT_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)`,
+		[id, ...debtValues(draft), nowTimestamp()]
+	);
+	return id;
+};
+
+export const updateDebt = async (id: string, draft: DebtDraft): Promise<void> => {
+	await db.runAsync(
+		`UPDATE debts SET ${DEBT_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ?, dirty = 1 WHERE id = ?`,
+		[...debtValues(draft), nowTimestamp(), id]
+	);
+};
+
+/** Lápide: some aqui e, no próximo sync, dos outros aparelhos. */
+export const deleteDebt = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync('UPDATE debts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [timestamp, timestamp, id]);
 };
 
 // ---------------------------------------------------------------------------
@@ -2221,7 +2336,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -2247,6 +2362,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 		db.getAllAsync<RetirementGoalDB>('SELECT * FROM retirement_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [
 			limit,
 		]),
+		db.getAllAsync<DebtDB>('SELECT * FROM debts WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
 
 	return {
@@ -2342,6 +2458,26 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		debts: debts.map((row) => ({
+			id: row.id,
+			name: row.name,
+			kind: row.kind,
+			system: row.system,
+			openingBalanceCents: row.openingBalanceCents,
+			openingBalanceDate: row.openingBalanceDate,
+			installmentCents: row.installmentCents,
+			remainingAtOpening: row.remainingAtOpening,
+			installmentsTotal: row.installmentsTotal,
+			dueDay: row.dueDay,
+			rateBp: row.rateBp,
+			adminFeeBp: row.adminFeeBp ?? null,
+			accountId: row.accountId ?? null,
+			category: row.category ?? null,
+			archived: Boolean(row.archived),
+			sortOrder: row.sortOrder,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 	};
 };
 
@@ -2371,6 +2507,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['budgets', changes.budgets],
 		['transfers', changes.transfers ?? []],
 		['retirement_goals', changes.retirementGoals ?? []],
+		['debts', changes.debts ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -2652,6 +2789,36 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				[row.id, row.targetMonthlyCents, row.reinvestBp, row.expectedYieldBp, row.outsideCapitalCents, row.updatedAt, row.deletedAt]
 			);
 		}
+
+		for (const row of changes.debts ?? []) {
+			if (await isStale('debts', row.id, row.updatedAt)) continue;
+
+			const values = [
+				row.name,
+				row.kind,
+				row.system,
+				row.openingBalanceCents,
+				row.openingBalanceDate,
+				row.installmentCents,
+				row.remainingAtOpening,
+				row.installmentsTotal,
+				row.dueDay,
+				row.rateBp,
+				row.adminFeeBp ?? null,
+				row.accountId ?? null,
+				row.category ?? null,
+				row.archived ? 1 : 0,
+				row.sortOrder,
+			];
+			await db.runAsync(
+				`INSERT INTO debts (id, ${DEBT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+         VALUES (?, ${DEBT_COLUMNS.map(() => '?').join(', ')}, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           ${DEBT_COLUMNS.map((column) => `${column} = excluded.${column}`).join(', ')},
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, ...values, row.updatedAt, row.deletedAt ?? null]
+			);
+		}
 	});
 };
 
@@ -2709,7 +2876,7 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals']) {
+			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -2726,6 +2893,10 @@ export const resetDatabase = async (): Promise<void> => {
 
 export default {
 	initDatabase,
+	getDebts,
+	addDebt,
+	updateDebt,
+	deleteDebt,
 	getMonthlyAccountActivity,
 	getMonthlyTransferActivity,
 	getMonthlyCategoryTotals,

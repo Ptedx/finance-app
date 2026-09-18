@@ -14,6 +14,7 @@
 
 import type { Account, Category, Transaction } from '../database/schema';
 import { type CardEntry, type CardSummary, invoicesClosingBetween } from './cardMath';
+import type { DebtMonthLine } from './debt';
 import { lastDayOfMonth, monthKeyOf, monthKeyRange, shiftMonthKey } from './dateUtils';
 import { type CategoryTotal, categoryDeltas, FULL_BASIS_POINTS } from './metrics';
 import type { Cents } from './money';
@@ -255,19 +256,26 @@ export interface CommittedMonth {
 	month: MonthKey;
 	cards: Array<{ accountId: string; name: string; cents: Cents }>;
 	cardCents: Cents;
+	/** As parcelas das dívidas no mês, todas — inclusive as que já estão no custo fixo. */
+	debts: Array<{ debtId: string; name: string; cents: Cents; inFixedCost: boolean }>;
+	/** Só as parcelas que o custo fixo ainda não conta: é isso que soma ao total. */
+	debtCents: Cents;
 	fixedCents: Cents;
 	totalCents: Cents;
 }
 
 /**
  * Os próximos `count` meses depois de `fromMonth`: o que vence de fatura em cada um (as
- * parcelas já compradas, menos o que já foi pago) mais o custo fixo das recorrências.
+ * parcelas já compradas, menos o que já foi pago), o custo fixo das recorrências e as
+ * parcelas das dívidas. Uma parcela que já tem recorrência cadastrada aparece, mas não soma
+ * de novo — ela já está no custo fixo.
  */
 export const committedMonths = (
 	cards: Array<{ id: string; name: string; summary: CardSummary }>,
 	fixedCents: Cents,
 	fromMonth: MonthKey,
-	count = 3
+	count = 3,
+	debtLines: DebtMonthLine[] = []
 ): CommittedMonth[] =>
 	Array.from({ length: count }, (_, index) => {
 		const month = shiftMonthKey(fromMonth, index + 1);
@@ -282,7 +290,11 @@ export const committedMonths = (
 			.filter((card) => card.cents > 0);
 		const cardCents = perCard.reduce((sum, card) => sum + card.cents, 0);
 		const fixed = Math.max(0, fixedCents);
-		return { month, cards: perCard, cardCents, fixedCents: fixed, totalCents: cardCents + fixed };
+		const debts = debtLines
+			.filter((line) => line.month === month)
+			.map((line) => ({ debtId: line.debtId, name: line.name, cents: line.cents, inFixedCost: line.inFixedCost }));
+		const debtCents = debts.filter((line) => !line.inFixedCost).reduce((sum, line) => sum + line.cents, 0);
+		return { month, cards: perCard, cardCents, debts, debtCents, fixedCents: fixed, totalCents: cardCents + fixed + debtCents };
 	});
 
 // ---------------------------------------------------------------------------
