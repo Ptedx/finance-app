@@ -1,6 +1,7 @@
 const it = {
 	tabs: {
 		home: 'Home',
+		wealth: 'Patrimonio',
 		transactions: 'Movimenti',
 		reports: 'Report',
 		settings: 'Impostazioni',
@@ -311,6 +312,24 @@ const it = {
 				neutral: 'Contesto',
 			},
 		},
+	},
+
+	netWorth: {
+		screenTitle: 'Patrimonio',
+		screenSubtitle: 'Ciò che hai e ciò che devi.',
+		title: 'Patrimonio netto',
+		have: 'Ho',
+		owe: 'Devo',
+		cash: 'Sui conti',
+		saved: 'Riserve e investimenti',
+		outside: "Investimenti fuori dall'app",
+		cards: 'Carte (fatture e rate in scadenza)',
+		debts: 'Debiti (residuo)',
+		assetsNote: "Beni come auto e casa non sono inclusi: l'app non sa quanto valgono. Chi finanzia un bene ha un patrimonio più alto di questo numero.",
+		debtsSummary: '{{monthly}} al mese di rate, fino a {{date}}.',
+		debtsSummaryNoDate: '{{monthly}} al mese di rate.',
+		paidOffToggle_one: '{{count}} estinto',
+		paidOffToggle_other: '{{count}} estinti',
 	},
 
 	debts: {

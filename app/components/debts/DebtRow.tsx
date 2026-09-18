@@ -4,9 +4,16 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Debt, DebtKind } from '../../database/schema';
 import { formatMonthYear, todayISO } from '../../utils/dateUtils';
-import { debtStateOn, termsOf } from '../../utils/debt';
+import { type DebtVerdict, debtStateOn, termsOf } from '../../utils/debt';
 import { formatCents } from '../../utils/money';
 import { ACCENT } from '../cards/formParts';
+
+const VERDICT_COLOR: Record<DebtVerdict, string> = { pay: '#4CAF50', invest: ACCENT, tie: '#FFCC5C' };
+const VERDICT_ICON: Record<DebtVerdict, React.ComponentProps<typeof Ionicons>['name']> = {
+	pay: 'trending-down',
+	invest: 'trending-up',
+	tie: 'swap-horizontal',
+};
 
 export const DEBT_KIND_ICONS: Record<DebtKind, React.ComponentProps<typeof Ionicons>['name']> = {
 	financing: 'document-text-outline',
@@ -19,7 +26,7 @@ export const DEBT_KIND_ICONS: Record<DebtKind, React.ComponentProps<typeof Ionic
  * foi pago e o saldo devedor de hoje. O saldo sai da âncora projetada — nunca de um número
  * guardado que envelhece.
  */
-const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void }> = ({ debt, onPress }) => {
+const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void; verdict?: DebtVerdict }> = ({ debt, onPress, verdict }) => {
 	const { t } = useTranslation();
 	const state = debtStateOn(termsOf(debt), todayISO());
 	const paid = Math.max(0, debt.installmentsTotal - state.remaining);
@@ -39,7 +46,7 @@ const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void }> = ({ debt
 		<Pressable
 			onPress={() => onPress(debt)}
 			accessibilityRole="button"
-			accessibilityLabel={`${debt.name}. ${t('debts.balance')} ${formatCents(state.balanceCents)}. ${detail}`}
+			accessibilityLabel={`${debt.name}. ${t('debts.balance')} ${formatCents(state.balanceCents)}. ${detail}${verdict ? `. ${t('debts.verdict.title')} ${t(`reports.debts.verdict.${verdict}`)}` : ''}`}
 			style={({ pressed }) => [styles.row, pressed && styles.pressed]}
 		>
 			<View style={styles.icon} accessible={false}>
@@ -55,6 +62,12 @@ const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void }> = ({ debt
 				<Text style={styles.detail} numberOfLines={2}>
 					{detail}
 				</Text>
+				{verdict && !debt.archived ? (
+					<View style={styles.verdict} accessible={false}>
+						<Ionicons name={VERDICT_ICON[verdict]} size={14} color={VERDICT_COLOR[verdict]} />
+						<Text style={[styles.verdictText, { color: VERDICT_COLOR[verdict] }]}>{t(`reports.debts.verdict.${verdict}`)}</Text>
+					</View>
+				) : null}
 				{!debt.archived ? (
 					<View style={styles.track} accessible={false}>
 						<View style={[styles.fill, { width: `${Math.max(2, progress)}%` }]} />
@@ -111,6 +124,15 @@ const styles = StyleSheet.create({
 		fontSize: 13,
 		lineHeight: 18,
 		color: 'rgba(255,255,255,0.65)',
+	},
+	verdict: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
+	},
+	verdictText: {
+		fontSize: 12,
+		fontWeight: '700',
 	},
 	track: {
 		height: 5,

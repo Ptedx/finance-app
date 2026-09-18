@@ -6,7 +6,10 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
 
 ## [1.1.0] — em desenvolvimento (branch `develop`)
 
-- Dívidas (Ajustes → Dívidas): financiamento (Price e SAC), consórcio e empréstimo. Cadastro
+- Nova aba **Patrimônio** na barra de baixo (Ajustes sai dela e abre pela engrenagem do
+  Início): patrimônio líquido — o que se tem menos o que se deve, com as parcelas futuras
+  dos cartões — e as dívidas.
+- Dívidas: financiamento (Price e SAC), consórcio e empréstimo. Cadastro
   pelo que está no boleto — a taxa ou o saldo saem da parcela —, saldo devedor projetado,
   data de quitação, juros que faltam, cronograma, simulador de amortização (reduzir prazo ou
   parcela) e o veredito "amortizar ou investir" contra o rendimento líquido da meta.

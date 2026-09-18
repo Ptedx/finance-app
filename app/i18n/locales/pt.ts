@@ -1,6 +1,7 @@
 const pt = {
 	tabs: {
 		home: 'Início',
+		wealth: 'Patrimônio',
 		transactions: 'Lançamentos',
 		reports: 'Relatórios',
 		settings: 'Ajustes',
@@ -305,6 +306,24 @@ const pt = {
 				neutral: 'Contexto',
 			},
 		},
+	},
+
+	netWorth: {
+		screenTitle: 'Patrimônio',
+		screenSubtitle: 'O que você tem e o que você deve.',
+		title: 'Patrimônio líquido',
+		have: 'Tenho',
+		owe: 'Devo',
+		cash: 'Em contas',
+		saved: 'Reservas e investimentos',
+		outside: 'Investimentos fora do app',
+		cards: 'Cartões (faturas e parcelas a vencer)',
+		debts: 'Dívidas (saldo devedor)',
+		assetsNote: 'Bens como carro e imóvel não entram: o app não sabe quanto valem. Quem financia um bem tem um patrimônio maior do que o número mostra.',
+		debtsSummary: '{{monthly}} por mês em parcelas, até {{date}}.',
+		debtsSummaryNoDate: '{{monthly}} por mês em parcelas.',
+		paidOffToggle_one: '{{count}} quitada',
+		paidOffToggle_other: '{{count}} quitadas',
 	},
 
 	debts: {

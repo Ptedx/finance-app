@@ -1,5 +1,5 @@
 import type { Account } from '../../database/schema';
-import { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
+import { counterpartCents, netWorth, owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
 import { centsToDisplayInput, configureMoney, finaliseAmountInput, formatAmountInput, parseAmountToCents } from '../money';
 
 const account = (overrides: Partial<Account>): Account => ({
@@ -134,5 +134,23 @@ describe('reserva fora do "Em caixa"', () => {
 	it('reserva arquivada não conta em lugar nenhum', () => {
 		const accounts = [account({ id: 'mp', kind: 'savings', role: 'reserve', archived: true })];
 		expect(summarizeAccounts(accounts, new Map([['mp', 700_000]]), 0)).toMatchObject({ cashCents: 0, savedCents: 0 });
+	});
+});
+
+describe('patrimônio líquido', () => {
+	it('o que se tem menos o que se deve', () => {
+		expect(netWorth({ cashCents: 500_000, savedCents: 2_000_000, outsideCents: 1_000_000, cardsCents: 400_000, debtsCents: 8_600_000 })).toEqual({
+			assetsCents: 3_500_000,
+			liabilitiesCents: 9_000_000,
+			netCents: -5_500_000,
+		});
+	});
+
+	it('conta no negativo desconta dos ativos; crédito no cartão não vira ativo', () => {
+		expect(netWorth({ cashCents: -10_000, savedCents: 0, outsideCents: 0, cardsCents: -5_000, debtsCents: 0 })).toEqual({
+			assetsCents: -10_000,
+			liabilitiesCents: 0,
+			netCents: -10_000,
+		});
 	});
 });

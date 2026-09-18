@@ -230,7 +230,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 				style: 'destructive',
 				onPress: async () => {
 					await removeDebt(existing.id);
-					router.replace('/debts/index');
+					router.replace('/(tabs)/wealth');
 				},
 			},
 		]);

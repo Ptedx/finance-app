@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
 	Alert,
+	Pressable,
 	ScrollView,
 	StyleSheet,
 	Switch,
@@ -340,7 +341,18 @@ const SettingsScreen = () => {
 			/>
 
 			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle}>{t('settings.headerTitle')}</Text>
+				<Pressable
+					onPress={() => router.back()}
+					accessibilityRole="button"
+					accessibilityLabel={t('debts.back')}
+					hitSlop={12}
+					style={styles.backButton}
+				>
+					<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+				</Pressable>
+				<Text style={styles.headerTitle} accessibilityRole="header">
+					{t('settings.headerTitle')}
+				</Text>
 			</View>
 
 			<ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
@@ -382,7 +394,6 @@ const SettingsScreen = () => {
 					)}
 					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
 					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards/index'))}
-					{renderSettingsItem('trending-down-outline', t('debts.screenTitle'), () => router.push('/debts/index'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),
@@ -508,7 +519,15 @@ const styles = StyleSheet.create({
 		flex: 1,
 		backgroundColor: '#121212',
 	},
+	backButton: {
+		minWidth: 48,
+		minHeight: 48,
+		justifyContent: 'center',
+	},
 	headerContainer: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
 		paddingHorizontal: 16,
 		paddingVertical: 12,
 		paddingTop: 60,

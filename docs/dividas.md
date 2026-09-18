@@ -1,9 +1,21 @@
 # Dívidas: financiamento, consórcio e empréstimo
 
-Ajustes → **Dívidas**. Para cada dívida, o app mostra quanto se deve hoje, quando quita,
+Aba **Patrimônio** (na barra de baixo). Para cada dívida, o app mostra quanto se deve hoje, quando quita,
 quanto ainda vai de juros e responde **"vale a pena amortizar?"**. Nos Relatórios, as
 dívidas aparecem com o veredito, entram no "Já comprometido" e mudam a projeção da
 aposentadoria.
+
+## A aba Patrimônio
+
+A barra de baixo fica **Início · Lançamentos · (+) · Patrimônio · Relatórios**; Ajustes saiu
+dela e abre pela engrenagem do Início. Cada aba responde uma pergunta: como está hoje, o
+que aconteceu, quanto eu valho e o que me prende, e se estou no caminho.
+
+No topo, o **patrimônio líquido**: o que se tem (contas, reservas e investimentos, e o
+capital fora do app informado na meta) menos o que se deve (cartões — faturas **e parcelas
+que ainda vão cair** — e o saldo das dívidas). Bens como carro e imóvel não entram, porque o
+app não sabe quanto valem; a tela diz isso. Embaixo, as dívidas com o veredito de cada uma.
+A reserva de emergência entra aqui quando o módulo existir.
 
 ## Cadastro: só o que está no boleto
 
@@ -84,7 +96,8 @@ herda da 1.0 só as coleções que ela conhecia. Ver [versionamento.md](versiona
 | `app/utils/debt.ts` | cronograma (Price, SAC, consórcio), saldo de hoje, taxa implícita, simulação, veredito, parcelas por mês, resumo |
 | `app/utils/retirement.ts` | `projectCapitalStepped` e `monthsToReachStepped` (aporte em degraus) |
 | `app/contexts/DebtsContext.tsx` | a lista, o resumo e as ações (criar, salvar, apagar, registrar amortização) |
-| `app/screens/Debt*.tsx`, `app/components/debts/` | lista, cadastro, detalhe e simulador |
+| `app/screens/WealthScreen.tsx`, `app/components/wealth/` | a aba Patrimônio: patrimônio líquido e o painel de dívidas |
+| `app/screens/Debt*.tsx`, `app/components/debts/` | cadastro, detalhe e simulador |
 | `app/components/reports/DebtsSection.tsx` | a seção nos Relatórios |
 | `app/sync/types.ts` | `WireDebt`, `COLLECTION_SINCE_SCHEMA`, `inheritCursor` |
 | `backend/prisma/migrations/20260918150000_debts` | a tabela no Postgres |

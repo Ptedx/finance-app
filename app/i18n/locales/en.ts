@@ -1,6 +1,7 @@
 const en = {
 	tabs: {
 		home: 'Home',
+		wealth: 'Net worth',
 		transactions: 'Transactions',
 		reports: 'Reports',
 		settings: 'Settings',
@@ -311,6 +312,24 @@ const en = {
 				neutral: 'Context',
 			},
 		},
+	},
+
+	netWorth: {
+		screenTitle: 'Net worth',
+		screenSubtitle: 'What you have and what you owe.',
+		title: 'Net worth',
+		have: 'I have',
+		owe: 'I owe',
+		cash: 'In accounts',
+		saved: 'Reserves and investments',
+		outside: 'Investments outside the app',
+		cards: 'Cards (invoices and upcoming installments)',
+		debts: 'Debts (balance owed)',
+		assetsNote: 'Assets like a car or a home are not included: the app does not know what they are worth. If you finance one, your net worth is higher than this number.',
+		debtsSummary: '{{monthly}} a month in installments, until {{date}}.',
+		debtsSummaryNoDate: '{{monthly}} a month in installments.',
+		paidOffToggle_one: '{{count}} paid off',
+		paidOffToggle_other: '{{count}} paid off',
 	},
 
 	debts: {
