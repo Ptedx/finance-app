@@ -314,7 +314,7 @@ const en = {
 		importData: 'Import Data',
 		resetAllData: 'Reset All Data',
 		aboutSpendr: 'About Spendr',
-		version: 'Version 1.0.0',
+		version: 'Version {{version}}',
 		error: 'Error',
 		notificationError: 'Failed to update notification settings.',
 		authFailed: 'Authentication Failed',

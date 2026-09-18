@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { router, Stack } from 'expo-router';
 import type React from 'react';
 import { useEffect, useState } from 'react';
@@ -484,7 +485,9 @@ const SettingsScreen = () => {
 					{renderSettingsItem('information-circle-outline', t('settings.aboutSpendr'), handleAbout)}
 				</View>
 
-				<Text style={styles.versionText}>{t('settings.version')}</Text>
+				{/* A versão do app instalado, lida da configuração embutida no build — é por ela que se
+				    sabe se o celular está na 1.0 ou na 1.1 antes de reinstalar uma delas. */}
+				<Text style={styles.versionText}>{t('settings.version', { version: Constants.expoConfig?.version ?? '—' })}</Text>
 			</ScrollView>
 
 			<CurrencySelector

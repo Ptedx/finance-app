@@ -308,7 +308,7 @@ const pt = {
 		importData: 'Importar dados',
 		resetAllData: 'Apagar todos os dados',
 		aboutSpendr: 'Sobre o Spendr',
-		version: 'Versão 1.0.0',
+		version: 'Versão {{version}}',
 		error: 'Erro',
 		notificationError: 'Não foi possível atualizar as notificações.',
 		authFailed: 'Falha na autenticação',

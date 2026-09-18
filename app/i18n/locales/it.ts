@@ -314,7 +314,7 @@ const it = {
 		importData: 'Importa Dati',
 		resetAllData: 'Reimposta Tutti i Dati',
 		aboutSpendr: 'Informazioni su Spendr',
-		version: 'Versione 1.0.0',
+		version: 'Versione {{version}}',
 		error: 'Errore',
 		notificationError: 'Impossibile aggiornare le impostazioni di notifica.',
 		authFailed: 'Autenticazione Fallita',
