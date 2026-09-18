@@ -79,3 +79,9 @@ build.sh
 modules/*/android/build/
 modules/*/android/.cxx/
 modules/*/android/.gradle/
+
+# Chave SSH da VM: nunca no repositório.
+/vm_keys
+
+# APKs guardados para reinstalar uma versão anterior (ver docs/versionamento.md).
+/releases

@@ -36,7 +36,7 @@ type Mode = 'signIn' | 'signUp';
  */
 const AccountScreen: React.FC = () => {
 	const { t } = useTranslation();
-	const { account, isAvailable, signIn, signUp, signOut, pendingClaim, resolveClaim } = useAuth();
+	const { account, isAvailable, signIn, signUp, signOut, pendingClaim, claimCounts, resolveClaim } = useAuth();
 	const { status, pending, lastSyncedAt, syncNow } = useSync();
 	const { refreshData } = useTransactions();
 	const { currentCurrency } = useCurrency();
@@ -84,10 +84,10 @@ const AccountScreen: React.FC = () => {
 	};
 
 	/**
-	 * Descartar é destrutivo e irreversível, então passa por uma confirmação explícita
-	 * que nomeia o que se perde. Mesclar não precisa: nada some.
+	 * Subir e descartar apagam um dos lados, então passam por uma confirmação que nomeia o
+	 * que se perde. Juntar não precisa: nada some.
 	 */
-	const handleClaim = (choice: 'merge' | 'discard') => {
+	const handleClaim = (choice: 'upload' | 'merge' | 'discard') => {
 		const apply = async () => {
 			try {
 				setIsSubmitting(true);
@@ -102,6 +102,14 @@ const AccountScreen: React.FC = () => {
 
 		if (choice === 'merge') {
 			apply();
+			return;
+		}
+
+		if (choice === 'upload') {
+			Alert.alert(t('account.uploadTitle'), t('account.uploadConfirm'), [
+				{ text: t('account.cancel'), style: 'cancel' },
+				{ text: t('account.uploadAction'), style: 'destructive', onPress: apply },
+			]);
 			return;
 		}
 
@@ -177,27 +185,57 @@ const AccountScreen: React.FC = () => {
 					<Text style={styles.title}>{t('account.claimTitle')}</Text>
 					<Text style={styles.paragraph}>{t('account.claimExplanation')}</Text>
 
+					{claimCounts ? (
+						<View style={styles.card} accessible>
+							<Text style={styles.cardLabel}>{t('account.claimDevice')}</Text>
+							<Text style={styles.paragraph}>
+								{t('account.claimCounts', {
+									transactions: claimCounts.device.transactions,
+									accounts: claimCounts.device.accounts,
+									recurring: claimCounts.device.recurringTransactions,
+								})}
+							</Text>
+							<Text style={styles.cardLabel}>{t('account.claimAccount')}</Text>
+							<Text style={styles.paragraph}>
+								{t('account.claimAccountCounts', {
+									transactions: claimCounts.account.transactions,
+									recurring: claimCounts.account.recurringTransactions,
+								})}
+							</Text>
+						</View>
+					) : null}
+
+					{isSubmitting ? <ActivityIndicator color="#15E8FE" style={styles.heroIcon} /> : null}
+
 					<TouchableOpacity
 						style={[styles.primaryButton, isSubmitting && styles.buttonDisabled]}
-						onPress={() => handleClaim('merge')}
+						onPress={() => handleClaim('upload')}
 						disabled={isSubmitting}
+						accessibilityRole="button"
 					>
-						{isSubmitting ? (
-							<ActivityIndicator color="#121212" />
-						) : (
-							<Text style={styles.primaryButtonText}>{t('account.claimMerge')}</Text>
-						)}
+						<Text style={styles.primaryButtonText}>{t('account.claimUpload')}</Text>
 					</TouchableOpacity>
-					<Text style={styles.hint}>{t('account.claimMergeHint')}</Text>
+					<Text style={styles.hint}>{t('account.claimUploadHint')}</Text>
 
 					<TouchableOpacity
 						style={[styles.dangerButton, isSubmitting && styles.buttonDisabled]}
 						onPress={() => handleClaim('discard')}
 						disabled={isSubmitting}
+						accessibilityRole="button"
 					>
 						<Text style={styles.dangerButtonText}>{t('account.claimDiscard')}</Text>
 					</TouchableOpacity>
 					<Text style={styles.hint}>{t('account.claimDiscardHint')}</Text>
+
+					<TouchableOpacity
+						style={[styles.dangerButton, isSubmitting && styles.buttonDisabled]}
+						onPress={() => handleClaim('merge')}
+						disabled={isSubmitting}
+						accessibilityRole="button"
+					>
+						<Text style={styles.dangerButtonText}>{t('account.claimMerge')}</Text>
+					</TouchableOpacity>
+					<Text style={styles.hint}>{t('account.claimMergeHint')}</Text>
 				</ScrollView>
 			</SafeAreaView>
 		);
