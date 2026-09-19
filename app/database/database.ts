@@ -511,6 +511,9 @@ const migrateCategoryNature = async (): Promise<void> => {
  * Seeded rows are dirty like any other: on a device that later signs in, the server has
  * its own copy under the same fixed id and last-write-wins settles which name survives.
  */
+/** O carimbo das categorias padrão semeadas: perde para qualquer versão vinda da conta. */
+const SEED_TIMESTAMP = '1970-01-01T00:00:00.000Z';
+
 const seedMissingDefaultCategories = async (): Promise<void> => {
 	// Includes tombstoned rows on purpose: a category the user deleted must not be
 	// resurrected by the next launch.
@@ -520,13 +523,17 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
 
 	if (missing.length === 0) return;
 
-	const timestamp = nowTimestamp();
+	// As padrão nascem com a data mais antiga possível e limpas. Com a data da instalação e
+	// sujas, o primeiro login de um app novo subia as padrão como mais novas que as da
+	// conta e desfazia os nomes e as naturezas que o usuário tinha ajustado. Assim a versão
+	// da conta sempre vence; uma conta nova recebe as padrão pelo `markEverythingDirty`.
+	const timestamp = SEED_TIMESTAMP;
 
 	await db.withTransactionAsync(async () => {
 		for (const category of missing) {
 			await db.runAsync(
 				`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)`,
 				[
 					category.id,
 					category.name,
@@ -1568,6 +1575,25 @@ export const addTransfer = async (transfer: TransferDraft, explicitId?: string):
 		[id, transfer.fromAccountId, transfer.toAccountId, transfer.amountCents, transfer.date, transfer.note, nowTimestamp()]
 	);
 	return id;
+};
+
+/**
+ * Grava uma conta ou transferência de um backup com o id original, **ressuscitando** a
+ * linha se ela estiver apagada. A importação apaga tudo (lápides) antes de regravar, e o
+ * `ON CONFLICT DO NOTHING` de `addAccount`/`addTransfer` deixava as contas apagadas: o
+ * app ficava sem contas, e os lançamentos importados, presos a contas invisíveis.
+ *
+ * A lápide sai e a linha entra de novo, suja e com carimbo de agora — mais nova que a
+ * lápide em qualquer aparelho ou no servidor, então é ela que vale no sync.
+ */
+export const restoreAccount = async (draft: AccountDraft, id: string): Promise<void> => {
+	await db.runAsync('DELETE FROM accounts WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	await addAccount(draft, id);
+};
+
+export const restoreTransfer = async (draft: TransferDraft, id: string): Promise<void> => {
+	await db.runAsync('DELETE FROM transfers WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	await addTransfer(draft, id);
 };
 
 export const updateTransfer = async (transfer: TransferEdit): Promise<void> => {

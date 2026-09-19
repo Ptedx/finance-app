@@ -4,6 +4,21 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.2] — 2026-09-19
+
+- Importar um backup num app que já tinha dados deixava **todas as contas apagadas**: a
+  importação marca tudo como apagado e regravava as contas com o mesmo id, o que o banco
+  ignorava. O app ficava em R$ 0,00, e o sync levava o "apagado" para a conta. Agora as
+  contas e transferências do backup voltam à vida.
+- "Puxar da conta" no login e a importação agora atualizam as telas na hora (a 1.2.1 só
+  cobria o sync em segundo plano).
+- Falhas de sync vão para o log do aparelho, com o motivo.
+- Um app recém-instalado não sobrescreve mais as categorias da conta no primeiro login: as
+  padrão nascem com a data mais antiga e limpas, e a versão da conta sempre vence (antes os
+  nomes e as naturezas voltavam ao padrão).
+- Importar um backup aplica o nome e a natureza das categorias que já existem no aparelho
+  (antes as padrão eram puladas e o essencial/repasse ajustado se perdia).
+
 ## [1.2.1] — 2026-09-19
 
 - Login num aparelho novo: os dados baixados da conta agora aparecem na hora. Antes, o sync

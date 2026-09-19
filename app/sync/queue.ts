@@ -89,6 +89,9 @@ const run = async (): Promise<void> => {
 		});
 	} catch (error) {
 		const offline = error instanceof ApiError && error.isOffline;
+		// Fica no log do aparelho (adb logcat): sem isto, um sync quebrado só aparecia como
+		// "erro" na tela de Ajustes, sem o motivo.
+		if (!offline) console.warn('Sync falhou:', error);
 
 		// Ficar sem rede não é um erro a ser mostrado como falha: as linhas continuam
 		// marcadas e sobem sozinhas quando a conexão voltar.
@@ -150,6 +153,15 @@ export const schedule = (): void => {
 	}, DEBOUNCE_MS);
 };
 
+/**
+ * O banco mudou por fora da fila — "puxar da conta" no login, importar um backup. Sobe o
+ * `pulledVersion` para as telas relerem (`hooks/useAfterPull.ts`); sem isso, elas ficavam
+ * com o que tinham antes, e o app mostrava R$ 0,00 com os dados já gravados.
+ */
+export const notifyDataChanged = (): void => {
+	emit({ pulledVersion: state.pulledVersion + 1 });
+};
+
 /** Sync imediato: app voltando ao foreground, ou o usuário puxando para atualizar. */
 export const syncImmediately = (): void => {
 	if (!enabled) return;
@@ -172,4 +184,4 @@ export const syncImmediately = (): void => {
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { start, stop, schedule, syncImmediately, subscribe, getState };
+export default { start, stop, schedule, syncImmediately, subscribe, getState, notifyDataChanged };

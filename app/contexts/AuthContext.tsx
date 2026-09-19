@@ -186,6 +186,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			await pullAll();
 		}
 
+		// Qualquer das três escolhas mexeu no banco por fora da fila: as telas releem.
+		syncQueue.notifyDataChanged();
 		claimBlocking.current = false;
 		setPendingClaim(false);
 		setClaimCounts(null);

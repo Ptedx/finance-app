@@ -8,24 +8,26 @@ import {
 	addTransaction,
 	getBudgets,
 	getCategories,
+	updateCategory,
 	resetDatabase,
 	setBudget,
 } from '../database/database';
 import {
-	addAccount,
 	addDebt,
-	addTransfer,
 	getAccounts,
 	getDebts,
 	getReserveGoal,
 	getRetirementGoal,
 	getTransfers,
+	restoreAccount,
+	restoreTransfer,
 	type ReserveGoalDraft,
 	type RetirementGoalDraft,
 	setReserveGoal,
 	setRetirementGoal,
 } from '../database/database';
 import type { Account, Category, Debt, RecurringTransaction, Transaction, Transfer } from '../database/schema';
+import * as syncQueue from '../sync/queue';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
 
@@ -397,7 +399,20 @@ export const importDatabaseData = async (): Promise<{
 		const existingIds = new Set((await getCategories()).map((c) => c.id));
 
 		for (const category of importData.categories) {
-			if (existingIds.has(category.id)) continue;
+			// Uma categoria que já existe aqui (as padrão, num app novo) recebe o que o backup
+			// diz: nome, cor e, principalmente, a natureza que o usuário ajustou. Antes ela era
+			// pulada, e o essencial/repasse de uma categoria padrão se perdia na restauração.
+			if (existingIds.has(category.id)) {
+				await updateCategory({
+					id: category.id,
+					name: category.name,
+					color: category.color,
+					icon: category.icon,
+					type: category.type,
+					nature: category.nature ?? 'discretionary',
+				});
+				continue;
+			}
 			// Backups escritos antes da tag necessidade/desejo não trazem `nature`, e a
 			// coluna é NOT NULL. O padrão é o mesmo da migração: supérfluo até que o
 			// usuário diga o contrário.
@@ -416,7 +431,7 @@ export const importDatabaseData = async (): Promise<{
 		const accountIds = new Set<string>();
 		for (const account of importData.accounts ?? []) {
 			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = account;
-			await addAccount(draft, id);
+			await restoreAccount(draft, id);
 			accountIds.add(id);
 		}
 
@@ -436,7 +451,7 @@ export const importDatabaseData = async (): Promise<{
 
 		for (const transfer of importData.transfers ?? []) {
 			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = transfer;
-			await addTransfer(
+			await restoreTransfer(
 				{
 					...draft,
 					fromAccountId: draft.fromAccountId && accountIds.has(draft.fromAccountId) ? draft.fromAccountId : null,
@@ -470,6 +485,9 @@ export const importDatabaseData = async (): Promise<{
 				await setBudget(budget.year, budget.month, readAmountCents(budget));
 			}
 		}
+
+		// As telas releem o banco: contas, orçamento e metas também mudaram.
+		syncQueue.notifyDataChanged();
 
 		return {
 			success: true,
