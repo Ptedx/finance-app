@@ -83,6 +83,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
 	);
 	const [yieldCdi, setYieldCdi] = useState(existing?.yieldCdiBp ? bpToPercentInput(existing.yieldCdiBp) : '');
+	// Numa reserva: entra na cascata da reserva de emergência, ou é só investimento.
+	const [reservePurpose, setReservePurpose] = useState<'cascade' | 'investment'>(existing?.reservePurpose === 'investment' ? 'investment' : 'cascade');
 	const [adjusting, setAdjusting] = useState(false);
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string; yieldCdi?: string }>({});
 	const [saving, setSaving] = useState(false);
@@ -96,6 +98,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		setRole(existing.role);
 		setEnvelopeMonthly(existing.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : '');
 		setYieldCdi(existing.yieldCdiBp ? bpToPercentInput(existing.yieldCdiBp) : '');
+		setReservePurpose(existing.reservePurpose === 'investment' ? 'investment' : 'cascade');
 	}, [existing]);
 
 	useEffect(() => {
@@ -151,6 +154,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			creditLimitCents: null,
 			cardNames: existing?.cardNames ?? null,
 			yieldCdiBp: yieldCdiBp && yieldCdiBp > 0 ? yieldCdiBp : null,
+			reservePurpose: role === 'reserve' && reservePurpose === 'investment' ? 'investment' : null,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
 			openingBalanceCents: existing?.openingBalanceCents ?? 0,
@@ -342,6 +346,41 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							{t(`accounts.roleDescription.${role}`)}
 						</Text>
 					</View>
+
+					{role === 'reserve' ? (
+						<View style={styles.field}>
+							<Text style={styles.label}>{t('accounts.edit.reservePurpose')}</Text>
+							<View style={styles.kinds} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.reservePurpose')}>
+								{(['cascade', 'investment'] as const).map((option) => {
+									const selected = reservePurpose === option;
+									return (
+										<Pressable
+											key={option}
+											onPress={() => setReservePurpose(option)}
+											accessibilityRole="radio"
+											accessibilityState={{ selected }}
+											accessibilityLabel={t(`accounts.reservePurpose.${option}`)}
+											style={({ pressed }) => [
+												styles.kindChip,
+												selected && { borderColor: ACCENT, backgroundColor: `${ACCENT}22` },
+												pressed && styles.pressed,
+											]}
+										>
+											<Ionicons
+												name={selected ? 'checkmark-circle' : option === 'cascade' ? 'shield-checkmark-outline' : 'trending-up-outline'}
+												size={18}
+												color={selected ? ACCENT : 'rgba(255,255,255,0.8)'}
+											/>
+											<Text style={[styles.kindLabel, selected && { color: ACCENT }]}>{t(`accounts.reservePurpose.${option}`)}</Text>
+										</Pressable>
+									);
+								})}
+							</View>
+							<Text style={styles.roleDescription} accessibilityLiveRegion="polite">
+								{t(`accounts.reservePurposeDescription.${reservePurpose}`)}
+							</Text>
+						</View>
+					) : null}
 
 					{role === 'envelope' &&
 						field(t('accounts.edit.envelopeMonthly'), envelopeMonthly, setEnvelopeMonthly, {

@@ -155,6 +155,12 @@ export interface Account extends SyncMeta {
 	 * rende. O saldo mostrado soma o rendimento estimado desde a âncora — ver `utils/yield.ts`.
 	 */
 	yieldCdiBp?: number | null;
+	/**
+	 * Numa conta de papel `reserve`: `'investment'` tira a conta da cascata da reserva de
+	 * emergência — o saldo é todo capital de investimento. Nulo (o padrão) entra na cascata.
+	 * Ver `utils/emergencyReserve.ts`.
+	 */
+	reservePurpose?: ReservePurpose | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -248,8 +254,10 @@ export const DATABASE_NAME = 'spendr.db';
  *     `feeCents` (insurance and fees inside the installment). Every debt is marked dirty:
  *     a server without the debts collection used to drop them silently while the app
  *     marked them as sent.
+ * 17 — `reserve_goals` is created (the emergency reserve target, one synced row);
+ *     accounts gain `reservePurpose` (an investment-only reserve stays out of the cascade).
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -261,6 +269,7 @@ export const SYNCED_TABLES = [
 	'transfers',
 	'retirement_goals',
 	'debts',
+	'reserve_goals',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -361,6 +370,7 @@ export const CREATE_ACCOUNTS_TABLE = `
     creditLimitCents INTEGER,
     cardNames TEXT,
     yieldCdiBp INTEGER,
+    reservePurpose TEXT,
     packageName TEXT,
     accountKey TEXT,
     openingBalanceCents INTEGER NOT NULL DEFAULT 0,
@@ -390,6 +400,12 @@ export const ACCOUNT_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardNa
 /** Colunas que o v16 acrescenta. */
 export const ACCOUNT_V16_COLUMNS: Array<[name: string, sql: string]> = [['yieldCdiBp', 'INTEGER']];
 export const DEBT_V16_COLUMNS: Array<[name: string, sql: string]> = [['feeCents', 'INTEGER NOT NULL DEFAULT 0']];
+
+/** Colunas que o v17 acrescenta. */
+export const ACCOUNT_V17_COLUMNS: Array<[name: string, sql: string]> = [['reservePurpose', 'TEXT']];
+
+/** Para que serve o dinheiro de uma conta de reserva. Só `'investment'` existe: nulo é a cascata. */
+export type ReservePurpose = 'investment';
 
 /** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
 export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
@@ -469,6 +485,35 @@ export const CREATE_RETIREMENT_GOALS_TABLE = `
     reinvestBp INTEGER NOT NULL DEFAULT 2500,
     expectedYieldBp INTEGER NOT NULL DEFAULT 1000,
     outsideCapitalCents INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
+ * A meta da reserva de emergência: uma linha só, de id fixo, como a da aposentadoria.
+ *
+ * Guarda só o que o usuário escolhe — quantos meses de custo essencial e, se quiser, o
+ * custo mensal à mão. O custo calculado, o quanto já está guardado e o quanto falta são
+ * derivados a cada leitura (`utils/emergencyReserve.ts`), nunca gravados.
+ */
+export const RESERVE_GOAL_ID = 'emergency';
+
+/** Quantos meses de custo essencial a reserva cobre, sem meta definida. */
+export const DEFAULT_RESERVE_MONTHS = 12;
+
+export interface ReserveGoalRow extends SyncMeta {
+	id: string;
+	/** Meses de custo essencial que a reserva deve cobrir. */
+	targetMonths: number;
+	/** O custo mensal informado à mão; nulo usa o calculado dos lançamentos. */
+	customMonthlyCostCents: number | null;
+}
+
+export const CREATE_RESERVE_GOALS_TABLE = `
+  CREATE TABLE IF NOT EXISTS reserve_goals (
+    id TEXT PRIMARY KEY NOT NULL,
+    targetMonths INTEGER NOT NULL DEFAULT 12,
+    customMonthlyCostCents INTEGER,
 ${SYNC_COLUMNS_SQL}
   );
 `;
@@ -681,6 +726,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_budgets_dirty ON budgets (dirty);
   CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
   CREATE INDEX IF NOT EXISTS idx_debts_dirty ON debts (dirty);
+  CREATE INDEX IF NOT EXISTS idx_reserve_goals_dirty ON reserve_goals (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -886,5 +932,6 @@ export default {
 	CREATE_INDEXES,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_DEBTS_TABLE,
+	CREATE_RESERVE_GOALS_TABLE,
 	DEFAULT_CATEGORIES,
 };

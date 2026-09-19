@@ -118,3 +118,17 @@ describe('ritmo de gastos', () => {
 		expect(byId({ averageMonthlySpendCents: null })['spending-trend'].status).toBe('unknown');
 	});
 });
+
+describe('reserva pelo custo essencial', () => {
+	it('reserva da cascata ÷ custo essencial, contra a meta de meses', () => {
+		const reserve = (reais: number) => ({ reserve: { reserveCents: R(reais), monthlyCostCents: R(4_000), targetMonths: 12 } });
+		expect(byId(reserve(48_000))['emergency-reserve']).toMatchObject({ status: 'good', value: 12, target: 12, variant: 'essential' });
+		expect(byId(reserve(12_000))['emergency-reserve']).toMatchObject({ status: 'warn', value: 3 });
+		expect(byId(reserve(10_526.51))['emergency-reserve']).toMatchObject({ status: 'bad', value: 2.6 });
+	});
+
+	it('sem custo essencial, volta ao caixa + guardado ÷ gasto', () => {
+		expect(byId({ reserve: null })['emergency-reserve']).toMatchObject({ status: 'good', value: 6 });
+		expect(byId({ reserve: null })['emergency-reserve'].variant).toBeUndefined();
+	});
+});

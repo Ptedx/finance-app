@@ -26,7 +26,9 @@ const FreedomHero: React.FC<{
 	/** "Se as parcelas virarem aporte quando quitar": chega antes. */
 	scenario?: { month: string | null; monthsEarlier: number | null } | null;
 	onEditGoal: () => void;
-}> = ({ model, goal, income, scenario, onEditGoal }) => {
+	/** A parte do guardado que é reserva de emergência e não conta como capital. */
+	reserveCents?: number;
+}> = ({ model, goal, income, scenario, onEditGoal, reserveCents = 0 }) => {
 	const { t } = useTranslation();
 
 	if (!model || !goal) {
@@ -86,6 +88,7 @@ const FreedomHero: React.FC<{
 						<Text style={reportStyles.muted}>{t('reports.freedom.capital')}</Text>
 						<Text style={reportStyles.rowValue}>{formatCents(model.capitalCents)}</Text>
 						{goal.outsideCapitalCents > 0 ? <Text style={reportStyles.rowSub}>{t('reports.freedom.capitalOutside', { amount: formatCents(goal.outsideCapitalCents) })}</Text> : null}
+						{reserveCents > 0 ? <Text style={reportStyles.rowSub}>{t('reports.freedom.inReserve', { amount: formatCents(reserveCents) })}</Text> : null}
 					</View>
 					<View style={[styles.capitalCell, styles.capitalCellRight]}>
 						<Text style={reportStyles.muted}>{t('reports.freedom.requiredCapital')}</Text>
@@ -120,6 +123,11 @@ const FreedomHero: React.FC<{
 				{reach}
 			</Text>
 			<Text style={reportStyles.muted}>{t('reports.freedom.pace', { amount: formatCents(Math.max(0, model.monthlyContributionCents)) })}</Text>
+			{model.contributionDelayMonths === null ? (
+				<Text style={reportStyles.muted}>{t('reports.freedom.reserveNeverFills')}</Text>
+			) : model.contributionDelayMonths > 0 ? (
+				<Text style={reportStyles.muted}>{t('reports.freedom.afterReserve', { count: model.contributionDelayMonths })}</Text>
+			) : null}
 			{scenario?.month && scenario.monthsEarlier !== null && scenario.monthsEarlier > 0 ? (
 				<Text style={styles.scenario}>
 					{t('reports.freedom.debtScenario', {

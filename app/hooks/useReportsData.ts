@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccounts } from '../contexts/AccountsContext';
+import { useBudget } from '../contexts/BudgetContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { usePeriod } from '../contexts/PeriodContext';
@@ -45,6 +46,7 @@ import {
 import {
 	buildRetirementReadModel,
 	contributionForHorizon,
+	retirementContributionPlan,
 	DEFAULT_EXPECTED_YIELD_BP,
 	monthlyRate,
 	monthsToReachStepped,
@@ -53,6 +55,16 @@ import {
 	type RetirementGoal,
 	type RetirementReadModel,
 } from '../utils/retirement';
+import {
+	buildReserveReadModel,
+	contributionDelayMonths,
+	essentialMonthlyCostCents,
+	essentialShareBp,
+	type ReserveReadModel,
+	resolveMonthlyCost,
+} from '../utils/emergencyReserve';
+import { buildPriorities, type PriorityItem } from '../utils/priorities';
+import { useReserveGoal } from './useReserveGoal';
 import { useWealthMetrics } from './useWealthMetrics';
 
 /**
@@ -134,6 +146,12 @@ export interface ReportsData {
 	debts: { summary: DebtsSummary; items: DebtReportItem[] };
 	/** Nulo sem meta ou sem dívida que quite. */
 	debtScenario: DebtScenario | null;
+	/** A reserva de emergência: custo essencial, meta, a cascata e quanto falta. */
+	reserve: ReserveReadModel;
+	/** O custo essencial que o app calcula (sem o valor à mão), para a folha da reserva. */
+	reserveComputedCostCents: number | null;
+	/** "Por onde começar": reserva mínima → dívida cara → reserva cheia → aposentadoria. */
+	priorities: PriorityItem[];
 	/** Verdadeiro até a primeira leva de dados desta combinação de mês e contas chegar. */
 	isLoading: boolean;
 	refresh: () => Promise<void>;
@@ -141,7 +159,9 @@ export interface ReportsData {
 
 export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): ReportsData => {
 	const { selectedMonth, selectedYear } = usePeriod();
-	const { accounts, overview, cardSummaries, cardsTotals, debitCards, creditCards, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+	const { currentBudgetCents } = useBudget();
+	const { goal: reserveGoal } = useReserveGoal();
 	const { categories, currentPeriodTransactions, refreshData } = useTransactions();
 	const { metrics, insights: wealthInsights } = useWealthMetrics();
 	const { activeDebts, summary: debtsSummary } = useDebts();
@@ -204,6 +224,39 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 	const averageIncomeCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.incomeCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
 	const averageSavedCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.savedCents, CONTRIBUTION_WINDOW_MONTHS) ?? 0, [fullSeries]);
 
+	// Reserva de emergência. O custo essencial sai dos meses fechados; sem nenhum, do
+	// orçamento do mês; o valor à mão vence os dois.
+	const natureById = useMemo(() => new Map(categories.map((category) => [category.id, category.nature])), [categories]);
+	const computedCost = useMemo(() => {
+		const rows = raw?.categoryRows ?? [];
+		return resolveMonthlyCost({
+			customCents: null,
+			historyCents: essentialMonthlyCostCents(fullSeries, rows, natureById),
+			budgetCents: currentBudgetCents,
+			currentShareBp: essentialShareBp(
+				rows.filter((row) => row.month === todayKey),
+				natureById
+			),
+		});
+	}, [raw, fullSeries, natureById, currentBudgetCents, todayKey]);
+
+	const reserve = useMemo<ReserveReadModel>(() => {
+		const custom = reserveGoal.customMonthlyCostCents;
+		const cost = custom !== null && custom > 0 ? { cents: custom, source: 'custom' as const } : computedCost;
+		return buildReserveReadModel({
+			accounts: liveAccounts
+				.filter((account) => !account.archived && account.kind !== 'credit_card' && account.role === 'reserve')
+				.map((account) => ({
+					balanceCents: balances.get(account.id) ?? account.openingBalanceCents,
+					purpose: account.reservePurpose === 'investment' ? 'investment' : null,
+				})),
+			targetMonths: reserveGoal.targetMonths,
+			cost,
+			monthlyContributionCents: averageSavedCents,
+			monthlyRate: monthlyRate(goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP),
+		});
+	}, [reserveGoal, computedCost, liveAccounts, balances, averageSavedCents, goal]);
+
 	const retirement = useMemo<RetirementReadModel | null>(() => {
 		if (!goal) return null;
 		// O rendimento observado anda para trás a partir do saldo de hoje, então só faz
@@ -211,13 +264,16 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		const history = selectedKey === todayKey ? fullSeries.slice(-12) : [];
 		return buildRetirementReadModel({
 			goal,
-			trackedCapitalCents: overview.savedCents,
+			// A cascata: só o que passa da reserva de emergência é capital da meta, e o aporte
+			// vem para a meta depois que a reserva enche.
+			trackedCapitalCents: reserve.split.investmentCents,
 			monthlyContributionCents: averageSavedCents,
 			realizedYield12mCents: history.length > 0 ? realizedYield12mCents(history) : null,
 			averageCapital12mCents: averageReserveCapitalCents(history, overview.savedCents),
 			asOfMonth: todayKey,
+			contributionDelayMonths: contributionDelayMonths(reserve),
 		});
-	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey]);
+	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve]);
 
 	const health = useMemo<HealthIndicator[]>(() => {
 		let neededSavingsRateBp: number | null = null;
@@ -245,8 +301,12 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 			limitUsagePercent,
 			currentSpendCents: selected?.overview.totalSpendCents ?? 0,
 			elapsedBp: monthElapsedBp(selectedKey, todayISO()),
+			reserve:
+				reserve.monthlyCostCents === null
+					? null
+					: { reserveCents: reserve.split.reserveCents, monthlyCostCents: reserve.monthlyCostCents, targetMonths: reserve.targetMonths },
 		});
-	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, metrics.fixedCostBasisPoints, cardsTotals, selectedKey]);
+	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, metrics.fixedCostBasisPoints, cardsTotals, selectedKey, reserve]);
 
 	const rankedCategories = useMemo(() => {
 		if (!raw) return [];
@@ -309,8 +369,13 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 
 	const debtScenario = useMemo<DebtScenario | null>(() => {
 		if (!retirement || !goal || debtsSummary.releases.length === 0) return null;
-		const steps = debtsSummary.releases.map((release) => ({ fromMonth: Math.max(1, monthsBetweenKeys(todayKey, release.fromMonth)), addCents: release.cents }));
-		const input = { capitalCents: retirement.capitalCents, contributionCents: retirement.monthlyContributionCents, monthlyRate: monthlyRate(goal.expectedYieldBp), steps };
+		// O aporte de base segue a regra da reserva primeiro; cada quitação soma a parcela.
+		const plan = retirementContributionPlan(retirement.monthlyContributionCents, retirement.contributionDelayMonths);
+		const steps = [
+			...plan.steps,
+			...debtsSummary.releases.map((release) => ({ fromMonth: Math.max(1, monthsBetweenKeys(todayKey, release.fromMonth)), addCents: release.cents })),
+		];
+		const input = { capitalCents: retirement.capitalCents, contributionCents: plan.contributionCents, monthlyRate: monthlyRate(goal.expectedYieldBp), steps };
 		const months = monthsToReachStepped({ ...input, requiredCapitalCents: retirement.requiredCapitalCents });
 		const baseMonths = retirement.reach.kind === 'eta' ? retirement.reach.months : null;
 		const horizon = retirement.projection[retirement.projection.length - 1]?.monthOffset ?? 0;
@@ -342,6 +407,17 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		[retirement, health, duplicates, debtInsights, wealthInsights]
 	);
 
+	const priorities = useMemo(
+		() =>
+			buildPriorities({
+				reserve,
+				hasDebts: debtItems.length > 0,
+				expensiveDebtCents: debtItems.filter((item) => item.verdict === 'pay').reduce((sum, item) => sum + item.balanceCents, 0),
+				retirement: retirement ? { capitalCents: retirement.capitalCents, requiredCapitalCents: retirement.requiredCapitalCents } : null,
+			}),
+		[reserve, debtItems, retirement]
+	);
+
 	const refresh = useCallback(async () => {
 		await Promise.all([refreshData(), refreshAccounts()]);
 	}, [refreshData, refreshAccounts]);
@@ -360,6 +436,9 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		duplicates,
 		debts: { summary: debtsSummary, items: debtItems },
 		debtScenario,
+		reserve,
+		reserveComputedCostCents: computedCost?.cents ?? null,
+		priorities,
 		isLoading: accountsLoading || raw === null,
 		refresh,
 	};

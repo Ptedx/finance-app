@@ -69,6 +69,8 @@ export interface WireAccount extends WireMeta {
 	cardNames?: string | null;
 	/** v16: quanto do CDI a conta rende, em pontos-base. */
 	yieldCdiBp?: number | null;
+	/** v17. */
+	reservePurpose?: 'investment' | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -117,6 +119,13 @@ export interface WireRetirementGoal extends WireMeta {
 	outsideCapitalCents: number;
 }
 
+/** A meta da reserva de emergência (v17): uma linha só, de id fixo. */
+export interface WireReserveGoal extends WireMeta {
+	id: string;
+	targetMonths: number;
+	customMonthlyCostCents: number | null;
+}
+
 /** Uma dívida (v15). */
 export interface WireDebt extends WireMeta {
 	id: string;
@@ -151,6 +160,8 @@ export interface SyncChanges {
 	retirementGoals?: WireRetirementGoal[];
 	/** Coleção do v15, idem. */
 	debts?: WireDebt[];
+	/** Coleção do v17, idem. */
+	reserveGoals?: WireReserveGoal[];
 }
 
 /**
@@ -170,6 +181,7 @@ export interface SyncCursor {
 	transfers: number;
 	retirementGoals: number;
 	debts: number;
+	reserveGoals: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -181,6 +193,7 @@ export const EMPTY_CURSOR: SyncCursor = {
 	transfers: 0,
 	retirementGoals: 0,
 	debts: 0,
+	reserveGoals: 0,
 };
 
 /**
@@ -197,6 +210,7 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	transfers: 7,
 	retirementGoals: 14,
 	debts: 15,
+	reserveGoals: 17,
 };
 
 /**
@@ -286,6 +300,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	transfers: [],
 	retirementGoals: [],
 	debts: [],
+	reserveGoals: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -296,7 +311,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	(changes.accounts?.length ?? 0) +
 	(changes.transfers?.length ?? 0) +
 	(changes.retirementGoals?.length ?? 0) +
-	(changes.debts?.length ?? 0);
+	(changes.debts?.length ?? 0) +
+	(changes.reserveGoals?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

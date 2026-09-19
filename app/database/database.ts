@@ -28,6 +28,12 @@ import {
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_DEBTS_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
+	CREATE_RESERVE_GOALS_TABLE,
+	ACCOUNT_V17_COLUMNS,
+	RESERVE_GOAL_ID,
+	DEFAULT_RESERVE_MONTHS,
+	type ReserveGoalRow,
+	type ReservePurpose,
 	CREATE_SYNC_STATE_TABLE,
 	CREATE_TRANSACTIONS_TABLE,
 	DATABASE_NAME,
@@ -111,6 +117,7 @@ interface AccountDB extends SyncColumnsDB {
 	creditLimitCents: number | null;
 	cardNames: string | null;
 	yieldCdiBp: number | null;
+	reservePurpose: string | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -170,6 +177,12 @@ interface DebtDB extends SyncColumnsDB {
 	sortOrder: number;
 }
 
+interface ReserveGoalDB extends SyncColumnsDB {
+	id: string;
+	targetMonths: number;
+	customMonthlyCostCents: number | null;
+}
+
 interface RetirementGoalDB extends SyncColumnsDB {
 	id: string;
 	targetMonthlyCents: number;
@@ -215,6 +228,7 @@ const convertAccount = (account: AccountDB): Account => ({
 	creditLimitCents: account.creditLimitCents,
 	cardNames: account.cardNames ?? null,
 	yieldCdiBp: account.yieldCdiBp ?? null,
+	reservePurpose: account.reservePurpose === 'investment' ? 'investment' : null,
 	packageName: account.packageName,
 	accountKey: account.accountKey,
 	openingBalanceCents: account.openingBalanceCents,
@@ -549,6 +563,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 14) await migrateRetirementGoals();
 	if (version < 15) await migrateDebts();
 	if (version < 16) await migrateYieldAndFees();
+	if (version < 17) await migrateReserve();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -669,6 +684,20 @@ const migrateYieldAndFees = async (): Promise<void> => {
 			await db.execAsync(`ALTER TABLE debts ADD COLUMN ${name} ${sql}`);
 		}
 		await db.runAsync('UPDATE debts SET dirty = 1');
+	}
+};
+
+/**
+ * v16 -> v17: a meta da reserva de emergência ganha sua tabela sincronizada, e as contas,
+ * `reservePurpose`. Só acréscimos: um app 1.1 abre um banco v17 e ignora os dois.
+ */
+const migrateReserve = async (): Promise<void> => {
+	await db.execAsync(CREATE_RESERVE_GOALS_TABLE);
+	if (await tableExists('accounts')) {
+		for (const [name, sql] of ACCOUNT_V17_COLUMNS) {
+			if (await tableHasColumn('accounts', name)) continue;
+			await db.execAsync(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
+		}
 	}
 };
 
@@ -887,6 +916,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_TRANSFERS_TABLE}
       ${CREATE_RETIREMENT_GOALS_TABLE}
       ${CREATE_DEBTS_TABLE}
+      ${CREATE_RESERVE_GOALS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -1250,6 +1280,7 @@ export const normalizeAccountDraft = (account: AccountDraft): AccountDraft => {
 		creditLimitCents: isCard ? (account.creditLimitCents ?? null) : null,
 		cardNames: account.cardNames ?? null,
 		yieldCdiBp: isCard ? null : (account.yieldCdiBp ?? null),
+		reservePurpose: account.role === 'reserve' && account.reservePurpose === 'investment' ? 'investment' : null,
 		packageName: account.packageName ?? null,
 		accountKey: account.accountKey ?? null,
 		sortOrder: account.sortOrder ?? 0,
@@ -1272,6 +1303,7 @@ const accountValues = (account: AccountDraft): Array<string | number | null> => 
 	account.creditLimitCents,
 	account.cardNames,
 	account.yieldCdiBp ?? null,
+	account.reservePurpose ?? null,
 	account.packageName,
 	account.accountKey,
 	account.openingBalanceCents,
@@ -1286,9 +1318,9 @@ export const addAccount = async (draft: AccountDraft, explicitId?: string): Prom
 	await db.runAsync(
 		`INSERT INTO accounts
        (name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-        closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+        closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, reservePurpose, packageName, accountKey, openingBalanceCents, openingBalanceDate,
         sortOrder, archived, id, updatedAt, deletedAt, dirty)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[...accountValues(account), id, nowTimestamp()]
 	);
@@ -1301,7 +1333,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE accounts
      SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
-         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, yieldCdiBp = ?, packageName = ?, accountKey = ?,
+         last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, yieldCdiBp = ?, reservePurpose = ?, packageName = ?, accountKey = ?,
          openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
          updatedAt = ?, dirty = 1
      WHERE id = ?`,
@@ -2296,6 +2328,40 @@ export const clearRetirementGoal = async (): Promise<void> => {
 };
 
 // ---------------------------------------------------------------------------
+// Reserve goal
+// ---------------------------------------------------------------------------
+
+export type ReserveGoalDraft = Omit<ReserveGoalRow, 'id' | 'updatedAt' | 'deletedAt'>;
+
+const convertReserveGoal = (row: ReserveGoalDB): ReserveGoalRow => ({
+	id: row.id,
+	targetMonths: row.targetMonths ?? DEFAULT_RESERVE_MONTHS,
+	customMonthlyCostCents: row.customMonthlyCostCents ?? null,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** A meta da reserva, ou nula enquanto o usuário não mexeu nela (vale o padrão de 12 meses). */
+export const getReserveGoal = async (): Promise<ReserveGoalRow | null> => {
+	const row = await db.getFirstAsync<ReserveGoalDB>('SELECT * FROM reserve_goals WHERE id = ? AND deletedAt IS NULL', [
+		RESERVE_GOAL_ID,
+	]);
+	return row ? convertReserveGoal(row) : null;
+};
+
+/** Define (ou redefine) a meta da reserva, na mesma linha de id fixo. */
+export const setReserveGoal = async (draft: ReserveGoalDraft): Promise<void> => {
+	await db.runAsync(
+		`INSERT INTO reserve_goals (id, targetMonths, customMonthlyCostCents, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO UPDATE SET
+       targetMonths = excluded.targetMonths, customMonthlyCostCents = excluded.customMonthlyCostCents,
+       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+		[RESERVE_GOAL_ID, draft.targetMonths, draft.customMonthlyCostCents, nowTimestamp()]
+	);
+};
+
+// ---------------------------------------------------------------------------
 // Budgets
 // ---------------------------------------------------------------------------
 
@@ -2369,7 +2435,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -2396,6 +2462,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			limit,
 		]),
 		db.getAllAsync<DebtDB>('SELECT * FROM debts WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<ReserveGoalDB>('SELECT * FROM reserve_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
 
 	return {
@@ -2425,6 +2492,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			creditLimitCents: row.creditLimitCents,
 			cardNames: row.cardNames ?? null,
 			yieldCdiBp: row.yieldCdiBp ?? null,
+			reservePurpose: row.reservePurpose === 'investment' ? ('investment' as ReservePurpose) : null,
 			packageName: row.packageName,
 			accountKey: row.accountKey,
 			openingBalanceCents: row.openingBalanceCents,
@@ -2480,6 +2548,13 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			year: row.year,
 			month: row.month,
 			amountCents: row.amountCents,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+		reserveGoals: reserveGoals.map((row) => ({
+			id: row.id,
+			targetMonths: row.targetMonths,
+			customMonthlyCostCents: row.customMonthlyCostCents ?? null,
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
@@ -2604,6 +2679,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['transfers', changes.transfers ?? []],
 		['retirement_goals', changes.retirementGoals ?? []],
 		['debts', changes.debts ?? []],
+		['reserve_goals', changes.reserveGoals ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -2713,9 +2789,9 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			await db.runAsync(
 				`INSERT INTO accounts
            (id, name, kind, role, envelopeMonthlyCents, network, bankName, color, last4, closingDay, dueDay,
-            closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, packageName, accountKey, openingBalanceCents, openingBalanceDate,
+            closingDaysBefore, creditLimitCents, cardNames, yieldCdiBp, reservePurpose, packageName, accountKey, openingBalanceCents, openingBalanceDate,
             sortOrder, archived, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT (id) DO UPDATE SET
            name = excluded.name, kind = excluded.kind, role = excluded.role,
            envelopeMonthlyCents = excluded.envelopeMonthlyCents, network = excluded.network,
@@ -2723,7 +2799,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
            color = excluded.color, last4 = excluded.last4, closingDay = excluded.closingDay,
            dueDay = excluded.dueDay, closingDaysBefore = excluded.closingDaysBefore,
            creditLimitCents = excluded.creditLimitCents, cardNames = excluded.cardNames, yieldCdiBp = excluded.yieldCdiBp,
-           packageName = excluded.packageName, accountKey = excluded.accountKey,
+           reservePurpose = excluded.reservePurpose, packageName = excluded.packageName, accountKey = excluded.accountKey,
            openingBalanceCents = excluded.openingBalanceCents,
            openingBalanceDate = excluded.openingBalanceDate, sortOrder = excluded.sortOrder,
            archived = excluded.archived, updatedAt = excluded.updatedAt,
@@ -2744,6 +2820,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 					row.creditLimitCents,
 					row.cardNames ?? null,
 					row.yieldCdiBp ?? null,
+					row.reservePurpose === 'investment' ? 'investment' : null,
 					row.packageName,
 					row.accountKey,
 					row.openingBalanceCents,
@@ -2872,6 +2949,20 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
+		// A meta da reserva também tem id fixo.
+		for (const row of changes.reserveGoals ?? []) {
+			if (await isStale('reserve_goals', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO reserve_goals (id, targetMonths, customMonthlyCostCents, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           targetMonths = excluded.targetMonths, customMonthlyCostCents = excluded.customMonthlyCostCents,
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.targetMonths, row.customMonthlyCostCents ?? null, row.updatedAt, row.deletedAt]
+			);
+		}
+
 		// A meta tem id fixo: o upsert é o merge inteiro.
 		for (const row of changes.retirementGoals ?? []) {
 			if (await isStale('retirement_goals', row.id, row.updatedAt)) continue;
@@ -2974,7 +3065,7 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts']) {
+			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -3005,6 +3096,8 @@ export default {
 	getRetirementGoal,
 	setRetirementGoal,
 	clearRetirementGoal,
+	getReserveGoal,
+	setReserveGoal,
 	getCategories,
 	getCategoriesByType,
 	addCategory,

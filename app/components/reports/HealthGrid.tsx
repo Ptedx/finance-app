@@ -36,7 +36,7 @@ const HealthGrid: React.FC<{ indicators: HealthIndicator[] }> = ({ indicators })
 				{indicators.map((indicator) => {
 					const label = t(`reports.health.${indicator.id}.label`);
 					const status = t(`reports.health.status.${indicator.status}`);
-					const why = t(`reports.health.${indicator.id}.${indicator.status}`, indicator.params);
+					const why = t(`reports.health.${indicator.id}.${indicator.variant ? `${indicator.variant}.` : ''}${indicator.status}`, indicator.params);
 					const target = indicator.unit === 'months' ? t('reports.health.targetMonths', { target: indicator.target }) : t('reports.health.target', { target: `${indicator.direction === 'atMost' ? '≤' : '≥'} ${Math.round(indicator.target / 100)}%` });
 					const needed = indicator.id === 'savings-rate' && indicator.neededBp !== null && indicator.neededBp !== undefined ? t('reports.health.savings-rate.needed', { needed: `${Math.round(indicator.neededBp / 100)}%` }) : null;
 					return (
