@@ -1,5 +1,6 @@
 import { buildHealthIndicators, type HealthInput } from '../healthScore';
 import {
+	buildDebtInsights,
 	buildGoalInsights,
 	buildInsights,
 	computeWealthMetrics,
@@ -267,5 +268,22 @@ describe('buildGoalInsights', () => {
 		const merged = mergeInsights(buildGoalInsights(retirement(), health(), []), buildInsights(computeWealthMetrics(snapshotOf())));
 		const order = { critical: 0, attention: 1, positive: 2, neutral: 3 };
 		for (let i = 1; i < merged.length; i += 1) expect(order[merged[i].severity]).toBeGreaterThanOrEqual(order[merged[i - 1].severity]);
+	});
+});
+
+describe('buildDebtInsights', () => {
+	const base = { id: 'car', name: 'Carro', rateBp: 2_200, netYieldBp: 850, perThousandCents: 13_500 };
+
+	it('dívida cara: amortizar primeiro, com quanto rende a mais', () => {
+		const [insight] = buildDebtInsights([{ ...base, verdict: 'pay' }]);
+		expect(insight).toMatchObject({ id: 'debt-pay-first', severity: 'attention', params: { name: 'Carro', rate: '22%', net: '9%' } });
+	});
+
+	it('dívida barata: não vale antecipar', () => {
+		expect(idsOf(buildDebtInsights([{ ...base, id: 'cons', name: 'Consórcio', rateBp: 500, verdict: 'invest', perThousandCents: -3_500 }]))).toEqual(['debt-keep-investing']);
+	});
+
+	it('empate não vira frase', () => {
+		expect(buildDebtInsights([{ ...base, verdict: 'tie' }])).toEqual([]);
 	});
 });

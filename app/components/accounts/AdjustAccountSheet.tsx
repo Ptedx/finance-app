@@ -20,6 +20,10 @@ import Sheet from '../cards/Sheet';
  * Mexer nos dois é permitido de propósito: quando sobrou dinheiro do mês passado que o app
  * não conhecia, a conta não fecha com o teto de hoje, e é o usuário quem sabe disso. O app
  * então lança o gasto no mês e trata o resto como ponto de partida.
+ *
+ * Numa reserva ou investimento não existe "gasto do mês": o dinheiro só entra, sai por
+ * transferência e rende. Ali a folha tem um campo só, o saldo de hoje, e acertar nunca
+ * lança despesa — antes, digitar o saldo recalculava um "gasto" e o lançava.
  */
 const AdjustAccountSheet: React.FC<{
 	visible: boolean;
@@ -31,9 +35,11 @@ const AdjustAccountSheet: React.FC<{
 	/** O dinheiro do mês, que liga os dois campos. */
 	targetCents: number;
 	isEnvelope: boolean;
+	/** Reserva ou investimento: só o saldo, sem gasto do mês. */
+	balanceOnly?: boolean;
 	onClose: () => void;
 	onConfirm: (input: { spentCents: number; balanceCents: number }) => Promise<void>;
-}> = ({ visible, account, spentCents, balanceCents, targetCents, isEnvelope, onClose, onConfirm }) => {
+}> = ({ visible, account, spentCents, balanceCents, targetCents, isEnvelope, balanceOnly = false, onClose, onConfirm }) => {
 	const { t } = useTranslation();
 	const [spent, setSpent] = useState('');
 	const [balance, setBalance] = useState('');
@@ -62,6 +68,7 @@ const AdjustAccountSheet: React.FC<{
 	const onBalanceChange = (text: string) => {
 		const next = formatAmountInput(text);
 		setBalance(next);
+		if (balanceOnly) return;
 		const value = parseAmountToCents(next);
 		if (value !== null) setSpent(centsToDisplayInput(counterpartCents(availableCents, value)));
 	};
@@ -69,7 +76,9 @@ const AdjustAccountSheet: React.FC<{
 	const preview =
 		typedSpent === null || typedBalance === null
 			? null
-			: isEnvelope
+			: balanceOnly
+				? t('accounts.adjust.previewBalanceOnly', { balance: formatCents(typedBalance) })
+				: isEnvelope
 				? t('accounts.adjust.previewEnvelope', {
 						spent: formatCents(typedSpent),
 						target: formatCents(typedSpent + typedBalance),
@@ -81,8 +90,9 @@ const AdjustAccountSheet: React.FC<{
 			visible={visible}
 			onClose={onClose}
 			title={t('accounts.adjust.title', { account: account.name })}
-			subtitle={t('accounts.adjust.subtitle')}
+			subtitle={balanceOnly ? t('accounts.adjust.subtitleBalanceOnly') : t('accounts.adjust.subtitle')}
 		>
+			{balanceOnly ? null : (
 			<Field
 				label={t('accounts.adjust.spent')}
 				hint={t('accounts.adjust.spentHint')}
@@ -92,9 +102,10 @@ const AdjustAccountSheet: React.FC<{
 				keyboardType="decimal-pad"
 				selectTextOnFocus
 			/>
+			)}
 			<Field
-				label={t('accounts.adjust.balance')}
-				hint={t('accounts.adjust.balanceHint')}
+				label={balanceOnly ? t('accounts.adjust.balanceToday') : t('accounts.adjust.balance')}
+				hint={balanceOnly ? t('accounts.adjust.balanceTodayHint') : t('accounts.adjust.balanceHint')}
 				value={balance}
 				onChangeText={onBalanceChange}
 				onBlur={() => setBalance(finaliseAmountInput(balance))}
@@ -116,7 +127,8 @@ const AdjustAccountSheet: React.FC<{
 						AccessibilityInfo.announceForAccessibility(t('accounts.edit.invalidAmount'));
 						return;
 					}
-					await onConfirm({ spentCents: typedSpent, balanceCents: typedBalance });
+					// Só saldo: o gasto informado é o que o app já tem, então nada é lançado.
+					await onConfirm({ spentCents: balanceOnly ? spentCents : typedSpent, balanceCents: typedBalance });
 					AccessibilityInfo.announceForAccessibility(t('accounts.adjust.done'));
 				}}
 			/>

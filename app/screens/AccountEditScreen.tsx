@@ -33,6 +33,7 @@ import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { formatDate, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
+import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
 
 /**
  * Criar ou editar uma conta ou cartão.
@@ -64,7 +65,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, adjustAccountMonth } =
+	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, adjustAccountMonth } =
 		useAccounts();
 	const { transactions } = useTransactions();
 
@@ -81,8 +82,9 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [envelopeMonthly, setEnvelopeMonthly] = useState(
 		existing?.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : ''
 	);
+	const [yieldCdi, setYieldCdi] = useState(existing?.yieldCdiBp ? bpToPercentInput(existing.yieldCdiBp) : '');
 	const [adjusting, setAdjusting] = useState(false);
-	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string }>({});
+	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string; yieldCdi?: string }>({});
 	const [saving, setSaving] = useState(false);
 
 	// Quando a conta chega depois (a lista ainda carregava), preenche o formulário.
@@ -93,6 +95,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		setBankName(existing.bankName ?? '');
 		setRole(existing.role);
 		setEnvelopeMonthly(existing.envelopeMonthlyCents ? centsToDisplayInput(existing.envelopeMonthlyCents) : '');
+		setYieldCdi(existing.yieldCdiBp ? bpToPercentInput(existing.yieldCdiBp) : '');
 	}, [existing]);
 
 	useEffect(() => {
@@ -123,6 +126,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			if (envelopeCents === null || envelopeCents <= 0) nextErrors.amount = t('accounts.edit.invalidAmount');
 		}
 
+		// "120" = 120% do CDI. Vazio = a conta não rende.
+		const yieldCdiBp = yieldCdi.trim() === '' ? null : percentInputToBp(yieldCdi, 1_000);
+		if (yieldCdi.trim() !== '' && yieldCdiBp === null) nextErrors.yieldCdi = t('accounts.edit.invalidYield');
+
 		setErrors(nextErrors);
 		if (Object.keys(nextErrors).length > 0) {
 			announce(Object.values(nextErrors).join('. '));
@@ -143,6 +150,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			dueDay: null,
 			creditLimitCents: null,
 			cardNames: existing?.cardNames ?? null,
+			yieldCdiBp: yieldCdiBp && yieldCdiBp > 0 ? yieldCdiBp : null,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
 			openingBalanceCents: existing?.openingBalanceCents ?? 0,
@@ -251,6 +259,14 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								</Text>
 							)}
 							{existing.accountKey && <Text style={styles.balanceMeta}>{t('accounts.linkedStatement')}</Text>}
+							{(accruedYield.get(existing.id) ?? 0) > 0 ? (
+								<Text style={styles.balanceMeta}>
+									{t('accounts.yieldIncluded', {
+										amount: formatCents(accruedYield.get(existing.id) ?? 0),
+										date: formatDate(existing.openingBalanceDate),
+									})}
+								</Text>
+							) : null}
 
 							<Pressable
 								onPress={() => setAdjusting(true)}
@@ -334,6 +350,23 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							error: errors.amount,
 						})}
 
+					{kind !== 'credit_card' ? (
+						<>
+							{field(t('accounts.edit.yieldCdi'), yieldCdi, setYieldCdi, {
+								keyboardType: 'decimal-pad',
+								placeholder: t('accounts.edit.yieldCdiPlaceholder'),
+								hint: t('accounts.edit.yieldCdiHint'),
+								error: errors.yieldCdi,
+								optional: true,
+							})}
+							<Text style={styles.yieldNote}>
+								{cdi
+									? t('accounts.edit.cdiToday', { rate: formatPercentBp(cdi.annualBp, 2), date: formatDate(cdi.date) })
+									: t('accounts.edit.cdiUnknown')}
+							</Text>
+						</>
+					) : null}
+
 					{field(t('accounts.edit.bank'), bankName, setBankName, {
 						placeholder: t('accounts.edit.bankPlaceholder'),
 						optional: true,
@@ -405,6 +438,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					balanceCents={balanceCents}
 					targetCents={month?.envelopes.find((envelope) => envelope.accountId === existing.id)?.targetCents ?? 0}
 					isEnvelope={existing.role === 'envelope'}
+					balanceOnly={existing.role === 'reserve'}
 					onClose={() => setAdjusting(false)}
 					onConfirm={async (input) => {
 						await adjustAccountMonth(existing.id, input);
@@ -444,6 +478,12 @@ const styles = StyleSheet.create({
 	content: {
 		paddingHorizontal: 16,
 		paddingBottom: 120,
+	},
+	yieldNote: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.6)',
+		marginTop: -8,
 	},
 	balanceCard: {
 		backgroundColor: '#1E1E1E',

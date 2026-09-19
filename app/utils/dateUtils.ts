@@ -95,6 +95,9 @@ export const formatMonthLong = (dateString: string): string => monthLong(languag
 /** Mês abreviado ('set'), para rótulos curtos como as abas de fatura. */
 export const formatMonthShort = (dateString: string): string => monthShort(languageOf(locale), parts(dateString).month);
 
+/** Mês curto e ano, para datas longe no futuro: "ago/2029". */
+export const formatMonthYear = (dateString: string): string => `${formatMonthShort(dateString)}/${parts(dateString).year}`;
+
 /** '16 de setembro de 2026', 'September 16, 2026', '16 settembre 2026'. */
 export const formatFullDate = (dateString: string): string => {
 	const { year, month, day } = parts(dateString);
@@ -175,6 +178,13 @@ export const shiftMonthKey = (key: string, delta: number): string => {
 	return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`;
 };
 
+/** Quantos meses de `from` até `to` (chaves `YYYY-MM`); negativo se `to` vem antes. */
+export const monthsBetweenKeys = (from: string, to: string): number => {
+	const [fromYear, fromMonth] = from.split('-').map(Number);
+	const [toYear, toMonth] = to.split('-').map(Number);
+	return (toYear - fromYear) * 12 + (toMonth - fromMonth);
+};
+
 /** Primeiro e último dia do mês de uma chave `YYYY-MM`. */
 export const monthKeyRange = (key: string): { startDate: string; endDate: string } => {
 	const [year, month] = key.split('-').map(Number);
@@ -204,8 +214,10 @@ export default {
 	addYearsClamped,
 	getCurrentMonthRange,
 	getMonthRange,
+	formatMonthYear,
 	monthKeyOf,
 	shiftMonthKey,
+	monthsBetweenKeys,
 	monthKeyRange,
 	monthKeyName,
 	getMonthName,

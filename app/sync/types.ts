@@ -67,6 +67,8 @@ export interface WireAccount extends WireMeta {
 	creditLimitCents: number | null;
 	/** v13: nomes dos cartões por final, em JSON. */
 	cardNames?: string | null;
+	/** v16: quanto do CDI a conta rende, em pontos-base. */
+	yieldCdiBp?: number | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -115,6 +117,28 @@ export interface WireRetirementGoal extends WireMeta {
 	outsideCapitalCents: number;
 }
 
+/** Uma dívida (v15). */
+export interface WireDebt extends WireMeta {
+	id: string;
+	name: string;
+	kind: 'financing' | 'consortium' | 'loan';
+	system: 'price' | 'sac' | 'none';
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	installmentCents: number;
+	remainingAtOpening: number;
+	installmentsTotal: number;
+	dueDay: number;
+	rateBp: number;
+	/** v16: seguro e tarifas dentro da parcela. */
+	feeCents?: number;
+	adminFeeBp: number | null;
+	accountId: string | null;
+	category: string | null;
+	archived: boolean;
+	sortOrder: number;
+}
+
 export interface SyncChanges {
 	categories: WireCategory[];
 	transactions: WireTransaction[];
@@ -125,6 +149,8 @@ export interface SyncChanges {
 	transfers?: WireTransfer[];
 	/** Coleção do v14, opcional pelo mesmo motivo. */
 	retirementGoals?: WireRetirementGoal[];
+	/** Coleção do v15, idem. */
+	debts?: WireDebt[];
 }
 
 /**
@@ -143,6 +169,7 @@ export interface SyncCursor {
 	accounts: number;
 	transfers: number;
 	retirementGoals: number;
+	debts: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -153,6 +180,53 @@ export const EMPTY_CURSOR: SyncCursor = {
 	accounts: 0,
 	transfers: 0,
 	retirementGoals: 0,
+	debts: 0,
+};
+
+/**
+ * Em que versão do banco cada coleção entrou. Serve ao cursor por versão: um app antigo
+ * avança o cursor de coleções que não conhece sem gravar as linhas, então o cursor dele
+ * não vale para elas.
+ */
+export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
+	categories: 3,
+	transactions: 3,
+	recurringTransactions: 3,
+	budgets: 4,
+	accounts: 7,
+	transfers: 7,
+	retirementGoals: 14,
+	debts: 15,
+};
+
+/**
+ * Só o que o servidor conhece. Um servidor mais antigo que o app descarta em silêncio as
+ * coleções que não conhece (o zod tira chaves desconhecidas) e responde como se tivesse
+ * gravado — e o app marcava essas linhas como enviadas, perdidas para sempre. As coleções
+ * que o servidor conhece são as do cursor que ele devolve no pull; o resto fica fora da
+ * remessa e continua marcado para subir quando ele passar a conhecer.
+ *
+ * Sem nenhum pull ainda (`known` nulo), tudo vai, como antes.
+ */
+export const onlyKnownCollections = (changes: SyncChanges, known: Set<string> | null): SyncChanges => {
+	if (!known) return changes;
+	const filtered = { ...changes } as Record<string, unknown[] | undefined>;
+	for (const key of Object.keys(filtered)) {
+		if (!known.has(key)) filtered[key] = [];
+	}
+	return filtered as unknown as SyncChanges;
+};
+
+/**
+ * O cursor herdado da versão anterior: vale para as coleções que ela conhecia; as que
+ * entraram depois começam do zero (pull completo delas, idempotente).
+ */
+export const inheritCursor = (legacy: SyncCursor, legacySchema: number): SyncCursor => {
+	const cursor = { ...EMPTY_CURSOR };
+	for (const key of Object.keys(EMPTY_CURSOR) as Array<keyof SyncCursor>) {
+		cursor[key] = COLLECTION_SINCE_SCHEMA[key] <= legacySchema ? legacy[key] : 0;
+	}
+	return cursor;
 };
 
 export interface PullResponse {
@@ -211,6 +285,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	accounts: [],
 	transfers: [],
 	retirementGoals: [],
+	debts: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -220,7 +295,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	changes.budgets.length +
 	(changes.accounts?.length ?? 0) +
 	(changes.transfers?.length ?? 0) +
-	(changes.retirementGoals?.length ?? 0);
+	(changes.retirementGoals?.length ?? 0) +
+	(changes.debts?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

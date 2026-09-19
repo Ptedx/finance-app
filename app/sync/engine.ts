@@ -3,14 +3,19 @@ import {
 	applyPulledChanges,
 	countDirtyRows,
 	getDirtyChanges,
+	getSyncedIds,
 	getSyncState,
 	hasCategory,
 	markCategoryDirty,
 	markChangesClean,
 	reassignToUncategorized,
 	setSyncState,
+	stampEverything,
 } from '../database/database';
-import { countChanges, EMPTY_CURSOR, type RejectedRow, type SyncCursor } from './types';
+import { SCHEMA_VERSION } from '../database/schema';
+import { nowTimestamp } from '../utils/dateUtils';
+import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
+import { countChanges, EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncCursor } from './types';
 
 /**
  * Motor de sincronização.
@@ -21,8 +26,34 @@ import { countChanges, EMPTY_CURSOR, type RejectedRow, type SyncCursor } from '.
  * visível porque as linhas continuam marcadas até subirem.
  */
 
-const CURSOR_KEY = 'pullCursor';
+/**
+ * O cursor do pull, guardado **por versão do banco**.
+ *
+ * Voltar para uma versão anterior do app é uma operação prevista (docs/versionamento.md).
+ * A versão anterior grava o cursor inteiro que o servidor devolve — inclusive o de coleções
+ * que ela não conhece e cujas linhas ela descarta. Se esta versão lesse esse cursor, as
+ * linhas descartadas nunca mais chegariam. Por isso cada versão tem sua chave, e ao nascer
+ * ela herda do cursor antigo só as coleções que a versão anterior já conhecia.
+ */
+const CURSOR_KEY = `pullCursor@${SCHEMA_VERSION}`;
+/** A chave de antes do cursor por versão (a 1.0 grava aqui). */
+const LEGACY_CURSOR_KEY = 'pullCursor';
+/** Versão do banco da última versão que usava a chave antiga. */
+const LEGACY_CURSOR_SCHEMA = 14;
 const LAST_SYNCED_KEY = 'lastSyncedAt';
+/** As coleções que o servidor conhece, lidas das chaves do cursor que ele devolve no pull. */
+const SERVER_COLLECTIONS_KEY = 'serverCollections';
+
+const readServerCollections = async (): Promise<Set<string> | null> => {
+	const stored = await getSyncState(SERVER_COLLECTIONS_KEY);
+	if (!stored) return null;
+	try {
+		const list = JSON.parse(stored);
+		return Array.isArray(list) ? new Set(list.map(String)) : null;
+	} catch {
+		return null;
+	}
+};
 
 /**
  * Quantas linhas cabem numa remessa. Tem que ser <= ao SYNC_PAGE_SIZE do servidor,
@@ -39,25 +70,92 @@ const PAGE_SIZE = 500;
  */
 const MAX_PAGES = 40;
 
-const readCursor = async (): Promise<SyncCursor> => {
-	const stored = await getSyncState(CURSOR_KEY);
-	if (!stored) return EMPTY_CURSOR;
-
+const parseCursor = (stored: string | null): SyncCursor | null => {
+	if (!stored) return null;
 	try {
 		return { ...EMPTY_CURSOR, ...(JSON.parse(stored) as Partial<SyncCursor>) };
 	} catch {
 		// Cursor corrompido: um sync completo é lento mas correto, e o
 		// last-write-wins garante que nada local seja atropelado no caminho.
 		console.warn('Cursor de sync ilegível, recomeçando do zero');
-		return EMPTY_CURSOR;
+		return null;
 	}
+};
+
+const readCursor = async (): Promise<SyncCursor> => {
+	const own = parseCursor(await getSyncState(CURSOR_KEY));
+	if (own) return own;
+	const legacy = parseCursor(await getSyncState(LEGACY_CURSOR_KEY));
+	return legacy ? inheritCursor(legacy, LEGACY_CURSOR_SCHEMA) : EMPTY_CURSOR;
 };
 
 export const resetCursor = async (): Promise<void> => {
 	await setSyncState(CURSOR_KEY, null);
+	await setSyncState(LEGACY_CURSOR_KEY, null);
 };
 
 export const getLastSyncedAt = async (): Promise<string | null> => getSyncState(LAST_SYNCED_KEY);
+
+/** O que sobrou de uma substituição: linhas da conta que o servidor não deixou apagar. */
+export interface ReplaceResult {
+	/** Linhas da conta apagadas porque não existiam neste aparelho. */
+	removed: number;
+	/** Linhas que o servidor recusou apagar (validação mudou desde que foram gravadas). */
+	notRemoved: number;
+}
+
+/**
+ * "Subir deste aparelho": a conta passa a ter exatamente o que este aparelho tem.
+ * O desenho está em `sync/replace.ts`; aqui é a execução:
+ *
+ *  1. Lê a conta inteira, sem gravar nada aqui.
+ *  2. Sobe como lápide o que só a conta tem.
+ *  3. Carimba tudo deste aparelho depois de qualquer linha da conta e sobe.
+ *  4. Refaz o cursor e puxa, para as lápides chegarem aqui também.
+ *
+ * Interromper no meio é seguro: as lápides já aceitas ficam, e o resto do aparelho
+ * continua marcado para subir no próximo sync.
+ */
+export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
+	const pages = [];
+	let cursor: SyncCursor = EMPTY_CURSOR;
+	// Sem o teto de páginas do sync normal: a foto da conta precisa estar inteira.
+	for (let page = 0; page < 10_000; page += 1) {
+		const response = await api.pull(cursor);
+		pages.push(response.changes);
+		cursor = response.cursor;
+		if (!response.hasMore) break;
+	}
+	const server = mergePages(pages);
+
+	const localIds = {} as Record<Collection, Set<string>>;
+	for (const collection of COLLECTIONS) {
+		localIds[collection] = await getSyncedIds(TABLE_OF[collection] as Parameters<typeof getSyncedIds>[0]);
+	}
+
+	const stamp = replacementStamp(server, nowTimestamp());
+	const tombstones = tombstonesFor(server, localIds, stamp);
+
+	let removed = 0;
+	let notRemoved = 0;
+	for (const chunk of chunkChanges(tombstones, PAGE_SIZE)) {
+		const response = await api.push(chunk);
+		removed += response.applied;
+		notRemoved += response.rejected.length;
+		for (const row of response.rejected) {
+			console.warn(`Substituição: o servidor não apagou ${row.collection}/${row.id} (${row.reason}${row.message ? `: ${row.message}` : ''})`);
+		}
+	}
+
+	await stampEverything(stamp);
+	await pushAll();
+
+	await resetCursor();
+	await pullAll();
+	await setSyncState(LAST_SYNCED_KEY, nowTimestamp());
+
+	return { removed, notRemoved };
+};
 
 /**
  * Traz tudo o que mudou no servidor desde o último cursor.
@@ -76,6 +174,7 @@ export const pullAll = async (): Promise<number> => {
 
 		await applyPulledChanges(response.changes);
 		await setSyncState(CURSOR_KEY, JSON.stringify(response.cursor));
+		await setSyncState(SERVER_COLLECTIONS_KEY, JSON.stringify(Object.keys(response.cursor)));
 
 		cursor = response.cursor;
 		received += countChanges(response.changes);
@@ -156,9 +255,10 @@ export const pushAll = async (): Promise<number> => {
 	// Categorias já reenviadas nesta rodada. Uma segunda rejeição da mesma categoria
 	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
 	const resentCategories = new Set<string>();
+	const known = await readServerCollections();
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
-		const changes = await getDirtyChanges(PAGE_SIZE);
+		const changes = onlyKnownCollections(await getDirtyChanges(PAGE_SIZE), known);
 		const pending = countChanges(changes);
 
 		if (pending === 0) break;
@@ -177,6 +277,7 @@ export const pushAll = async (): Promise<number> => {
 			budgets: changes.budgets.filter((r) => !rejected.has(`budgets:${r.id}`)),
 			transfers: (changes.transfers ?? []).filter((r) => !rejected.has(`transfers:${r.id}`)),
 			retirementGoals: (changes.retirementGoals ?? []).filter((r) => !rejected.has(`retirementGoals:${r.id}`)),
+			debts: (changes.debts ?? []).filter((r) => !rejected.has(`debts:${r.id}`)),
 		});
 
 		sent += response.applied;

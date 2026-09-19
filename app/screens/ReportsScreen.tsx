@@ -6,6 +6,7 @@ import { Pressable, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, 
 import PeriodSelector from '../components/PeriodSelector';
 import CategoryRanking from '../components/reports/CategoryRanking';
 import CommittedSection from '../components/reports/CommittedSection';
+import DebtsSection from '../components/reports/DebtsSection';
 import FreedomHero from '../components/reports/FreedomHero';
 import GoalSheet from '../components/reports/GoalSheet';
 import HealthGrid from '../components/reports/HealthGrid';
@@ -97,9 +98,11 @@ const ReportsScreen = () => {
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						<FreedomHero model={data.retirement} goal={goal} income={data.income} onEditGoal={() => setGoalSheetOpen(true)} />
+						<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} />
 
 						<HealthGrid indicators={data.health} />
+
+						<DebtsSection summary={data.debts.summary} items={data.debts.items} />
 
 						<View style={styles.rangeRow}>
 							<RangeChips value={range} onChange={setRange} />
@@ -107,7 +110,7 @@ const ReportsScreen = () => {
 						<TrendBars series={data.series} />
 
 						{data.retirement && data.retirement.reach.kind !== 'reached' ? (
-							<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} />
+							<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} scenario={data.debtScenario?.projection} />
 						) : null}
 
 						<CategoryRanking rows={data.categories} />

@@ -93,6 +93,7 @@ export const accountSchema = z.object({
 	creditLimitCents: amountCents.nullish(),
 	/** v13: nomes dos cartões por final, JSON. */
 	cardNames: z.string().max(4000).nullish(),
+	yieldCdiBp: z.number().int().min(0).max(100_000).nullish(),
 	packageName: z.string().max(200).nullish(),
 	accountKey: z.string().max(200).nullish(),
 	openingBalanceCents: amountCents,
@@ -136,6 +137,28 @@ export const budgetSchema = z.object({
 	...syncMeta,
 });
 
+/** Uma dívida (v15 do app): financiamento, consórcio ou empréstimo. */
+export const debtSchema = z.object({
+	id: z.string().min(1).max(64),
+	name: z.string().min(1).max(120),
+	kind: z.enum(['financing', 'consortium', 'loan']),
+	system: z.enum(['price', 'sac', 'none']),
+	openingBalanceCents: amountCents.min(0),
+	openingBalanceDate: calendarDate,
+	installmentCents: amountCents.min(0),
+	remainingAtOpening: z.number().int().min(0).max(600),
+	installmentsTotal: z.number().int().min(0).max(600),
+	dueDay: z.number().int().min(1).max(31),
+	rateBp: z.number().int().min(0).max(100_000),
+	feeCents: amountCents.min(0).nullish(),
+	adminFeeBp: z.number().int().min(0).max(10_000).nullish(),
+	accountId: z.string().min(1).max(64).nullish(),
+	category: z.string().min(1).max(64).nullish(),
+	archived: z.boolean(),
+	sortOrder: z.number().int(),
+	...syncMeta,
+});
+
 /** A meta de aposentadoria (v14 do app): uma linha por usuário, de id fixo. */
 export const retirementGoalSchema = z.object({
 	id: z.string().min(1).max(64),
@@ -172,6 +195,7 @@ export const pushBodySchema = z.object({
 			budgets: rows(),
 			transfers: rows(),
 			retirementGoals: rows(),
+			debts: rows(),
 		})
 		.default({
 			categories: [],
@@ -181,6 +205,7 @@ export const pushBodySchema = z.object({
 			budgets: [],
 			transfers: [],
 			retirementGoals: [],
+			debts: [],
 		}),
 });
 
@@ -205,6 +230,8 @@ export const cursorSchema = z.object({
 	transfers: z.number().int().nonnegative().default(0),
 	// Coleção do v14, idem.
 	retirementGoals: z.number().int().nonnegative().default(0),
+	// Coleção do v15, idem.
+	debts: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -215,6 +242,7 @@ const EMPTY_CURSOR = {
 	accounts: 0,
 	transfers: 0,
 	retirementGoals: 0,
+	debts: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -242,4 +270,5 @@ export type TransactionPayload = z.infer<typeof transactionSchema>;
 export type RecurringTransactionPayload = z.infer<typeof recurringTransactionSchema>;
 export type BudgetPayload = z.infer<typeof budgetSchema>;
 export type RetirementGoalPayload = z.infer<typeof retirementGoalSchema>;
+export type DebtPayload = z.infer<typeof debtSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

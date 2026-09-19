@@ -233,6 +233,63 @@ export const projectCapital = ({ capitalCents, contributionCents, monthlyRate: r
 	return points;
 };
 
+// ---------------------------------------------------------------------------
+// Aporte em degraus: o cenário "quitei a dívida e a parcela virou aporte"
+// ---------------------------------------------------------------------------
+
+/** A partir do mês `fromMonth` (1 = o mês que vem) o aporte sobe `addCents`. */
+export interface ContributionStep {
+	fromMonth: number;
+	addCents: Cents;
+}
+
+const contributionAt = (base: Cents, steps: ContributionStep[], month: number): Cents =>
+	steps.reduce((sum, step) => (month >= step.fromMonth ? sum + Math.max(0, step.addCents) : sum), Math.max(0, base));
+
+export interface SteppedInput {
+	capitalCents: Cents;
+	contributionCents: Cents;
+	monthlyRate: number;
+	steps: ContributionStep[];
+}
+
+/**
+ * A projeção com aporte que muda no caminho. Mês a mês, com o aporte no fim de cada mês —
+ * a mesma convenção de `futureValueCents`, então sem degraus as duas batem.
+ */
+export const projectCapitalStepped = ({ capitalCents, contributionCents, monthlyRate: rate, steps, months, maxPoints = PROJECTION_MAX_POINTS }: SteppedInput & { months: number; maxPoints?: number }): ProjectionPoint[] => {
+	const capital = Math.max(0, safe(capitalCents));
+	const total = Math.max(0, Math.floor(months));
+	const stride = Math.max(1, Math.ceil(total / Math.max(1, maxPoints)));
+	const points: ProjectionPoint[] = [{ monthOffset: 0, contributedCents: Math.round(capital), totalCents: Math.round(capital), interestCents: 0 }];
+
+	let value = capital;
+	let contributed = capital;
+	for (let month = 1; month <= total; month += 1) {
+		const contribution = contributionAt(contributionCents, steps, month);
+		value = value * (1 + rate) + contribution;
+		contributed += contribution;
+		if (month % stride === 0 || month === total) {
+			const totalCents = Math.round(value);
+			const contributedCents = Math.round(contributed);
+			points.push({ monthOffset: month, contributedCents, totalCents, interestCents: totalCents - contributedCents });
+		}
+	}
+	return points;
+};
+
+/** Em quantos meses a meta chega com o aporte em degraus; nulo além de 100 anos. */
+export const monthsToReachStepped = ({ capitalCents, contributionCents, monthlyRate: rate, steps, requiredCapitalCents: required }: SteppedInput & { requiredCapitalCents: Cents | null }): number | null => {
+	if (required === null || required <= 0) return null;
+	let value = Math.max(0, safe(capitalCents));
+	if (value >= required) return 0;
+	for (let month = 1; month <= MAX_HORIZON_MONTHS; month += 1) {
+		value = value * (1 + rate) + contributionAt(contributionCents, steps, month);
+		if (Math.round(value) >= required) return month;
+	}
+	return null;
+};
+
 /** Média dos últimos `k` meses (ou dos que houver); zero sem nenhum. */
 export const averageContributionCents = (savedByMonth: Cents[], k: number): Cents => {
 	const window = savedByMonth.slice(-Math.max(1, k));
@@ -295,4 +352,4 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { buildRetirementReadModel, monthsToReach, contributionForHorizon, projectCapital };
+export default { buildRetirementReadModel, monthsToReach, contributionForHorizon, projectCapital, projectCapitalStepped, monthsToReachStepped };
