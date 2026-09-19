@@ -19,7 +19,7 @@
 import type { SyncChanges } from './types';
 
 /** As coleções do sync, na ordem em que o servidor as grava. */
-export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts'] as const;
+export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts', 'reserveGoals'] as const;
 
 export type Collection = (typeof COLLECTIONS)[number];
 
@@ -33,6 +33,7 @@ export const TABLE_OF: Record<Collection, string> = {
 	transfers: 'transfers',
 	retirementGoals: 'retirement_goals',
 	debts: 'debts',
+	reserveGoals: 'reserve_goals',
 };
 
 /** Uma lista vazia por coleção — derivada de COLLECTIONS, para nenhuma ficar de fora. */

@@ -94,6 +94,8 @@ export const accountSchema = z.object({
 	/** v13: nomes dos cartões por final, JSON. */
 	cardNames: z.string().max(4000).nullish(),
 	yieldCdiBp: z.number().int().min(0).max(100_000).nullish(),
+	/** v17: numa reserva, "investment" fica fora da cascata da reserva de emergência. */
+	reservePurpose: z.enum(['investment']).nullish(),
 	packageName: z.string().max(200).nullish(),
 	accountKey: z.string().max(200).nullish(),
 	openingBalanceCents: amountCents,
@@ -169,6 +171,14 @@ export const retirementGoalSchema = z.object({
 	...syncMeta,
 });
 
+/** A meta da reserva de emergência (v17 do app): uma linha por usuário, de id fixo. */
+export const reserveGoalSchema = z.object({
+	id: z.string().min(1).max(64),
+	targetMonths: z.number().int().min(1).max(120),
+	customMonthlyCostCents: amountCents.min(0).nullish(),
+	...syncMeta,
+});
+
 /**
  * Corpo do push — só o envelope.
  *
@@ -196,6 +206,7 @@ export const pushBodySchema = z.object({
 			transfers: rows(),
 			retirementGoals: rows(),
 			debts: rows(),
+			reserveGoals: rows(),
 		})
 		.default({
 			categories: [],
@@ -206,6 +217,7 @@ export const pushBodySchema = z.object({
 			transfers: [],
 			retirementGoals: [],
 			debts: [],
+			reserveGoals: [],
 		}),
 });
 
@@ -232,6 +244,8 @@ export const cursorSchema = z.object({
 	retirementGoals: z.number().int().nonnegative().default(0),
 	// Coleção do v15, idem.
 	debts: z.number().int().nonnegative().default(0),
+	// Coleção do v17, idem.
+	reserveGoals: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -243,6 +257,7 @@ const EMPTY_CURSOR = {
 	transfers: 0,
 	retirementGoals: 0,
 	debts: 0,
+	reserveGoals: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -271,4 +286,5 @@ export type RecurringTransactionPayload = z.infer<typeof recurringTransactionSch
 export type BudgetPayload = z.infer<typeof budgetSchema>;
 export type RetirementGoalPayload = z.infer<typeof retirementGoalSchema>;
 export type DebtPayload = z.infer<typeof debtSchema>;
+export type ReserveGoalPayload = z.infer<typeof reserveGoalSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

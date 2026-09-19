@@ -54,6 +54,7 @@ model User {
   budgets               Budget[]
   retirementGoals       RetirementGoal[]
   debts                 Debt[]
+  reserveGoals          ReserveGoal[]
   accounts              Account[]
   transfers             Transfer[]
   assets                Asset[]
@@ -250,6 +251,8 @@ model Account {
   cardNames           String?
   /// Quanto do CDI a conta rende, em pontos-base (12000 = 120%). Nulo quando não rende.
   yieldCdiBp          Int?
+  /// Numa reserva, "investment" tira a conta da cascata da reserva de emergência (v17).
+  reservePurpose      String?
   creditLimitCents    BigInt?
   packageName         String?
   accountKey          String?
@@ -339,6 +342,23 @@ model RetirementGoal {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("retirement_goals")
+}
+
+/// A meta da reserva de emergência (v17 do app): meses de custo essencial e, opcional, o
+/// custo mensal informado à mão. Uma linha por usuário, de id fixo ("emergency").
+model ReserveGoal {
+  id                     String
+  userId                 String
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetMonths           Int
+  customMonthlyCostCents BigInt?
+  updatedAt              DateTime
+  deletedAt              DateTime?
+  serverSeq              Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("reserve_goals")
 }
 
 /// Uma dívida (v15 do app): financiamento (Price/SAC), consórcio ou empréstimo. O saldo é

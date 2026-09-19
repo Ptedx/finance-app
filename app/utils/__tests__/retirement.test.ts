@@ -14,6 +14,7 @@ import {
 	realizedYieldBp,
 	requiredCapitalCents,
 	requiredMonthlyCents,
+	retirementContributionPlan,
 	type RetirementInput,
 } from '../retirement';
 
@@ -262,5 +263,36 @@ describe('aporte em degraus: a parcela vira aporte quando a dívida quita', () =
 	it('já chegou é zero; sem capital necessário é nulo', () => {
 		expect(monthsToReachStepped({ capitalCents: R(10), contributionCents: 0, monthlyRate: rate, steps: [], requiredCapitalCents: R(5) })).toBe(0);
 		expect(monthsToReachStepped({ capitalCents: 0, contributionCents: R(1), monthlyRate: rate, steps: [], requiredCapitalCents: null })).toBeNull();
+	});
+});
+
+describe('reserva primeiro', () => {
+	it('sem atraso, o quadro de sempre', () => {
+		const base = buildRetirementReadModel(input({ trackedCapitalCents: R(20_000), monthlyContributionCents: R(3_000) }));
+		const zero = buildRetirementReadModel(input({ trackedCapitalCents: R(20_000), monthlyContributionCents: R(3_000), contributionDelayMonths: 0 }));
+		expect(zero.reach).toEqual(base.reach);
+		expect(zero.projection).toEqual(base.projection);
+		expect(zero.contributionDelayMonths).toBe(0);
+	});
+
+	it('o aporte que enche a reserva por 19 meses atrasa a chegada', () => {
+		const base = buildRetirementReadModel(input({ trackedCapitalCents: 0, monthlyContributionCents: R(3_000) }));
+		const delayed = buildRetirementReadModel(input({ trackedCapitalCents: 0, monthlyContributionCents: R(3_000), contributionDelayMonths: 19 }));
+		expect(base.reach.kind).toBe('eta');
+		expect(delayed.reach.kind).toBe('eta');
+		if (base.reach.kind === 'eta' && delayed.reach.kind === 'eta') expect(delayed.reach.months).toBe(base.reach.months + 19);
+		// Nos 19 primeiros meses o capital não cresce: não há aporte nem capital para render.
+		expect(delayed.projection.find((p) => p.monthOffset > 0 && p.monthOffset <= 19)?.totalCents ?? 0).toBe(0);
+	});
+
+	it('reserva que nunca enche: a meta não recebe aporte', () => {
+		const model = buildRetirementReadModel(input({ trackedCapitalCents: 0, monthlyContributionCents: R(3_000), contributionDelayMonths: null }));
+		expect(model.reach).toEqual({ kind: 'never', reason: 'no-contribution' });
+	});
+
+	it('o plano de aporte: base e degrau', () => {
+		expect(retirementContributionPlan(R(3_000), 0)).toEqual({ contributionCents: R(3_000), steps: [] });
+		expect(retirementContributionPlan(R(3_000), 5)).toEqual({ contributionCents: 0, steps: [{ fromMonth: 6, addCents: R(3_000) }] });
+		expect(retirementContributionPlan(R(3_000), null)).toEqual({ contributionCents: 0, steps: [] });
 	});
 });

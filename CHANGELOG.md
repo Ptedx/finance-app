@@ -4,7 +4,24 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
-## [1.1.0] — em desenvolvimento (branch `develop`)
+## [1.2.0] — em desenvolvimento (branch `develop`)
+
+- **Reserva de emergência** no Patrimônio: meta em meses de **custo essencial** (padrão 12),
+  com o custo tirado dos meses fechados (gasto do mês × fatia essencial das categorias),
+  do orçamento enquanto não há mês fechado, ou informado à mão.
+- **Cascata**: o dinheiro guardado enche primeiro a reserva; só o que passa dela é capital da
+  meta de aposentadoria. Uma conta de reserva pode ser marcada "só investimento" e fica fora.
+- **Reserva primeiro** na projeção da aposentadoria: enquanto a reserva não enche, o aporte vai
+  para ela, e a data de chegada conta esse atraso.
+- **Por onde começar**: reserva mínima (3 meses) → dívida que custa mais que o investimento →
+  reserva cheia → aposentadoria, com o que falta em cada degrau.
+- O indicador "Reserva de emergência" da saúde financeira mede a reserva contra o custo
+  essencial e a meta de meses (sem custo conhecido, segue como antes).
+- Patrimônio separa "Reserva de emergência" de "Investimentos" (o total não muda).
+- Banco local v17 (tabela `reserve_goals`, `accounts.reservePurpose`), sincronizado.
+  Detalhes: [docs/reserva-de-emergencia.md](docs/reserva-de-emergencia.md).
+
+## [1.1.0] — 2026-09-18
 
 - Nova aba **Patrimônio** na barra de baixo (Ajustes sai dela e abre pela engrenagem do
   Início): patrimônio líquido — o que se tem menos o que se deve, com as parcelas futuras

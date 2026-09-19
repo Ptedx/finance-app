@@ -59,6 +59,12 @@ export interface RetirementInput {
 	averageCapital12mCents: Cents | null;
 	/** Mês de hoje, `YYYY-MM`: é daqui que a data de chegada é contada. */
 	asOfMonth: string;
+	/**
+	 * Por quantos meses o aporte ainda vai para a reserva de emergência antes de vir para a
+	 * meta ("reserva primeiro"). Ausente ou 0: o aporte vem desde já. Nulo: a reserva não
+	 * enche no ritmo de hoje, e a meta não recebe aporte. Ver `utils/emergencyReserve.ts`.
+	 */
+	contributionDelayMonths?: number | null;
 }
 
 export type GoalReach =
@@ -94,6 +100,8 @@ export interface RetirementReadModel {
 	/** Capital de hoje sobre o necessário, 0..10.000; nulo sem capital necessário. */
 	progressBp: number | null;
 	monthlyContributionCents: Cents;
+	/** Meses até o aporte começar a vir para a meta (0 = já vem; nulo = não vem). */
+	contributionDelayMonths: number | null;
 	reach: GoalReach;
 	projection: ProjectionPoint[];
 	/** Quanto guardar por mês para chegar em cada horizonte; nulo quando não dá. */
@@ -303,12 +311,24 @@ export const realizedYieldBp = (yield12mCents: Cents | null, averageCapitalCents
 	return Math.round((safe(yield12mCents) * FULL_BASIS_POINTS) / averageCapitalCents);
 };
 
-const reachOf = (input: ReachInput, asOfMonth: string): GoalReach => {
+/**
+ * O aporte da meta como base + degraus. Sem atraso, é o aporte inteiro desde já. Com
+ * atraso, começa em zero e sobe no mês seguinte ao que a reserva enche; com a reserva que
+ * nunca enche (atraso nulo), fica em zero.
+ */
+export const retirementContributionPlan = (contributionCents: Cents, delayMonths: number | null): { contributionCents: Cents; steps: ContributionStep[] } => {
+	if (delayMonths === 0) return { contributionCents, steps: [] };
+	if (delayMonths === null) return { contributionCents: 0, steps: [] };
+	return { contributionCents: 0, steps: [{ fromMonth: delayMonths + 1, addCents: Math.max(0, contributionCents) }] };
+};
+
+const reachOf = (input: ReachInput, asOfMonth: string, steps: ContributionStep[] = []): GoalReach => {
 	if (input.requiredCapitalCents === null) return { kind: 'never', reason: 'no-yield' };
-	const months = monthsToReach(input);
+	const months = steps.length > 0 ? monthsToReachStepped({ ...input, steps }) : monthsToReach(input);
 	if (months === 0) return { kind: 'reached' };
 	if (months === null) {
-		const growsAlone = input.contributionCents > 0 || (Math.max(0, input.capitalCents) > 0 && input.monthlyRate > 0);
+		const growsAlone =
+			input.contributionCents > 0 || steps.some((step) => step.addCents > 0) || (Math.max(0, input.capitalCents) > 0 && input.monthlyRate > 0);
 		return { kind: 'never', reason: growsAlone ? 'beyond-horizon' : 'no-contribution' };
 	}
 	return { kind: 'eta', months, month: shiftMonthKey(asOfMonth, months), years: Math.round((months / MONTHS_IN_YEAR) * 10) / 10 };
@@ -322,11 +342,18 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
 	const capitalCents = Math.max(0, safe(input.trackedCapitalCents)) + Math.max(0, safe(goal.outsideCapitalCents));
 	const rate = monthlyRate(goal.expectedYieldBp);
 	const contribution = safe(input.monthlyContributionCents);
+	const delay = input.contributionDelayMonths === undefined ? 0 : input.contributionDelayMonths;
+	const plan = retirementContributionPlan(contribution, delay);
 
-	const reachInput: ReachInput = { capitalCents, contributionCents: contribution, monthlyRate: rate, requiredCapitalCents: requiredCapital };
-	const reach = reachOf(reachInput, input.asOfMonth);
+	const reachInput: ReachInput = { capitalCents, contributionCents: plan.contributionCents, monthlyRate: rate, requiredCapitalCents: requiredCapital };
+	const reach = reachOf(reachInput, input.asOfMonth, plan.steps);
 
 	const projectionMonths = reach.kind === 'eta' ? reach.months : reach.kind === 'reached' ? 0 : NEVER_PROJECTION_MONTHS;
+	// Sem atraso, a projeção de sempre (fórmula fechada); com atraso, mês a mês com o degrau.
+	const projection =
+		delay === 0
+			? projectCapital({ capitalCents, contributionCents: contribution, monthlyRate: rate, months: projectionMonths })
+			: projectCapitalStepped({ capitalCents, contributionCents: plan.contributionCents, monthlyRate: rate, steps: plan.steps, months: projectionMonths });
 
 	return {
 		targetMonthlyCents: Math.max(0, safe(goal.targetMonthlyCents)),
@@ -338,8 +365,9 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
 		realizedYieldBp: realizedYieldBp(input.realizedYield12mCents, input.averageCapital12mCents),
 		progressBp: progressBp(capitalCents, requiredCapital),
 		monthlyContributionCents: contribution,
+		contributionDelayMonths: delay,
 		reach,
-		projection: projectCapital({ capitalCents, contributionCents: contribution, monthlyRate: rate, months: projectionMonths }),
+		projection,
 		contributionByHorizon: CONTRIBUTION_HORIZONS_YEARS.map((years) => ({
 			years,
 			monthlyCents: contributionForHorizon({ capitalCents, requiredCapitalCents: requiredCapital, monthlyRate: rate, months: years * MONTHS_IN_YEAR }),
