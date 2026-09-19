@@ -11,8 +11,21 @@ import {
 	resetDatabase,
 	setBudget,
 } from '../database/database';
-import { addAccount, addTransfer, getAccounts, getTransfers } from '../database/database';
-import type { Account, Category, RecurringTransaction, Transaction, Transfer } from '../database/schema';
+import {
+	addAccount,
+	addDebt,
+	addTransfer,
+	getAccounts,
+	getDebts,
+	getReserveGoal,
+	getRetirementGoal,
+	getTransfers,
+	type ReserveGoalDraft,
+	type RetirementGoalDraft,
+	setReserveGoal,
+	setRetirementGoal,
+} from '../database/database';
+import type { Account, Category, Debt, RecurringTransaction, Transaction, Transfer } from '../database/schema';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
 
@@ -37,6 +50,10 @@ export interface DatabaseExportData {
 	/** Contas, cartões e transferências (v7). Ausentes em backups anteriores. */
 	accounts?: Account[];
 	transfers?: Transfer[];
+	/** Dívidas e as metas (1.1+). Ausentes em backups anteriores. */
+	debts?: Debt[];
+	retirementGoal?: RetirementGoalDraft | null;
+	reserveGoal?: ReserveGoalDraft | null;
 	exportDate: string;
 }
 
@@ -284,7 +301,13 @@ export const exportDatabaseData = async (
 			amountCents,
 		}));
 
-		const [accounts, transfers] = await Promise.all([getAccounts(), getTransfers()]);
+		const [accounts, transfers, debts, retirement, reserve] = await Promise.all([
+			getAccounts(),
+			getTransfers(),
+			getDebts(),
+			getRetirementGoal(),
+			getReserveGoal(),
+		]);
 
 		const exportData: DatabaseExportData = {
 			formatVersion: EXPORT_FORMAT_VERSION,
@@ -294,6 +317,17 @@ export const exportDatabaseData = async (
 			budgets,
 			accounts,
 			transfers,
+			debts,
+			// As metas vão sem o id fixo e sem a contabilidade do sync: só o que o usuário escolheu.
+			retirementGoal: retirement
+				? {
+						targetMonthlyCents: retirement.targetMonthlyCents,
+						reinvestBp: retirement.reinvestBp,
+						expectedYieldBp: retirement.expectedYieldBp,
+						outsideCapitalCents: retirement.outsideCapitalCents,
+					}
+				: null,
+			reserveGoal: reserve ? { targetMonths: reserve.targetMonths, customMonthlyCostCents: reserve.customMonthlyCostCents } : null,
 			exportDate: new Date().toISOString(),
 		};
 
@@ -420,6 +454,15 @@ export const importDatabaseData = async (): Promise<{
 				category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
 			});
 		}
+
+		// Dívidas e metas: backups anteriores à 1.1 não as trazem. A conta de onde a parcela
+		// sai só vale se veio no mesmo backup.
+		for (const debt of Array.isArray(importData.debts) ? importData.debts : []) {
+			const { id: _id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
+			await addDebt({ ...draft, feeCents: draft.feeCents ?? 0, accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null });
+		}
+		if (importData.retirementGoal) await setRetirementGoal(importData.retirementGoal);
+		if (importData.reserveGoal) await setReserveGoal(importData.reserveGoal);
 
 		if (Array.isArray(importData.budgets)) {
 			for (const budget of importData.budgets) {

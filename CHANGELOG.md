@@ -4,7 +4,15 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
-## [1.2.0] — em desenvolvimento (branch `develop`)
+## [1.2.1] — 2026-09-19
+
+- Login num aparelho novo: os dados baixados da conta agora aparecem na hora. Antes, o sync
+  gravava tudo no banco local, mas lançamentos, contas, orçamento, recorrências e a meta só
+  eram relidos ao reabrir o app — a tela ficava zerada.
+- Backup (Exportar/Importar dados) passa a levar as dívidas, a meta de aposentadoria e a
+  meta da reserva de emergência. Antes, um backup restaurado voltava sem elas.
+
+## [1.2.0] — 2026-09-19
 
 - **Reserva de emergência** no Patrimônio: meta em meses de **custo essencial** (padrão 12),
   com o custo tirado dos meses fechados (gasto do mês × fatia essencial das categorias),
