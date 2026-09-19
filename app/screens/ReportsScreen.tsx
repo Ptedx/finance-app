@@ -98,7 +98,7 @@ const ReportsScreen = () => {
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} />
+						<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} reserveCents={data.reserve.split.reserveCents} />
 
 						<HealthGrid indicators={data.health} />
 

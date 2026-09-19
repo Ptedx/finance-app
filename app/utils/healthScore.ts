@@ -3,7 +3,8 @@
  * com um status (bom, atenção, ruim, sem dados), o valor, o alvo e o porquê.
  *
  *  - Taxa de poupança: quanto da renda ficou com você.
- *  - Reserva de emergência: quantos meses de gasto o caixa e o guardado sustentam.
+ *  - Reserva de emergência: quantos meses de custo essencial a reserva cobre (ou, sem
+ *    custo essencial conhecido, quantos meses de gasto o caixa e o guardado sustentam).
  *  - Custo fixo: quanto da renda já está comprometida antes do mês começar.
  *  - Peso do cartão: as faturas (fechada e aberta) contra a renda média.
  *  - Ritmo de gastos: o mês contra a média, proporcional ao dia em que ele está.
@@ -41,6 +42,8 @@ export interface HealthIndicator {
 	params: Record<string, string | number>;
 	/** Só na taxa de poupança: quanto seria preciso guardar, em pontos-base da renda. */
 	neededBp?: number | null;
+	/** Qual frase usar: `essential` quando a reserva é medida pelo custo essencial. */
+	variant?: 'essential';
 }
 
 export interface HealthInput {
@@ -64,6 +67,11 @@ export interface HealthInput {
 	currentSpendCents: Cents;
 	/** Quanto do mês selecionado já passou, em pontos-base (10.000 = mês fechado). */
 	elapsedBp: number;
+	/**
+	 * A reserva de emergência da cascata e o custo essencial. Com ela, o indicador mede
+	 * reserva ÷ custo essencial contra a meta de meses; sem ela, caixa + guardado ÷ gasto.
+	 */
+	reserve?: { reserveCents: Cents; monthlyCostCents: Cents; targetMonths: number } | null;
 }
 
 export const HEALTH_THRESHOLDS = {
@@ -106,6 +114,21 @@ const savingsRateIndicator = (input: HealthInput): HealthIndicator => {
 };
 
 const emergencyReserveIndicator = (input: HealthInput): HealthIndicator => {
+	const reserve = input.reserve;
+	if (reserve && reserve.monthlyCostCents > 0) {
+		const months = Math.round((Math.max(0, reserve.reserveCents) / reserve.monthlyCostCents) * 10) / 10;
+		const target = Math.max(1, reserve.targetMonths);
+		return {
+			id: 'emergency-reserve',
+			status: atLeast(months, target, Math.min(THIN_RUNWAY_MONTHS, target)),
+			unit: 'months',
+			value: months,
+			target,
+			direction: 'atLeast',
+			params: { months: monthsText(months), target },
+			variant: 'essential',
+		};
+	}
 	const { good, warn } = HEALTH_THRESHOLDS.reserveMonths;
 	const spend = input.averageMonthlySpendCents;
 	const months = spend === null || spend <= 0 ? null : Math.round((Math.max(0, input.liquidCents) / spend) * 10) / 10;

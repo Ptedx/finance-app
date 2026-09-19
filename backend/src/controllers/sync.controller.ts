@@ -12,6 +12,7 @@ import {
 	pullQuerySchema,
 	pushBodySchema,
 	recurringTransactionSchema,
+	reserveGoalSchema,
 	retirementGoalSchema,
 	transactionSchema,
 	transferSchema,
@@ -38,7 +39,8 @@ type Collection =
 	| 'budgets'
 	| 'transfers'
 	| 'retirementGoals'
-	| 'debts';
+	| 'debts'
+	| 'reserveGoals';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -81,7 +83,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		take: env.syncPageSize,
 	});
 
-	const [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts] =
+	const [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts, reserveGoals] =
 		await Promise.all([
 			prisma.category.findMany(page(cursor.categories)),
 			prisma.account.findMany(page(cursor.accounts)),
@@ -91,6 +93,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			prisma.transfer.findMany(page(cursor.transfers)),
 			prisma.retirementGoal.findMany(page(cursor.retirementGoals)),
 			prisma.debt.findMany(page(cursor.debts)),
+			prisma.reserveGoal.findMany(page(cursor.reserveGoals)),
 		]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
@@ -121,6 +124,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			closingDaysBefore: row.closingDaysBefore,
 			cardNames: row.cardNames,
 			yieldCdiBp: row.yieldCdiBp,
+			reservePurpose: row.reservePurpose === 'investment' ? 'investment' : null,
 			creditLimitCents: row.creditLimitCents === null ? null : Number(row.creditLimitCents),
 			packageName: row.packageName,
 			accountKey: row.accountKey,
@@ -180,6 +184,13 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
+		reserveGoals: reserveGoals.map((row) => ({
+			id: row.id,
+			targetMonths: row.targetMonths,
+			customMonthlyCostCents: row.customMonthlyCostCents === null ? null : Number(row.customMonthlyCostCents),
+			updatedAt: row.updatedAt.toISOString(),
+			deletedAt: iso(row.deletedAt),
+		})),
 		retirementGoals: retirementGoals.map((row) => ({
 			id: row.id,
 			targetMonthlyCents: Number(row.targetMonthlyCents),
@@ -229,6 +240,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		transfers: advance(transfers, cursor.transfers),
 		retirementGoals: advance(retirementGoals, cursor.retirementGoals),
 		debts: advance(debts, cursor.debts),
+		reserveGoals: advance(reserveGoals, cursor.reserveGoals),
 	};
 
 	res.json({
@@ -236,7 +248,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		/** O cliente guarda isto e devolve no próximo pull. */
 		cursor: nextCursor,
 		/** Verdadeiro enquanto houver mais para buscar: o cliente repete o pull. */
-		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts].some(
+		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts, reserveGoals].some(
 			(rows) => rows.length === env.syncPageSize
 		),
 		changes,
@@ -325,6 +337,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const transfers = partitionRows('transfers', changes.transfers, transferSchema, rejected);
 	const retirementGoals = partitionRows('retirementGoals', changes.retirementGoals, retirementGoalSchema, rejected);
 	const debts = partitionRows('debts', changes.debts, debtSchema, rejected);
+	const reserveGoals = partitionRows('reserveGoals', changes.reserveGoals, reserveGoalSchema, rejected);
 
 	let applied = 0;
 
@@ -397,6 +410,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					closingDaysBefore: row.closingDaysBefore ?? null,
 					cardNames: row.cardNames ?? null,
 					yieldCdiBp: row.yieldCdiBp ?? null,
+					reservePurpose: row.reservePurpose ?? null,
 					creditLimitCents: row.creditLimitCents == null ? null : BigInt(row.creditLimitCents),
 					packageName: row.packageName ?? null,
 					accountKey: row.accountKey ?? null,
@@ -569,6 +583,33 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				};
 
 				await tx.retirementGoal.upsert({
+					where: { userId_id: { userId, id: row.id } },
+					create: { id: row.id, userId, ...data },
+					update: data,
+				});
+				applied += 1;
+			}
+
+			// --- Meta da reserva de emergência -------------------------------------
+			for (const row of reserveGoals) {
+				const current = await tx.reserveGoal.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'reserveGoals', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = {
+					targetMonths: row.targetMonths,
+					customMonthlyCostCents: row.customMonthlyCostCents == null ? null : BigInt(row.customMonthlyCostCents),
+					updatedAt: new Date(row.updatedAt),
+					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+				};
+
+				await tx.reserveGoal.upsert({
 					where: { userId_id: { userId, id: row.id } },
 					create: { id: row.id, userId, ...data },
 					update: data,

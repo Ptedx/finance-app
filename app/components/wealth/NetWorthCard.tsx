@@ -6,7 +6,10 @@ import { formatCents } from '../../utils/money';
 
 export interface NetWorthParts {
 	cashCents: number;
-	savedCents: number;
+	/** A parte do guardado que é reserva de emergência (a cascata). */
+	reserveCents: number;
+	/** O resto do guardado: capital de investimento. */
+	investedCents: number;
 	outsideCents: number;
 	cardsCents: number;
 	debtsCents: number;
@@ -22,7 +25,8 @@ const NetWorthCard: React.FC<{ worth: NetWorth; parts: NetWorthParts }> = ({ wor
 
 	const have = [
 		{ key: 'cash', label: t('netWorth.cash'), cents: parts.cashCents },
-		{ key: 'saved', label: t('netWorth.saved'), cents: parts.savedCents },
+		...(parts.reserveCents > 0 ? [{ key: 'reserve', label: t('netWorth.reserve'), cents: parts.reserveCents }] : []),
+		{ key: 'invested', label: t('netWorth.invested'), cents: parts.investedCents },
 		...(parts.outsideCents > 0 ? [{ key: 'outside', label: t('netWorth.outside'), cents: parts.outsideCents }] : []),
 	];
 	const owe = [
