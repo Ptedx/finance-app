@@ -64,6 +64,13 @@ export default function TabsLayout() {
 				}}
 			/>
 			<Tabs.Screen
+				name="wealth"
+				options={{
+					title: t('tabs.wealth'),
+					tabBarIcon: ({ color }) => <TabBarIcon name="wallet" color={color} />,
+				}}
+			/>
+			<Tabs.Screen
 				name="reports"
 				options={{
 					title: t('tabs.reports'),
@@ -75,13 +82,6 @@ export default function TabsLayout() {
 						textAlign: 'center',
 					},
 					tabBarIcon: ({ color }) => <TabBarIcon name="pie-chart" color={color} />,
-				}}
-			/>
-			<Tabs.Screen
-				name="settings"
-				options={{
-					title: t('tabs.settings'),
-					tabBarIcon: ({ color }) => <TabBarIcon name="settings-outline" color={color} />,
 				}}
 			/>
 		</Tabs>

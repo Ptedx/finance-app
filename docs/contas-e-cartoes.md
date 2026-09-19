@@ -100,6 +100,26 @@ transferência, mesmo com a saída "você enviou para VINICIUS" (avisada pela PJ
 caixa de entrada; e essa saída, se já tinha virado transferência para fora, é
 neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
 
+### Contas que rendem (% do CDI)
+
+Uma conta pode render uma fração do CDI (a Investimentos MP rende 120%). Sem isso, o
+saldo ficaria sempre abaixo do banco. Informe o percentual na conta ("Rende quanto do
+CDI?") e o saldo mostrado passa a somar o **rendimento estimado** desde a última âncora:
+
+- A taxa CDI vem do **Banco Central** (série SGS 4389, CDI anualizado base 252), buscada
+  no máximo duas vezes por dia e guardada; sem internet, vale a última. Sem nenhuma taxa
+  conhecida, a conta não soma rendimento — o app não inventa um CDI.
+- Rende por **dia útil**: taxa diária = % do CDI × ((1 + CDI)^(1/252) − 1), sobre o saldo
+  do dia, composta. O rendimento de hoje aparece amanhã (como no banco) e um aporte rende
+  a partir do dia útil seguinte.
+- É estimativa bruta (o IR só sai no resgate). **Acertar o saldo** move a âncora e zera o
+  erro acumulado; numa reserva, o acerto tem um campo só — o saldo de hoje — e nunca lança
+  despesa.
+
+O rendimento estimado entra no saldo das contas, no Patrimônio e no capital da meta de
+aposentadoria. Não vira lançamento: o "Rendimento" do mês continua sendo o que o banco
+creditou e foi lançado.
+
 ### Repasse: dinheiro que só passou pela conta
 
 A renda pode chegar em dois Pix (R$ 5.000 e R$ 15.000) com uma parte a repassar

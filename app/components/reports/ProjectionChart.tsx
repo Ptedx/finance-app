@@ -3,10 +3,10 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Line, Path, Text as SvgText } from 'react-native-svg';
-import { areaPath, yOf } from '../../utils/chartPaths';
+import { areaPath, linePath, yOf } from '../../utils/chartPaths';
 import { formatCents } from '../../utils/money';
 import type { ProjectionPoint } from '../../utils/retirement';
-import { ACCENT, INCOME_COLOR, reportStyles } from './reportStyles';
+import { ACCENT, INCOME_COLOR, reportStyles, WARN_COLOR } from './reportStyles';
 
 const HEIGHT = 170;
 const PADDING_TOP = 18;
@@ -19,14 +19,15 @@ const PADDING_BOTTOM = 22;
  * Um só gráfico em SVG na tela, e com um rótulo inteiro para o leitor de tela: a
  * imagem é um resumo, não a única forma de saber o que ela diz.
  */
-const ProjectionChart: React.FC<{ points: ProjectionPoint[]; goalCents: number | null }> = ({ points, goalCents }) => {
+const ProjectionChart: React.FC<{ points: ProjectionPoint[]; goalCents: number | null; scenario?: ProjectionPoint[] | null }> = ({ points, goalCents, scenario }) => {
 	const { t } = useTranslation();
 	const [width, setWidth] = useState(0);
 
 	if (points.length < 2) return null;
 
 	const last = points[points.length - 1];
-	const maxValue = Math.max(last.totalCents, goalCents ?? 0, 1);
+	const scenarioLast = scenario && scenario.length === points.length ? scenario[scenario.length - 1] : null;
+	const maxValue = Math.max(last.totalCents, goalCents ?? 0, scenarioLast?.totalCents ?? 0, 1);
 	const frame = { width, height: HEIGHT, paddingTop: PADDING_TOP, paddingBottom: PADDING_BOTTOM };
 	const years = Math.round(last.monthOffset / 12);
 	const interestShare = last.totalCents > 0 ? Math.round((last.interestCents / last.totalCents) * 100) : 0;
@@ -51,6 +52,9 @@ const ProjectionChart: React.FC<{ points: ProjectionPoint[]; goalCents: number |
 					<Svg width={width} height={HEIGHT}>
 						<Path d={areaPath(points.map((p) => p.totalCents), maxValue, frame)} fill={ACCENT} fillOpacity={0.35} />
 						<Path d={areaPath(points.map((p) => p.contributedCents), maxValue, frame)} fill={INCOME_COLOR} fillOpacity={0.55} />
+						{scenarioLast && scenario ? (
+							<Path d={linePath(scenario.map((p) => p.totalCents), maxValue, frame)} stroke={WARN_COLOR} strokeWidth={2} strokeDasharray="5 4" fill="none" />
+						) : null}
 						{goalCents !== null ? (
 							<>
 								<Line x1={0} x2={width} y1={yOf(goalCents, maxValue, frame)} y2={yOf(goalCents, maxValue, frame)} stroke="#FFFFFF" strokeOpacity={0.7} strokeDasharray="6 4" strokeWidth={1} />
@@ -76,6 +80,14 @@ const ProjectionChart: React.FC<{ points: ProjectionPoint[]; goalCents: number |
 						{t('reports.projection.contributed')} · {formatCents(last.contributedCents)}
 					</Text>
 				</View>
+				{scenarioLast ? (
+					<View style={styles.legendItem}>
+						<View style={[styles.swatch, styles.swatchDashed]} accessible={false} />
+						<Text style={reportStyles.muted}>
+							{t('reports.projection.scenario')} · {formatCents(scenarioLast.totalCents)}
+						</Text>
+					</View>
+				) : null}
 				<View style={styles.legendItem}>
 					<View style={[styles.swatch, { backgroundColor: ACCENT }]} accessible={false} />
 					<Text style={reportStyles.muted}>
@@ -101,6 +113,12 @@ const styles = StyleSheet.create({
 		width: 12,
 		height: 12,
 		borderRadius: 3,
+	},
+	swatchDashed: {
+		height: 0,
+		borderTopWidth: 2,
+		borderStyle: 'dashed',
+		borderColor: WARN_COLOR,
 	},
 });
 

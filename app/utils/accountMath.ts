@@ -75,4 +75,38 @@ export const summarizeAccounts = (
 	return { cashCents, savedCents, cardsOwedCents, netCents: cashCents - cardsOwedCents };
 };
 
-export default { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts };
+export interface NetWorthInput {
+	/** Contas (corrente, carteira, envelope): `overview.cashCents`. */
+	cashCents: number;
+	/** Reservas e investimentos no app: `overview.savedCents`. */
+	savedCents: number;
+	/** Investimentos que o app não acompanha (da meta de aposentadoria). */
+	outsideCents: number;
+	/** Cartões: o que já está nas faturas mais as parcelas que ainda vão cair. */
+	cardsCents: number;
+	/** Saldo devedor das dívidas de longo prazo. */
+	debtsCents: number;
+}
+
+export interface NetWorth {
+	/** O que se tem: contas, reservas, investimentos. */
+	assetsCents: number;
+	/** O que se deve: cartões e dívidas. */
+	liabilitiesCents: number;
+	/** A diferença. Pode ser negativa — e dizer isso é o ponto. */
+	netCents: number;
+}
+
+/**
+ * O patrimônio líquido: o que se tem menos o que se deve. Bens como carro e imóvel ficam
+ * de fora — o app não sabe quanto valem —, então para quem financia um bem o número
+ * aparece menor do que é, e a tela diz isso. Saldo negativo numa conta desconta dos ativos;
+ * crédito num cartão (pagou a mais) não vira ativo.
+ */
+export const netWorth = (input: NetWorthInput): NetWorth => {
+	const assetsCents = input.cashCents + input.savedCents + Math.max(0, input.outsideCents);
+	const liabilitiesCents = Math.max(0, input.cardsCents) + Math.max(0, input.debtsCents);
+	return { assetsCents, liabilitiesCents, netCents: assetsCents - liabilitiesCents };
+};
+
+export default { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts, netWorth };

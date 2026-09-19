@@ -293,10 +293,21 @@ describe('já comprometido', () => {
 		}
 	});
 
+	it('parcela de dívida soma, a não ser que já esteja no custo fixo', () => {
+		const [october] = committedMonths([], R(2_000), '2026-09', 1, [
+			{ debtId: 'car', name: 'Carro', month: '2026-10', cents: R(1_500), inFixedCost: false },
+			{ debtId: 'cons', name: 'Consórcio', month: '2026-10', cents: R(800), inFixedCost: true },
+			{ debtId: 'car', name: 'Carro', month: '2026-11', cents: R(1_500), inFixedCost: false },
+		]);
+		expect(october.debts).toHaveLength(2);
+		expect(october.debtCents).toBe(R(1_500));
+		expect(october.totalCents).toBe(R(3_500));
+	});
+
 	it('sem cartão é só o custo fixo', () => {
 		expect(committedMonths([], R(500), '2026-09', 2)).toEqual([
-			{ month: '2026-10', cards: [], cardCents: 0, fixedCents: R(500), totalCents: R(500) },
-			{ month: '2026-11', cards: [], cardCents: 0, fixedCents: R(500), totalCents: R(500) },
+			{ month: '2026-10', cards: [], cardCents: 0, debts: [], debtCents: 0, fixedCents: R(500), totalCents: R(500) },
+			{ month: '2026-11', cards: [], cardCents: 0, debts: [], debtCents: 0, fixedCents: R(500), totalCents: R(500) },
 		]);
 	});
 });

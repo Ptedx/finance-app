@@ -23,8 +23,10 @@ const FreedomHero: React.FC<{
 	model: RetirementReadModel | null;
 	goal: RetirementGoal | null;
 	income: IncomeComposition;
+	/** "Se as parcelas virarem aporte quando quitar": chega antes. */
+	scenario?: { month: string | null; monthsEarlier: number | null } | null;
 	onEditGoal: () => void;
-}> = ({ model, goal, income, onEditGoal }) => {
+}> = ({ model, goal, income, scenario, onEditGoal }) => {
 	const { t } = useTranslation();
 
 	if (!model || !goal) {
@@ -118,6 +120,14 @@ const FreedomHero: React.FC<{
 				{reach}
 			</Text>
 			<Text style={reportStyles.muted}>{t('reports.freedom.pace', { amount: formatCents(Math.max(0, model.monthlyContributionCents)) })}</Text>
+			{scenario?.month && scenario.monthsEarlier !== null && scenario.monthsEarlier > 0 ? (
+				<Text style={styles.scenario}>
+					{t('reports.freedom.debtScenario', {
+						month: `${monthKeyName(scenario.month)} ${scenario.month.slice(0, 4)}`,
+						years: yearsText(Math.round((scenario.monthsEarlier / 12) * 10) / 10),
+					})}
+				</Text>
+			) : null}
 
 			{model.reach.kind !== 'reached' && model.contributionByHorizon.some((h) => h.monthlyCents !== null) ? (
 				<View style={styles.horizons} accessible accessibilityLabel={`${t('reports.freedom.horizonsTitle')} ${model.contributionByHorizon.map((h) => `${t('reports.freedom.horizon', { years: h.years })}: ${h.monthlyCents === null ? '—' : t('reports.freedom.perMonth', { amount: formatCents(h.monthlyCents) })}`).join('; ')}`}>
@@ -196,6 +206,12 @@ const styles = StyleSheet.create({
 		color: '#FFFFFF',
 		lineHeight: 21,
 		marginBottom: 4,
+	},
+	scenario: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: '#FFCC5C',
+		marginTop: 4,
 	},
 	horizons: {
 		marginTop: 12,

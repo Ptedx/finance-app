@@ -3,21 +3,11 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, StyleSheet, Text } from 'react-native';
 import type { RetirementGoalDraft } from '../../database/database';
-import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents, parseDecimalInput } from '../../utils/money';
+import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../../utils/money';
+import { bpToPercentInput, percentInputToBp } from '../../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP, DEFAULT_REINVEST_BP, type RetirementGoal, requiredCapitalCents, requiredMonthlyCents } from '../../utils/retirement';
 import { Button, Field } from '../cards/formParts';
 import Sheet from '../cards/Sheet';
-
-/** Pontos-base como texto de porcentagem com até duas casas: 2.500 → "25", 1.050 → "10,5". */
-const bpToPercentInput = (bp: number): string => {
-	const value = bp / 100;
-	return (Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '')).replace('.', ',');
-};
-
-const percentInputToBp = (input: string): number | null => {
-	const value = parseDecimalInput(input);
-	return value === null || value < 0 || value > 100 ? null : Math.round(value * 100);
-};
 
 /**
  * Definir a meta: a renda que se quer, a margem reinvestida, o rendimento esperado e o

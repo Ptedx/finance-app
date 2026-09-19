@@ -7,6 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const STORAGE_KEYS = {
 	budgets: 'monthlyBudgets',
 	selectedCurrency: 'selectedCurrency',
+	/** A última taxa CDI do Banco Central (ver api/cdi.ts). */
+	cdiRate: 'cdiRate',
 } as const;
 
 /**

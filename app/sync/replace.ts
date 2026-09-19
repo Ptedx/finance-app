@@ -19,7 +19,7 @@
 import type { SyncChanges } from './types';
 
 /** As coleções do sync, na ordem em que o servidor as grava. */
-export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals'] as const;
+export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts'] as const;
 
 export type Collection = (typeof COLLECTIONS)[number];
 
@@ -32,7 +32,11 @@ export const TABLE_OF: Record<Collection, string> = {
 	budgets: 'budgets',
 	transfers: 'transfers',
 	retirementGoals: 'retirement_goals',
+	debts: 'debts',
 };
+
+/** Uma lista vazia por coleção — derivada de COLLECTIONS, para nenhuma ficar de fora. */
+const emptyByCollection = (): Record<Collection, SyncedRow[]> => Object.fromEntries(COLLECTIONS.map((collection) => [collection, []])) as unknown as Record<Collection, SyncedRow[]>;
 
 interface SyncedRow {
 	id: string;
@@ -64,15 +68,7 @@ export const replacementStamp = (server: Partial<SyncChanges>, now: string): str
  * carimbada e vence.
  */
 export const tombstonesFor = (server: Partial<SyncChanges>, localIds: Record<Collection, Set<string>>, stamp: string): SyncChanges => {
-	const result: Record<Collection, SyncedRow[]> = {
-		categories: [],
-		accounts: [],
-		transactions: [],
-		recurringTransactions: [],
-		budgets: [],
-		transfers: [],
-		retirementGoals: [],
-	};
+	const result = emptyByCollection();
 	for (const collection of COLLECTIONS) {
 		for (const row of rowsOf(server, collection)) {
 			if (row.deletedAt) continue;
@@ -85,15 +81,7 @@ export const tombstonesFor = (server: Partial<SyncChanges>, localIds: Record<Col
 
 /** Junta as páginas do pull numa foto só da conta. */
 export const mergePages = (pages: Array<Partial<SyncChanges>>): Partial<SyncChanges> => {
-	const merged: Record<Collection, SyncedRow[]> = {
-		categories: [],
-		accounts: [],
-		transactions: [],
-		recurringTransactions: [],
-		budgets: [],
-		transfers: [],
-		retirementGoals: [],
-	};
+	const merged = emptyByCollection();
 	// A mesma linha pode vir em duas páginas (editada entre elas): fica a mais nova.
 	const seen: Record<Collection, Map<string, SyncedRow>> = Object.fromEntries(COLLECTIONS.map((c) => [c, new Map()])) as Record<Collection, Map<string, SyncedRow>>;
 	for (const page of pages) {

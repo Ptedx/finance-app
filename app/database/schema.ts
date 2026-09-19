@@ -150,6 +150,11 @@ export interface Account extends SyncMeta {
 	 * corrente, os cartões de débito. Ler e gravar por `utils/cardNames.ts`.
 	 */
 	cardNames: string | null;
+	/**
+	 * Quanto a conta rende, em pontos-base do CDI (12.000 = 120% do CDI). Nulo quando não
+	 * rende. O saldo mostrado soma o rendimento estimado desde a âncora — ver `utils/yield.ts`.
+	 */
+	yieldCdiBp?: number | null;
 	packageName: string | null;
 	accountKey: string | null;
 	openingBalanceCents: number;
@@ -237,8 +242,14 @@ export const DATABASE_NAME = 'spendr.db';
  *     debit becomes a debit card of its bank's checking account.
  * 14 — `retirement_goals` is created (the financial-independence goal, one synced row).
  *     Categories gain the `passthrough` nature (no column change).
+ * 15 — `debts` is created (financing, consortium, loan). Additive only: the 1.0 app
+ *     opens a v15 database, runs no migration and ignores the table.
+ * 16 — accounts gain `yieldCdiBp` (how much of the CDI the account yields); debts gain
+ *     `feeCents` (insurance and fees inside the installment). Every debt is marked dirty:
+ *     a server without the debts collection used to drop them silently while the app
+ *     marked them as sent.
  */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 16;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -249,6 +260,7 @@ export const SYNCED_TABLES = [
 	'budgets',
 	'transfers',
 	'retirement_goals',
+	'debts',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -348,6 +360,7 @@ export const CREATE_ACCOUNTS_TABLE = `
     closingDaysBefore INTEGER,
     creditLimitCents INTEGER,
     cardNames TEXT,
+    yieldCdiBp INTEGER,
     packageName TEXT,
     accountKey TEXT,
     openingBalanceCents INTEGER NOT NULL DEFAULT 0,
@@ -373,6 +386,10 @@ export const ACCOUNT_V10_COLUMNS: Array<[name: string, sql: string]> = [['closin
 /** Colunas que o v13 acrescenta. */
 export const TRANSACTION_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardLast4', 'TEXT']];
 export const ACCOUNT_V13_COLUMNS: Array<[name: string, sql: string]> = [['cardNames', 'TEXT']];
+
+/** Colunas que o v16 acrescenta. */
+export const ACCOUNT_V16_COLUMNS: Array<[name: string, sql: string]> = [['yieldCdiBp', 'INTEGER']];
+export const DEBT_V16_COLUMNS: Array<[name: string, sql: string]> = [['feeCents', 'INTEGER NOT NULL DEFAULT 0']];
 
 /** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
 export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
@@ -452,6 +469,76 @@ export const CREATE_RETIREMENT_GOALS_TABLE = `
     reinvestBp INTEGER NOT NULL DEFAULT 2500,
     expectedYieldBp INTEGER NOT NULL DEFAULT 1000,
     outsideCapitalCents INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/** Financiamento (carro, casa), consórcio ou empréstimo. */
+export type DebtKind = 'financing' | 'consortium' | 'loan';
+
+/** Price: parcela fixa. SAC: amortização fixa, parcela caindo. none: consórcio, sem juros. */
+export type AmortizationSystem = 'price' | 'sac' | 'none';
+
+/**
+ * Uma dívida de longo prazo.
+ *
+ * O saldo devedor é uma **âncora**, como o saldo das contas: `openingBalanceCents` é o que
+ * se devia logo depois da última parcela paga em `openingBalanceDate`, e o saldo de hoje é
+ * projetado pelo cronograma (`utils/debt.ts`). Amortizar move a âncora; nunca se guarda um
+ * saldo que envelhece.
+ */
+export interface Debt extends SyncMeta {
+	id: string;
+	name: string;
+	kind: DebtKind;
+	system: AmortizationSystem;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	/** Parcela na âncora: fixa na Price, a próxima na SAC, a atual no consórcio. */
+	installmentCents: number;
+	/** Parcelas que faltavam depois da âncora. */
+	remainingAtOpening: number;
+	/** Total de parcelas do contrato, para o "12 de 48". */
+	installmentsTotal: number;
+	dueDay: number;
+	/** Taxa de juros do contrato ao ano, em pontos-base; no consórcio, o reajuste anual. */
+	rateBp: number;
+	/**
+	 * Seguro e tarifas dentro da parcela: o que ela cobra além de juros e amortização. É a
+	 * diferença entre a parcela que o banco cobra e a que a taxa do contrato daria.
+	 */
+	feeCents: number;
+	/** Taxa de administração do consórcio, informativa. */
+	adminFeeBp: number | null;
+	/** De onde sai a parcela. */
+	accountId: string | null;
+	category: string | null;
+	/** Quitada: some da lista e dos relatórios, mas fica no histórico. */
+	archived: boolean;
+	sortOrder: number;
+}
+
+export type DebtDraft = Omit<Debt, 'id' | keyof SyncMeta>;
+
+export const CREATE_DEBTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS debts (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'financing',
+    system TEXT NOT NULL DEFAULT 'price',
+    openingBalanceCents INTEGER NOT NULL,
+    openingBalanceDate TEXT NOT NULL,
+    installmentCents INTEGER NOT NULL,
+    remainingAtOpening INTEGER NOT NULL,
+    installmentsTotal INTEGER NOT NULL,
+    dueDay INTEGER NOT NULL,
+    rateBp INTEGER NOT NULL DEFAULT 0,
+    feeCents INTEGER NOT NULL DEFAULT 0,
+    adminFeeBp INTEGER,
+    accountId TEXT,
+    category TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
 ${SYNC_COLUMNS_SQL}
   );
 `;
@@ -593,6 +680,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_recurring_dirty ON recurring_transactions (dirty);
   CREATE INDEX IF NOT EXISTS idx_budgets_dirty ON budgets (dirty);
   CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
+  CREATE INDEX IF NOT EXISTS idx_debts_dirty ON debts (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -797,5 +885,6 @@ export default {
 	CREATE_TRANSFERS_TABLE,
 	CREATE_INDEXES,
 	CREATE_RETIREMENT_GOALS_TABLE,
+	CREATE_DEBTS_TABLE,
 	DEFAULT_CATEGORIES,
 };

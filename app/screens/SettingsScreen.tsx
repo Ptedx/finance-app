@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { router, Stack } from 'expo-router';
 import type React from 'react';
 import { useEffect, useState } from 'react';
@@ -6,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
 	Alert,
+	Pressable,
 	ScrollView,
 	StyleSheet,
 	Switch,
@@ -339,7 +341,18 @@ const SettingsScreen = () => {
 			/>
 
 			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle}>{t('settings.headerTitle')}</Text>
+				<Pressable
+					onPress={() => router.back()}
+					accessibilityRole="button"
+					accessibilityLabel={t('debts.back')}
+					hitSlop={12}
+					style={styles.backButton}
+				>
+					<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+				</Pressable>
+				<Text style={styles.headerTitle} accessibilityRole="header">
+					{t('settings.headerTitle')}
+				</Text>
 			</View>
 
 			<ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
@@ -484,7 +497,9 @@ const SettingsScreen = () => {
 					{renderSettingsItem('information-circle-outline', t('settings.aboutSpendr'), handleAbout)}
 				</View>
 
-				<Text style={styles.versionText}>{t('settings.version')}</Text>
+				{/* A versão do app instalado, lida da configuração embutida no build — é por ela que se
+				    sabe se o celular está na 1.0 ou na 1.1 antes de reinstalar uma delas. */}
+				<Text style={styles.versionText}>{t('settings.version', { version: Constants.expoConfig?.version ?? '—' })}</Text>
 			</ScrollView>
 
 			<CurrencySelector
@@ -504,7 +519,15 @@ const styles = StyleSheet.create({
 		flex: 1,
 		backgroundColor: '#121212',
 	},
+	backButton: {
+		minWidth: 48,
+		minHeight: 48,
+		justifyContent: 'center',
+	},
 	headerContainer: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
 		paddingHorizontal: 16,
 		paddingVertical: 12,
 		paddingTop: 60,
