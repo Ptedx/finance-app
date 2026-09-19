@@ -12,20 +12,21 @@ import {
 	setBudget,
 } from '../database/database';
 import {
-	addAccount,
 	addDebt,
-	addTransfer,
 	getAccounts,
 	getDebts,
 	getReserveGoal,
 	getRetirementGoal,
 	getTransfers,
+	restoreAccount,
+	restoreTransfer,
 	type ReserveGoalDraft,
 	type RetirementGoalDraft,
 	setReserveGoal,
 	setRetirementGoal,
 } from '../database/database';
 import type { Account, Category, Debt, RecurringTransaction, Transaction, Transfer } from '../database/schema';
+import * as syncQueue from '../sync/queue';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
 
@@ -416,7 +417,7 @@ export const importDatabaseData = async (): Promise<{
 		const accountIds = new Set<string>();
 		for (const account of importData.accounts ?? []) {
 			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = account;
-			await addAccount(draft, id);
+			await restoreAccount(draft, id);
 			accountIds.add(id);
 		}
 
@@ -436,7 +437,7 @@ export const importDatabaseData = async (): Promise<{
 
 		for (const transfer of importData.transfers ?? []) {
 			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = transfer;
-			await addTransfer(
+			await restoreTransfer(
 				{
 					...draft,
 					fromAccountId: draft.fromAccountId && accountIds.has(draft.fromAccountId) ? draft.fromAccountId : null,
@@ -470,6 +471,9 @@ export const importDatabaseData = async (): Promise<{
 				await setBudget(budget.year, budget.month, readAmountCents(budget));
 			}
 		}
+
+		// As telas releem o banco: contas, orçamento e metas também mudaram.
+		syncQueue.notifyDataChanged();
 
 		return {
 			success: true,

@@ -1570,6 +1570,25 @@ export const addTransfer = async (transfer: TransferDraft, explicitId?: string):
 	return id;
 };
 
+/**
+ * Grava uma conta ou transferência de um backup com o id original, **ressuscitando** a
+ * linha se ela estiver apagada. A importação apaga tudo (lápides) antes de regravar, e o
+ * `ON CONFLICT DO NOTHING` de `addAccount`/`addTransfer` deixava as contas apagadas: o
+ * app ficava sem contas, e os lançamentos importados, presos a contas invisíveis.
+ *
+ * A lápide sai e a linha entra de novo, suja e com carimbo de agora — mais nova que a
+ * lápide em qualquer aparelho ou no servidor, então é ela que vale no sync.
+ */
+export const restoreAccount = async (draft: AccountDraft, id: string): Promise<void> => {
+	await db.runAsync('DELETE FROM accounts WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	await addAccount(draft, id);
+};
+
+export const restoreTransfer = async (draft: TransferDraft, id: string): Promise<void> => {
+	await db.runAsync('DELETE FROM transfers WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	await addTransfer(draft, id);
+};
+
 export const updateTransfer = async (transfer: TransferEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE transfers SET fromAccountId = ?, toAccountId = ?, amountCents = ?, date = ?, note = ?,
