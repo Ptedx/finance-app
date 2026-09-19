@@ -13,6 +13,11 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
 - "Puxar da conta" no login e a importação agora atualizam as telas na hora (a 1.2.1 só
   cobria o sync em segundo plano).
 - Falhas de sync vão para o log do aparelho, com o motivo.
+- Um app recém-instalado não sobrescreve mais as categorias da conta no primeiro login: as
+  padrão nascem com a data mais antiga e limpas, e a versão da conta sempre vence (antes os
+  nomes e as naturezas voltavam ao padrão).
+- Importar um backup aplica o nome e a natureza das categorias que já existem no aparelho
+  (antes as padrão eram puladas e o essencial/repasse ajustado se perdia).
 
 ## [1.2.1] — 2026-09-19
 

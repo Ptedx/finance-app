@@ -8,6 +8,7 @@ import {
 	addTransaction,
 	getBudgets,
 	getCategories,
+	updateCategory,
 	resetDatabase,
 	setBudget,
 } from '../database/database';
@@ -398,7 +399,20 @@ export const importDatabaseData = async (): Promise<{
 		const existingIds = new Set((await getCategories()).map((c) => c.id));
 
 		for (const category of importData.categories) {
-			if (existingIds.has(category.id)) continue;
+			// Uma categoria que já existe aqui (as padrão, num app novo) recebe o que o backup
+			// diz: nome, cor e, principalmente, a natureza que o usuário ajustou. Antes ela era
+			// pulada, e o essencial/repasse de uma categoria padrão se perdia na restauração.
+			if (existingIds.has(category.id)) {
+				await updateCategory({
+					id: category.id,
+					name: category.name,
+					color: category.color,
+					icon: category.icon,
+					type: category.type,
+					nature: category.nature ?? 'discretionary',
+				});
+				continue;
+			}
 			// Backups escritos antes da tag necessidade/desejo não trazem `nature`, e a
 			// coluna é NOT NULL. O padrão é o mesmo da migração: supérfluo até que o
 			// usuário diga o contrário.

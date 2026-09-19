@@ -511,6 +511,9 @@ const migrateCategoryNature = async (): Promise<void> => {
  * Seeded rows are dirty like any other: on a device that later signs in, the server has
  * its own copy under the same fixed id and last-write-wins settles which name survives.
  */
+/** O carimbo das categorias padrão semeadas: perde para qualquer versão vinda da conta. */
+const SEED_TIMESTAMP = '1970-01-01T00:00:00.000Z';
+
 const seedMissingDefaultCategories = async (): Promise<void> => {
 	// Includes tombstoned rows on purpose: a category the user deleted must not be
 	// resurrected by the next launch.
@@ -520,13 +523,17 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
 
 	if (missing.length === 0) return;
 
-	const timestamp = nowTimestamp();
+	// As padrão nascem com a data mais antiga possível e limpas. Com a data da instalação e
+	// sujas, o primeiro login de um app novo subia as padrão como mais novas que as da
+	// conta e desfazia os nomes e as naturezas que o usuário tinha ajustado. Assim a versão
+	// da conta sempre vence; uma conta nova recebe as padrão pelo `markEverythingDirty`.
+	const timestamp = SEED_TIMESTAMP;
 
 	await db.withTransactionAsync(async () => {
 		for (const category of missing) {
 			await db.runAsync(
 				`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)`,
 				[
 					category.id,
 					category.name,
