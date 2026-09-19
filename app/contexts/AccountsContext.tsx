@@ -26,6 +26,7 @@ import {
 } from '../database/database';
 import { getPendingCaptures } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Capture, Transfer } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { type AccountsOverview, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
 import {
@@ -654,6 +655,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			assignUnassigned,
 		]
 	);
+
+	// Transferências e âncoras de saldo baixadas pelo sync não passam pelos lançamentos.
+	useAfterPull(refresh);
 
 	return <AccountsContext.Provider value={value}>{children}</AccountsContext.Provider>;
 };

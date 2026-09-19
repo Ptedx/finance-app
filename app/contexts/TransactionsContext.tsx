@@ -27,6 +27,7 @@ import type {
 	TransactionDraft,
 	TransactionEdit,
 } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
 import { usePeriod } from './PeriodContext';
@@ -290,6 +291,9 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		updateCategory,
 		deleteCategory,
 	};
+
+	// O que o sync baixou da conta só aparece se a tela reler o banco.
+	useAfterPull(refreshData);
 
 	return <TransactionsContext.Provider value={value}>{children}</TransactionsContext.Provider>;
 };

@@ -2,6 +2,7 @@ import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { clearBudget, getBudgets, initDatabase, setBudget } from '../database/database';
 import type { Budget } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { usePeriod } from './PeriodContext';
 
@@ -80,6 +81,9 @@ export const BudgetProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 		clearBudgetForCurrentPeriod,
 		convertBudgets,
 	};
+
+	// O que o sync baixou da conta só aparece se a tela reler o banco.
+	useAfterPull(reload);
 
 	return <BudgetContext.Provider value={value}>{children}</BudgetContext.Provider>;
 };

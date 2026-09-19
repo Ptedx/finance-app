@@ -24,6 +24,11 @@ interface QueueState {
 	status: SyncStatus;
 	lastError: string | null;
 	pending: number;
+	/**
+	 * Sobe a cada rodada que baixou linhas da conta. Os contexts de dados escutam isto
+	 * (`hooks/useAfterPull.ts`) para reler o banco: sem isso o pull grava e a tela não muda.
+	 */
+	pulledVersion: number;
 }
 
 type Listener = (state: QueueState) => void;
@@ -36,7 +41,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = RETRY_BASE_MS;
 
-let state: QueueState = { status: 'idle', lastError: null, pending: 0 };
+let state: QueueState = { status: 'idle', lastError: null, pending: 0, pulledVersion: 0 };
 const listeners = new Set<Listener>();
 
 const emit = (next: Partial<QueueState>): void => {
@@ -76,7 +81,12 @@ const run = async (): Promise<void> => {
 		const result: SyncResult = await syncNow();
 
 		retryDelay = RETRY_BASE_MS;
-		emit({ status: 'idle', lastError: null, pending: result.pendingAfter });
+		emit({
+			status: 'idle',
+			lastError: null,
+			pending: result.pendingAfter,
+			pulledVersion: result.pulled > 0 ? state.pulledVersion + 1 : state.pulledVersion,
+		});
 	} catch (error) {
 		const offline = error instanceof ApiError && error.isOffline;
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import { clearRetirementGoal, getRetirementGoal, initDatabase, type RetirementGoalDraft, setRetirementGoal } from '../database/database';
 import * as syncQueue from '../sync/queue';
+import { useAfterPull } from './useAfterPull';
 import type { RetirementGoal } from '../utils/retirement';
 
 /**
@@ -68,6 +69,9 @@ export const useRetirementGoal = (): RetirementGoalResult => {
 		syncQueue.schedule();
 		await load();
 	}, [load]);
+
+	// A meta editada em outro aparelho chega pelo pull.
+	useAfterPull(load);
 
 	return { goal, isLoading, save, clear };
 };
