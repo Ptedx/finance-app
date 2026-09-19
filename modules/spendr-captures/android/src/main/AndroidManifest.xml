@@ -5,10 +5,13 @@
       liga "Acesso a notificações" para o Spendr nas configurações do Android — é o
       sistema quem o vincula (daí exported="true" com a permissão de BIND, que só o
       próprio Android detém). O merge de manifestos leva esta declaração para o app.
+
+      Sem android:label de propósito: a lista do sistema mostra então o nome do app, e o
+      "Spendr (Dev)" não aparece como um segundo "Spendr" — foi assim que o acesso acabou
+      ligado no app de desenvolvimento achando que era o de verdade.
     -->
     <service
       android:name="expo.modules.spendrcaptures.CaptureListenerService"
-      android:label="Spendr"
       android:exported="true"
       android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
       <intent-filter>
