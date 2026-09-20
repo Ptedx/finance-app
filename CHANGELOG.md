@@ -4,6 +4,12 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.3] — 2026-09-19
+
+- A tela inicial avisa quando a **captura está desligada** (o Android não está entregando
+  notificações ao app) e leva direto à tela do sistema para ligar. O acesso se perde a cada
+  reinstalação, e a captura parava em silêncio. O aviso pode ser dispensado.
+
 ## [1.2.2] — 2026-09-19
 
 - Importar um backup num app que já tinha dados deixava **todas as contas apagadas**: a
