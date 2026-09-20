@@ -65,7 +65,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, adjustAccountMonth } =
+	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, adjustAccountMonth } =
 		useAccounts();
 	const { transactions } = useTransactions();
 
@@ -182,6 +182,42 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		if (!existing) return;
 		await saveAccount({ ...existing, archived: !existing.archived });
 		announce(existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive'));
+	};
+
+	/**
+	 * A mesma conta do banco com duas fichas no app: a que o usuário cadastrou e a que a
+	 * primeira notificação criou, por exemplo. Juntar leva lançamentos, capturas e
+	 * transferências para a escolhida e apaga esta.
+	 */
+	const mergeCandidates = existing
+		? accounts.filter((account) => account.id !== existing.id && !account.deletedAt && !account.archived && (account.kind === 'credit_card') === (existing.kind === 'credit_card'))
+		: [];
+
+	const handleMerge = () => {
+		if (!existing || mergeCandidates.length === 0) return;
+		Alert.alert(
+			t('accounts.edit.merge'),
+			t('accounts.edit.mergePick', { name: existing.name }),
+			[
+				{ text: t('accounts.edit.cancel'), style: 'cancel' },
+				...mergeCandidates.map((account) => ({
+					text: account.name,
+					onPress: () => {
+						Alert.alert(t('accounts.edit.merge'), t('accounts.edit.mergeConfirm', { from: existing.name, into: account.name }), [
+							{ text: t('accounts.edit.cancel'), style: 'cancel' as const },
+							{
+								text: t('accounts.edit.mergeAction'),
+								onPress: async () => {
+									await mergeAccounts(existing.id, account.id);
+									announce(t('accounts.edit.merged', { into: account.name }));
+									router.back();
+								},
+							},
+						]);
+					},
+				})),
+			]
+		);
 	};
 
 	const handleDelete = () => {
@@ -436,6 +472,18 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 									{existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive')}
 								</Text>
 							</Pressable>
+							{mergeCandidates.length > 0 ? (
+								<Pressable
+									onPress={handleMerge}
+									accessibilityRole="button"
+									accessibilityLabel={t('accounts.edit.merge')}
+									accessibilityHint={t('accounts.edit.mergeHint')}
+									style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+								>
+									<Ionicons name="git-merge-outline" size={18} color="#FFFFFF" />
+									<Text style={styles.secondaryButtonText}>{t('accounts.edit.merge')}</Text>
+								</Pressable>
+							) : null}
 							<Pressable
 								onPress={handleDelete}
 								accessibilityRole="button"

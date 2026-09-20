@@ -4,6 +4,16 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.5] — 2026-09-20
+
+- A primeira notificação de um banco passa a **adotar a conta que você cadastrou à mão**,
+  em vez de criar uma segunda conta do mesmo banco ao lado dela (era assim só para contas
+  vindas de extrato OFX). Com duas contas do mesmo banco, nada é adivinhado: a conta do app
+  nasce como antes.
+- **Juntar contas**: em Editar conta, "Juntar com outra conta" leva lançamentos, capturas e
+  transferências para a conta escolhida e apaga esta. Serve para desfazer a duplicata que a
+  regra antiga criou.
+
 ## [1.2.4] — 2026-09-20
 
 - Lançamento manual num cartão de crédito: dá para dizer **qual cartão** fez a compra — o

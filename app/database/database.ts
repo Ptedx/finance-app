@@ -1387,6 +1387,32 @@ export const moveAccountLedger = async (fromId: string, toId: string, cardLast4:
 };
 
 /**
+ * Repõe em outra conta as transferências de uma. A que ligava as duas vira uma
+ * transferência para si mesma e some: ela só existia porque o mesmo dinheiro tinha duas
+ * fichas no app.
+ */
+export const repointTransfers = async (fromId: string, toId: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		await db.runAsync(
+			`UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL AND ((fromAccountId = ? AND toAccountId = ?) OR (fromAccountId = ? AND toAccountId = ?))`,
+			[timestamp, timestamp, fromId, toId, toId, fromId]
+		);
+		await db.runAsync('UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL', [
+			toId,
+			timestamp,
+			fromId,
+		]);
+		await db.runAsync('UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL', [
+			toId,
+			timestamp,
+			fromId,
+		]);
+	});
+};
+
+/**
  * Leva o que uma captura pôs no livro — a transação, ou todas as parcelas do grupo — para
  * outra conta. Usado quando o aviso do banco revela o cartão de uma compra que o Samsung
  * Pay avisou antes.
