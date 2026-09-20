@@ -19,6 +19,7 @@ import {
 	getUnassignedPeriodSummary,
 	getTransfersByDateRange,
 	moveAccountLedger,
+	repointTransfers,
 	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
@@ -145,6 +146,8 @@ interface AccountsContextType {
 	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
 	 */
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
+	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
+	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
 	/** Dá nome a um cartão (físico, virtual ou de débito) pelo final; nome vazio tira. */
 	renameCard: (accountId: string, last4: string, name: string | null) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
@@ -504,6 +507,37 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[accounts, refreshData]
 	);
 
+	/**
+	 * Duas fichas para a mesma conta do banco — a que o usuário cadastrou e a que a primeira
+	 * notificação criou, por exemplo. Lançamentos, capturas e transferências vão para a que
+	 * fica, junto com o app e a chave de extrato, para o que vier depois cair lá.
+	 *
+	 * Os saldos não se somam: cada ficha tinha a sua âncora, e somá-las contaria o mesmo
+	 * dinheiro duas vezes. A conta que fica mantém a dela; "Definir saldo" acerta o resto.
+	 */
+	const mergeAccounts = useCallback(
+		async (fromId: string, intoId: string) => {
+			const from = accounts.find((account) => account.id === fromId);
+			const into = accounts.find((account) => account.id === intoId);
+			if (!from || !into || fromId === intoId) return;
+
+			await moveAccountLedger(fromId, intoId, from.last4);
+			await repointTransfers(fromId, intoId);
+			if (from.last4) await setAccountCardNames(intoId, withCardName(into.cardNames, from.last4, from.name));
+			if (into.packageName === null || into.accountKey === null) {
+				await updateAccount({
+					...into,
+					packageName: into.packageName ?? from.packageName,
+					accountKey: into.accountKey ?? from.accountKey,
+				});
+			}
+			await deleteAccount(fromId);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[accounts, refresh, refreshData]
+	);
+
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
 			const card = accounts.find((account) => account.id === cardId);
@@ -622,6 +656,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			mergeAccounts,
 			renameCard,
 			assignUnassigned,
 		}),
@@ -651,6 +686,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			mergeAccounts,
 			renameCard,
 			assignUnassigned,
 		]

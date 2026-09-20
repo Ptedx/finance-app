@@ -9,7 +9,9 @@
  *
  * Adotar em vez de duplicar: o extrato do Nubank e as notificações do Nubank são a
  * mesma conta. Quando o OFX chega e já existe uma conta do mesmo banco criada por
- * notificação, sem chave de extrato, ela ganha a chave em vez de nascer uma segunda.
+ * notificação, sem chave de extrato, ela ganha a chave em vez de nascer uma segunda. O
+ * mesmo vale para a conta que o usuário cadastrou à mão: a primeira notificação daquele
+ * banco a adota, em vez de nascer uma segunda conta do mesmo banco ao lado dela.
  */
 
 import {
@@ -96,15 +98,18 @@ export const resolveAccountForNotification = async (
 	if (existing) return existing;
 
 	if (!isCard) {
-		const twin = accounts.find(
+		// Contas do mesmo banco ainda sem app: a do extrato (OFX) ou a cadastrada à mão.
+		const twins = accounts.filter(
 			(account) =>
 				account.kind !== 'credit_card' &&
 				!account.deletedAt &&
 				account.packageName === null &&
-				account.accountKey !== null &&
 				sameBank(account.bankName, raw.appLabel)
 		);
-		if (twin) {
+		// Com duas contas do mesmo banco (a PF e a PJ, por exemplo) o aviso não diz qual é:
+		// adivinhar poria dinheiro na conta errada, então a nova nasce como antes.
+		if (twins.length === 1) {
+			const twin = twins[0];
 			await updateAccount({ ...twin, packageName: raw.packageName });
 			return { ...twin, packageName: raw.packageName };
 		}
