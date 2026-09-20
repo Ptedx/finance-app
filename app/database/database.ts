@@ -1182,6 +1182,7 @@ export const updateTransaction = async (transaction: TransactionEdit): Promise<v
 			`UPDATE transactions
        SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ?,
            accountId = CASE WHEN ? THEN ? ELSE accountId END,
+           cardLast4 = CASE WHEN ? THEN ? ELSE cardLast4 END,
            updatedAt = ?, dirty = 1
        WHERE id = ?`,
 			[
@@ -1192,6 +1193,9 @@ export const updateTransaction = async (transaction: TransactionEdit): Promise<v
 				transaction.isIncome ? 1 : 0,
 				transaction.accountId === undefined ? 0 : 1,
 				transaction.accountId ?? null,
+				// Como a conta: `undefined` preserva o cartão que a captura anotou.
+				transaction.cardLast4 === undefined ? 0 : 1,
+				transaction.cardLast4 ?? null,
 				nowTimestamp(),
 				transaction.id,
 			]

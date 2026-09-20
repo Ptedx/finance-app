@@ -845,6 +845,11 @@ account: {
 			noTransactions: 'No entries in this account yet',
 		},
 		picker: {
+			cardLabel: 'Which card',
+			cardHint: 'Physical and virtual cards share one bill; this only says which one made the purchase',
+			cardUnknown: 'Not sure',
+			cardEnding: 'Ending {{last4}}',
+			cardOther: 'Another card: last 4 digits',
 			label: 'Account',
 			none: 'No account',
 			hint: 'Which account or card this comes from',

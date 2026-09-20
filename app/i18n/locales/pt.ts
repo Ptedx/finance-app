@@ -840,6 +840,11 @@ const pt = {
 			noTransactions: 'Nenhum lançamento nesta conta ainda',
 		},
 		picker: {
+			cardLabel: 'Qual cartão',
+			cardHint: 'O físico e os virtuais caem na mesma fatura; isto só diz qual deles comprou',
+			cardUnknown: 'Não sei',
+			cardEnding: 'Final {{last4}}',
+			cardOther: 'Outro cartão: os 4 últimos dígitos',
 			label: 'Conta',
 			none: 'Sem conta',
 			hint: 'De qual conta ou cartão isto saiu',

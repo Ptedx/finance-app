@@ -847,6 +847,11 @@ account: {
 			noTransactions: 'Ancora nessun movimento in questo conto',
 		},
 		picker: {
+			cardLabel: 'Quale carta',
+			cardHint: "La fisica e le virtuali finiscono nello stesso estratto; questo dice solo quale ha comprato",
+			cardUnknown: 'Non so',
+			cardEnding: 'Finale {{last4}}',
+			cardOther: "Un'altra carta: ultime 4 cifre",
 			label: 'Conto',
 			none: 'Senza conto',
 			hint: 'Da quale conto o carta proviene',
