@@ -67,6 +67,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	);
 	const [note, setNote] = useState(initialTransaction ? initialTransaction.note : '');
 	const [accountId, setAccountId] = useState<string | null>(initialTransaction?.accountId ?? null);
+	const [cardLast4, setCardLast4] = useState<string | null>(initialTransaction?.cardLast4 ?? null);
 	const [isIncome, setIsIncome] = useState(
 		initialTransaction
 			? initialTransaction.isIncome
@@ -123,6 +124,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				note: note.trim(),
 				isIncome,
 				accountId,
+				// Só um final completo vale; meio digitado não vira cartão.
+				cardLast4: accountId && cardLast4?.length === 4 ? cardLast4 : null,
 			};
 
 			if (isEditing && initialTransaction) {
@@ -366,7 +369,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				/>
 				{errors.category ? <Text style={styles.errorText}>{errors.category}</Text> : null}
 
-				<AccountPicker selectedAccountId={accountId} onSelect={setAccountId} />
+				<AccountPicker selectedAccountId={accountId} onSelect={setAccountId} selectedLast4={cardLast4} onSelectLast4={setCardLast4} />
 
 				<View style={styles.formGroup}>
 					<Text style={styles.label}>Date</Text>

@@ -4,6 +4,12 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.4] — 2026-09-20
+
+- Lançamento manual num cartão de crédito: dá para dizer **qual cartão** fez a compra — o
+  físico, um virtual já visto (pelo final ou pelo nome) ou um final novo digitado. Editar um
+  lançamento também permite trocar o cartão. Todos caem na mesma fatura.
+
 ## [1.2.3] — 2026-09-19
 
 - A tela inicial avisa quando a **captura está desligada** (o Android não está entregando

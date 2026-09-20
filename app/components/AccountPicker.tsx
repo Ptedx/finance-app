@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account, AccountKind } from '../database/schema';
+import { parseCardNames } from '../utils/cardNames';
 
 /**
  * De qual conta ou cartão saiu (ou entrou) o dinheiro. Uma linha de fichas, com
@@ -13,6 +14,10 @@ import type { Account, AccountKind } from '../database/schema';
  * Fichas são botões de rádio para o leitor de tela (`accessibilityRole="radio"` com
  * `selected`), têm 48 pontos de altura e o estado selecionado não depende só de cor:
  * a ficha ativa ganha ícone de check.
+ *
+ * Com um cartão de crédito escolhido, uma segunda linha pergunta **qual cartão** fez a
+ * compra: o físico e os virtuais já vistos nessa conta (pelo final), ou um final novo
+ * digitado. Todos caem na mesma fatura; o final só diz de qual cartão foi.
  */
 
 export const ACCOUNT_KIND_ICONS: Record<AccountKind, React.ComponentProps<typeof Ionicons>['name']> = {
@@ -26,9 +31,12 @@ export const ACCOUNT_KIND_ICONS: Record<AccountKind, React.ComponentProps<typeof
 interface AccountPickerProps {
 	selectedAccountId: string | null;
 	onSelect: (accountId: string | null) => void;
+	/** Final do cartão que fez a compra. Sem `onSelectLast4`, a linha dos cartões não aparece. */
+	selectedLast4?: string | null;
+	onSelectLast4?: (last4: string | null) => void;
 }
 
-const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSelect }) => {
+const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSelect, selectedLast4 = null, onSelectLast4 }) => {
 	const { t } = useTranslation();
 	const { activeAccounts } = useAccounts();
 
@@ -39,7 +47,7 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 		return (
 			<Pressable
 				key={key}
-				onPress={() => onSelect(value)}
+				onPress={() => pickAccount(value)}
 				accessibilityRole="radio"
 				accessibilityState={{ selected }}
 				accessibilityLabel={label}
@@ -57,7 +65,39 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 		);
 	};
 
+	const selectedAccount = activeAccounts.find((account) => account.id === selectedAccountId);
+	const showCards = Boolean(onSelectLast4) && selectedAccount?.kind === 'credit_card';
+	const names = parseCardNames(selectedAccount?.cardNames);
+	const knownCards = [...new Set([...(selectedAccount?.last4 ? [selectedAccount.last4] : []), ...Object.keys(names)])];
+	const isNewCard = selectedLast4 !== null && !knownCards.includes(selectedLast4);
+
+	const pickAccount = (value: string | null) => {
+		if (value !== selectedAccountId) onSelectLast4?.(null);
+		onSelect(value);
+	};
+
+	const cardChip = (last4: string | null, label: string) => {
+		const selected = selectedLast4 === last4;
+		const color = selectedAccount?.color ?? '#15E8FE';
+		return (
+			<Pressable
+				key={last4 ?? 'unknown'}
+				onPress={() => onSelectLast4?.(last4)}
+				accessibilityRole="radio"
+				accessibilityState={{ selected }}
+				accessibilityLabel={label}
+				style={({ pressed }) => [styles.chip, selected && { borderColor: color, backgroundColor: `${color}22` }, pressed && styles.pressed]}
+			>
+				<Ionicons name={selected ? 'checkmark-circle' : 'card-outline'} size={18} color={selected ? color : 'rgba(255,255,255,0.8)'} />
+				<Text style={[styles.chipLabel, selected && { color }]} numberOfLines={1}>
+					{label}
+				</Text>
+			</Pressable>
+		);
+	};
+
 	return (
+		<>
 		<View style={styles.group} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.picker.label')}>
 			<Text style={styles.label}>{t('accounts.picker.label')}</Text>
 			<Text style={styles.hint}>{t('accounts.picker.hint')}</Text>
@@ -68,10 +108,44 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 				)}
 			</ScrollView>
 		</View>
+		{showCards ? (
+			<View style={styles.group}>
+				<Text style={styles.label}>{t('accounts.picker.cardLabel')}</Text>
+				<Text style={styles.hint}>{t('accounts.picker.cardHint')}</Text>
+				<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.picker.cardLabel')}>
+					{cardChip(null, t('accounts.picker.cardUnknown'))}
+					{knownCards.map((last4) => cardChip(last4, names[last4] ? `${names[last4]} · ${last4}` : t('accounts.picker.cardEnding', { last4 })))}
+				</ScrollView>
+				<TextInput
+					style={styles.last4Input}
+					value={isNewCard ? (selectedLast4 ?? '') : ''}
+					onChangeText={(text) => {
+						const digits = text.replace(/\D/g, '').slice(0, 4);
+						onSelectLast4?.(digits === '' ? null : digits);
+					}}
+					keyboardType="number-pad"
+					maxLength={4}
+					placeholder={t('accounts.picker.cardOther')}
+					placeholderTextColor="rgba(255,255,255,0.35)"
+					accessibilityLabel={t('accounts.picker.cardOther')}
+				/>
+			</View>
+		) : null}
+		</>
 	);
 };
 
 const styles = StyleSheet.create({
+	last4Input: {
+		minHeight: 48,
+		marginTop: 10,
+		paddingHorizontal: 14,
+		borderRadius: 10,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.2)',
+		color: '#FFFFFF',
+		fontSize: 16,
+	},
 	group: {
 		marginBottom: 20,
 	},
