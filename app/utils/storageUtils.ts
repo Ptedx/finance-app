@@ -5,6 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * drift apart on a string literal.
  */
 export const STORAGE_KEYS = {
+	/** O usuário dispensou o aviso "captura desligada" da tela inicial. */
+	captureAccessDismissed: 'captureAccessDismissed',
 	budgets: 'monthlyBudgets',
 	selectedCurrency: 'selectedCurrency',
 	/** A última taxa CDI do Banco Central (ver api/cdi.ts). */
