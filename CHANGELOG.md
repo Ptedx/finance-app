@@ -4,6 +4,40 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.6] — 2026-10-11
+
+- **Só banco vira conta.** Qualquer notificação com um valor criava uma conta com o nome do
+  app que avisou: nasceram contas "WhatsApp", "Gmail", "Messages", "Google" e "99" ao lado
+  das de verdade, e a compra podia cair numa delas. Agora o app só cria conta quando
+  reconhece o banco; sem isso a captura fica **sem conta** e você diz de onde saiu.
+- **Aviso repassado cai no banco certo.** O SMS, o e-mail ou o mensageiro que repassa o
+  aviso do banco agora entra na conta daquele banco, e o app do mensageiro nunca fica
+  gravado como origem da conta.
+- **As contas fantasma que já existiam saem sozinhas** na atualização — só as vazias. Com
+  lançamento, transferência ou captura apontando para ela, a conta fica e você decide.
+- **"Duas contas do mesmo banco"**: a tela de Contas avisa quando duas fichas parecem a
+  mesma conta do banco (uma recebendo o que o banco avisa, a outra cadastrada à mão) e
+  pergunta qual fica. Com três fichas do mesmo banco nada é sugerido.
+- **"Compras do app do banco"**: a tela da conta mostra em qual conta entram as compras que
+  o app daquele banco avisa, e deixa trazê-las para esta. Era o único vínculo invisível do
+  app — e era ele que mandava a compra do Inter para a conta "errada".
+- **Final de débito nomeado decide a conta.** O final que você nomeia numa conta corrente
+  ("Débito Inter", final 0443) passa a levar a compra para aquela conta, mesmo quando o
+  banco também tem cartão de crédito. Antes os nomes só valiam para cartões.
+- **Juntar contas não perde mais nada**: os nomes dos cartões virtuais da ficha que sai, o
+  final do plástico dela, o valor mensal do envelope e o rendimento combinado vão junto.
+  Antes o nome do cartão era gravado e sobrescrito em seguida, e a notificação do virtual
+  voltava a criar a duplicata.
+- **Parcelamento longo passa a ter fatura.** As faturas futuras paravam no 12º mês: um
+  parcelamento de 36 vezes somava no limite usado, mas as parcelas depois do 12º mês não
+  apareciam em fatura nenhuma. Agora o horizonte vai até 48 — o maior parcelamento que o
+  app aceita.
+- **O mês das parcelas é o mês da fatura.** "3 parcelas de R$ 200, de ago a out" mostrava
+  um mês antes da fatura que cobra cada uma, porque usava a data do lançamento (o começo
+  do ciclo) e não o mês em que a fatura fecha. Valia para a prévia de "Compra parcelada
+  antiga" e para "Parcelas em andamento", e fazia conferir com a fatura do banco dar um
+  mês de diferença.
+
 ## [1.2.5] — 2026-09-20
 
 - A primeira notificação de um banco passa a **adotar a conta que você cadastrou à mão**,

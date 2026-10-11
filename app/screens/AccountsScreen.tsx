@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AccountRow } from '../components/AccountsOverview';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
+import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
 import { formatCents } from '../utils/money';
 
 /**
@@ -18,7 +19,7 @@ const ACCENT = '#15E8FE';
 const AccountsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, overview } = useAccounts();
+	const { accounts, balances, overview, mergeAccounts } = useAccounts();
 
 	// Só contas: cartões vivem em /cards.
 	const bankOnly = accounts.filter((account) => account.kind !== 'credit_card');
@@ -26,6 +27,35 @@ const AccountsScreen = () => {
 	const archived = bankOnly.filter((account) => account.archived);
 	const openAccount = (account: Account) =>
 		router.push({ pathname: '/accounts/[id]', params: { id: account.id } });
+
+	/**
+	 * Duas fichas da mesma conta do banco mostram metade do dinheiro cada uma, e o que o
+	 * banco avisa cai só numa delas. O aviso aparece aqui porque é a tela onde as duas
+	 * estão lado a lado — quem escolhe qual fica é o usuário, não o app.
+	 */
+	const duplicates = duplicateAccountPairs(accounts);
+
+	const askMerge = (pair: DuplicateAccounts) => {
+		Alert.alert(
+			t('accounts.duplicate.title'),
+			t('accounts.duplicate.confirm', { fed: pair.fed.name, loose: pair.loose.name }),
+			[
+				{ text: t('accounts.duplicate.cancel'), style: 'cancel' },
+				{
+					text: t('accounts.duplicate.keep', { name: pair.fed.name }),
+					onPress: () => {
+						void mergeAccounts(pair.loose.id, pair.fed.id);
+					},
+				},
+				{
+					text: t('accounts.duplicate.keep', { name: pair.loose.name }),
+					onPress: () => {
+						void mergeAccounts(pair.fed.id, pair.loose.id);
+					},
+				},
+			]
+		);
+	};
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -60,6 +90,27 @@ const AccountsScreen = () => {
 					</Text>
 
 				</View>
+
+				{duplicates.map((pair) => (
+					<View key={pair.loose.id} style={styles.duplicate}>
+						<Text style={styles.duplicateTitle} accessibilityRole="header">
+							{t('accounts.duplicate.title')}
+						</Text>
+						<Text style={styles.duplicateBody}>
+							{t('accounts.duplicate.body', { fed: pair.fed.name, loose: pair.loose.name })}
+						</Text>
+						<Pressable
+							onPress={() => askMerge(pair)}
+							accessibilityRole="button"
+							accessibilityLabel={t('accounts.duplicate.action')}
+							accessibilityHint={t('accounts.duplicate.hint')}
+							style={({ pressed }) => [styles.duplicateButton, pressed && styles.pressed]}
+						>
+							<Ionicons name="git-merge-outline" size={18} color="#000000" />
+							<Text style={styles.duplicateButtonText}>{t('accounts.duplicate.action')}</Text>
+						</Pressable>
+					</View>
+				))}
 
 				<Pressable
 					onPress={() => router.push('/accounts/new')}
@@ -144,6 +195,37 @@ const styles = StyleSheet.create({
 	totalsNet: {
 		fontWeight: '700',
 		color: '#FFFFFF',
+	},
+	duplicate: {
+		backgroundColor: '#FFB74D',
+		borderRadius: 12,
+		padding: 16,
+		marginBottom: 12,
+		gap: 8,
+	},
+	duplicateTitle: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#000000',
+	},
+	duplicateBody: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#000000',
+	},
+	duplicateButton: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: 8,
+		minHeight: 48,
+		borderRadius: 10,
+		backgroundColor: '#FFFFFF',
+	},
+	duplicateButtonText: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: '#000000',
 	},
 	addButton: {
 		flexDirection: 'row',

@@ -17,6 +17,7 @@ import {
 	owedOn,
 	planCardAdjustment,
 	shiftCycle,
+	invoiceMonthOf,
 } from '../cardMath';
 import { addDays, buildClampedDate } from '../dateUtils';
 
@@ -448,5 +449,27 @@ describe('invoicesClosingBetween — fechamento no primeiro dia do mês', () => 
 	it('a fatura que fecha em 01/09 é a de setembro', () => {
 		const s = settings({ closingDay: 1 });
 		expect(invoicesClosingBetween(s, [purchase('2026-08-15', 7_000)], '2026-09-01', '2026-09-30')).toBe(7_000);
+	});
+});
+
+describe('invoiceMonthOf — em qual fatura a parcela cai', () => {
+	const rule = { closingDay: 25, dueDaysAfter: 7 };
+
+	it('compra depois do fechamento é da fatura do mês seguinte', () => {
+		// Fecha 25/09: a compra de 26/09 entra na fatura que fecha em outubro.
+		expect(invoiceMonthOf('2026-09-26', rule)).toBe('2026-10');
+	});
+
+	it('compra antes do fechamento é da fatura do mês', () => {
+		expect(invoiceMonthOf('2026-09-24', rule)).toBe('2026-09');
+	});
+
+	it('a parcela datada no começo do ciclo aberto é da fatura seguinte', () => {
+		// É exatamente a data que `existingInstallmentDates` usa: o fechamento anterior.
+		expect(invoiceMonthOf('2026-09-25', rule)).toBe('2026-10');
+	});
+
+	it('sem fechamento, vale o mês da data', () => {
+		expect(invoiceMonthOf('2026-09-26', null)).toBe('2026-09');
 	});
 });

@@ -256,8 +256,10 @@ export const DATABASE_NAME = 'spendr.db';
  *     marked them as sent.
  * 17 — `reserve_goals` is created (the emergency reserve target, one synced row);
  *     accounts gain `reservePurpose` (an investment-only reserve stays out of the cascade).
+ * 18 — no column changes: accounts invented from a non-bank app ("WhatsApp", "Gmail",
+ *     "99") are tombstoned, but only the empty ones. Nothing creates them any more.
  */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [

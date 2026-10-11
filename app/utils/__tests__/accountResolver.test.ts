@@ -87,7 +87,7 @@ describe('a conta de uma notificação', () => {
 
 		const resolved = await resolveAccountForNotification(debitPurchase, parsed);
 
-		expect(resolved.id).toBe('inter-pf');
+		expect(resolved?.id).toBe('inter-pf');
 		expect(mocked.addAccount).not.toHaveBeenCalled();
 		// A conta passa a conhecer o app: a próxima notificação cai nela direto.
 		expect(mocked.updateAccount).toHaveBeenCalledWith(expect.objectContaining({ id: 'inter-pf', packageName: INTER }));
@@ -96,7 +96,7 @@ describe('a conta de uma notificação', () => {
 	it('adota também a conta que veio do extrato (OFX)', async () => {
 		withAccounts([account({ id: 'inter-ofx', name: 'Inter', bankName: 'Inter', accountKey: 'inter:0001' })]);
 
-		expect((await resolveAccountForNotification(debitPurchase, parsed)).id).toBe('inter-ofx');
+		expect((await resolveAccountForNotification(debitPurchase, parsed))?.id).toBe('inter-ofx');
 		expect(mocked.addAccount).not.toHaveBeenCalled();
 	});
 
@@ -129,12 +129,72 @@ describe('a conta de uma notificação', () => {
 		expect(mocked.addAccount).toHaveBeenCalledTimes(1);
 	});
 
+	it('app que não é banco não vira conta: a captura fica sem conta', async () => {
+		withAccounts([account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter' })]);
+
+		const resolved = await resolveAccountForNotification(
+			{
+				packageName: 'com.whatsapp',
+				appLabel: 'WhatsApp',
+				title: 'Mãe',
+				text: 'passa R$ 26,47 pra mim depois',
+				postedAt: '2026-09-19T23:51:00.000Z',
+			},
+			parsed
+		);
+
+		expect(resolved).toBeNull();
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+	});
+
+	it('aviso repassado por SMS cai na conta do banco que o texto cita, sem levar o app do SMS', async () => {
+		const inter = account({ id: 'inter-app', name: 'Inter', bankName: 'Inter', packageName: INTER });
+		withAccounts([inter]);
+
+		const resolved = await resolveAccountForNotification(
+			{
+				packageName: 'com.google.android.apps.messaging',
+				appLabel: 'Messages',
+				title: 'Inter',
+				text: 'Banco Inter: compra no débito aprovada de R$ 26,47 no ATACADAO DIA A DIA.',
+				postedAt: '2026-09-19T23:51:00.000Z',
+			},
+			parsed
+		);
+
+		expect(resolved?.id).toBe('inter-app');
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+		// O pacote do SMS nunca vira a origem da conta: senão o Messages "viraria" o banco.
+		expect(mocked.updateAccount).not.toHaveBeenCalled();
+	});
+
+	it('final de débito nomeado numa conta corrente leva a compra para ela', async () => {
+		withAccounts([
+			account({
+				id: 'inter-pf',
+				name: 'Inter PF',
+				bankName: 'Inter',
+				cardNames: '{"0443":"Débito Inter"}',
+			}),
+			account({ id: 'inter-credito', name: 'Cartão Inter', kind: 'credit_card', role: 'card', bankName: 'Inter', packageName: INTER }),
+		]);
+
+		const resolved = await resolveAccountForNotification(
+			{ ...debitPurchase, text: 'Compra aprovada no cartão final 0443 no ATACADAO DIA A DIA de R$ 26,47' },
+			{ ...parsed, cardLast4: '0443' }
+		);
+
+		// O cartão de crédito do Inter é o único do banco, mas o final declarado vence.
+		expect(resolved?.id).toBe('inter-pf');
+		expect(mocked.updateAccount).toHaveBeenCalledWith(expect.objectContaining({ id: 'inter-pf', packageName: INTER }));
+	});
+
 	it('a conta que já tem o app vem direto, sem adoção', async () => {
 		const bound = account({ id: 'inter-app', name: 'Inter', bankName: 'Inter', packageName: INTER });
 		mocked.findAccountBySource.mockResolvedValue(bound);
 		withAccounts([bound]);
 
-		expect((await resolveAccountForNotification(debitPurchase, parsed)).id).toBe('inter-app');
+		expect((await resolveAccountForNotification(debitPurchase, parsed))?.id).toBe('inter-app');
 		expect(mocked.addAccount).not.toHaveBeenCalled();
 		expect(mocked.updateAccount).not.toHaveBeenCalled();
 	});

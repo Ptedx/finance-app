@@ -29,6 +29,7 @@ import {
 	defaultRoleFor,
 	type Transaction,
 } from '../database/schema';
+import { feedOwnerOf } from '../utils/accountBinding';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { formatDate, todayISO } from '../utils/dateUtils';
@@ -65,7 +66,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, adjustAccountMonth } =
+	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, takeNotifications, adjustAccountMonth } =
 		useAccounts();
 	const { transactions } = useTransactions();
 
@@ -216,6 +217,31 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						]);
 					},
 				})),
+			]
+		);
+	};
+
+	/**
+	 * Quem recebe as compras que o app deste banco avisa. O vínculo é invisível na tela e
+	 * nasce de qual ficha a primeira notificação encontrou — então é aqui que o usuário vê
+	 * para onde o dinheiro do banco está indo, e muda.
+	 */
+	const feedOwner = existing && existing.kind !== 'credit_card' ? feedOwnerOf(accounts, existing) : null;
+
+	const handleTakeNotifications = () => {
+		if (!existing || !feedOwner || feedOwner.id === existing.id) return;
+		Alert.alert(
+			t('accounts.edit.feedTitle'),
+			t('accounts.edit.feedConfirm', { from: feedOwner.name, into: existing.name }),
+			[
+				{ text: t('accounts.edit.cancel'), style: 'cancel' },
+				{
+					text: t('accounts.edit.feedTake'),
+					onPress: async () => {
+						await takeNotifications(existing.id);
+						announce(t('accounts.edit.feedMoved', { name: existing.name }));
+					},
+				},
 			]
 		);
 	};
@@ -495,6 +521,31 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							</Pressable>
 						</View>
 					)}
+
+					{existing && feedOwner ? (
+						<View style={styles.section}>
+							<Text style={styles.sectionTitle} accessibilityRole="header">
+								{t('accounts.edit.feedTitle')}
+							</Text>
+							<Text style={styles.empty}>
+								{feedOwner.id === existing.id
+									? t('accounts.edit.feedHere')
+									: t('accounts.edit.feedElsewhere', { name: feedOwner.name })}
+							</Text>
+							{feedOwner.id === existing.id ? null : (
+								<Pressable
+									onPress={handleTakeNotifications}
+									accessibilityRole="button"
+									accessibilityLabel={t('accounts.edit.feedTake')}
+									accessibilityHint={t('accounts.edit.feedHint')}
+									style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+								>
+									<Ionicons name="swap-horizontal-outline" size={18} color="#FFFFFF" />
+									<Text style={styles.secondaryButtonText}>{t('accounts.edit.feedTake')}</Text>
+								</Pressable>
+							)}
+						</View>
+					) : null}
 
 					{existing && (
 						<View style={styles.section}>

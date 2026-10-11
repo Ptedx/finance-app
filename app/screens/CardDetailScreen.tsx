@@ -15,7 +15,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
 import { sameBank } from '../utils/accountResolver';
-import { cycleRuleOf, existingInstallmentDates, type InvoiceView } from '../utils/cardMath';
+import { cycleRuleOf, existingInstallmentDates, invoiceMonthOf, type InvoiceView } from '../utils/cardMath';
 import { usageByCard } from '../utils/cardNames';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
@@ -357,7 +357,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									parcel: formatCents(plan.parcelCents),
 									remaining: plan.remainingCount,
 									total: plan.totalCount,
-									last: formatMonthShort(plan.lastDate),
+									// O mês da fatura que cobra a última parcela, não o mês em que ela está datada.
+									last: formatMonthShort(`${invoiceMonthOf(plan.lastDate, cycleRuleOf(card))}-01`),
 								});
 								return (
 									<View
@@ -678,8 +679,8 @@ const InstallmentsSheet: React.FC<{
 					{t('cards.installments.preview', {
 						count: dates.length,
 						amount: formatCents(parcelCents),
-						first: formatMonthShort(dates[0].date),
-						last: formatMonthShort(dates[dates.length - 1].date),
+						first: formatMonthShort(`${invoiceMonthOf(dates[0].date, cycleRuleOf(card))}-01`),
+						last: formatMonthShort(`${invoiceMonthOf(dates[dates.length - 1].date, cycleRuleOf(card))}-01`),
 					})}
 				</Text>
 			) : null}

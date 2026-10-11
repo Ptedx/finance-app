@@ -4,7 +4,7 @@
  */
 
 import type { Account, Capture } from '../database/schema';
-import { brandFor } from './bankBrands';
+import { BANK_BRANDS, brandFor } from './bankBrands';
 import { isWalletPackage, normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
 
 /** "Nu" e "Nubank", "Inter" e "Banco Inter": o mesmo banco, escrito de dois jeitos. */
@@ -57,8 +57,31 @@ const namedFinals = (account: Account): string[] => {
 	}
 };
 
+/**
+ * O banco de um aviso, quando dá para saber.
+ *
+ * O app ouve a notificação de todo mundo, e meio mundo fala de dinheiro: o app de
+ * corrida avisa o valor da viagem, o SMS e o mensageiro repassam o aviso que o banco
+ * mandou, o e-mail mostra a fatura. Nada disso é uma conta — foi assim que nasceram
+ * contas chamadas "WhatsApp" e "Messages" ao lado das de verdade.
+ *
+ * Banco reconhecido pelo nome do app ("Inter", "Nu") é banco. Senão, vale o banco que o
+ * texto citar, como no aviso da carteira. Sem nenhum dos dois, o aviso não vira conta.
+ */
+export const bankLabelOf = (raw: Pick<RawCapture, 'appLabel' | 'title' | 'text'>): string | null => {
+	if (brandFor(raw.appLabel)) return raw.appLabel;
+	const text = normalizeText(`${raw.title} ${raw.text}`);
+	return BANK_BRANDS.find((brand) => textMentionsBank(text, brand.name))?.name ?? null;
+};
+
+/** Quem avisou não é o app do banco: carteira, SMS, e-mail, mensageiro, loja. */
+export const isForeignApp = (raw: Pick<RawCapture, 'packageName' | 'appLabel'>): boolean =>
+	isWalletPackage(raw.packageName) || brandFor(raw.appLabel) === null;
+
 export type NotificationTarget =
 	| { type: 'card'; account: Account }
+	/** Uma conta certa, não "a corrente do app": o final de débito que ela declarou. */
+	| { type: 'account'; account: Account }
 	| { type: 'new_card' }
 	| { type: 'checking' };
 
@@ -80,10 +103,33 @@ export const pickNotificationTarget = (
 	notification: { packageName: string; appLabel: string; title: string; text: string; cardLast4: string | null }
 ): NotificationTarget => {
 	const hint = cardHintOf(notification);
+	const foreign = isForeignApp(notification);
+	const text = normalizeText(`${notification.title} ${notification.text}`);
+	/** Do mesmo banco do aviso: pelo app que avisou, ou pelo banco citado no texto. */
+	const ofNotificationBank = (account: Account): boolean =>
+		foreign
+			? textMentionsBank(text, account.bankName)
+			: (account.packageName !== null && account.packageName === notification.packageName) ||
+				sameBank(account.bankName, notification.appLabel);
+
+	// Final nomeado numa conta que não é cartão é cartão de débito: a compra é daquela
+	// conta, mesmo quando o banco também tem cartão de crédito. Quem declarou decide, e
+	// por isso vem antes de tudo — inclusive do aviso que diz "débito" sem dizer a conta.
+	if (notification.cardLast4) {
+		const last4 = notification.cardLast4;
+		const debit = accounts.find(
+			(account) =>
+				account.kind !== 'credit_card' &&
+				!account.archived &&
+				!account.deletedAt &&
+				namedFinals(account).includes(last4) &&
+				ofNotificationBank(account)
+		);
+		if (debit) return { type: 'account', account: debit };
+	}
+
 	if (!notification.cardLast4 || hint === 'debit') return { type: 'checking' };
 
-	const wallet = isWalletPackage(notification.packageName);
-	const text = normalizeText(`${notification.title} ${notification.text}`);
 	const cards = accounts.filter(
 		(account) =>
 			account.kind === 'credit_card' &&
@@ -91,21 +137,16 @@ export const pickNotificationTarget = (
 			!account.deletedAt &&
 			!DEBIT_NAME.test(normalizeText(`${account.name} ${account.bankName ?? ''}`))
 	);
-	const ofBank = cards.filter((card) =>
-		wallet
-			? textMentionsBank(text, card.bankName)
-			: (card.packageName !== null && card.packageName === notification.packageName) ||
-				sameBank(card.bankName, notification.appLabel)
-	);
+	const ofBank = cards.filter(ofNotificationBank);
 
 	// O final do plástico ou de um virtual já nomeado: com dois cartões de crédito do mesmo
 	// banco (PF e PJ, por exemplo), é isso que decide a fatura.
-	const exact = (wallet ? cards : ofBank).find(
+	const exact = (foreign ? cards : ofBank).find(
 		(card) => card.last4 === notification.cardLast4 || namedFinals(card).includes(notification.cardLast4 as string)
 	);
 	if (exact) return { type: 'card', account: exact };
 	if (ofBank.length === 1) return { type: 'card', account: ofBank[0] };
-	if (hint === 'credit' && !wallet && ofBank.length === 0) return { type: 'new_card' };
+	if (hint === 'credit' && !foreign && ofBank.length === 0) return { type: 'new_card' };
 	return { type: 'checking' };
 };
 

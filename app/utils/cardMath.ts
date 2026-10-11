@@ -39,6 +39,7 @@
 
 import { DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
 import { nextBusinessDay } from './businessDays';
+import { MAX_INSTALLMENTS } from './installments';
 import { addDays, addMonthsClamped, buildClampedDate, parseISODate } from './dateUtils';
 
 export interface InvoiceCycle {
@@ -300,6 +301,16 @@ export const buildInstallmentPlans = (entries: CardEntry[], today: string): Inst
 	return plans.sort((a, b) => a.nextDate.localeCompare(b.nextDate) || a.note.localeCompare(b.note));
 };
 
+/**
+ * Em qual fatura um lançamento cai: `YYYY-MM` do mês em que ela fecha.
+ *
+ * Não é o mês da data. Com fechamento no dia 25, a compra de 26 de setembro está na
+ * fatura de **outubro**, e a parcela que o app data em 25/09 (o começo do ciclo aberto)
+ * também. Usar o mês da data mostraria a parcela um mês antes da fatura que a cobra.
+ */
+export const invoiceMonthOf = (date: string, rule: CycleRule | null): string =>
+	rule === null ? date.slice(0, 7) : cycleFor(date, rule).key;
+
 /** Pagamentos (entradas no cartão) com data em [from, until). */
 const paymentsBetween = (movements: CardMovement[], from: string, until: string): number => {
 	let total = 0;
@@ -311,7 +322,12 @@ const paymentsBetween = (movements: CardMovement[], from: string, until: string)
 
 const DUE_SOON_DAYS = 3;
 const PAST_INVOICES = 6;
-const FUTURE_INVOICES = 12;
+/**
+ * Até onde as faturas futuras vão: o maior parcelamento que o app aceita (48). As vazias
+ * são descartadas logo abaixo, então o custo é só percorrer os ciclos — e um
+ * parcelamento de 36 vezes deixa de ter parcelas em faturas que não existem na tela.
+ */
+const FUTURE_INVOICES = MAX_INSTALLMENTS;
 
 export const buildCardSummary = (
 	settings: CardSettings,
@@ -580,5 +596,6 @@ export default {
 	buildCardSummary,
 	buildInstallmentPlans,
 	existingInstallmentDates,
+	invoiceMonthOf,
 	daysBetween,
 };

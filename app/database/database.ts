@@ -1,3 +1,4 @@
+import { brandFor } from '../utils/bankBrands';
 import { planDebitCardConversions } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -571,6 +572,7 @@ const runMigrations = async (): Promise<void> => {
 	if (version < 15) await migrateDebts();
 	if (version < 16) await migrateYieldAndFees();
 	if (version < 17) await migrateReserve();
+	if (version < 18) await migratePhantomAppAccounts();
 
 	await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 };
@@ -698,6 +700,60 @@ const migrateYieldAndFees = async (): Promise<void> => {
  * v16 -> v17: a meta da reserva de emergência ganha sua tabela sincronizada, e as contas,
  * `reservePurpose`. Só acréscimos: um app 1.1 abre um banco v17 e ignora os dois.
  */
+/**
+ * v17 -> v18: fora as contas que nasceram de um app que não é banco.
+ *
+ * Até aqui, qualquer notificação com um valor criava uma conta com o nome do app que
+ * avisou. O mensageiro que repassa o SMS do banco, o e-mail com a fatura, o app de
+ * corrida: nasceram contas "WhatsApp", "Gmail" e "99" do lado das de verdade, e a
+ * compra podia cair numa delas. `bankLabelOf` não as cria mais; aqui saem as que
+ * ficaram.
+ *
+ * Só as vazias. Com lançamento, transferência ou captura apontando para ela, a conta
+ * fica — pode ser um banco que a lista de marcas não conhece, e nesse caso o dinheiro é
+ * real. Marca a lápide como suja, para a limpeza subir no próximo sync.
+ */
+const migratePhantomAppAccounts = async (): Promise<void> => {
+	if (!(await tableExists('accounts'))) return;
+
+	const bound = (
+		await db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE deletedAt IS NULL AND packageName IS NOT NULL')
+	).map(convertAccount);
+	// Nome igual ao do banco e âncora zerada é a assinatura da conta criada sozinha; marca
+	// conhecida (Nubank, Inter…) nunca é fantasma, mesmo que o resto bata.
+	const phantoms = bound.filter(
+		(account) =>
+			account.accountKey === null &&
+			account.openingBalanceCents === 0 &&
+			account.bankName !== null &&
+			account.name === account.bankName &&
+			brandFor(account.bankName) === null
+	);
+	if (phantoms.length === 0) return;
+
+	const hasCaptures = await tableExists('captures');
+	const timestamp = nowTimestamp();
+	for (const account of phantoms) {
+		const inUse = await db.getFirstAsync<{ total: number }>(
+			`SELECT (SELECT COUNT(*) FROM transactions WHERE accountId = ? AND deletedAt IS NULL)
+						+ (SELECT COUNT(*) FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL)
+						+ ${hasCaptures ? '(SELECT COUNT(*) FROM captures WHERE accountId = ?)' : '0'} AS total`,
+			hasCaptures
+				? [account.id, account.id, account.id, account.id]
+				: [account.id, account.id, account.id]
+		);
+		// Na dúvida (consulta sem resposta), a conta fica.
+		if ((inUse?.total ?? 1) > 0) continue;
+		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+			timestamp,
+			timestamp,
+			account.id,
+		]);
+	}
+
+	console.log('Migrated phantom app accounts');
+};
+
 const migrateReserve = async (): Promise<void> => {
 	await db.execAsync(CREATE_RESERVE_GOALS_TABLE);
 	if (await tableExists('accounts')) {
