@@ -5,15 +5,17 @@ import * as authApi from '../api/auth';
 import { ApiError, isApiConfigured, setSessionLostHandler } from '../api/client';
 import { fetchSyncStatus } from '../api/sync';
 import { loadTokens } from '../api/tokens';
+import { clearSyncedData, countLocalData, markEverythingDirty } from '../database/database';
 import {
-	clearSyncedData,
-	clearSyncState,
-	countLocalData,
-	type LocalDataCounts,
-	markEverythingDirty,
-} from '../database/database';
-import { pullAll, replaceAccountWithDevice } from '../sync/engine';
-import type { SyncStatusResponse } from '../sync/types';
+	beginSessionFor,
+	type ClaimCounts,
+	clearPendingClaim,
+	endSyncSession,
+	type PendingClaim,
+	readPendingClaim,
+	savePendingClaim,
+} from '../sync/claim';
+import { pullAll, replaceAccountWithDevice, resetCursor } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
 
 /**
@@ -27,11 +29,12 @@ import * as syncQueue from '../sync/queue';
  */
 export type ClaimChoice = 'upload' | 'discard' | 'merge';
 
-/** Os dois lados, para a tela mostrar o que está em jogo antes da escolha. */
-export interface ClaimCounts {
-	account: SyncStatusResponse['counts'];
-	device: LocalDataCounts;
-}
+/**
+ * Os dois lados, para a tela mostrar o que está em jogo antes da escolha. Mora em
+ * `sync/claim.ts` junto com a gravação do claim, e é reexportado aqui porque é daqui
+ * que as telas o leem.
+ */
+export type { ClaimCounts };
 
 interface AuthContextType {
 	/** Nulo enquanto carrega a sessão guardada, e no modo anônimo. */
@@ -69,12 +72,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	// ligar a fila antes empurraria os dados locais para uma conta que talvez não os queira.
 	const claimBlocking = useRef(false);
 
+	/**
+	 * Põe a pergunta de volta na tela e mantém a fila desligada. Usado tanto quando a
+	 * pergunta nasce (`afterSignIn`) quanto quando ela é recuperada do banco na abertura.
+	 */
+	const resumeClaim = useCallback((claim: PendingClaim) => {
+		claimBlocking.current = true;
+		setClaimCounts(claim.counts);
+		setPendingClaim(true);
+	}, []);
+
+	/**
+	 * Fim de sessão: pelo "sair" ou porque o refresh foi recusado.
+	 *
+	 * O estado de sync vai junto — cursor, último sync e qualquer claim pendente. Ele
+	 * descreve o progresso naquela conta, e sobreviver a ela era o que fazia um login em
+	 * outra conta abrir sem nada: o cursor antigo escondia tudo o que a conta nova tinha
+	 * gravado antes dele.
+	 */
 	const endSession = useCallback(() => {
 		syncQueue.stop();
 		setAccount(null);
 		setPendingClaim(false);
 		setClaimCounts(null);
 		claimBlocking.current = false;
+
+		// Sem `await`: quem chama é o cliente HTTP, que não espera ninguém. Falhar aqui
+		// não pode impedir a volta ao modo anônimo.
+		endSyncSession().catch((error) => {
+			console.warn('Não foi possível limpar o estado de sync da sessão encerrada:', error);
+		});
 	}, []);
 
 	// Restaura a sessão guardada na abertura. Uma falha aqui abre o app no modo anônimo
@@ -84,15 +111,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			try {
 				if (!isApiConfigured() || !(await loadTokens())) return;
 
-				setAccount(await authApi.fetchProfile());
-				syncQueue.start();
-			} catch (error) {
-				if (error instanceof ApiError && error.isOffline) {
-					// Sem rede na abertura não significa sessão inválida. A fila liga e
-					// tenta sozinha; o perfil chega quando a conexão voltar.
-					syncQueue.start();
+				let accountId: string | null = null;
+				try {
+					const profile = await authApi.fetchProfile();
+					setAccount(profile);
+					accountId = profile.id;
+				} catch (error) {
+					if (!(error instanceof ApiError && error.isOffline)) throw error;
+					// Sem rede na abertura não significa sessão inválida: o perfil chega
+					// quando a conexão voltar.
+				}
+
+				// A escolha pendente é relida do banco, com rede ou sem ela: enquanto não
+				// houver resposta a fila não liga. Era este o furo — a pergunta só existia
+				// na memória, e quem fechava o app no meio dela (ou tinha o processo morto
+				// pelo Android) voltava com os dois conjuntos **juntados**, em silêncio.
+				const pending = await readPendingClaim();
+				if (pending && (accountId === null || pending.accountId === accountId)) {
+					resumeClaim(pending);
 					return;
 				}
+				// Claim de outra conta: a sessão dele já acabou, a pergunta não é mais desta.
+				if (pending) await clearPendingClaim();
+
+				syncQueue.start();
+			} catch (error) {
 				console.warn('Não foi possível restaurar a sessão:', error);
 				endSession();
 			} finally {
@@ -101,7 +144,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		};
 
 		restore();
-	}, [endSession]);
+	}, [endSession, resumeClaim]);
 
 	// O cliente HTTP avisa quando a sessão morre de vez (refresh recusado).
 	useEffect(() => {
@@ -132,37 +175,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	 * aparelho que já sincronizou com outra conta e saiu tem tudo limpo, e antes era
 	 * mesclado sem pergunta nenhuma.
 	 */
-	const afterSignIn = useCallback(async () => {
-		const [status, device] = await Promise.all([fetchSyncStatus(), countLocalData()]);
+	const afterSignIn = useCallback(
+		async (accountId: string) => {
+			// Conta diferente da última: cursor, último sync e claim velho vão embora
+			// antes de qualquer coisa subir ou descer.
+			await beginSessionFor(accountId);
 
-		if (!status.hasData) {
-			await markEverythingDirty();
-			syncQueue.start();
-			return;
-		}
+			const [status, device] = await Promise.all([fetchSyncStatus(), countLocalData()]);
 
-		if (device.total === 0) {
-			syncQueue.start();
-			return;
-		}
+			if (!status.hasData) {
+				await markEverythingDirty();
+				syncQueue.start();
+				return;
+			}
 
-		claimBlocking.current = true;
-		setClaimCounts({ account: status.counts, device });
-		setPendingClaim(true);
-	}, []);
+			if (device.total === 0) {
+				syncQueue.start();
+				return;
+			}
+
+			// Gravado **antes** de a pergunta ir para a tela: se o app morrer agora, a
+			// próxima abertura refaz a pergunta em vez de juntar por conta própria.
+			const claim: PendingClaim = { accountId, counts: { account: status.counts, device } };
+			await savePendingClaim(claim);
+			resumeClaim(claim);
+		},
+		[resumeClaim]
+	);
 
 	const signIn = useCallback(
 		async (params: { email: string; password: string }) => {
-			setAccount(await authApi.login(params));
-			await afterSignIn();
+			const profile = await authApi.login(params);
+			setAccount(profile);
+			await afterSignIn(profile.id);
 		},
 		[afterSignIn]
 	);
 
 	const signUp = useCallback(
 		async (params: { email: string; password: string; name: string }) => {
-			setAccount(await authApi.register(params));
-			// Conta recém-criada nunca tem histórico: o claim é sempre automático.
+			const profile = await authApi.register(params);
+			setAccount(profile);
+			// Conta recém-criada nunca tem histórico: o claim é sempre automático. O
+			// estado de sync de qualquer conta anterior sai de cena do mesmo jeito.
+			await beginSessionFor(profile.id);
 			await markEverythingDirty();
 			syncQueue.start();
 		},
@@ -180,11 +236,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			// Tudo sobe; o last-write-wins resolve as sobreposições linha a linha.
 			await markEverythingDirty();
 		} else {
-			// Limpa o local e o cursor, para o pull seguinte reconstruir do zero.
+			// Limpa o local e o cursor, para o pull seguinte reconstruir do zero. Só o
+			// cursor: zerar a tabela de estado inteira levaria junto o vínculo com esta
+			// conta, e o próximo login nela refaria o pull completo sem motivo.
 			await clearSyncedData();
-			await clearSyncState();
+			await resetCursor();
 			await pullAll();
 		}
+
+		// A escolha só é apagada depois de cumprida: interromper no meio faz a pergunta
+		// voltar, que é o que se quer — a alternativa é o aparelho decidir sozinho.
+		await clearPendingClaim();
 
 		// Qualquer das três escolhas mexeu no banco por fora da fila: as telas releem.
 		syncQueue.notifyDataChanged();
@@ -197,12 +259,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	/**
 	 * Sair preserva os dados locais e o app volta ao modo anônimo.
 	 *
-	 * O cursor é descartado junto: ele descreve o progresso naquela conta, e reaproveitá-lo
-	 * num login seguinte faria o app achar que já tem o que nunca baixou.
+	 * O estado de sync é descartado em `endSession`, junto com o da sessão que cai
+	 * sozinha: ele descreve o progresso naquela conta, e reaproveitá-lo num login
+	 * seguinte faria o app achar que já tem o que nunca baixou.
 	 */
 	const signOut = useCallback(async () => {
 		await authApi.logout();
-		await clearSyncState();
 		endSession();
 	}, [endSession]);
 

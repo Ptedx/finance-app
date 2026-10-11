@@ -44,7 +44,8 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 				expenseCents: 70_000,
 				envelopeMonthlyCents: 100_000,
 			}),
-			// Reserva: 1.500 guardados e 30 de rendimento.
+			// Reserva: 1.500 guardados e 30 de rendimento — lançado na categoria de rendimento
+			// de investimento, que é o que o faz contar como rendimento e não como receita.
 			activity({
 				accountId: 'mp',
 				name: 'Mercado Pago',
@@ -52,6 +53,7 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 				role: 'reserve',
 				transfersInCents: 150_000,
 				incomeCents: 3_000,
+				investmentIncomeCents: 3_000,
 			}),
 		],
 		unassigned: { incomeCents: 0, expenseCents: 0 },
@@ -84,6 +86,12 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 				targetCents: 100_000,
 				remainingCents: 30_000,
 			},
+		]);
+	});
+
+	it('cada reserva tem a sua linha, com o que entrou nela', () => {
+		expect(overview.reserves).toEqual([
+			{ accountId: 'mp', name: 'Mercado Pago', savedCents: 150_000, yieldCents: 3_000 },
 		]);
 	});
 
@@ -147,12 +155,63 @@ describe('buildMonthOverview — detalhes', () => {
 		expect(overview.savingsRateBp).toBe(6000);
 	});
 
-	it('conta externa não entra em nada', () => {
+	// O teste antigo ('conta externa não entra em nada') congelava o defeito: ele conferia que
+	// a conta externa não produz nada e parava aí, então a transferência que ela manda para a
+	// principal não era receita em lugar nenhum. O contrato escrito em `AccountRole` sempre
+	// disse o contrário — "o que ela manda para a principal é receita" —, e o caso real é
+	// quem recebe pela PJ: a PJ é a conta externa, o pró-labore chega na principal como
+	// transferência, e o mês em que entraram R$ 12.000 mostrava "Receita R$ 0,00". O que a
+	// conta externa movimenta **lá dentro** continua fora de tudo, e é isso que impede a
+	// contagem dupla: o dinheiro só entra na receita quando chega numa conta sua.
+	it('o que a conta externa movimenta lá dentro não é seu', () => {
 		const overview = buildMonthOverview({
-			accounts: [activity({ role: 'external', incomeCents: 99_999, expenseCents: 99_999, transfersOutCents: 5 })],
+			accounts: [activity({ accountId: 'pj', role: 'external', incomeCents: 99_999, expenseCents: 99_999, transfersOutCents: 5 })],
 			unassigned: { incomeCents: 0, expenseCents: 0 },
 		});
 		expect(overview.incomeCents).toBe(0);
+		expect(overview.totalSpendCents).toBe(0);
+	});
+
+	it('o que a conta externa manda para a principal é receita do mês', () => {
+		const overview = buildMonthOverview({
+			accounts: [
+				// A PJ faturou 4.000.000 e repassou 12.000 de pró-labore: só os 12.000 são renda.
+				activity({ accountId: 'pj', name: 'PJ', role: 'external', incomeCents: 4_000_000, transfersOutCents: 1_200_000 }),
+				activity({ accountId: 'nu', role: 'main', transfersInCents: 1_200_000, transfersInFromExternalCents: 1_200_000, expenseCents: 300_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.grossIncomeCents).toBe(1_200_000);
+		expect(overview.incomeCents).toBe(1_200_000);
+		expect(overview.mainSpendCents).toBe(300_000);
+		expect(overview.leftoverCents).toBe(900_000);
+		expect(overview.savingsRateBp).toBe(7_500);
+	});
+
+	it('transferência entre duas contas suas não é receita', () => {
+		// Só a parte que veio de fora do seu patrimônio conta: mandar 1.000 da principal para
+		// o envelope não cria renda nenhuma.
+		const overview = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', role: 'main', incomeCents: 500_000, transfersOutCents: 100_000 }),
+				activity({ accountId: 'inter', role: 'envelope', transfersInCents: 100_000, envelopeMonthlyCents: 100_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.incomeCents).toBe(500_000);
+	});
+
+	it('o pró-labore que cai na reserva é receita e poupança, não rendimento', () => {
+		const overview = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'pj', role: 'external', transfersOutCents: 1_200_000 }),
+				activity({ accountId: 'mp', kind: 'savings', role: 'reserve', transfersInCents: 1_200_000, transfersInFromExternalCents: 1_200_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.incomeCents).toBe(1_200_000);
+		expect(overview.savedCents).toBe(1_200_000);
+		expect(overview.yieldCents).toBe(0);
 		expect(overview.totalSpendCents).toBe(0);
 	});
 
@@ -171,6 +230,85 @@ describe('buildMonthOverview — detalhes', () => {
 			unassigned: { incomeCents: 0, expenseCents: 0 },
 		});
 		expect(overview.savedCents).toBe(-3_000);
+	});
+});
+
+/**
+ * O critério: rendimento é só o que está em categoria de rendimento de investimento
+ * (`investmentIncomeCents`, a parte da receita na categoria `investment`). Toda outra
+ * receita que cai numa conta de reserva — um Pix de um amigo, um reembolso — é receita
+ * comum do mês. E a despesa lançada dentro da reserva é gasto: o dinheiro saiu do saldo.
+ */
+describe('reserva: o gasto dela é gasto, e só rendimento é rendimento', () => {
+	it('compra no débito da conta de reserva é gasto do mês', () => {
+		// R$ 800 no débito do Mercado Pago (papel reserve): saía do saldo e não aparecia em
+		// "Gastos", então "sobrou" vinha R$ 800 acima do real.
+		const overview = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', role: 'main', incomeCents: 1_000_000 }),
+				activity({ accountId: 'mp', kind: 'savings', role: 'reserve', expenseCents: 80_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.mainSpendCents).toBe(80_000);
+		expect(overview.totalSpendCents).toBe(80_000);
+		expect(overview.leftoverCents).toBe(920_000);
+	});
+
+	it('Pix de um amigo caindo na reserva é receita, não rendimento de investimento', () => {
+		// R$ 2.000 de um amigo, sem categoria de rendimento: era anunciado como rentabilidade
+		// que não houve, e o "rendeu nos últimos 12 meses" do Patrimônio ia junto.
+		const overview = buildMonthOverview({
+			accounts: [activity({ accountId: 'mp', kind: 'savings', role: 'reserve', incomeCents: 200_000 })],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.yieldCents).toBe(0);
+		expect(overview.incomeCents).toBe(200_000);
+		expect(overview.reserves[0]).toMatchObject({ savedCents: 0, yieldCents: 0 });
+	});
+
+	it('receita na categoria de rendimento é rendimento, e não entra na receita do mês', () => {
+		const overview = buildMonthOverview({
+			accounts: [activity({ accountId: 'mp', kind: 'savings', role: 'reserve', incomeCents: 3_000, investmentIncomeCents: 3_000 })],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.yieldCents).toBe(3_000);
+		expect(overview.incomeCents).toBe(0);
+	});
+
+	it('mês com os dois: R$ 40 de rendimento e R$ 2.000 de Pix na mesma reserva', () => {
+		const overview = buildMonthOverview({
+			accounts: [activity({ accountId: 'mp', kind: 'savings', role: 'reserve', incomeCents: 204_000, investmentIncomeCents: 4_000 })],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.yieldCents).toBe(4_000);
+		expect(overview.incomeCents).toBe(200_000);
+	});
+
+	it('repasse lançado na reserva desconta da receita e não é gasto', () => {
+		const overview = buildMonthOverview({
+			accounts: [activity({ accountId: 'mp', kind: 'savings', role: 'reserve', incomeCents: 200_000, expenseCents: 150_000, passThroughCents: 150_000 })],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.incomeCents).toBe(50_000);
+		expect(overview.totalSpendCents).toBe(0);
+		expect(overview.passThroughCents).toBe(150_000);
+	});
+
+	it('uma linha por reserva: o agregado não serve para a linha da conta', () => {
+		// Duas reservas, R$ 1.000 e R$ 300: cada linha mostra o que entrou nela, não 1.300.
+		const overview = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'mp', name: 'Mercado Pago', kind: 'savings', role: 'reserve', transfersInCents: 100_000 }),
+				activity({ accountId: 'cdb', name: 'CDB Inter', kind: 'investment', role: 'reserve', transfersInCents: 30_000 }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(overview.savedCents).toBe(130_000);
+		expect(overview.reserves.map((reserve) => [reserve.accountId, reserve.savedCents])).toEqual([
+			['mp', 100_000],
+			['cdb', 30_000],
+		]);
 	});
 });
 
@@ -265,6 +403,21 @@ describe('envelope é custo fixo do mês', () => {
 
 	it('num mês em que entrou mais que o combinado, vale o que entrou', () => {
 		expect(month({ transfersInCents: 130_000, expenseCents: 0 }).envelopeFundingCents).toBe(130_000);
+	});
+
+	it('devolver a sobra acumulada para a principal não gera gasto negativo', () => {
+		// Sobrou R$ 1.500 de meses anteriores no envelope e o usuário devolve tudo para a
+		// principal. O combinado é R$ 1.000, então `max(1.000, 0) − 1.500` dava −R$ 500: o mês
+		// ficava R$ 500 mais barato e o "sobrou" inflava, num mês em que o dinheiro foi gasto
+		// de verdade pela principal.
+		const overview = month({ transfersInCents: 0, transfersOutCents: 150_000, startBalanceCents: 150_000, endBalanceCents: 0 });
+		expect(overview.envelopes[0].costCents).toBe(0);
+		expect(overview.envelopeFundingCents).toBe(0);
+		expect(overview.totalSpendCents).toBe(0);
+	});
+
+	it('o envelope que recebeu e devolveu parte custa só a diferença', () => {
+		expect(month({ transfersInCents: 100_000, transfersOutCents: 60_000 }).envelopeFundingCents).toBe(40_000);
 	});
 });
 

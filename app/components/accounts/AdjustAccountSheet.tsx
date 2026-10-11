@@ -30,6 +30,8 @@ const AdjustAccountSheet: React.FC<{
 	account: Account;
 	/** Gasto que o app já tem no período. */
 	spentCents: number;
+	/** O mês de onde vem o gasto pré-preenchido, escrito. Ver `accounts.adjust.spent`. */
+	monthLabel: string;
 	/** Saldo que o app tem hoje. */
 	balanceCents: number;
 	/** O dinheiro do mês, que liga os dois campos. */
@@ -39,7 +41,7 @@ const AdjustAccountSheet: React.FC<{
 	balanceOnly?: boolean;
 	onClose: () => void;
 	onConfirm: (input: { spentCents: number; balanceCents: number }) => Promise<void>;
-}> = ({ visible, account, spentCents, balanceCents, targetCents, isEnvelope, balanceOnly = false, onClose, onConfirm }) => {
+}> = ({ visible, account, spentCents, monthLabel, balanceCents, targetCents, isEnvelope, balanceOnly = false, onClose, onConfirm }) => {
 	const { t } = useTranslation();
 	const [spent, setSpent] = useState('');
 	const [balance, setBalance] = useState('');
@@ -94,8 +96,8 @@ const AdjustAccountSheet: React.FC<{
 		>
 			{balanceOnly ? null : (
 			<Field
-				label={t('accounts.adjust.spent')}
-				hint={t('accounts.adjust.spentHint')}
+				label={t('accounts.adjust.spent', { month: monthLabel })}
+				hint={t('accounts.adjust.spentHint', { month: monthLabel })}
 				value={spent}
 				onChangeText={onSpentChange}
 				onBlur={() => setSpent(finaliseAmountInput(spent))}

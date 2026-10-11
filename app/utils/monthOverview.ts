@@ -4,8 +4,10 @@
  * A fatura do cartão não é o gasto do mês. O gasto do mês é a soma de três coisas que
  * saem de lugares diferentes: as compras no cartão (parcela a parcela, no mês em que
  * caem), o Pix e o débito da conta principal, e o que foi mandado para os envelopes
- * de gastos. O que vai para a reserva não é gasto, é poupança. Um pagamento de fatura
- * é transferência e não entra em lugar nenhum — senão o cartão contaria duas vezes.
+ * de gastos. O que vai para a reserva não é gasto, é poupança — mas o que é gasto de
+ * dentro dela é. Um pagamento de fatura é transferência e não entra em lugar nenhum —
+ * senão o cartão contaria duas vezes. A receita também não é só o que foi lançado como
+ * receita: o que uma conta `external` manda para uma conta sua é renda do mês.
  *
  * Puro: recebe o movimento de cada conta no período (já somado pelo banco) e compõe.
  */
@@ -19,6 +21,13 @@ export interface AccountMonthActivity {
 	role: AccountRole;
 	/** Receitas lançadas na conta no período. */
 	incomeCents: number;
+	/**
+	 * Parte de `incomeCents` em categoria de rendimento de investimento. Só lido em contas
+	 * de reserva, e é o que separa "a poupança rendeu" de "um Pix caiu aqui": sem isto, toda
+	 * receita que encosta na reserva era anunciada como rendimento que não houve. Ausente
+	 * (ou zero) significa "nenhuma receita desta conta é rendimento" — nunca o contrário.
+	 */
+	investmentIncomeCents?: number;
 	/** Despesas lançadas na conta no período (no cartão, as parcelas que caem no mês). */
 	expenseCents: number;
 	/**
@@ -28,6 +37,11 @@ export interface AccountMonthActivity {
 	 */
 	passThroughCents?: number;
 	transfersInCents: number;
+	/**
+	 * Parte de `transfersInCents` que veio de uma conta de papel `external`. É o pró-labore
+	 * da PJ chegando na principal: transferência no livro, receita na sua vida.
+	 */
+	transfersInFromExternalCents?: number;
 	transfersOutCents: number;
 	/**
 	 * Só cartões: soma das faturas que **fecham** no período. É a métrica principal —
@@ -85,6 +99,15 @@ export interface EnvelopeMonth {
 	remainingCents: number;
 }
 
+export interface ReserveMonth {
+	accountId: string;
+	name: string;
+	/** O que entrou nesta reserva no mês menos o que saiu dela. */
+	savedCents: number;
+	/** O rendimento desta reserva no mês. */
+	yieldCents: number;
+}
+
 export interface MonthOverview {
 	/** Receita líquida: o que entrou menos o que só passou pela conta (repasses). */
 	incomeCents: number;
@@ -97,7 +120,7 @@ export interface MonthOverview {
 	mainSpendCents: number;
 	envelopeFundingCents: number;
 	totalSpendCents: number;
-	/** Entrou na reserva menos o que saiu dela. */
+	/** Entrou nas reservas menos o que saiu delas, somando todas. */
 	savedCents: number;
 	/** Rendimento das reservas: receita, mas de outra natureza. */
 	yieldCents: number;
@@ -107,6 +130,8 @@ export interface MonthOverview {
 	savingsRateBp: number | null;
 	cards: CardMonth[];
 	envelopes: EnvelopeMonth[];
+	/** Uma linha por conta de reserva: o agregado não serve para a linha de cada conta. */
+	reserves: ReserveMonth[];
 }
 
 export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => {
@@ -123,8 +148,25 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 	let yieldCents = 0;
 	const cards: CardMonth[] = [];
 	const envelopes: EnvelopeMonth[] = [];
+	const reserves: ReserveMonth[] = [];
 
 	for (const account of input.accounts) {
+		// O contrato do papel `external` (ver `AccountRole` em `database/schema.ts`): o que
+		// uma conta que o app não acompanha manda para uma conta sua é receita do mês. Quem
+		// recebe pela PJ vê o pró-labore chegar como **transferência**, e sem isto o mês em
+		// que ganhou R$ 12.000 mostrava "Receita R$ 0,00".
+		//
+		// Conta uma vez só: o que a conta externa recebe e lança lá dentro é ignorado (o
+		// `case 'external'` abaixo não produz nada), então o dinheiro só entra na receita no
+		// momento em que chega numa conta sua. Se o mesmo pró-labore também estiver lançado
+		// como receita na principal, é lançamento duplicado — é `findDuplicateIncomes` que
+		// aponta, e apagar um dos dois é a correção.
+		if (account.role !== 'external') {
+			const fromExternal = Math.max(0, account.transfersInFromExternalCents ?? 0);
+			grossIncomeCents += fromExternal;
+			incomeCents += fromExternal;
+		}
+
 		switch (account.role) {
 			case 'main': {
 				const passThrough = account.passThroughCents ?? 0;
@@ -151,7 +193,11 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				// dinheiro sai da conta principal e fica lá. Entrou mais que o combinado? Vale o que
 				// entrou. O que voltou para outra conta sua desconta — senão, pagar a fatura com
 				// dinheiro do envelope contaria duas vezes.
-				const cost = Math.max(account.envelopeMonthlyCents ?? 0, account.transfersInCents) - account.transfersOutCents;
+				// Piso em zero: devolver para a principal a sobra acumulada de meses anteriores
+				// fazia o custo do envelope ficar negativo e **reduzir** o gasto de um mês em que
+				// o dinheiro foi gasto de verdade pela principal. Sobra devolvida não é gasto
+				// negativo; no máximo o envelope não custou nada naquele mês.
+				const cost = Math.max(0, Math.max(account.envelopeMonthlyCents ?? 0, account.transfersInCents) - account.transfersOutCents);
 				envelopeFundingCents += cost;
 				const carried = Math.max(0, account.startBalanceCents ?? 0);
 				const monthly = account.envelopeMonthlyCents ?? null;
@@ -174,12 +220,29 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				break;
 			}
 			case 'reserve': {
-				savedCents += account.transfersInCents - account.transfersOutCents;
-				yieldCents += account.incomeCents;
+				const passThrough = account.passThroughCents ?? 0;
+				const saved = account.transfersInCents - account.transfersOutCents;
+				// Rendimento é só o que está em categoria de rendimento de investimento. O resto
+				// que cai na reserva — o Pix de R$ 2.000 de um amigo, um reembolso, um salário
+				// recebido direto na poupança — é receita comum do mês, e anunciá-lo como
+				// rendimento inventava uma rentabilidade que não houve.
+				const investmentIncome = Math.max(0, Math.min(account.incomeCents, account.investmentIncomeCents ?? 0));
+				const plainIncome = account.incomeCents - investmentIncome;
+				// A despesa lançada na conta de reserva é gasto do mês: a compra de R$ 800 no
+				// débito do Mercado Pago saiu do saldo e tem de sair do "sobrou" também. Entra no
+				// mesmo bolso do Pix e do débito da principal, que é de onde o usuário a vê sair.
+				grossIncomeCents += plainIncome;
+				passThroughCents += passThrough;
+				incomeCents += plainIncome - passThrough;
+				mainSpendCents += account.expenseCents - passThrough;
+				savedCents += saved;
+				yieldCents += investmentIncome;
+				reserves.push({ accountId: account.accountId, name: account.name, savedCents: saved, yieldCents: investmentIncome });
 				break;
 			}
 			case 'external':
-				// Não acompanhada: o que ela manda para a principal já chegou lá como receita.
+				// Não acompanhada: nada do que acontece lá dentro é seu. O que ela manda para uma
+				// conta sua já entrou na receita acima, no lado de quem recebeu.
 				break;
 		}
 	}
@@ -203,6 +266,7 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 		savingsRateBp,
 		cards,
 		envelopes,
+		reserves,
 	};
 };
 

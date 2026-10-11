@@ -57,6 +57,8 @@ export const essentialShareBp = (rows: CategoryMonthRow[], natureById: Map<strin
 /**
  * Custo essencial médio dos últimos meses fechados **com gasto**. Um mês fechado vazio é
  * de antes do app estar em uso, não um mês sem custo: entrar na média o puxaria para baixo.
+ * Mês futuro também fica fora: ele tem o gasto das parcelas já compradas e mais nada, e
+ * entrava na média como se fosse um mês vivido inteiro.
  */
 export const essentialMonthlyCostCents = (
 	series: MonthPoint[],
@@ -65,7 +67,7 @@ export const essentialMonthlyCostCents = (
 	k = ESSENTIAL_WINDOW_MONTHS
 ): Cents | null => {
 	const costs: Cents[] = [];
-	for (const point of series.filter((p) => !p.isCurrent && p.overview.totalSpendCents > 0).slice(-Math.max(1, k))) {
+	for (const point of series.filter((p) => !p.isCurrent && !p.isFuture && p.overview.totalSpendCents > 0).slice(-Math.max(1, k))) {
 		const share = essentialShareBp(
 			rows.filter((row) => row.month === point.month),
 			natureById
@@ -167,7 +169,10 @@ export interface ReserveReadModel {
 /** Meses até `from` chegar a `target` com aporte no fim de cada mês. */
 const monthsUntil = (from: Cents, target: Cents, contribution: Cents, rate: number): number | null => {
 	if (from >= target) return 0;
-	if (contribution <= 0 && !(rate > 0 && from > 0)) return null;
+	// Aporte médio negativo é resgate: no ritmo de hoje a reserva não enche. Grampear o
+	// negativo em zero fazia a tela prometer uma data de um ritmo que ninguém está fazendo.
+	if (contribution < 0) return null;
+	if (contribution === 0 && !(rate > 0 && from > 0)) return null;
 	let value = from;
 	for (let month = 1; month <= MAX_FILL_MONTHS; month += 1) {
 		value = value * (1 + Math.max(0, rate)) + Math.max(0, contribution);

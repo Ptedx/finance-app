@@ -258,9 +258,10 @@ export interface PullResponse {
  * - `unknown_category`: o lançamento aponta para uma categoria que o servidor não
  *   conhece. Em vez de gravar reancorado (e divergir deste aparelho para sempre), ele
  *   devolve a linha, e cabe a quem enviou subir a categoria junto na próxima remessa.
- * - `invalid`: a linha não passou na validação — um valor acima do teto, por exemplo.
- *   Antes, um caso desses derrubava a remessa inteira com 400 e travava o sync do
- *   aparelho; agora só aquela linha fica de fora.
+ * - `invalid`: a linha não passou na validação — um valor acima do teto, por exemplo —
+ *   ou o banco do servidor a recusou na gravação. Antes, um caso desses derrubava a
+ *   remessa inteira (400 na validação, 500 na gravação) e travava o sync do aparelho;
+ *   agora só aquela linha fica de fora.
  */
 export type RejectionReason = 'stale' | 'unknown_category' | 'invalid';
 

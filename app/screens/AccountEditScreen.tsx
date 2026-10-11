@@ -32,7 +32,8 @@ import {
 import { feedOwnerOf } from '../utils/accountBinding';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
-import { formatDate, todayISO } from '../utils/dateUtils';
+import { usePeriod } from '../contexts/PeriodContext';
+import { formatDate, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
 
@@ -69,6 +70,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, takeNotifications, adjustAccountMonth } =
 		useAccounts();
 	const { transactions } = useTransactions();
+	// O gasto pré-preenchido na folha é o do **período escolhido** na tela inicial, e o
+	// ajuste é lançado hoje. Quem está olhando setembro e digita o número de outubro gera
+	// receita falsa no mês atual; dizer de qual mês é o número é o que evita a troca.
+	const { selectedYear, selectedMonth } = usePeriod();
 
 	const existing: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === accountId),
@@ -573,6 +578,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					visible={adjusting}
 					account={existing}
 					spentCents={periodSpentByAccount.get(existing.id) ?? 0}
+					monthLabel={formatMonthLong(`${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-01`)}
 					balanceCents={balanceCents}
 					targetCents={month?.envelopes.find((envelope) => envelope.accountId === existing.id)?.targetCents ?? 0}
 					isEnvelope={existing.role === 'envelope'}

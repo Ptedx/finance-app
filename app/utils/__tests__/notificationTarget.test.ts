@@ -94,6 +94,32 @@ describe('pickNotificationTarget — a compra chega na fatura certa', () => {
 		expect(pickNotificationTarget(both, nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({ type: 'checking' });
 	});
 
+	// Achado 7.6: caía em "conta corrente" e R$ 480 saíam do saldo, fora das duas faturas.
+	it('"no crédito" com dois cartões do banco e final desconhecido: não dá para responder', () => {
+		const second = { ...nubankCard, id: 'nu-card-2', last4: '9999' };
+		const both = [nubankCard, second, nubankPF];
+		expect(
+			pickNotificationTarget(
+				both,
+				nubank('Compra no crédito aprovada', 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.')
+			)
+		).toEqual({ type: 'unknown' });
+		// Sem a palavra "crédito" nada muda: o débito do Inter não a diz, e vai para a conta.
+		expect(
+			pickNotificationTarget(
+				both,
+				nubank('Compra aprovada', 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.')
+			)
+		).toEqual({ type: 'checking' });
+		// Com um cartão só, continua sendo a fatura dele: a dúvida é que muda a resposta.
+		expect(
+			pickNotificationTarget(
+				[nubankCard, nubankPF],
+				nubank('Compra no crédito aprovada', 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.')
+			)
+		).toEqual({ type: 'card', account: nubankCard });
+	});
+
 	it('Samsung Pay: o banco sai do texto e a compra vai para o cartão desse banco', () => {
 		const target = pickNotificationTarget(accounts, { packageName: SAMSUNG, appLabel: 'Samsung Wallet', title: 'Samsung Pay', text: 'R$ 35,90 em SUPERMERCADO com Nubank final 1234', cardLast4: '1234' });
 		expect(target).toEqual({ type: 'card', account: nubankCard });

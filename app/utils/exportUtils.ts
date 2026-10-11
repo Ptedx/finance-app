@@ -4,22 +4,23 @@ import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 import {
 	addCategory,
-	addRecurringTransaction,
-	addTransaction,
 	getBudgets,
 	getCategories,
 	updateCategory,
 	resetDatabase,
+	restoreBudget,
 	setBudget,
 } from '../database/database';
 import {
-	addDebt,
 	getAccounts,
 	getDebts,
 	getReserveGoal,
 	getRetirementGoal,
 	getTransfers,
 	restoreAccount,
+	restoreDebt,
+	restoreRecurringTransaction,
+	restoreTransaction,
 	restoreTransfer,
 	type ReserveGoalDraft,
 	type RetirementGoalDraft,
@@ -31,8 +32,15 @@ import * as syncQueue from '../sync/queue';
 import { getMonthName, todayISO } from './dateUtils';
 import { centsToMajorUnits, majorUnitsToCents } from './money';
 
-/** Bumped when the backup payload changes shape. 2 = amounts in integer cents. */
-const EXPORT_FORMAT_VERSION = 2;
+/**
+ * Bumped when the backup payload changes shape. 2 = amounts in integer cents; 3 = o id
+ * de cada linha viaja no arquivo (lançamentos, recorrências, dívidas e orçamentos),
+ * para que importar o mesmo backup em dois aparelhos não duplique o livro.
+ *
+ * Ninguém decide nada pelo número: a leitura aceita as três formas campo a campo. Ele
+ * fica no arquivo para quem precisar olhar um backup antigo e entender o que falta nele.
+ */
+const EXPORT_FORMAT_VERSION = 3;
 
 /** A budget as it travels in a backup file, in either the current or the legacy shape. */
 interface ExportedBudget {
@@ -41,6 +49,11 @@ interface ExportedBudget {
 	amountCents?: number;
 	/** Backups written before budgets moved to integer cents. */
 	amount?: number;
+	/**
+	 * O id da linha. Ausente em backups escritos antes da 1.2.7, que não o levavam: sem
+	 * ele, dois aparelhos importando o mesmo arquivo criavam dois orçamentos do mesmo mês.
+	 */
+	id?: string;
 }
 
 export interface DatabaseExportData {
@@ -295,9 +308,10 @@ export const exportDatabaseData = async (
 	recurringTransactions: RecurringTransaction[]
 ): Promise<void> => {
 	try {
-		// Budgets moved from AsyncStorage into SQLite in schema v4; only the year, month
-		// and amount belong in a backup — sync bookkeeping is per-device.
-		const budgets = (await getBudgets()).map(({ year, month, amountCents }) => ({
+		// Budgets moved from AsyncStorage into SQLite in schema v4; só o id, o ano, o mês
+		// e o valor vão no backup — o resto (`dirty`, carimbos) é de cada aparelho.
+		const budgets = (await getBudgets()).map(({ id, year, month, amountCents }) => ({
+			id,
 			year,
 			month,
 			amountCents,
@@ -435,18 +449,26 @@ export const importDatabaseData = async (): Promise<{
 			accountIds.add(id);
 		}
 
+		// Com o id do arquivo, e não um novo. Importar o mesmo backup em dois aparelhos
+		// deixava duas gerações do mesmo lançamento vivas na mesma conta — o livro-caixa
+		// dobrava, e nada no sync tinha como perceber que era a mesma compra. `cardLast4`
+		// vai junto: sem ele, a importação perdia de qual cartão saiu cada compra.
 		for (const transaction of importData.transactions) {
-			await addTransaction({
-				amountCents: readAmountCents(transaction),
-				category: existingIds.has(transaction.category) ? transaction.category : 'uncategorized',
-				date: transaction.date,
-				note: transaction.note,
-				isIncome: transaction.isIncome,
-				accountId: transaction.accountId && accountIds.has(transaction.accountId) ? transaction.accountId : null,
-				installmentGroup: transaction.installmentGroup ?? null,
-				installmentIndex: transaction.installmentIndex ?? null,
-				installmentCount: transaction.installmentCount ?? null,
-			});
+			await restoreTransaction(
+				{
+					amountCents: readAmountCents(transaction),
+					category: existingIds.has(transaction.category) ? transaction.category : 'uncategorized',
+					date: transaction.date,
+					note: transaction.note,
+					isIncome: transaction.isIncome,
+					accountId: transaction.accountId && accountIds.has(transaction.accountId) ? transaction.accountId : null,
+					installmentGroup: transaction.installmentGroup ?? null,
+					installmentIndex: transaction.installmentIndex ?? null,
+					installmentCount: transaction.installmentCount ?? null,
+					cardLast4: transaction.cardLast4 ?? null,
+				},
+				transaction.id
+			);
 		}
 
 		for (const transfer of importData.transfers ?? []) {
@@ -461,20 +483,32 @@ export const importDatabaseData = async (): Promise<{
 			);
 		}
 
+		// Id, `lastProcessed` e `nextDue` do arquivo. Sem eles a regra renascia como nova:
+		// id diferente em cada aparelho, e o relógio recomeçando — a assinatura que já
+		// tinha sido lançada no mês vinha outra vez.
 		for (const recurring of importData.recurringTransactions) {
-			const { id: _id, lastProcessed: _lp, nextDue: _nd, ...rule } = recurring;
-			await addRecurringTransaction({
-				...rule,
-				amountCents: readAmountCents(recurring),
-				category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
-			});
+			await restoreRecurringTransaction(
+				{
+					...recurring,
+					amountCents: readAmountCents(recurring),
+					category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
+				},
+				recurring.id
+			);
 		}
 
-		// Dívidas e metas: backups anteriores à 1.1 não as trazem. A conta de onde a parcela
-		// sai só vale se veio no mesmo backup.
+		// Dívidas e metas: backups anteriores à 1.1 não as trazem. O id também é o do
+		// arquivo. A conta de onde a parcela sai só vale se veio no mesmo backup.
 		for (const debt of Array.isArray(importData.debts) ? importData.debts : []) {
-			const { id: _id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
-			await addDebt({ ...draft, feeCents: draft.feeCents ?? 0, accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null });
+			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
+			await restoreDebt(
+				{
+					...draft,
+					feeCents: draft.feeCents ?? 0,
+					accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
+				},
+				id
+			);
 		}
 		if (importData.retirementGoal) await setRetirementGoal(importData.retirementGoal);
 		if (importData.reserveGoal) await setReserveGoal(importData.reserveGoal);
@@ -482,7 +516,13 @@ export const importDatabaseData = async (): Promise<{
 		if (Array.isArray(importData.budgets)) {
 			for (const budget of importData.budgets) {
 				if (!Number.isFinite(budget?.year) || !Number.isFinite(budget?.month)) continue;
-				await setBudget(budget.year, budget.month, readAmountCents(budget));
+				// Backup anterior à 1.2.7 não trazia o id; aí o mês recebe uma linha nova,
+				// como antes.
+				if (typeof budget.id === 'string' && budget.id.length > 0) {
+					await restoreBudget(budget.year, budget.month, readAmountCents(budget), budget.id);
+				} else {
+					await setBudget(budget.year, budget.month, readAmountCents(budget));
+				}
 			}
 		}
 

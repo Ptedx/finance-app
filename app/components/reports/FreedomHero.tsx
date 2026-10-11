@@ -114,7 +114,12 @@ const FreedomHero: React.FC<{
 				<Text style={[reportStyles.rowValue, styles.income]}>{formatCents(model.passiveIncomeNowCents)}</Text>
 			</View>
 			{model.realizedYieldBp !== null ? (
-				<Text style={styles.chip}>{t('reports.freedom.realizedYield', { percent: percent(model.realizedYieldBp) })}</Text>
+				<Text style={styles.chip}>
+					{t(
+						model.realizedYieldBasis === 'posted' ? 'reports.freedom.realizedYield' : 'reports.freedom.realizedYieldEstimated',
+						{ percent: percent(model.realizedYieldBp) }
+					)}
+				</Text>
 			) : null}
 
 			<View style={reportStyles.hairline} accessible={false} />
@@ -122,8 +127,14 @@ const FreedomHero: React.FC<{
 			<Text style={styles.reach} accessibilityLiveRegion="polite">
 				{reach}
 			</Text>
-			<Text style={reportStyles.muted}>{t('reports.freedom.pace', { amount: formatCents(Math.max(0, model.monthlyContributionCents)) })}</Text>
-			{model.contributionDelayMonths === null ? (
+			<Text style={reportStyles.muted}>
+				{model.isWithdrawing
+					? t('reports.freedom.paceWithdrawing', { amount: formatCents(Math.abs(model.monthlyContributionCents)) })
+					: t('reports.freedom.pace', { amount: formatCents(model.monthlyContributionCents) })}
+			</Text>
+			{/* Quem está tirando da reserva não está esperando ela encher: as duas linhas abaixo
+			    contariam uma história que a linha de cima acabou de negar. */}
+			{model.isWithdrawing ? null : model.contributionDelayMonths === null ? (
 				<Text style={reportStyles.muted}>{t('reports.freedom.reserveNeverFills')}</Text>
 			) : model.contributionDelayMonths > 0 ? (
 				<Text style={reportStyles.muted}>{t('reports.freedom.afterReserve', { count: model.contributionDelayMonths })}</Text>

@@ -237,6 +237,14 @@ const classify = (
 	}
 	// Só o movimento feito, nunca o substantivo solto: "resgate seu dinheiro quando
 	// quiser" é propaganda, "resgate de R$ 300,00 concluído" é dinheiro trocando de bolso.
+	//
+	// A direção importa, e muito: o investimento não é receita nem despesa, mas é uma
+	// transferência, e uma transferência tem um lado. Aplicação **sai** da conta que
+	// avisou e resgate **entra** nela; enquanto os dois eram "saída", um resgate de
+	// R$ 5.000 debitava a conta corrente em vez de creditá-la (achado 7.2).
+	if (has(text, 'resgate de r$', 'resgate realizado', 'resgate efetuado', 'resgatou')) {
+		return { direction: 'in', kind: 'investment', neutral: true };
+	}
 	if (
 		has(
 			text,
@@ -244,10 +252,6 @@ const classify = (
 			'aplicacao realizada',
 			'aplicacao efetuada',
 			'aplicou',
-			'resgate de r$',
-			'resgate realizado',
-			'resgate efetuado',
-			'resgatou',
 			'investimento realizado'
 		)
 	) {

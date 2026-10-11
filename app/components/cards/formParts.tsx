@@ -54,12 +54,14 @@ interface ChipGroupProps<T extends string> {
 	selected: T | null;
 	onSelect: (value: T) => void;
 	hint?: string;
+	/** Quando nada está escolhido e a escolha é obrigatória: o app não adivinha por você. */
+	error?: string;
 }
 
-export const ChipGroup = <T extends string>({ label, options, selected, onSelect, hint }: ChipGroupProps<T>) => (
+export const ChipGroup = <T extends string>({ label, options, selected, onSelect, hint, error }: ChipGroupProps<T>) => (
 	<View style={styles.field}>
 		<Text style={styles.label}>{label}</Text>
-		{hint ? <Text style={[styles.hint, styles.hintTop]}>{hint}</Text> : null}
+		{hint && !error ? <Text style={[styles.hint, styles.hintTop]}>{hint}</Text> : null}
 		<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={label}>
 			{options.map((option) => {
 				const isSelected = option.value === selected;
@@ -84,6 +86,11 @@ export const ChipGroup = <T extends string>({ label, options, selected, onSelect
 				);
 			})}
 		</View>
+		{error ? (
+			<Text style={styles.error} accessibilityLiveRegion="polite">
+				{error}
+			</Text>
+		) : null}
 	</View>
 );
 
