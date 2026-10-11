@@ -148,6 +148,14 @@ const has = (text: string, ...needles: string[]): boolean =>
  * investimento ou estorno, e não é movimentação nenhuma. É descartada antes de
  * classificar — a menos que o texto também confirme algo feito ("aprovada", "você
  * recebeu"), caso em que é um aviso real com um chamariz no fim.
+ *
+ * **Chamariz não entra nesta lista.** "Toque para ver o comprovante", "clique para
+ * gerenciar", "saiba mais": o aviso de verdade termina assim tanto quanto a propaganda.
+ * Enquanto estiveram aqui, "Pix enviado: R$ 1.200,00 para JOAO SILVA. Toque para ver o
+ * comprovante." era descartado sem virar item pendente, sem virar `ignored` e sem
+ * aparecer em lugar nenhum — o gasto simplesmente não existia para o app. Sem o
+ * chamariz quem decide é `classify`, que exige um verbo de movimentação ("compra",
+ * "pix", "débito"); propaganda não tem nenhum, e continua sendo descartada.
  */
 const PROMOTIONAL_PHRASES = [
 	'a partir de r$',
@@ -167,10 +175,6 @@ const PROMOTIONAL_PHRASES = [
 	'desconto de ate',
 	'ate r$',
 	'ate $',
-	'quando quiser',
-	'saiba mais',
-	'toque para',
-	'clique',
 ];
 
 const CONFIRMATION_PHRASES = [
@@ -187,6 +191,13 @@ const CONFIRMATION_PHRASES = [
 	'efetuado',
 	'recebido',
 	'recebida',
+	'enviado',
+	'enviada',
+	'debitado',
+	'debitada',
+	'creditado',
+	'creditada',
+	'pago',
 ];
 
 export const isPromotional = (normalized: string): boolean =>

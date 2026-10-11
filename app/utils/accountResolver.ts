@@ -9,7 +9,9 @@
  *
  * Adotar em vez de duplicar: o extrato do Nubank e as notificações do Nubank são a
  * mesma conta. Quando o OFX chega e já existe uma conta do mesmo banco criada por
- * notificação, sem chave de extrato, ela ganha a chave em vez de nascer uma segunda.
+ * notificação, sem chave de extrato, ela ganha a chave em vez de nascer uma segunda. O
+ * mesmo vale para a conta que o usuário cadastrou à mão: a primeira notificação daquele
+ * banco a adota, em vez de nascer uma segunda conta do mesmo banco ao lado dela.
  */
 
 import {
@@ -21,10 +23,10 @@ import {
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
-import { isWalletPackage, normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
-import { isCreditCardNotification, pickNotificationTarget, sameBank } from './notificationTarget';
+import type { ParsedCapture, RawCapture } from './captureParser';
+import { bankLabelOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
 
-export { cardHintOf, isCreditCardNotification, pickNotificationTarget, sameBank } from './notificationTarget';
+export { bankLabelOf, cardHintOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
 import { addDays, getISODate, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
 
@@ -66,45 +68,70 @@ const newAccountDraft = (
 });
 
 /**
- * A conta de uma notificação: o cartão de crédito certo (`pickNotificationTarget`) ou a
- * conta corrente daquele app. Cria na primeira vez, ancorada na véspera **da compra** —
- * não na véspera de quando o app abriu, senão a compra da noite anterior ficaria antes
- * da âncora e fora da fatura.
+ * A conta de uma notificação: o cartão de crédito certo (`pickNotificationTarget`), a
+ * conta que declarou aquele final de débito, ou a conta corrente daquele app. Cria na
+ * primeira vez, ancorada na véspera **da compra** — não na véspera de quando o app
+ * abriu, senão a compra da noite anterior ficaria antes da âncora e fora da fatura.
+ *
+ * Devolve `null` quando não dá para saber de onde saiu o dinheiro: o aviso veio de um
+ * app que não é banco (SMS, e-mail, mensageiro, app de corrida) e o texto não cita banco
+ * nenhum. A captura fica sem conta e o usuário a atribui em "Sem conta" — é melhor do
+ * que inventar uma conta chamada "WhatsApp" ao lado das de verdade.
  */
 export const resolveAccountForNotification = async (
 	raw: RawCapture,
 	parsed: ParsedCapture
-): Promise<Account> => {
+): Promise<Account | null> => {
 	const purchaseEve = addDays(getISODate(new Date(raw.postedAt)), -1);
 	const accounts = await getAccounts();
 	const target = pickNotificationTarget(accounts, { ...raw, cardLast4: parsed.cardLast4 });
+	// Carteira, SMS, e-mail: quem avisou não é o app do banco, e gravar esse pacote na
+	// conta faria o mensageiro "virar" o banco para sempre.
+	const foreign = isForeignApp(raw);
 
-	if (target.type === 'card') {
-		const card = target.account;
-		// Cartão cadastrado à mão ganha o app na primeira notificação do banco.
-		if (card.packageName === null && !isWalletPackage(raw.packageName)) {
-			await updateAccount({ ...card, packageName: raw.packageName });
-			return { ...card, packageName: raw.packageName };
+	if (target.type === 'card' || target.type === 'account') {
+		const found = target.account;
+		// Conta ou cartão cadastrado à mão ganha o app na primeira notificação do banco.
+		if (found.packageName === null && !foreign) {
+			await updateAccount({ ...found, packageName: raw.packageName });
+			return { ...found, packageName: raw.packageName };
 		}
-		return card;
+		return found;
 	}
 
 	const isCard = target.type === 'new_card';
 	const last4 = isCard ? parsed.cardLast4 : null;
 
-	const existing = await findAccountBySource(raw.packageName, last4);
-	if (existing) return existing;
+	// O app do banco é a identidade mais forte: a conta já ligada a ele vem primeiro.
+	if (!foreign) {
+		const existing = await findAccountBySource(raw.packageName, last4);
+		if (existing) return existing;
+	}
+
+	const bank = bankLabelOf(raw);
+	if (bank === null) return null;
+
+	const ofBank = accounts.filter(
+		(account) =>
+			!account.deletedAt && (account.kind === 'credit_card') === isCard && sameBank(account.bankName, bank)
+	);
+
+	// Aviso de terceiro que cita o banco: cai na conta daquele banco, se houver uma só.
+	// Nunca cria — um banco reconhecido no texto de um SMS é pista, não cadastro.
+	if (foreign) {
+		const live = ofBank.filter((account) => !account.archived);
+		const bound = live.filter((account) => account.packageName !== null);
+		if (bound.length === 1) return bound[0];
+		return live.length === 1 ? live[0] : null;
+	}
 
 	if (!isCard) {
-		const twin = accounts.find(
-			(account) =>
-				account.kind !== 'credit_card' &&
-				!account.deletedAt &&
-				account.packageName === null &&
-				account.accountKey !== null &&
-				sameBank(account.bankName, raw.appLabel)
-		);
-		if (twin) {
+		// Contas do mesmo banco ainda sem app: a do extrato (OFX) ou a cadastrada à mão.
+		const twins = ofBank.filter((account) => account.packageName === null);
+		// Com duas contas do mesmo banco (a PF e a PJ, por exemplo) o aviso não diz qual é:
+		// adivinhar poria dinheiro na conta errada, então a nova nasce como antes.
+		if (twins.length === 1) {
+			const twin = twins[0];
 			await updateAccount({ ...twin, packageName: raw.packageName });
 			return { ...twin, packageName: raw.packageName };
 		}
@@ -112,9 +139,9 @@ export const resolveAccountForNotification = async (
 
 	const id = await addAccount(
 		newAccountDraft({
-			name: isCard && last4 ? `${raw.appLabel} · final ${last4}` : raw.appLabel,
+			name: isCard && last4 ? `${bank} · final ${last4}` : bank,
 			kind: isCard ? 'credit_card' : 'checking',
-			bankName: raw.appLabel,
+			bankName: bank,
 			last4,
 			packageName: raw.packageName,
 			accountKey: null,

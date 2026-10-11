@@ -519,7 +519,8 @@ export const ingestRawCaptures = async (
 			transactionId: null,
 			autoConfirmed: false,
 			reason: null,
-			accountId: account.id,
+			// Sem conta quando o aviso não é de banco: o usuário atribui em "Sem conta".
+			accountId: account?.id ?? null,
 			transferId: null,
 			installments: parsed.installments,
 		};

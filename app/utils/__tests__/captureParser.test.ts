@@ -349,3 +349,38 @@ describe('guessCategory', () => {
 		expect(guessCategory({ direction: 'out', kind: 'purchase', counterparty: 'RESTAURANTE GOIANIA' })).toBe('food');
 	});
 });
+
+describe('chamariz no fim do aviso não descarta o aviso', () => {
+	const raw = (text: string) => ({
+		packageName: 'br.com.intermedium',
+		appLabel: 'Inter',
+		title: 'Inter',
+		text,
+		postedAt: '2026-10-11T12:00:00.000Z',
+	});
+
+	it('Pix enviado com "Toque para ver o comprovante" é um gasto, não propaganda', () => {
+		const parsed = parseCapture(raw('Pix enviado: R$ 1.200,00 para JOAO SILVA. Toque para ver o comprovante.'));
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.amountCents).toBe(120000);
+		expect(parsed?.direction).toBe('out');
+	});
+
+	it('compra no débito com "Toque para ver detalhes" também passa', () => {
+		const parsed = parseCapture(raw('Compra no debito de R$ 26,47 no ATACADAO. Toque para ver detalhes.'));
+
+		expect(parsed?.amountCents).toBe(2647);
+		expect(parsed?.direction).toBe('out');
+	});
+
+	it('débito de assinatura com "Clique para gerenciar" também passa', () => {
+		expect(parseCapture(raw('Debito de R$ 89,90 - NETFLIX. Clique para gerenciar sua assinatura.'))?.amountCents).toBe(8990);
+	});
+
+	it('propaganda continua sendo descartada, com chamariz ou sem', () => {
+		expect(parseCapture(raw('Invista a partir de R$ 1 no CDB e resgate quando quiser! Toque para saber mais.'))).toBeNull();
+		expect(parseCapture(raw('Ganhe até R$ 100 de cashback no seu próximo mês. Saiba mais.'))).toBeNull();
+		expect(parseCapture(raw('Simule seu empréstimo de até R$ 20.000. Clique aqui.'))).toBeNull();
+	});
+});

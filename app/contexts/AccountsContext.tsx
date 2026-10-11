@@ -19,6 +19,7 @@ import {
 	getUnassignedPeriodSummary,
 	getTransfersByDateRange,
 	moveAccountLedger,
+	repointTransfers,
 	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
@@ -42,6 +43,7 @@ import {
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { generateUniqueId } from '../utils/categoryEditUtils';
+import { feedOwnerOf } from '../utils/accountBinding';
 import { parseCardNames, withCardName } from '../utils/cardNames';
 import { addDays, getISODate, todayISO } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
@@ -145,6 +147,10 @@ interface AccountsContextType {
 	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
 	 */
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
+	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
+	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
+	/** As compras que o app do banco avisa passam a cair nesta conta, e não na outra. */
+	takeNotifications: (accountId: string) => Promise<void>;
 	/** Dá nome a um cartão (físico, virtual ou de débito) pelo final; nome vazio tira. */
 	renameCard: (accountId: string, last4: string, name: string | null) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
@@ -504,6 +510,73 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[accounts, refreshData]
 	);
 
+	/**
+	 * Duas fichas para a mesma conta do banco — a que o usuário cadastrou e a que a primeira
+	 * notificação criou, por exemplo. Lançamentos, capturas e transferências vão para a que
+	 * fica, junto com o app e a chave de extrato, para o que vier depois cair lá.
+	 *
+	 * Os saldos não se somam: cada ficha tinha a sua âncora, e somá-las contaria o mesmo
+	 * dinheiro duas vezes. A conta que fica mantém a dela; "Definir saldo" acerta o resto.
+	 */
+	const mergeAccounts = useCallback(
+		async (fromId: string, intoId: string) => {
+			const from = accounts.find((account) => account.id === fromId);
+			const into = accounts.find((account) => account.id === intoId);
+			if (!from || !into || fromId === intoId) return;
+
+			await moveAccountLedger(fromId, intoId, from.last4);
+			await repointTransfers(fromId, intoId);
+
+			// Os finais vêm junto: os virtuais que a ficha que sai já tinha nomeados, e o
+			// plástico dela com o nome dela. Sem isso a próxima notificação daquele final não
+			// encontra a conta e cria a duplicata de novo, agora com os lançamentos divididos.
+			let cardNames = into.cardNames;
+			for (const [last4, name] of Object.entries(parseCardNames(from.cardNames))) {
+				cardNames = withCardName(cardNames, last4, name);
+			}
+			if (from.last4) cardNames = withCardName(cardNames, from.last4, from.name);
+
+			// Uma gravação só: um `updateAccount` depois de `setAccountCardNames` regravaria a
+			// coluna com o valor antigo e apagaria o nome que acabou de entrar.
+			await updateAccount({
+				...into,
+				cardNames,
+				last4: into.last4 ?? from.last4,
+				packageName: into.packageName ?? from.packageName,
+				accountKey: into.accountKey ?? from.accountKey,
+				envelopeMonthlyCents: into.envelopeMonthlyCents ?? from.envelopeMonthlyCents,
+				yieldCdiBp: into.yieldCdiBp ?? from.yieldCdiBp,
+			});
+			await deleteAccount(fromId);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[accounts, refresh, refreshData]
+	);
+
+	/**
+	 * Puxa para esta conta as compras que o app do banco avisa.
+	 *
+	 * Duas contas no mesmo banco (a de todo dia e a do envelope, a PF e a PJ) não dizem
+	 * qual é qual numa notificação, e o app escolheu uma. Aqui o usuário corrige: o
+	 * vínculo com o app sai de uma e vai para a outra. O que já está lançado fica onde
+	 * está — mover histórico é "juntar contas", que é outra decisão.
+	 */
+	const takeNotifications = useCallback(
+		async (accountId: string) => {
+			const target = accounts.find((account) => account.id === accountId);
+			if (!target) return;
+			const owner = feedOwnerOf(accounts, target);
+			if (!owner || owner.id === accountId || owner.packageName === null) return;
+
+			await updateAccount({ ...owner, packageName: null });
+			await updateAccount({ ...target, packageName: owner.packageName });
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[accounts, refresh, refreshData]
+	);
+
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
 			const card = accounts.find((account) => account.id === cardId);
@@ -622,6 +695,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			mergeAccounts,
+			takeNotifications,
 			renameCard,
 			assignUnassigned,
 		}),
@@ -651,6 +726,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
+			mergeAccounts,
+			takeNotifications,
 			renameCard,
 			assignUnassigned,
 		]
