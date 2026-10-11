@@ -3,11 +3,14 @@ import {
 	buildDebtInsights,
 	buildGoalInsights,
 	buildInsights,
+	buildSavingsRateInsights,
 	computeWealthMetrics,
 	type Insight,
 	mergeInsights,
+	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthSnapshot,
 } from '../insights';
+import { buildMonthOverview } from '../monthOverview';
 import { buildRetirementReadModel, type RetirementInput } from '../retirement';
 
 const snapshotOf = (overrides: Partial<WealthSnapshot> = {}): WealthSnapshot => ({
@@ -58,6 +61,92 @@ describe('computeWealthMetrics', () => {
 		expect(metrics.monthlyFixedCents).toBe(0);
 		expect(metrics.runwayMonths).toBeNull();
 		expect(metrics.fixedCostBasisPoints).toBe(0);
+	});
+});
+
+/**
+ * A tela de Relatórios tinha duas contas de "sobrou" num mesmo scroll: a grade de saúde vinha
+ * do quadro do mês e o insight, da soma crua do período — "taxa de poupança 4%" em cima e
+ * "54% da sua renda virou poupança" embaixo. `buildSavingsRateInsights` existe para que quem
+ * monta a tela escolha uma base e as duas frases saiam dela.
+ */
+describe('a taxa de poupança tem uma base só', () => {
+	// A fatura que **fecha** no mês é R$ 6.800; a soma crua do período veria só o que foi
+	// lançado e pago. É a diferença que fazia os dois números discordarem.
+	const month = buildMonthOverview({
+		accounts: [
+			{
+				accountId: 'nu',
+				name: 'Nubank PF',
+				kind: 'checking',
+				role: 'main',
+				incomeCents: 1_000_000,
+				expenseCents: 200_000,
+				transfersInCents: 0,
+				transfersOutCents: 680_000,
+			},
+			{
+				accountId: 'card',
+				name: 'Cartão',
+				kind: 'credit_card',
+				role: 'card',
+				incomeCents: 0,
+				expenseCents: 0,
+				transfersInCents: 680_000,
+				transfersOutCents: 0,
+				invoiceCents: 680_000,
+			},
+		],
+		unassigned: { incomeCents: 0, expenseCents: 0 },
+	});
+
+	const rateOf = (overview: typeof month) => ({
+		incomeCents: overview.incomeCents,
+		netCents: overview.leftoverCents,
+		basisPoints: overview.savingsRateBp,
+	});
+
+	it('a frase sai do mesmo número que a grade de saúde mostra', () => {
+		expect(month.savingsRateBp).toBe(1_200);
+		const insights = buildSavingsRateInsights(rateOf(month));
+		expect(idsOf(insights)).toEqual([]); // 12%: nem saudável (20%) nem baixa (10%)
+		expect(buildSavingsRateInsights({ incomeCents: 1_000_000, netCents: 540_000, basisPoints: 5_400 })[0]).toMatchObject({
+			id: 'savings-rate-healthy',
+			params: { percent: '54%' },
+		});
+	});
+
+	it('mês no vermelho pelo quadro do mês é mês no vermelho na frase', () => {
+		const red = buildMonthOverview({
+			accounts: [
+				{
+					accountId: 'nu',
+					name: 'Nubank PF',
+					kind: 'checking',
+					role: 'main',
+					incomeCents: 500_000,
+					expenseCents: 600_000,
+					transfersInCents: 0,
+					transfersOutCents: 0,
+				},
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(buildSavingsRateInsights(rateOf(red))[0]).toMatchObject({ id: 'savings-rate-negative', severity: 'critical' });
+	});
+
+	it('as quedas seguidas vêm de fora, para que venham da mesma base', () => {
+		expect(idsOf(buildSavingsRateInsights(rateOf(month), 3))).toContain('savings-rate-falling');
+		expect(idsOf(buildSavingsRateInsights(rateOf(month), 2))).not.toContain('savings-rate-falling');
+	});
+
+	it('todas as frases de taxa de poupança estão na lista que a tela troca', () => {
+		const produced = new Set([
+			...idsOf(buildSavingsRateInsights({ incomeCents: 100, netCents: -100, basisPoints: null }, 3)),
+			...idsOf(buildSavingsRateInsights({ incomeCents: 100, netCents: 50, basisPoints: 5_000 })),
+			...idsOf(buildSavingsRateInsights({ incomeCents: 100, netCents: 5, basisPoints: 500 })),
+		]);
+		for (const id of produced) expect(SAVINGS_RATE_INSIGHT_IDS).toContain(id);
 	});
 });
 
@@ -250,6 +339,22 @@ describe('buildGoalInsights', () => {
 		expect(ids).toContain('reserve-yield-low');
 		// 6% contra 10% esperados ainda não é metade: silêncio.
 		expect(idsOf(buildGoalInsights(retirement({ realizedYield12mCents: R(600), averageCapital12mCents: R(10_000) }), health(), []))).not.toContain('reserve-yield-low');
+	});
+
+	it('5.1 — base só estimada não sustenta "troque de investimento"', () => {
+		// O número é uma conta do próprio app sobre a taxa contratada, não rendimento lançado:
+		// a frase chegava a sugerir trocar um CDB de 120% do CDI.
+		const base = { realizedYield12mCents: R(300), averageCapital12mCents: R(10_000) };
+		expect(idsOf(buildGoalInsights(retirement({ ...base, realizedYieldBasis: 'estimated' }), health(), []))).not.toContain('reserve-yield-low');
+		expect(idsOf(buildGoalInsights(retirement({ ...base, realizedYieldBasis: 'posted' }), health(), []))).toContain('reserve-yield-low');
+		// Parte lançada, parte estimada: há livro suficiente para a frase.
+		expect(idsOf(buildGoalInsights(retirement({ ...base, realizedYieldBasis: 'mixed' }), health(), []))).toContain('reserve-yield-low');
+	});
+
+	it('5.6 — com resgate, a frase é "nada foi para a reserva", não "hoje são R$ 0,00"', () => {
+		const ids = idsOf(buildGoalInsights(retirement({ trackedCapitalCents: R(20_000), monthlyContributionCents: -R(300) }), health(), []));
+		expect(ids).toContain('goal-no-contribution');
+		expect(ids).not.toContain('goal-needs-more');
 	});
 
 	it('a grade só fala quando está no vermelho', () => {

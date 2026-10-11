@@ -129,6 +129,29 @@ describe('o estado de hoje sai da âncora', () => {
 	it('antes do primeiro vencimento, o saldo é a âncora', () => {
 		expect(debtStateOn(car(), '2026-09-05').balanceCents).toBe(R(40_000));
 	});
+
+	describe('5.5 — dívida quitada no prazo', () => {
+		it('depois da última parcela, saldo zero e cronograma vazio: quitada', () => {
+			// 36 parcelas desde 10/10/2026: a última vence em 10/09/2029.
+			const state = debtStateOn(car(), '2029-10-01');
+			expect(state).toMatchObject({ balanceCents: 0, remaining: 0, settled: true });
+			expect(state.next).toBeNull();
+		});
+
+		it('quem ainda paga não está quitada, nem quem tem parcela que não cobre os juros', () => {
+			expect(debtStateOn(car(), '2026-12-15').settled).toBe(false);
+			expect(debtStateOn(car(), '2026-09-05').settled).toBe(false);
+			// Parcela insuficiente: sem cronograma, mas o saldo continua de pé.
+			const stuck = debtStateOn(car({ installmentCents: R(100) }), '2027-01-01');
+			expect(stuck).toMatchObject({ amortizes: false, settled: false });
+			expect(stuck.balanceCents).toBe(R(40_000));
+		});
+
+		it('quitada sai do saldo devedor e do comprometido do mês', () => {
+			const summary = summarizeDebts([{ id: 'car', name: 'Carro', terms: car() }], '2029-10-01');
+			expect(summary).toMatchObject({ balanceCents: 0, monthlyCents: 0, weightedRateBp: null, releases: [] });
+		});
+	});
 });
 
 describe('cadastro: derivar o que não se sabe', () => {

@@ -1,4 +1,4 @@
-import { accruedYieldCents, cdiDailyRate, parseBcbCdi } from '../yield';
+import { accruedYieldCents, cdiDailyRate, parseBcbCdi, rebasedAnchor } from '../yield';
 
 const R = (reais: number) => Math.round(reais * 100);
 const base = { anchorCents: R(10_000), anchorDate: '2026-09-11', flows: [], cdiAnnualBp: 1_490, percentOfCdiBp: 12_000 };
@@ -44,6 +44,47 @@ describe('rendimento acumulado', () => {
 		expect(accruedYieldCents({ ...base, flows: [{ date: '2026-09-11', cents: R(99_999) }], today: '2026-09-17' })).toBe(accruedYieldCents({ ...base, today: '2026-09-17' }));
 		expect(accruedYieldCents({ ...base, anchorCents: -R(100), today: '2026-09-17' })).toBe(0);
 		expect(accruedYieldCents({ ...base, today: '2026-09-11' })).toBe(0);
+	});
+});
+
+describe('rendimento lançado e rendimento estimado não se somam', () => {
+	// O caso real: o banco pagou o rendimento, o lançamento entrou no livro em 15/09 e já
+	// está no saldo. Estimar desde a âncora (11/09) contava aquele período duas vezes — e
+	// passava a compor sobre a duplicata.
+	const posted = { ...base, flows: [{ date: '2026-09-15', cents: R(100) }] };
+
+	it('a estimativa só corre depois do último rendimento lançado', () => {
+		const daily = cdiDailyRate(1_490, 12_000);
+		// Reancorada em 15/09 com 10.100 (a âncora mais o rendimento lançado), só a quarta 16
+		// rende; hoje é quinta 17.
+		expect(accruedYieldCents({ ...posted, notBefore: '2026-09-15', today: '2026-09-17' })).toBe(Math.round(R(10_100) * daily));
+	});
+
+	it('sem a reancoragem, o mesmo período era estimado por cima do lançamento', () => {
+		const withRebase = accruedYieldCents({ ...posted, notBefore: '2026-09-15', today: '2026-09-17' });
+		const without = accruedYieldCents({ ...posted, today: '2026-09-17' });
+		expect(without).toBeGreaterThan(withRebase);
+	});
+
+	it('lançamento anterior à âncora (ou nenhum) não muda nada: quem vale é o saldo informado', () => {
+		const plain = accruedYieldCents({ ...posted, today: '2026-09-17' });
+		expect(accruedYieldCents({ ...posted, notBefore: null, today: '2026-09-17' })).toBe(plain);
+		expect(accruedYieldCents({ ...posted, notBefore: '2026-09-01', today: '2026-09-17' })).toBe(plain);
+		expect(accruedYieldCents({ ...posted, notBefore: '2026-09-11', today: '2026-09-17' })).toBe(plain);
+	});
+
+	it('a âncora nova é o saldo do fim daquele dia, com os movimentos até ele', () => {
+		expect(rebasedAnchor({ ...posted, notBefore: '2026-09-15' })).toEqual({ anchorCents: R(10_100), anchorDate: '2026-09-15' });
+		// Um movimento depois da data nova fica fora dela: ele ainda vai render no laço.
+		expect(rebasedAnchor({ anchorCents: R(10_000), anchorDate: '2026-09-11', flows: [{ date: '2026-09-16', cents: R(500) }], notBefore: '2026-09-15' })).toEqual({
+			anchorCents: R(10_000),
+			anchorDate: '2026-09-15',
+		});
+		expect(rebasedAnchor({ ...posted, notBefore: null })).toEqual({ anchorCents: R(10_000), anchorDate: '2026-09-11' });
+	});
+
+	it('rendimento lançado hoje mesmo não deixa estimativa nenhuma', () => {
+		expect(accruedYieldCents({ ...posted, notBefore: '2026-09-17', today: '2026-09-17' })).toBe(0);
 	});
 });
 

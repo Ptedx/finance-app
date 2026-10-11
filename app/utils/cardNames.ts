@@ -105,7 +105,15 @@ export interface DebitCardConversion {
 /**
  * "Cartões de crédito" que são débito ("Débito Inter"): débito não tem fatura, então os
  * lançamentos pertencem à conta corrente do mesmo banco, e o nome vira o nome do cartão
- * de débito dela. A conta é a única corrente do banco que não é externa, ou a principal.
+ * de débito dela.
+ *
+ * Só converte quando **não há dúvida**: uma única conta corrente do banco que não é
+ * externa. Com duas (a PF e a PJ, a de todo dia e a do envelope) o aviso não diz qual é,
+ * e esta migração roda sozinha, move meses de lançamentos e põe lápide nas transferências
+ * e no cartão — um palpite errado joga o histórico na conta errada, sem volta. É o mesmo
+ * palpite que o resolvedor de notificações recusa fazer ("adivinhar poria dinheiro na
+ * conta errada"). Na dúvida o cartão fica como está, e quem converte é o usuário, pela
+ * ação "Mover lançamentos e remover cartão" na tela do cartão, escolhendo a conta.
  */
 export const planDebitCardConversions = (accounts: Account[]): DebitCardConversion[] => {
 	const live = accounts.filter((account) => !account.deletedAt);
@@ -122,9 +130,8 @@ export const planDebitCardConversions = (accounts: Account[]): DebitCardConversi
 				account.role !== 'external' &&
 				((card.packageName !== null && account.packageName === card.packageName) || sameBank(account.bankName, card.bankName))
 		);
-		const main = candidates.filter((account) => account.role === 'main');
-		const checking = candidates.length === 1 ? candidates[0] : main.length === 1 ? main[0] : null;
-		if (!checking) continue;
+		if (candidates.length !== 1) continue;
+		const checking = candidates[0];
 
 		plans.push({
 			card,

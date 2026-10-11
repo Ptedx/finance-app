@@ -1,5 +1,7 @@
+import type { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 import type { z } from 'zod';
+import { resolveBudgetPeriod } from '../domain/budgetConflict.js';
 import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -50,7 +52,8 @@ const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
  * - `stale`: o servidor já tem uma versão mais nova.
  * - `unknown_category`: o lançamento aponta para uma categoria que este perfil não
  *   conhece. Nada é gravado; `category` diz qual faltou, e quem enviou a reenvia junto.
- * - `invalid`: a linha não passou na validação da sua coleção; `message` diz por quê.
+ * - `invalid`: a linha não passou na validação da sua coleção, ou o banco a recusou na
+ *   gravação; `message` diz por quê. A remessa segue sem ela — ver `writeRowIsolated`.
  */
 interface RejectedRow {
 	collection: Collection;
@@ -313,6 +316,44 @@ const partitionRows = <T>(
 const isStale = (current: { updatedAt: Date } | null, row: { updatedAt: string }): boolean =>
 	current !== null && current.updatedAt > new Date(row.updatedAt);
 
+/**
+ * O que dizer ao aparelho quando o banco recusa uma linha. Só o código do Prisma, nunca
+ * a mensagem: ela traz nome de índice, de tabela e às vezes um trecho do dado.
+ */
+const databaseRefusal = (error: unknown): string => {
+	const code = (error as { code?: unknown } | null)?.code;
+	return typeof code === 'string'
+		? `o banco recusou a linha (${code})`
+		: 'o banco recusou a linha';
+};
+
+/**
+ * Grava uma linha isolada por um SAVEPOINT, e devolve o motivo quando o banco recusa.
+ *
+ * No Postgres, um comando que falha aborta a **transação inteira**: um `try/catch` comum
+ * não salvaria nada, porque todo comando seguinte morreria com "current transaction is
+ * aborted". O SAVEPOINT é o que permite desfazer uma linha e seguir com as outras — é
+ * ele que impede um único registro problemático de derrubar a remessa com 500 e travar o
+ * sync daquele aparelho para sempre. O nome é fixo e o RELEASE é imediato: a remessa tem
+ * milhares de linhas e savepoints acumulados custam memória na sessão.
+ */
+const writeRowIsolated = async (
+	tx: Prisma.TransactionClient,
+	write: () => Promise<void>
+): Promise<string | null> => {
+	await tx.$executeRawUnsafe('SAVEPOINT sync_row');
+	try {
+		await write();
+		await tx.$executeRawUnsafe('RELEASE SAVEPOINT sync_row');
+		return null;
+	} catch (error) {
+		await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT sync_row');
+		await tx.$executeRawUnsafe('RELEASE SAVEPOINT sync_row');
+		console.warn('Sync: linha recusada pelo banco:', error);
+		return databaseRefusal(error);
+	}
+};
+
 export const pushData = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
 	const { changes } = pushBodySchema.parse(req.body);
 	const userId = req.userId;
@@ -534,6 +575,12 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 			}
 
 			// --- Orçamentos -------------------------------------------------------
+			// Um orçamento vivo por mês é regra do banco, não do código: o índice parcial
+			// `budgets_userId_year_month_live_key`. Dois ids para o mesmo mês chegam de
+			// verdade — aparelho anônimo que depois entra numa conta que já tinha aquele
+			// mês, ou dois aparelhos offline. O conflito é resolvido antes de gravar
+			// (`resolveBudgetPeriod`), pelo mesmo last-write-wins do resto; o SAVEPOINT é
+			// a rede embaixo, para uma corrida que escape disso não derrubar a remessa.
 			for (const row of budgets) {
 				const current = await tx.budget.findUnique({
 					where: { userId_id: { userId, id: row.id } },
@@ -553,12 +600,52 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
 				};
 
-				await tx.budget.upsert({
-					where: { userId_id: { userId, id: row.id } },
-					create: { id: row.id, userId, ...data },
-					update: data,
+				// A outra linha viva daquele mês, se existir. Uma lápide que chega não
+				// disputa nada, e nem vale a consulta.
+				const live = data.deletedAt
+					? null
+					: await tx.budget.findFirst({
+							where: { userId, year: row.year, month: row.month, deletedAt: null, id: { not: row.id } },
+							select: { id: true, updatedAt: true },
+						});
+
+				const resolution = resolveBudgetPeriod(
+					{ id: row.id, updatedAt: data.updatedAt, deletedAt: data.deletedAt },
+					live
+				);
+
+				const refusal = await writeRowIsolated(tx, async () => {
+					if (resolution.kind === 'tombstone_existing') {
+						// A linha de lá é mais antiga: ela sai, e a lápide sobe para os
+						// aparelhos que tinham aquele id.
+						await tx.budget.update({
+							where: { userId_id: { userId, id: resolution.id } },
+							data: { deletedAt: resolution.at, updatedAt: resolution.at },
+						});
+					}
+
+					// Quando é a linha que chegou que perde, ela entra **apagada**, com o
+					// carimbo de quem venceu: o aparelho que a enviou recebe a lápide no
+					// pull seguinte e os dois lados ficam com o mesmo orçamento vivo.
+					const resolved =
+						resolution.kind === 'tombstone_incoming'
+							? { ...data, deletedAt: resolution.at, updatedAt: resolution.at }
+							: data;
+
+					await tx.budget.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...resolved },
+						update: resolved,
+					});
 				});
-				applied += 1;
+
+				// Contado depois do SAVEPOINT: o que o rollback desfez não foi aplicado.
+				if (refusal !== null) {
+					rejected.push({ collection: 'budgets', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += resolution.kind === 'tombstone_existing' ? 2 : 1;
 			}
 
 			// --- Meta de aposentadoria -------------------------------------------

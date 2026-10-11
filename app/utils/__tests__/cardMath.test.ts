@@ -14,6 +14,7 @@ import {
 	invoiceAmount,
 	invoiceClosingIn,
 	invoicesClosingBetween,
+	isSameCardPayment,
 	owedOn,
 	planCardAdjustment,
 	shiftCycle,
@@ -256,6 +257,30 @@ describe('buildCardSummary', () => {
 		expect(summary).toMatchObject({ owedCents: 376_720, openInvoiceCents: 376_720, toPayCents: 0, closedStatus: 'none' });
 	});
 
+	it('estorno na fatura aberta não abate a fatura fechada', () => {
+		// Fechada de R$ 1.000 (compra em 10/09, antes do fechamento de 25/09) e um estorno de
+		// R$ 200 na aberta. No Brasil o estorno credita a fatura seguinte: o banco cobra os
+		// R$ 1.000 inteiros, e mostrar "a pagar R$ 800" levaria ao rotativo.
+		const entries = [purchase('2026-09-10', 100_000), purchase('2026-09-26', 20_000, { isIncome: true })];
+		const summary = buildCardSummary(settings(), entries, [], '2026-09-27');
+		expect(summary).toMatchObject({
+			closedInvoiceCents: 100_000,
+			openInvoiceCents: -20_000,
+			toPayCents: 100_000,
+			closedStatus: 'due',
+			owedCents: 80_000,
+		});
+
+		// Pagando os R$ 1.000 que o banco cobra, a fechada fica paga e sobra o crédito.
+		const paid = buildCardSummary(settings(), entries, [payment('2026-10-01', 100_000)], '2026-10-01');
+		expect(paid).toMatchObject({ toPayCents: 0, closedStatus: 'paid', creditCents: 20_000 });
+	});
+
+	it('o estorno da aberta segue abatendo o devido quando não há fechada a pagar', () => {
+		const summary = buildCardSummary(settings(), [purchase('2026-09-26', 20_000, { isIncome: true })], [], '2026-09-27');
+		expect(summary).toMatchObject({ toPayCents: 0, closedStatus: 'none', creditCents: 20_000, owedCents: 0 });
+	});
+
 	it('sem fechamento: limite e devido funcionam, faturas não', () => {
 		const summary = buildCardSummary(settings({ closingDay: null }), [purchase('2026-09-12', 10_000)], [], '2026-09-20');
 		expect(summary).toMatchObject({ configured: false, owedCents: 10_000, toPayCents: 10_000, invoices: [], limitUsedCents: 10_000, bestPurchaseDate: null });
@@ -335,32 +360,98 @@ describe('buildInstallmentPlans', () => {
 });
 
 describe('existingInstallmentDates — compra parcelada feita antes do app', () => {
+	/** Âncora antiga: não interfere, o começo do ciclo é bem depois dela. */
+	const OLD_ANCHOR = '2026-01-01';
+
 	it('a parcela atual no começo do ciclo aberto, as seguintes uma por fatura', () => {
-		expect(existingInstallmentDates(4, 6, NUBANK, '2026-09-20')).toEqual([
+		expect(existingInstallmentDates(4, 6, NUBANK, '2026-09-20', OLD_ANCHOR)).toEqual([
 			{ index: 4, date: '2026-08-25' },
 			{ index: 5, date: '2026-09-25' },
 			{ index: 6, date: '2026-10-25' },
 		]);
 	});
 
-	it('cada parcela cai numa fatura diferente e na ordem (propriedade)', () => {
+	it('cada parcela cai numa fatura diferente e na ordem, com âncora velha ou de ontem (propriedade)', () => {
 		for (const closingDay of [1, 15, 25, 31]) {
-			const rule = { closingDay, dueDaysAfter: 7 };
-			const dates = existingInstallmentDates(1, 12, rule, '2026-01-30');
-			const keys = dates.map((d) => cycleFor(d.date, rule).key);
-			expect(new Set(keys).size).toBe(12);
-			expect([...keys].sort()).toEqual(keys);
-			expect(keys[0]).toBe(cycleFor('2026-01-30', rule).key);
+			for (const anchor of [OLD_ANCHOR, '2026-01-29', '2026-01-30']) {
+				const rule = { closingDay, dueDaysAfter: 7 };
+				const dates = existingInstallmentDates(1, 12, rule, '2026-01-30', anchor);
+				const keys = dates.map((d) => cycleFor(d.date, rule).key);
+				expect(new Set(keys).size).toBe(12);
+				expect([...keys].sort()).toEqual(keys);
+				// Nenhuma parcela antes do dia seguinte à âncora: antes dela nada conta.
+				expect(dates.every((d) => d.date > anchor)).toBe(true);
+			}
 		}
 	});
 
 	it('sem vencimento, de mês em mês a partir de hoje; índices inválidos não geram nada', () => {
-		expect(existingInstallmentDates(2, 3, null, '2026-01-31')).toEqual([
+		expect(existingInstallmentDates(2, 3, null, '2026-01-31', OLD_ANCHOR)).toEqual([
 			{ index: 2, date: '2026-01-31' },
 			{ index: 3, date: '2026-02-28' },
 		]);
-		expect(existingInstallmentDates(0, 3, NUBANK, '2026-09-20')).toEqual([]);
-		expect(existingInstallmentDates(4, 3, NUBANK, '2026-09-20')).toEqual([]);
+		expect(existingInstallmentDates(0, 3, NUBANK, '2026-09-20', OLD_ANCHOR)).toEqual([]);
+		expect(existingInstallmentDates(4, 3, NUBANK, '2026-09-20', OLD_ANCHOR)).toEqual([]);
+	});
+
+	it('cartão cadastrado hoje: a parcela atual não cai antes da âncora e entra na fatura aberta', () => {
+		// Cartão criado em 20/09 com âncora em 19/09 (a véspera). O ciclo aberto começou em
+		// 25/08 — datar a parcela lá a poria antes da âncora, fora da fatura e da lista.
+		const anchor = '2026-09-19';
+		const dates = existingInstallmentDates(4, 6, NUBANK, '2026-09-20', anchor);
+		expect(dates).toEqual([
+			{ index: 4, date: '2026-09-20' },
+			{ index: 5, date: '2026-09-25' },
+			{ index: 6, date: '2026-10-25' },
+		]);
+
+		// E a parcela de verdade aparece: a fatura de setembro cobra os R$ 100.
+		const s = settings({ openingBalanceCents: 0, openingBalanceDate: anchor });
+		const parcels = dates.map((d) =>
+			purchase(d.date, 10_000, { installmentGroup: 'g', installmentIndex: d.index, installmentCount: 6 })
+		);
+		const summary = buildCardSummary(s, parcels, [], '2026-09-20');
+		expect(summary.openCycle?.key).toBe('2026-09');
+		expect(summary).toMatchObject({ openInvoiceCents: 10_000, owedCents: 10_000, futureCommittedCents: 20_000 });
+		expect(summary.invoices.filter((i) => i.offset > 0).map((i) => [i.cycle.key, i.amountCents])).toEqual([
+			['2026-10', 10_000],
+			['2026-11', 10_000],
+		]);
+	});
+});
+
+describe('isSameCardPayment — a fatura paga em duas parcelas iguais entra duas vezes', () => {
+	const nubank = (date: string, amountCents = 50_000) => ({ fromAccountId: 'nubank', amountCents, date });
+
+	it('a fatura de R$ 1.000 paga em 01/10 pela Nubank e em 03/10 pelo Inter são dois pagamentos', () => {
+		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: 'inter', amountCents: 50_000, date: '2026-10-03' })).toBe(false);
+	});
+
+	it('mesmo valor e mesmo dia, contas diferentes: dois pagamentos', () => {
+		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: 'inter', amountCents: 50_000, date: '2026-10-01' })).toBe(false);
+	});
+
+	it('mesma conta, mesmo valor, dias diferentes: dois pagamentos legítimos', () => {
+		expect(isSameCardPayment(nubank('2026-10-01'), nubank('2026-10-03'))).toBe(false);
+		expect(isSameCardPayment(nubank('2026-10-01'), nubank('2026-10-15'))).toBe(false);
+	});
+
+	it('o mesmo pagamento visto duas vezes: mesma conta, mesmo valor, no mesmo dia ou um dia depois', () => {
+		expect(isSameCardPayment(nubank('2026-10-01'), nubank('2026-10-01'))).toBe(true);
+		// A notificação do banco pode chegar com a data do dia seguinte ao registro à mão.
+		expect(isSameCardPayment(nubank('2026-10-01'), nubank('2026-10-02'))).toBe(true);
+		expect(isSameCardPayment(nubank('2026-10-02'), nubank('2026-10-01'))).toBe(true);
+	});
+
+	it('valor diferente nunca é o mesmo pagamento', () => {
+		expect(isSameCardPayment(nubank('2026-10-01'), nubank('2026-10-01', 49_999))).toBe(false);
+	});
+
+	it('origem desconhecida casa com qualquer conta, como em findLiveTransfer', () => {
+		expect(isSameCardPayment({ fromAccountId: null, amountCents: 50_000, date: '2026-10-01' }, nubank('2026-10-01'))).toBe(true);
+		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: null, amountCents: 50_000, date: '2026-10-02' })).toBe(true);
+		// Mas a janela de datas continua valendo.
+		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: null, amountCents: 50_000, date: '2026-10-03' })).toBe(false);
 	});
 });
 
@@ -377,10 +468,10 @@ describe('planCardAdjustment — acertar com o banco sem misturar faturas', () =
 		// 27/09: setembro fechou em 25/09 e vence 02/10; outubro está aberta.
 		const entries = [purchase('2026-09-20', 10_000), purchase('2026-09-26', 3_000)];
 		const plan = planCardAdjustment(settings(), entries, [], '2026-09-27', 50_000, 200_000);
-		expect(plan).toEqual({ anchorDate: '2026-09-24', anchorCents: -200_000, adjustmentCents: 47_000 });
+		expect(plan).toEqual({ anchor: { date: '2026-09-24', cents: -200_000 }, adjustmentCents: 47_000 });
 
 		// Aplicando o plano, o resumo mostra exatamente o que o banco mostra.
-		const s = settings({ openingBalanceCents: plan.anchorCents, openingBalanceDate: plan.anchorDate });
+		const s = settings({ openingBalanceCents: plan.anchor?.cents ?? 0, openingBalanceDate: plan.anchor?.date ?? '' });
 		const withAdjustment = [...entries, purchase('2026-09-27', plan.adjustmentCents)];
 		const summary = buildCardSummary(s, withAdjustment, [], '2026-09-27');
 		expect(summary).toMatchObject({ closedInvoiceCents: 200_000, openInvoiceCents: 50_000, toPayCents: 200_000, closedStatus: 'due', owedCents: 250_000 });
@@ -393,8 +484,8 @@ describe('planCardAdjustment — acertar com o banco sem misturar faturas', () =
 
 	it('pagamento já registrado depois do fechamento continua abatendo a fechada', () => {
 		const plan = planCardAdjustment(settings(), [], [payment('2026-09-26', 50_000)], '2026-09-27', 0, 150_000);
-		expect(plan.anchorCents).toBe(-200_000);
-		const s = settings({ openingBalanceCents: plan.anchorCents, openingBalanceDate: plan.anchorDate });
+		expect(plan.anchor).toEqual({ date: '2026-09-24', cents: -200_000 });
+		const s = settings({ openingBalanceCents: plan.anchor?.cents ?? 0, openingBalanceDate: plan.anchor?.date ?? '' });
 		expect(buildCardSummary(s, [], [payment('2026-09-26', 50_000)], '2026-09-27')).toMatchObject({ toPayCents: 150_000, owedCents: 150_000 });
 	});
 
@@ -406,7 +497,74 @@ describe('planCardAdjustment — acertar com o banco sem misturar faturas', () =
 
 	it('sem dia de fechamento, âncora na véspera com a soma, descontado o lançado hoje', () => {
 		const plan = planCardAdjustment(settings({ closingDay: null }), [purchase('2026-09-27', 1_000)], [], '2026-09-27', 10_000, 5_000);
-		expect(plan).toEqual({ anchorDate: '2026-09-26', anchorCents: -14_000, adjustmentCents: 0 });
+		expect(plan).toEqual({ anchor: { date: '2026-09-26', cents: -14_000 }, adjustmentCents: 0 });
+	});
+});
+
+describe('planCardAdjustment — campo em branco é "não informei", não zero', () => {
+	// O caso do dono: fechada de R$ 1.200 em aberto e R$ 450 na aberta. Entries e âncora
+	// montam esse estado antes de qualquer acerto.
+	const entries = [purchase('2026-09-20', 120_000), purchase('2026-09-26', 45_000)];
+
+	it('preenchendo só a fechada, a aberta fica intacta — nada de estorno falso', () => {
+		const plan = planCardAdjustment(settings(), entries, [], '2026-09-27', null, 120_000);
+		expect(plan).toEqual({ anchor: { date: '2026-09-24', cents: -120_000 }, adjustmentCents: 0 });
+
+		const s = settings({ openingBalanceCents: plan.anchor?.cents ?? 0, openingBalanceDate: plan.anchor?.date ?? '' });
+		expect(buildCardSummary(s, entries, [], '2026-09-27')).toMatchObject({
+			closedInvoiceCents: 120_000,
+			openInvoiceCents: 45_000,
+			toPayCents: 120_000,
+			owedCents: 165_000,
+		});
+	});
+
+	it('preenchendo só a aberta, a âncora não se move e a fechada fica intacta', () => {
+		const plan = planCardAdjustment(settings(), entries, [], '2026-09-27', 50_000, null);
+		expect(plan).toEqual({ anchor: null, adjustmentCents: 5_000 });
+
+		// Sem âncora nova, a fechada continua sendo o que o app já tinha.
+		const withAdjustment = [...entries, purchase('2026-09-27', plan.adjustmentCents)];
+		expect(buildCardSummary(settings(), withAdjustment, [], '2026-09-27')).toMatchObject({
+			closedInvoiceCents: 120_000,
+			openInvoiceCents: 50_000,
+			toPayCents: 120_000,
+		});
+	});
+
+	it('zero digitado continua valendo zero: quem diz "a fechada está paga" é obedecido', () => {
+		const plan = planCardAdjustment(settings(), entries, [], '2026-09-27', null, 0);
+		expect(plan.anchor).toEqual({ date: '2026-09-24', cents: 0 });
+		const s = settings({ openingBalanceCents: 0, openingBalanceDate: '2026-09-24' });
+		expect(buildCardSummary(s, entries, [], '2026-09-27')).toMatchObject({ closedInvoiceCents: 0, openInvoiceCents: 45_000, toPayCents: 0 });
+	});
+
+	it('nada informado não mexe em nada', () => {
+		expect(planCardAdjustment(settings(), entries, [], '2026-09-27', null, null)).toEqual({ anchor: null, adjustmentCents: 0 });
+		expect(planCardAdjustment(settings({ closingDay: null }), entries, [], '2026-09-27', null, null)).toEqual({
+			anchor: null,
+			adjustmentCents: 0,
+		});
+	});
+
+	it('a "fatura atual" informada antes sobrevive a informar só a fechada', () => {
+		// "Fatura atual" de R$ 300 informada como âncora em 26/09, dentro do ciclo aberto.
+		// Mover a âncora para o fechamento anterior tiraria esses R$ 300 da fatura aberta; o
+		// ajuste os devolve, e a aberta continua valendo R$ 300.
+		const informed: CardEntry[] = [];
+		const s = settings({ openingBalanceCents: -30_000, openingBalanceDate: '2026-09-26' });
+		expect(buildCardSummary(s, informed, [], '2026-09-27').openInvoiceCents).toBe(30_000);
+
+		const plan = planCardAdjustment(s, informed, [], '2026-09-27', null, 80_000);
+		expect(plan).toEqual({ anchor: { date: '2026-09-24', cents: -80_000 }, adjustmentCents: 30_000 });
+		const anchored = settings({ openingBalanceCents: plan.anchor?.cents ?? 0, openingBalanceDate: plan.anchor?.date ?? '' });
+		const after = buildCardSummary(
+			anchored,
+			plan.adjustmentCents === 0 ? informed : [...informed, purchase('2026-09-27', plan.adjustmentCents)],
+			[],
+			'2026-09-27'
+		);
+		expect(after).toMatchObject({ closedInvoiceCents: 80_000, openInvoiceCents: 30_000, toPayCents: 80_000 });
 	});
 });
 

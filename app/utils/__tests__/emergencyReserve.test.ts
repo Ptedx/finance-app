@@ -19,8 +19,8 @@ const natures = new Map<string, CategoryNature>([
 	['repasse', 'passthrough'],
 ]);
 
-const point = (month: string, totalSpendCents: number, isCurrent = false): MonthPoint =>
-	({ month, isCurrent, overview: { totalSpendCents } }) as unknown as MonthPoint;
+const point = (month: string, totalSpendCents: number, isCurrent = false, isFuture = false): MonthPoint =>
+	({ month, isCurrent, isFuture, overview: { totalSpendCents } }) as unknown as MonthPoint;
 
 const input = (overrides: Partial<ReserveInput> = {}): ReserveInput => ({
 	accounts: [{ balanceCents: R(10_526.51), purpose: null }],
@@ -71,6 +71,13 @@ describe('custo essencial médio', () => {
 
 	it('sem mês fechado, nulo', () => {
 		expect(essentialMonthlyCostCents([point('2026-09', R(9_000), true)], rows, natures)).toBeNull();
+	});
+
+	it('5.4 — mês futuro não entra na média: ele só tem a parcela que já foi comprada', () => {
+		// Com dezembro selecionado na Home, os meses que ainda não aconteceram chegavam na
+		// série como fechados e puxavam o custo essencial — e a meta da reserva — para baixo.
+		const series = [point('2026-07', R(4_000)), point('2026-09', R(9_000), true), point('2026-10', R(1_200), false, true)];
+		expect(essentialMonthlyCostCents(series, rows, natures)).toBe(R(4_000));
 	});
 });
 
@@ -162,6 +169,13 @@ describe('o quadro da reserva', () => {
 
 	it('sem aporte nem rendimento, não enche', () => {
 		expect(buildReserveReadModel(input({ monthlyContributionCents: 0 })).monthsToFill).toBeNull();
+	});
+
+	it('5.6 — resgate não enche: nada de prometer uma data grampeando o aporte em zero', () => {
+		// Com a média guardada negativa, o rendimento sozinho "enchia" a reserva e a tela dava
+		// uma data que ninguém está perseguindo.
+		expect(buildReserveReadModel(input({ monthlyContributionCents: -R(300), monthlyRate: 0.01 })).monthsToFill).toBeNull();
+		expect(contributionDelayMonths(buildReserveReadModel(input({ monthlyContributionCents: -R(300), monthlyRate: 0.01 })))).toBeNull();
 	});
 
 	it('o rendimento ajuda a encher', () => {

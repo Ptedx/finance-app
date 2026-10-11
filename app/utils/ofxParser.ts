@@ -54,10 +54,11 @@ export interface OfxAccount {
 	/** Linhas descartadas por não terem FITID, data ou valor válidos. */
 	skipped: number;
 	/**
-	 * Saldo que o banco imprimiu no extrato (`LEDGERBAL`) e o dia a que ele se refere.
-	 * É a melhor âncora possível para o saldo de uma conta: vem do próprio banco. Nulos
-	 * quando o arquivo não traz, e ignorados pelo app em extratos de cartão, cujo sinal
-	 * varia entre bancos.
+	 * Saldo **contábil** que o banco imprimiu no extrato (`LEDGERBAL`) e o dia a que ele
+	 * se refere. É a melhor âncora possível para o saldo de uma conta: vem do próprio
+	 * banco. Nulos quando o arquivo não traz — e nunca preenchidos com o `AVAILBAL`, que
+	 * é o disponível e inclui o limite do cheque especial. Ignorados pelo app em extratos
+	 * de cartão, cujo sinal varia entre bancos.
 	 */
 	ledgerBalanceCents: number | null;
 	ledgerDate: string | null;
@@ -325,6 +326,17 @@ interface RawStatement {
 }
 
 /**
+ * Agregados de saldo, cujas folhas ficam com a chave qualificada (`LEDGERBAL.BALAMT`).
+ *
+ * `LEDGERBAL` (contábil) e `AVAILBAL` (disponível) usam os **mesmos** nomes de folha,
+ * `BALAMT` e `DTASOF`, e num mapa plano o segundo sobrescrevia o primeiro. Nos bancos
+ * que mandam os dois — Itaú, Bradesco, Santander —, o disponível inclui o limite do
+ * cheque especial: ele entrava como saldo da conta, calado, e subia para todos os
+ * aparelhos. Qualificar a chave é o que obriga quem lê a dizer de qual saldo fala.
+ */
+const BALANCE_AGGREGATES = new Set(['LEDGERBAL', 'AVAILBAL']);
+
+/**
  * Percorre as tags e monta um extrato por `STMTRS` / `CCSTMTRS`. Folhas (`<NAME>x`)
  * são atribuídas ao agregado corrente; a pilha só tem agregados, então um
  * `</NAME>` de XML é simplesmente ignorado por não bater com o topo.
@@ -364,7 +376,8 @@ const tokenize = (content: string): { org: string | null; statements: RawStateme
 			org = value;
 		} else if (current) {
 			// Chaves de conta ficam distintas das da lista de transações.
-			current.fields[name] = value;
+			const parent = stack[stack.length - 1];
+			current.fields[parent && BALANCE_AGGREGATES.has(parent) ? `${parent}.${name}` : name] = value;
 		}
 
 		match = tagPattern.exec(content);
@@ -429,10 +442,14 @@ export const parseOfx = (content: string): OfxStatement => {
 			});
 		}
 
-		// LEDGERBAL/BALAMT e LEDGERBAL/DTASOF chegam como folhas do extrato; AVAILBAL
-		// usa os mesmos nomes e viria por cima, mas os bancos daqui só mandam LEDGERBAL.
-		const ledgerBalanceCents = statement.fields.BALAMT ? parseOfxAmount(statement.fields.BALAMT) : null;
-		const ledgerDate = statement.fields.DTASOF ? parseOfxDate(statement.fields.DTASOF) : null;
+		// Só o saldo contábil, lido do agregado dele (ver `BALANCE_AGGREGATES`). O
+		// disponível é recusado de propósito: num extrato do Itaú o `AVAILBAL` traz
+		// saldo + cheque especial, e virar âncora da conta inventava dinheiro que o
+		// usuário não tem. Sem `LEDGERBAL` no arquivo a resposta é "não dá para saber".
+		const ledgerAmount = statement.fields['LEDGERBAL.BALAMT'];
+		const ledgerAsOf = statement.fields['LEDGERBAL.DTASOF'];
+		const ledgerBalanceCents = ledgerAmount ? parseOfxAmount(ledgerAmount) : null;
+		const ledgerDate = ledgerAsOf ? parseOfxDate(ledgerAsOf) : null;
 
 		return {
 			accountKey,

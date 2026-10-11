@@ -89,6 +89,10 @@ export const resolveAccountForNotification = async (
 	// conta faria o mensageiro "virar" o banco para sempre.
 	const foreign = isForeignApp(raw);
 
+	// O aviso diz "crédito" e o banco tem mais de um cartão: não dá para responder de qual
+	// fatura é a compra. Sem conta, e o usuário atribui — nunca a conta corrente.
+	if (target.type === 'unknown') return null;
+
 	if (target.type === 'card' || target.type === 'account') {
 		const found = target.account;
 		// Conta ou cartão cadastrado à mão ganha o app na primeira notificação do banco.

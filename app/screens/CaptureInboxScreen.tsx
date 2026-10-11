@@ -14,12 +14,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Capture, Category } from '../database/schema';
+import type { Account, Capture, Category } from '../database/schema';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage } from '../utils/captureMatcher';
 import { formatDate, getISODate } from '../utils/dateUtils';
+import { splitInstallments } from '../utils/installments';
 import { formatCents } from '../utils/money';
 
 /**
@@ -51,6 +53,38 @@ const whenLabelFor = (capture: Pick<Capture, 'packageName' | 'postedAt'>): strin
 	isStatementPackage(capture.packageName)
 		? formatDate(getISODate(new Date(capture.postedAt)))
 		: whenLabel(capture.postedAt);
+
+/**
+ * Onde a captura vai cair, e em quantas vezes — as duas coisas que a revisão não mostrava.
+ *
+ * A conta é a decisão mais arriscada do fluxo (dinheiro no lugar errado não aparece em
+ * lugar nenhum) e "Sem conta" agora acontece de propósito: desde a 1.2.6, quando o app
+ * não sabe de onde saiu o dinheiro ele não chuta. As parcelas são o que mais muda o caixa
+ * futuro: uma compra em 3x aparecia como "− R$ 300,00" e ao confirmar virava três
+ * parcelas de R$ 100 em três faturas, sem nada disso estar escrito (achado 7.7).
+ */
+export const destinationLabel = (
+	capture: Pick<Capture, 'accountId'>,
+	accounts: Account[],
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+	if (!capture.accountId) return t('captures.noAccount');
+	const account = accounts.find((item) => item.id === capture.accountId);
+	return account ? account.name : t('captures.noAccount');
+};
+
+/** "3x de R$ 100,00": a divisão exata que a confirmação vai lançar. */
+export const installmentsLabel = (
+	capture: Pick<Capture, 'amountCents' | 'installments'>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string | null => {
+	const count = capture.installments ?? 1;
+	if (count <= 1) return null;
+	const parts = splitInstallments(capture.amountCents, count);
+	// `times`, não `count`: `count` liga a pluralização do i18next, e aqui o número é
+	// parte da frase ("3x"), não a contagem de uma coisa no plural.
+	return t('captures.installmentsSplit', { times: count, amount: formatCents(parts[0]) });
+};
 
 const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {
 	id: 'uncategorized',
@@ -108,6 +142,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onAnswerTransfer,
 }) => {
 	const { t } = useTranslation();
+	const { accounts } = useAccounts();
 	const isIncome = capture.direction === 'in';
 	const [categoryId, setCategoryId] = useState(() =>
 		resolveCategoryId(capture.suggestedCategory, capture.direction, categories)
@@ -118,9 +153,14 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const category = categories.find((c) => c.id === categoryId) ?? FALLBACK_CATEGORY;
 	const amount = formatCents(capture.amountCents);
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
+	const destination = destinationLabel(capture, accounts, t);
+	const installments = installmentsLabel(capture, t);
 	const summary = `${isIncome ? t('captures.income') : t('captures.expense')}, ${amount}, ${
 		capture.counterparty ?? kindLabel
-	}, ${t('captures.from', { app: capture.appLabel, time: whenLabelFor(capture) })}`;
+	}, ${t('captures.inAccount', { account: destination })}${installments ? `, ${installments}` : ''}, ${t(
+		'captures.from',
+		{ app: capture.appLabel, time: whenLabelFor(capture) }
+	)}`;
 
 	return (
 		<View style={styles.card}>
@@ -138,6 +178,19 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					{kindLabel}
 					{capture.cardLast4 ? ` · ${t('captures.cardEnding', { last4: capture.cardLast4 })}` : ''}
 				</Text>
+				{/* Nada depende só de cor: o ícone acompanha o texto, e o texto diz "Sem conta"
+				    com todas as letras quando o app não soube de onde saiu o dinheiro. */}
+				<View style={styles.destinationRow}>
+					<Ionicons
+						name={capture.accountId ? 'wallet-outline' : 'help-circle-outline'}
+						size={15}
+						color="rgba(255,255,255,0.7)"
+					/>
+					<Text style={[styles.destination, !capture.accountId && styles.destinationMissing]}>
+						{t('captures.inAccount', { account: destination })}
+					</Text>
+					{installments && <Text style={styles.installments}>{installments}</Text>}
+				</View>
 			</View>
 
 			{capture.question === 'duplicate' && (
@@ -715,7 +768,31 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		color: 'rgba(255,255,255,0.7)',
 		marginTop: 2,
+	},
+	destinationRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexWrap: 'wrap',
+		gap: 6,
+		marginTop: 6,
 		marginBottom: 12,
+	},
+	destination: {
+		fontSize: 14,
+		color: 'rgba(255,255,255,0.85)',
+	},
+	destinationMissing: {
+		color: '#FFD166',
+	},
+	installments: {
+		fontSize: 13,
+		fontWeight: '600',
+		color: '#000000',
+		backgroundColor: ACCENT,
+		borderRadius: 6,
+		paddingHorizontal: 6,
+		paddingVertical: 2,
+		overflow: 'hidden',
 	},
 	question: {
 		backgroundColor: 'rgba(21, 232, 254, 0.08)',

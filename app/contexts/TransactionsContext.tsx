@@ -249,8 +249,12 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 	const updateCategory = async (category: CategoryEdit): Promise<void> => {
 		try {
 			await dbUpdateCategory(category);
-			setCategories(await getCategories());
 			syncQueue.schedule();
+			// Recarrega tudo, não só a lista de categorias: os totais do mês são somados em SQL
+			// com join na natureza, então marcar "Repasse sócio" como repasse (ou promover uma
+			// categoria de discricionária para essencial) não tinha efeito nenhum até reabrir o
+			// app — e é exatamente a ação que corrige uma receita inflada.
+			await refreshData();
 		} catch (error) {
 			console.error('Error updating category:', error);
 			Alert.alert('Error', 'Failed to update category. Please try again.');

@@ -83,7 +83,13 @@ export type NotificationTarget =
 	/** Uma conta certa, não "a corrente do app": o final de débito que ela declarou. */
 	| { type: 'account'; account: Account }
 	| { type: 'new_card' }
-	| { type: 'checking' };
+	| { type: 'checking' }
+	/**
+	 * "Não dá para responder": a compra não é da conta corrente e não há como dizer de
+	 * qual cartão é. A captura fica sem conta e o usuário atribui — chutar poria o
+	 * dinheiro no lugar errado, e desde a 1.2.6 ficar sem conta é um caminho normal.
+	 */
+	| { type: 'unknown' };
 
 /**
  * Para onde vai uma compra com final de cartão. Puro, para ser testado caso a caso.
@@ -147,6 +153,11 @@ export const pickNotificationTarget = (
 	if (exact) return { type: 'card', account: exact };
 	if (ofBank.length === 1) return { type: 'card', account: ofBank[0] };
 	if (hint === 'credit' && !foreign && ofBank.length === 0) return { type: 'new_card' };
+	// Dois cartões do mesmo banco (PF e PJ) e um final que não é de nenhum deles: o texto
+	// diz "crédito", então a compra **não** é da conta corrente — mas também não há como
+	// dizer de qual fatura é. Caía em "conta corrente", e R$ 480 saíam do saldo e ficavam
+	// fora das duas faturas (achado 7.6). A resposta certa é não responder.
+	if (hint === 'credit' && ofBank.length > 1) return { type: 'unknown' };
 	return { type: 'checking' };
 };
 

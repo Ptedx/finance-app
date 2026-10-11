@@ -1,12 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type React from 'react';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Debt } from '../../database/schema';
-import { formatMonthYear } from '../../utils/dateUtils';
-import type { DebtsSummary, DebtVerdict } from '../../utils/debt';
+import { formatMonthYear, todayISO } from '../../utils/dateUtils';
+import { type DebtsSummary, type DebtVerdict, debtStateOn, termsOf } from '../../utils/debt';
 import { formatCents } from '../../utils/money';
 import { ACCENT } from '../cards/formParts';
 import DebtRow from '../debts/DebtRow';
@@ -24,8 +24,12 @@ const DebtsPanel: React.FC<{
 	const { t } = useTranslation();
 	const router = useRouter();
 	const [showPaidOff, setShowPaidOff] = useState(false);
-	const active = debts.filter((debt) => !debt.archived);
-	const paidOff = debts.filter((debt) => debt.archived);
+	// Quitada no prazo conta como quitada, igual à arquivada: ela não deve nada, não entra no
+	// "por mês em parcelas" e não fica entre as que ainda estão sendo pagas. O cadastro
+	// continua inteiro — isto é só onde a linha aparece.
+	const isPaidOff = useCallback((debt: Debt) => debt.archived || debtStateOn(termsOf(debt), todayISO()).settled, []);
+	const active = debts.filter((debt) => !isPaidOff(debt));
+	const paidOff = debts.filter((debt) => isPaidOff(debt));
 	const openDebt = (debt: Debt) => router.push({ pathname: '/debts/[id]', params: { id: debt.id } });
 
 	return (

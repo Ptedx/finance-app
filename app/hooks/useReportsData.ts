@@ -10,17 +10,27 @@ import {
 	getMonthlyCategoryTotals,
 	getMonthlyTransferActivity,
 	getTransactionsForAccounts,
+	getTransfersByDateRange,
 	initDatabase,
 	type MonthAccountActivityRow,
 	type MonthCategoryTotalRow,
 	type MonthTransferActivityRow,
 } from '../database/database';
+import type { Transfer } from '../database/schema';
 import type { CardEntry } from '../utils/cardMath';
 import { monthKeyOf, monthsBetweenKeys, shiftMonthKey, todayISO } from '../utils/dateUtils';
 import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
 import { buildHealthIndicators, type HealthIndicator } from '../utils/healthScore';
-import { buildDebtInsights, buildGoalInsights, type Insight, mergeInsights, type WealthMetrics } from '../utils/insights';
-import { FULL_BASIS_POINTS } from '../utils/metrics';
+import {
+	buildDebtInsights,
+	buildGoalInsights,
+	buildSavingsRateInsights,
+	type Insight,
+	mergeInsights,
+	SAVINGS_RATE_INSIGHT_IDS,
+	type WealthMetrics,
+} from '../utils/insights';
+import { fixedCostShare, FULL_BASIS_POINTS } from '../utils/metrics';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
@@ -29,9 +39,13 @@ import {
 	committedMonths,
 	type DuplicateIncome,
 	buildMonthSeries,
+	externalIncomeTransfers,
 	findDuplicateIncomes,
+	findRecurringDoubleCharges,
 	type IncomeComposition,
 	incomeComposition,
+	investmentIncomeRows,
+	type MonthInvestmentIncomeRow,
 	type MonthKey,
 	type MonthPoint,
 	monthElapsedBp,
@@ -39,9 +53,10 @@ import {
 	monthRangeOf,
 	rankCategories,
 	rankSpendSources,
-	realizedYield12mCents,
+	savingsRateDropsEnding,
 	type SpendSourceRow,
 	toCardEntry,
+	yield12m,
 } from '../utils/reportSeries';
 import {
 	buildRetirementReadModel,
@@ -83,6 +98,17 @@ export type TrendRange = 3 | 6 | 12;
 
 export const TREND_RANGES: TrendRange[] = [3, 6, 12];
 
+/**
+ * Em que mês a série termina.
+ *
+ * `selected` é o mês do seletor, que é o que a tela de Relatórios responde ("como foi
+ * setembro?"). `today` é para quem fala do presente: o Patrimônio mistura médias com os
+ * saldos de **hoje** (a cascata da reserva, o capital, o saldo das dívidas), e seguir o mês
+ * escolhido em outra tela mudava a meta da reserva, o "em quantos meses enche" e a data da
+ * aposentadoria sem que nada tivesse mudado no dinheiro — selecionar dezembro bastava.
+ */
+export type ReportsAnchor = 'selected' | 'today';
+
 /** 12 meses de tendência mais um anterior, para a variação de categoria do primeiro. */
 const HISTORY_MONTHS = 13;
 
@@ -101,6 +127,10 @@ interface ReportsRaw {
 	transfers: MonthTransferActivityRow[];
 	categoryRows: MonthCategoryTotalRow[];
 	cardEntries: Map<string, CardEntry[]>;
+	/** As transferências do histórico, linha a linha: só elas dizem de qual conta o dinheiro veio. */
+	transferLines: Transfer[];
+	/** A parte de rendimento da receita de cada conta de reserva, mês a mês. */
+	investmentIncome: MonthInvestmentIncomeRow[];
 }
 
 /** Uma dívida na seção dos Relatórios. */
@@ -157,9 +187,9 @@ export interface ReportsData {
 	refresh: () => Promise<void>;
 }
 
-export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): ReportsData => {
+export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, anchor: ReportsAnchor = 'selected'): ReportsData => {
 	const { selectedMonth, selectedYear } = usePeriod();
-	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, accruedYield12m, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
 	const { currentBudgetCents } = useBudget();
 	const { goal: reserveGoal } = useReserveGoal();
 	const { categories, currentPeriodTransactions, refreshData } = useTransactions();
@@ -167,8 +197,9 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 	const { activeDebts, summary: debtsSummary } = useDebts();
 	const { transactions: recurring } = useRecurringTransactions();
 
-	const selectedKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
 	const todayKey = monthKeyOf(todayISO());
+	// Ancorado em hoje, o mês escolhido na Home não mexe aqui (ver `ReportsAnchor`).
+	const selectedKey = anchor === 'today' ? todayKey : `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
 
 	const [raw, setRaw] = useState<ReportsRaw | null>(null);
 
@@ -178,27 +209,41 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		let cancelled = false;
 		const months = monthKeysEnding(selectedKey, HISTORY_MONTHS);
 		const { startDate, endDate } = monthRangeOf(months);
-		const cardIds = accounts.filter((account) => account.kind === 'credit_card' && !account.deletedAt).map((account) => account.id);
+		const live = accounts.filter((account) => !account.deletedAt);
+		const cardIds = live.filter((account) => account.kind === 'credit_card').map((account) => account.id);
+		// As contas de reserva vêm na mesma consulta porque delas o quadro do mês precisa saber
+		// quanto da receita é rendimento de investimento — o que as somas por conta não dizem.
+		const reserveIds = live.filter((account) => account.kind !== 'credit_card' && account.role === 'reserve').map((account) => account.id);
 
 		const load = async () => {
 			try {
 				await initDatabase();
-				const [activity, transfers, categoryRows, cardTransactions] = await Promise.all([
+				const [activity, transfers, categoryRows, ledgerTransactions, transferLines] = await Promise.all([
 					getMonthlyAccountActivity(startDate, endDate),
 					getMonthlyTransferActivity(startDate, endDate),
 					getMonthlyCategoryTotals(startDate, endDate, 'expense'),
-					getTransactionsForAccounts(cardIds),
+					getTransactionsForAccounts([...cardIds, ...reserveIds]),
+					getTransfersByDateRange(startDate, endDate),
 				]);
 				if (cancelled) return;
 
+				const isCard = new Set(cardIds);
 				const cardEntries = new Map<string, CardEntry[]>();
-				for (const transaction of cardTransactions) {
-					if (!transaction.accountId) continue;
+				for (const transaction of ledgerTransactions) {
+					if (!transaction.accountId || !isCard.has(transaction.accountId)) continue;
 					const list = cardEntries.get(transaction.accountId) ?? [];
 					list.push(toCardEntry(transaction));
 					cardEntries.set(transaction.accountId, list);
 				}
-				setRaw({ months, activity, transfers, categoryRows, cardEntries });
+				setRaw({
+					months,
+					activity,
+					transfers,
+					categoryRows,
+					cardEntries,
+					transferLines,
+					investmentIncome: investmentIncomeRows(ledgerTransactions),
+				});
 			} catch (error) {
 				console.error('Error loading the reports history:', error);
 			}
@@ -213,7 +258,19 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 	const liveAccounts = useMemo(() => accounts.filter((account) => !account.deletedAt), [accounts]);
 
 	const fullSeries = useMemo<MonthPoint[]>(
-		() => (raw ? buildMonthSeries({ months: raw.months, accounts: liveAccounts, activity: raw.activity, transfers: raw.transfers, cardEntries: raw.cardEntries, currentMonth: todayKey }) : []),
+		() =>
+			raw
+				? buildMonthSeries({
+						months: raw.months,
+						accounts: liveAccounts,
+						activity: raw.activity,
+						transfers: raw.transfers,
+						cardEntries: raw.cardEntries,
+						transferLines: raw.transferLines,
+						investmentIncome: raw.investmentIncome,
+						currentMonth: todayKey,
+					})
+				: [],
 		[raw, liveAccounts, todayKey]
 	);
 
@@ -257,23 +314,45 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		});
 	}, [reserveGoal, computedCost, liveAccounts, balances, averageSavedCents, goal]);
 
+	/**
+	 * O rendimento que o app **estimou** para as contas de reserva nos últimos 12 meses (o
+	 * acréscimo do CDI, que não é lançado no livro). Entra no "rendeu nos últimos 12 meses"
+	 * ao lado do lançado: sem ele a tela afirmava "rendeu 0% ao ano" num CDB de 120% do CDI.
+	 */
+	const estimatedYield12mCents = useMemo(() => {
+		let total = 0;
+		let found = false;
+		for (const account of liveAccounts) {
+			if (account.archived || account.kind === 'credit_card' || account.role !== 'reserve') continue;
+			const cents = accruedYield12m.get(account.id);
+			if (cents === undefined) continue;
+			found = true;
+			total += cents;
+		}
+		return found ? total : null;
+	}, [liveAccounts, accruedYield12m]);
+
 	const retirement = useMemo<RetirementReadModel | null>(() => {
 		if (!goal) return null;
 		// O rendimento observado anda para trás a partir do saldo de hoje, então só faz
 		// sentido quando a série termina no mês de hoje.
 		const history = selectedKey === todayKey ? fullSeries.slice(-12) : [];
+		const yielded = yield12m(history, history.length > 0 ? estimatedYield12mCents : null);
 		return buildRetirementReadModel({
 			goal,
 			// A cascata: só o que passa da reserva de emergência é capital da meta, e o aporte
 			// vem para a meta depois que a reserva enche.
 			trackedCapitalCents: reserve.split.investmentCents,
 			monthlyContributionCents: averageSavedCents,
-			realizedYield12mCents: history.length > 0 ? realizedYield12mCents(history) : null,
+			// Nulo é "não dá para responder", e é o que vale sem lançamento e sem estimativa:
+			// antes esta linha devolvia centavos (nunca nulo) e a tela afirmava zero.
+			realizedYield12mCents: yielded.cents,
+			realizedYieldBasis: yielded.basis,
 			averageCapital12mCents: averageReserveCapitalCents(history, overview.savedCents),
 			asOfMonth: todayKey,
 			contributionDelayMonths: contributionDelayMonths(reserve),
 		});
-	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve]);
+	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve, estimatedYield12mCents]);
 
 	const health = useMemo<HealthIndicator[]>(() => {
 		let neededSavingsRateBp: number | null = null;
@@ -283,6 +362,9 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 				requiredCapitalCents: retirement.requiredCapitalCents,
 				monthlyRate: monthlyRate(goal.expectedYieldBp),
 				months: NEEDED_HORIZON_MONTHS,
+				// "Reserva primeiro" também aqui: os primeiros meses vão para a reserva, então a
+				// fatia da renda que a meta pede é maior do que a conta sem atraso dizia.
+				delayMonths: retirement.contributionDelayMonths,
 			});
 			neededSavingsRateBp = needed === null ? null : Math.round((needed * FULL_BASIS_POINTS) / averageIncomeCents);
 		}
@@ -295,7 +377,10 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 			neededSavingsRateBp,
 			liquidCents: overview.cashCents + overview.savedCents,
 			averageMonthlySpendCents: averageSpendCents,
-			fixedCostBp: metrics.fixedCostBasisPoints,
+			// A fatia de custo fixo também sai do quadro do mês: a receita crua do período não
+			// vê o que a PJ transferiu para a principal, e o indicador acusava "custo fixo acima
+			// de 50% da renda" num mês de R$ 12.000 de pró-labore.
+			fixedCostBp: selected ? fixedCostShare({ monthlyFixedCents: metrics.monthlyFixedCents, incomeCents: selected.overview.incomeCents }) : metrics.fixedCostBasisPoints,
 			cardOwedCents: cardsTotals.toPayCents + cardsTotals.openInvoicesCents,
 			averageMonthlyIncomeCents: averageIncomeCents,
 			limitUsagePercent,
@@ -306,7 +391,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 					? null
 					: { reserveCents: reserve.split.reserveCents, monthlyCostCents: reserve.monthlyCostCents, targetMonths: reserve.targetMonths },
 		});
-	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, metrics.fixedCostBasisPoints, cardsTotals, selectedKey, reserve]);
+	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, metrics.fixedCostBasisPoints, metrics.monthlyFixedCents, cardsTotals, selectedKey, reserve]);
 
 	const rankedCategories = useMemo(() => {
 		if (!raw) return [];
@@ -331,7 +416,17 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 		[selected, raw, liveAccounts, debitCards]
 	);
 
-	const debtInputs = useMemo(() => activeDebts.map((debt) => ({ id: debt.id, name: debt.name, terms: termsOf(debt) })), [activeDebts]);
+	/**
+	 * As dívidas que ainda estão sendo pagas: a quitada no prazo sai daqui.
+	 *
+	 * Só a amortização confirmada arquiva a dívida, então quem terminou as 48 parcelas no
+	 * prazo continuava na lista com a parcela da âncora, o chip "Amortize" e uma frase
+	 * recomendando antecipar uma dívida que não existe mais. Nada é apagado nem arquivado:
+	 * a dívida segue cadastrada e visível no Patrimônio como quitada.
+	 */
+	const payingDebts = useMemo(() => activeDebts.filter((debt) => !debtStateOn(termsOf(debt), todayISO()).settled), [activeDebts]);
+
+	const debtInputs = useMemo(() => payingDebts.map((debt) => ({ id: debt.id, name: debt.name, terms: termsOf(debt) })), [payingDebts]);
 
 	const committed = useMemo(() => {
 		const months = [1, 2, 3].map((offset) => shiftMonthKey(todayKey, offset));
@@ -352,7 +447,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 
 	const debtItems = useMemo<DebtReportItem[]>(
 		() =>
-			activeDebts.map((debt) => {
+			payingDebts.map((debt) => {
 				const state = debtStateOn(termsOf(debt), todayISO());
 				return {
 					id: debt.id,
@@ -364,7 +459,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 					verdict: worthPayingOff({ debtRateBp: effectiveRateBp(termsOf(debt), todayISO()), investmentYieldBp }).verdict,
 				};
 			}),
-		[activeDebts, investmentYieldBp]
+		[payingDebts, investmentYieldBp]
 	);
 
 	const debtScenario = useMemo<DebtScenario | null>(() => {
@@ -388,23 +483,55 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null): 
 	}, [retirement, goal, debtsSummary.releases, todayKey]);
 
 	const passThroughIds = useMemo(() => new Set(categories.filter((category) => category.nature === 'passthrough').map((category) => category.id)), [categories]);
-	const income = useMemo(() => incomeComposition(currentPeriodTransactions, passThroughIds), [currentPeriodTransactions, passThroughIds]);
+	const income = useMemo(
+		() =>
+			incomeComposition(
+				currentPeriodTransactions,
+				passThroughIds,
+				externalIncomeTransfers(raw?.transferLines ?? [], liveAccounts).filter((transfer) => transfer.month === selectedKey)
+			),
+		[currentPeriodTransactions, passThroughIds, raw, liveAccounts, selectedKey]
+	);
 	const duplicates = useMemo(() => findDuplicateIncomes(currentPeriodTransactions), [currentPeriodTransactions]);
+	// A assinatura cadastrada como recorrente e cobrada no cartão entra duas vezes: a
+	// recorrente lança no dia combinado e a notificação lança a compra na fatura.
+	const doubleCharges = useMemo(() => findRecurringDoubleCharges(currentPeriodTransactions), [currentPeriodTransactions]);
 
 	const debtInsights = useMemo(
 		() =>
 			buildDebtInsights(
-				activeDebts.map((debt) => {
+				payingDebts.map((debt) => {
 					const costBp = effectiveRateBp(termsOf(debt), todayISO());
 					return { id: debt.id, name: debt.name, rateBp: costBp, ...worthPayingOff({ debtRateBp: costBp, investmentYieldBp }) };
 				})
 			),
-		[activeDebts, investmentYieldBp]
+		[payingDebts, investmentYieldBp]
 	);
 
+	// Uma base só para a taxa de poupança nesta tela: a do quadro do mês, a mesma que a grade
+	// de saúde usa. Os insights de `useWealthMetrics` saem da soma crua do período (fatura
+	// paga em vez de fatura que fecha, envelope pelo que foi gasto lá dentro, reserva
+	// contada), e a tela se contradizia num mesmo scroll — "taxa de poupança 4%" na grade e
+	// "54% da sua renda virou poupança" no insight logo abaixo. Os outros insights de riqueza
+	// (custo fixo, fôlego, 50/30/20, categoria que saltou) continuam vindo de lá.
+	const savingsRateInsights = useMemo(() => {
+		if (!selected) return [];
+		const { incomeCents, leftoverCents, savingsRateBp } = selected.overview;
+		return buildSavingsRateInsights(
+			{ incomeCents, netCents: leftoverCents, basisPoints: savingsRateBp },
+			savingsRateDropsEnding(fullSeries)
+		);
+	}, [selected, fullSeries]);
+
 	const insights = useMemo(
-		() => mergeInsights(buildGoalInsights(retirement, health, duplicates), debtInsights, wealthInsights),
-		[retirement, health, duplicates, debtInsights, wealthInsights]
+		() =>
+			mergeInsights(
+				buildGoalInsights(retirement, health, duplicates, doubleCharges),
+				debtInsights,
+				savingsRateInsights,
+				wealthInsights.filter((insight) => !SAVINGS_RATE_INSIGHT_IDS.includes(insight.id))
+			),
+		[retirement, health, duplicates, debtInsights, savingsRateInsights, wealthInsights]
 	);
 
 	const priorities = useMemo(
