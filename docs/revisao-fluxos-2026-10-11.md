@@ -1,8 +1,7 @@
 # Revisão dos fluxos — 11/10/2026
 
-Cinco revisões independentes, uma por fluxo do app, feitas em cima da `hotfix/1.2.5`. Cada
-achado traz o lugar, o cenário que quebra e a consequência. A sexta revisão (fluxo de
-captura de notificações) ainda estava rodando quando este documento foi escrito.
+Seis revisões independentes, uma por fluxo do app, feitas em cima da `hotfix/1.2.5`. Cada
+achado traz o lugar, o cenário que quebra e a consequência.
 
 Estado de cada achado:
 
@@ -239,6 +238,55 @@ centavos) a repetição falha com "tabela já existe" e o app não abre mais.
 
 ---
 
+## 7. Captura de notificação → lançamento
+
+### 7.1 Chamariz no fim do aviso descartava a notificação inteira — corrigido
+
+"toque para", "clique", "saiba mais" e "quando quiser" estavam na lista de sinais de
+propaganda, e o aviso só era poupado se tivesse palavra de confirmação. Rodando o parser:
+"Pix enviado: R$ 1.200,00 para JOAO SILVA. Toque para ver o comprovante." era **descartado
+sem deixar rastro** — não virava item para revisar, não virava ignorado, não entrava no
+histórico, e a fila nativa já tinha sido esvaziada. O gasto não existia para o app.
+
+### 7.2 Aplicação e resgate não geram nada, e o saldo fica errado para sempre — relatado
+
+"Aplicação de R$ 5.000,00 realizada" é gravada como ignorada, com a justificativa de que
+investimento não é receita nem despesa. Mas o dinheiro saiu da conta corrente e entrou na
+caixinha: sem transferência, a conta corrente fica R$ 5.000 acima do real indefinidamente.
+O pagamento de fatura grava transferência justamente por isso — aqui faltou.
+
+### 7.3 Um toque em "Transferência" cria regra permanente, invisível e irreversível — relatado
+
+Tocar por engano em "Transferência" num item grava a regra na primeira vez (a categoria
+exige três confirmações) e o "Desfazer" não a remove. Nenhuma tela mostra ou apaga regras
+aprendidas: aquele estabelecimento desaparece das despesas para sempre.
+
+### 7.4 Duplicata de carteira casa só por valor e direção, em 12 horas — relatado
+
+Duas compras de R$ 20,00 no mesmo dia (uma pela carteira às 9h, outra no cartão às 18h)
+viram uma só, sem pergunta. Não compara estabelecimento, final do cartão nem conta.
+
+### 7.5 `recordTransfer` reaproveita qualquer transferência viva de mesmo valor em ±5 dias — relatado
+
+Mesmo defeito do achado 1.2, visto do outro lado: um Pix de R$ 1.500 pode ser casado com o
+pagamento da fatura de R$ 1.500 de dois dias antes. Pior, reverter o Pix apaga o pagamento
+da fatura.
+
+### 7.6 Compra "no crédito" vai para a conta corrente quando há 2 cartões do mesmo banco — conferido
+
+Sem final exato e com dois cartões do banco, a função cai no caso "conta corrente" mesmo
+quando o texto diz "crédito". R$ 480 saem do saldo e ficam fora das duas faturas. A
+convenção do projeto manda devolver "não dá para responder" na ambiguidade; aqui ela chuta.
+
+### 7.7 A tela de revisão não mostra em qual conta a captura caiu, nem as parcelas — relatado
+
+O item mostra valor, estabelecimento, app e hora. A decisão mais arriscada do fluxo (qual
+conta) e a que mais muda o caixa futuro (ser parcelada) são as duas invisíveis no único
+momento de revisão: uma compra em 3x aparece como "− R$ 300,00" e ao confirmar vira três
+parcelas de R$ 100 em três faturas.
+
+---
+
 ## O que as revisões conferiram e consideraram correto
 
 Vale registrar, porque é a cobertura: ciclo de fatura (fechamento 29/30/31, fevereiro, dia
@@ -255,6 +303,7 @@ duas direções com gatilho de `serverSeq` em todas, e o cursor de pull que não
 
 ## Sem rede de proteção
 
-Não há teste para `database.ts`, para os contextos nem para o backend. Os achados 1.1, 2.2 e
-1.5 seriam pegos de primeira por um teste de `mergeAccounts` e um de atribuição dos
-lançamentos sem conta.
+Não há teste para `database.ts`, para os contextos, para `captureActions.ts` nem para o
+backend. Os achados 1.1, 2.2 e 1.5 seriam pegos de primeira por um teste de `mergeAccounts`
+e um de atribuição dos lançamentos sem conta; 7.2, 7.3 e 7.5 estão todos no caminho de
+escrita das capturas, que é o que não tem teste nenhum.
