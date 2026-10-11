@@ -6,6 +6,14 @@ versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atr�
 
 ## [1.2.6] — 2026-10-11
 
+- **Notificação de compra com "Toque para ver o comprovante" não é mais descartada.** O
+  filtro de propaganda tratava chamariz ("toque para", "clique", "saiba mais") como sinal
+  de anúncio, então "Pix enviado: R$ 1.200,00 para JOAO SILVA. Toque para ver o
+  comprovante." era jogado fora **sem deixar rastro**: não virava item para revisar, não
+  entrava no histórico e não dava erro. Quem decide agora é o verbo de movimentação, e
+  propaganda continua sendo descartada. Um movimento confirmado ("enviado", "debitado",
+  "pago", "creditado") nunca é tratado como anúncio.
+
 - **Só banco vira conta.** Qualquer notificação com um valor criava uma conta com o nome do
   app que avisou: nasceram contas "WhatsApp", "Gmail", "Messages", "Google" e "99" ao lado
   das de verdade, e a compra podia cair numa delas. Agora o app só cria conta quando
