@@ -33,14 +33,17 @@ import * as biometricUtils from '../utils/biometricUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 import { StatementImportError } from '../utils/statementImport';
-import { resetAsyncStorage } from '../utils/storageUtils';
+import { resetAsyncStorage, STORAGE_KEYS } from '../utils/storageUtils';
 
 const SettingsScreen = () => {
 	const { t } = useTranslation();
 	const { account, isAvailable: isAuthAvailable } = useAuth();
 	const { currentCurrency } = useCurrency();
 	const { currentLanguage } = useLanguage();
-	const { transactions, categories, refreshData } = useTransactions();
+	// O backup não passa mais pelo estado da tela: `exportDatabaseData` lê o banco. A
+	// tela entregava `transactions`/`categories` daqui, e um contexto que ainda não
+	// carregou (ou que falhou) virava um arquivo válido e vazio.
+	const { refreshData } = useTransactions();
 	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { authenticate } = useBiometricAuth();
@@ -188,7 +191,7 @@ const SettingsScreen = () => {
 	const performExport = async () => {
 		try {
 			setIsExporting(true);
-			await exportDatabaseData(transactions, categories, recurringTransactions);
+			await exportDatabaseData();
 			setIsExporting(false);
 		} catch (error) {
 			console.error('Error during export:', error);
@@ -232,12 +235,17 @@ const SettingsScreen = () => {
 			const result = await importDatabaseData();
 			if (result.success) {
 				await refreshAppData();
+				const summary = t('settings.importSuccessMsg', {
+					transactions: result.stats?.transactions,
+					recurringTransactions: result.stats?.recurringTransactions,
+				});
+				// Uma restauração que deixou algo para trás não pode sair com a mesma cara
+				// de uma que voltou inteira: o aviso vem junto, mesmo em inglês, enquanto
+				// as chaves de tradução não existem (ver o relatório).
+				const warnings = result.warnings ?? [];
 				Alert.alert(
 					t('settings.importSuccess'),
-					t('settings.importSuccessMsg', {
-						transactions: result.stats?.transactions,
-						recurringTransactions: result.stats?.recurringTransactions,
-					})
+					warnings.length > 0 ? `${summary}\n\n${warnings.join(' ')}` : summary
 				);
 			} else {
 				Alert.alert(t('settings.importFailed'), result.message);
@@ -263,7 +271,7 @@ const SettingsScreen = () => {
 							try {
 								setIsResetting(true);
 								await resetDatabase();
-								await resetAsyncStorage(['@spendr_biometric_enabled', '@spendr_language']);
+								await resetAsyncStorage(['@spendr_biometric_enabled', STORAGE_KEYS.language]);
 								await refreshAppData();
 								setIsResetting(false);
 								Alert.alert(t('settings.resetSuccess'), t('settings.resetSuccessMsg'), [

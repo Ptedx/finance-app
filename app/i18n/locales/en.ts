@@ -597,6 +597,16 @@ const en = {
 		exportAuthMsg: 'For your security, exporting data requires authentication.',
 		exportFailed: 'Export Failed',
 		exportError: 'There was an error exporting your data. Please try again.',
+		exportErrorReport: 'There was an error exporting your report. Please try again.',
+		exportErrorDetail: 'Nothing was saved. Please try again.\n\n{{reason}}',
+		exportErrorUnknown: 'Unknown error',
+		exportSummary:
+			'{{transactions}} transactions, {{categories}} categories, {{accounts}} accounts, {{transfers}} transfers, {{recurring}} recurring, {{budgets}} budgets, {{debts}} debts, {{captures}} inbox items, {{rules}} learned rules',
+		exportSuccess: 'Backup saved',
+		exportSuccessMsg: 'Keep this file.\n\nSaved: {{summary}}.',
+		exportIncompleteTitle: 'Export incomplete',
+		exportIncompleteMsg:
+			'The file was saved but it is missing: {{missing}}. Do not uninstall the app relying on it — export again.\n\nSaved: {{summary}}.',
 		importTitle: 'Import Data',
 		importConfirmMsg:
 			'This will replace ALL your current data with the imported data. Make sure you have a backup of your current data if needed. Continue?',

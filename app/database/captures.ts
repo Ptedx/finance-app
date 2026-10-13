@@ -73,6 +73,77 @@ export const insertCapture = async (draft: CaptureDraft, explicitId?: string): P
 	return capture;
 };
 
+/**
+ * A caixa de entrada inteira, para o backup — pendentes e resolvidas.
+ *
+ * O caso real: no dia 12/10/2026 o dono gerou um backup e reinstalou o app. As compras
+ * de outubro ainda estavam **aqui**, pendentes de revisão, e não em `transactions`: não
+ * sincronizam (são rascunho de cada aparelho) e não saíam no arquivo. Duas semanas de
+ * compras foram embora com a desinstalação, enquanto as transferências do mesmo período
+ * voltaram — porque uma captura de troca de bolso grava a transferência na hora, e uma
+ * de compra espera a confirmação do usuário.
+ */
+export const getAllCaptures = async (): Promise<Capture[]> => {
+	const rows = await db.getAllAsync<CaptureRow>('SELECT * FROM captures ORDER BY postedAt ASC');
+	return rows.map(toCapture);
+};
+
+/**
+ * Regrava uma captura do backup com o id, o texto cru e a decisão originais.
+ *
+ * O id é o do arquivo porque é por ele que `relatedId` ("é duplicata daquela?") e o
+ * histórico se encontram. `fingerprint` é UNIQUE: se este aparelho já capturou a mesma
+ * notificação com outro id, a linha local sai e a do arquivo entra — ela é a que carrega
+ * o que o usuário decidiu. Sem isso o INSERT estouraria no meio da importação, com o
+ * banco já apagado.
+ */
+export const restoreCapture = async (capture: Capture): Promise<void> => {
+	await db.runAsync('DELETE FROM captures WHERE fingerprint = ? AND id <> ?', [
+		capture.fingerprint,
+		capture.id,
+	]);
+	await db.runAsync(
+		`INSERT INTO captures
+       (id, fingerprint, packageName, appLabel, title, text, postedAt, amountCents, direction, kind,
+        counterparty, merchantKey, cardLast4, status, question, relatedId, suggestedCategory,
+        transactionId, autoConfirmed, reason, accountId, transferId, installments, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET
+       status = excluded.status, question = excluded.question, relatedId = excluded.relatedId,
+       suggestedCategory = excluded.suggestedCategory, transactionId = excluded.transactionId,
+       autoConfirmed = excluded.autoConfirmed, reason = excluded.reason,
+       accountId = excluded.accountId, transferId = excluded.transferId,
+       installments = excluded.installments, updatedAt = excluded.updatedAt`,
+		[
+			capture.id,
+			capture.fingerprint,
+			capture.packageName,
+			capture.appLabel,
+			capture.title,
+			capture.text,
+			capture.postedAt,
+			capture.amountCents,
+			capture.direction,
+			capture.kind,
+			capture.counterparty ?? null,
+			capture.merchantKey ?? null,
+			capture.cardLast4 ?? null,
+			capture.status,
+			capture.question ?? null,
+			capture.relatedId ?? null,
+			capture.suggestedCategory ?? null,
+			capture.transactionId ?? null,
+			capture.autoConfirmed ? 1 : 0,
+			capture.reason ?? null,
+			capture.accountId ?? null,
+			capture.transferId ?? null,
+			capture.installments ?? null,
+			capture.createdAt,
+			capture.updatedAt,
+		]
+	);
+};
+
 export const hasCaptureFingerprint = async (fingerprint: string): Promise<boolean> => {
 	const row = await db.getFirstAsync<{ id: string }>(
 		'SELECT id FROM captures WHERE fingerprint = ?',
@@ -167,6 +238,37 @@ export const getMerchantRule = async (merchantKey: string): Promise<MerchantRule
 		merchantKey,
 	]);
 
+/**
+ * Todas as regras aprendidas, para o backup. É o que o app sabe dos hábitos deste
+ * usuário — qual categoria cada estabelecimento recebe, quem é conta própria, o que
+ * ignorar — e quantas confirmações sustentam cada palpite. Reinstalar sem isso faz o
+ * app desaprender tudo e voltar a perguntar o que já estava respondido.
+ */
+export const getMerchantRules = async (): Promise<MerchantRule[]> =>
+	db.getAllAsync<MerchantRule>('SELECT * FROM merchant_rules ORDER BY merchantKey');
+
+/**
+ * Regrava uma regra do backup com o `updatedAt` do arquivo, e não o de agora:
+ * `saveMerchantRule` carimba o instante da escrita, que é o certo para um aprendizado
+ * novo e errado para um que está só voltando do backup.
+ */
+export const restoreMerchantRule = async (rule: MerchantRule): Promise<void> => {
+	await db.runAsync(
+		`INSERT INTO merchant_rules (merchantKey, categoryId, treatAs, confirmations, updatedAt)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (merchantKey) DO UPDATE SET
+       categoryId = excluded.categoryId, treatAs = excluded.treatAs,
+       confirmations = excluded.confirmations, updatedAt = excluded.updatedAt`,
+		[
+			rule.merchantKey,
+			rule.categoryId ?? null,
+			rule.treatAs,
+			rule.confirmations,
+			rule.updatedAt,
+		]
+	);
+};
+
 export const saveMerchantRule = async (
 	rule: Omit<MerchantRule, 'updatedAt'>
 ): Promise<void> => {
@@ -246,6 +348,10 @@ export const getLinkedTransactionIds = async (): Promise<Set<string>> => {
 
 export default {
 	insertCapture,
+	getAllCaptures,
+	restoreCapture,
+	getMerchantRules,
+	restoreMerchantRule,
 	hasCaptureFingerprint,
 	getStatementFingerprints,
 	getStatementClaimedCaptureIds,

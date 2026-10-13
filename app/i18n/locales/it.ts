@@ -597,6 +597,16 @@ const it = {
 		exportAuthMsg: "Per la tua sicurezza, l'esportazione dei dati richiede l'autenticazione.",
 		exportFailed: 'Esportazione Fallita',
 		exportError: "Si è verificato un errore durante l'esportazione dei dati. Riprova.",
+		exportErrorReport: 'Si è verificato un errore esportando il report. Riprova.',
+		exportErrorDetail: 'Niente è stato salvato. Riprova.\n\n{{reason}}',
+		exportErrorUnknown: 'Errore sconosciuto',
+		exportSummary:
+			'{{transactions}} movimenti, {{categories}} categorie, {{accounts}} conti, {{transfers}} trasferimenti, {{recurring}} ricorrenze, {{budgets}} budget, {{debts}} debiti, {{captures}} elementi in arrivo, {{rules}} regole apprese',
+		exportSuccess: 'Backup salvato',
+		exportSuccessMsg: 'Conserva questo file.\n\nSalvato: {{summary}}.',
+		exportIncompleteTitle: 'Backup incompleto',
+		exportIncompleteMsg:
+			"Il file è stato salvato ma manca: {{missing}}. Non disinstallare l'app contando su questo file — esporta di nuovo.\n\nSalvato: {{summary}}.",
 		importTitle: 'Importa Dati',
 		importConfirmMsg:
 			'Questa operazione sostituirà TUTTI i tuoi dati attuali con i dati importati. Assicurati di avere un backup se necessario. Continuare?',

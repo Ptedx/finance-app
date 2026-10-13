@@ -1107,6 +1107,27 @@ export const getCategories = async (): Promise<Category[]> => {
 	}
 };
 
+/**
+ * **Todas** as categorias, para o backup: as apagadas (lápide) e a `uncategorized`.
+ *
+ * `getCategories` é a lista da tela e esconde a `uncategorized` enquanto nada cai nela;
+ * foi por isso que o backup de 12/10/2026 saiu com 15 categorias enquanto o servidor
+ * tinha 16. Um arquivo que não leva a lápide também ressuscita, na restauração, a
+ * categoria padrão que o usuário tinha apagado.
+ *
+ * `dirty` fica fora: é de cada aparelho, e vazava no arquivo porque a leitura da tela
+ * é um `SELECT *` cru.
+ */
+export const getCategoriesForBackup = async (): Promise<Category[]> => {
+	const rows = await db.getAllAsync<Category & { dirty?: number }>(
+		'SELECT * FROM categories ORDER BY name'
+	);
+	return rows.map(({ dirty: _dirty, ...category }) => ({
+		...category,
+		deletedAt: category.deletedAt ?? undefined,
+	}));
+};
+
 /** Categories of one side of the ledger, for the pickers in the transaction forms. */
 export const getCategoriesByType = async (type: CategoryType): Promise<Category[]> => {
 	try {
@@ -1152,6 +1173,28 @@ export const addCategory = async (
 		]
 	);
 	return id;
+};
+
+/**
+ * Grava uma categoria do backup com o id original, **mantendo a lápide** que o arquivo
+ * traz.
+ *
+ * `addCategory` ressuscita o que encontra apagado, e é o que a restauração quer para
+ * uma categoria viva. Para uma categoria que o usuário apagou é o contrário: sem isto,
+ * restaurar o backup trazia de volta todas as categorias padrão que ele tinha removido,
+ * e elas reapareciam nos seletores do app.
+ */
+export const restoreCategory = async (
+	category: CategoryDraft & { deletedAt?: string },
+	id: string
+): Promise<void> => {
+	await addCategory(category, id);
+	if (category.deletedAt) {
+		await db.runAsync('UPDATE categories SET deletedAt = ?, dirty = 1 WHERE id = ?', [
+			category.deletedAt,
+			id,
+		]);
+	}
 };
 
 export const updateCategory = async (category: CategoryEdit): Promise<void> => {
@@ -3464,8 +3507,10 @@ export default {
 	getReserveGoal,
 	setReserveGoal,
 	getCategories,
+	getCategoriesForBackup,
 	getCategoriesByType,
 	addCategory,
+	restoreCategory,
 	updateCategory,
 	deleteCategory,
 	addTransaction,
