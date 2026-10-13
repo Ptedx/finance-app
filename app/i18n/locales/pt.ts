@@ -706,6 +706,9 @@ const pt = {
 		statusOffline_other: 'Offline — {{count}} alterações serão enviadas depois',
 		statusError: 'Não foi possível sincronizar. Vai tentar de novo sozinho.',
 		lastSynced: 'Última sincronização {{date}}',
+		onlyHere_one: '{{count}} item ainda só existe neste aparelho. Toque em sincronizar antes de desinstalar o app ou trocar de celular.',
+		onlyHere_other: '{{count}} itens ainda só existem neste aparelho. Toque em sincronizar antes de desinstalar o app ou trocar de celular.',
+		allSafe: 'Tudo o que está aqui também está na sua conta.',
 		claimTitle: 'Esta conta já tem dados',
 		claimExplanation:
 			'Este aparelho e a conta têm dados diferentes. Escolha qual lado vale.',

@@ -75,7 +75,12 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
 | `GET` | `/health` | consulta o banco de propósito |
 
 `GET /api/sync/pull` sem cursor devolve tudo. O cursor é um objeto por coleção:
-`{"categories":15,"transactions":10,"recurringTransactions":0,"budgets":1,"accounts":0,"transfers":0,"retirementGoals":0}`.
+`{"categories":15,"transactions":10,"recurringTransactions":0,"budgets":1,"accounts":0,"transfers":0,"retirementGoals":0,"debts":0,"reserveGoals":0,"captures":0,"merchantRules":0}`.
+
+Toda coleção é opcional nas duas direções: um app anterior a uma delas não a manda nem a
+lê, e o push sem ela é aceito. As chaves do cursor devolvido no pull são também o anúncio
+de quais coleções este servidor conhece — o app segura o que não aparece ali em vez de
+marcá-lo como enviado.
 
 ### Decisões que não são óbvias
 
@@ -99,6 +104,13 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
   para `uncategorized` e sobe assim. Reancorar no servidor, como era feito, deixava o
   aparelho com a categoria certa e o servidor com `uncategorized`, e o empate no
   last-write-wins eternizava a diferença.
+- **Na captura, o `id` é o fingerprint da notificação; na regra aprendida, é a
+  `merchantKey`.** O id local do aparelho nunca viaja: o mesmo aviso do banco capturado em
+  dois aparelhos tem dois ids aleatórios e um único fingerprint, e uma linha com o id do
+  outro aparelho não caberia na tabela de ninguém. `postedAt` e `createdAt` da captura são
+  TEXT, e não TIMESTAMP, porque o app ordena e fatia esse texto — e a importação de extrato
+  gera instante sem fuso. Essas duas coleções só passaram a sincronizar no v19, depois de
+  uma desinstalação levar duas semanas de compras que esperavam revisão.
 - **PK composta `(userId, id)`.** É o que deixa as categorias padrão manterem os ids
   fixos (`food`, `salary`) que ficam gravados em `Transaction.category`: o `food` de um
   usuário é outra linha que o de outro, e cada um pode renomear ou apagar o seu.

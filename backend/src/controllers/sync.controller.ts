@@ -2,6 +2,12 @@ import type { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 import type { z } from 'zod';
 import { resolveBudgetPeriod } from '../domain/budgetConflict.js';
+import {
+	captureColumns,
+	captureToWire,
+	merchantRuleColumns,
+	merchantRuleToWire,
+} from '../domain/captureWire.js';
 import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -9,8 +15,10 @@ import type { AuthenticatedRequest } from '../middleware/auth.js';
 import {
 	accountSchema,
 	budgetSchema,
+	captureSchema,
 	categorySchema,
 	debtSchema,
+	merchantRuleSchema,
 	pullQuerySchema,
 	pushBodySchema,
 	recurringTransactionSchema,
@@ -31,6 +39,10 @@ import {
  * Seis coleções: categorias, contas, lançamentos, recorrências, orçamentos e
  * transferências. Contas e transferências chegaram no v7 do app; um aparelho anterior
  * simplesmente não as manda nem as lê.
+ *
+ * O v19 acrescentou outras duas, `captures` e `merchantRules`, pela mesma regra: toda
+ * coleção é opcional nas duas direções, então um app que não as conhece não quebra e um
+ * push sem elas é aceito.
  */
 
 type Collection =
@@ -42,7 +54,9 @@ type Collection =
 	| 'transfers'
 	| 'retirementGoals'
 	| 'debts'
-	| 'reserveGoals';
+	| 'reserveGoals'
+	| 'captures'
+	| 'merchantRules';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -86,18 +100,31 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		take: env.syncPageSize,
 	});
 
-	const [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts, reserveGoals] =
-		await Promise.all([
-			prisma.category.findMany(page(cursor.categories)),
-			prisma.account.findMany(page(cursor.accounts)),
-			prisma.transaction.findMany(page(cursor.transactions)),
-			prisma.recurringTransaction.findMany(page(cursor.recurringTransactions)),
-			prisma.budget.findMany(page(cursor.budgets)),
-			prisma.transfer.findMany(page(cursor.transfers)),
-			prisma.retirementGoal.findMany(page(cursor.retirementGoals)),
-			prisma.debt.findMany(page(cursor.debts)),
-			prisma.reserveGoal.findMany(page(cursor.reserveGoals)),
-		]);
+	const [
+		categories,
+		accounts,
+		transactions,
+		recurringTransactions,
+		budgets,
+		transfers,
+		retirementGoals,
+		debts,
+		reserveGoals,
+		captures,
+		merchantRules,
+	] = await Promise.all([
+		prisma.category.findMany(page(cursor.categories)),
+		prisma.account.findMany(page(cursor.accounts)),
+		prisma.transaction.findMany(page(cursor.transactions)),
+		prisma.recurringTransaction.findMany(page(cursor.recurringTransactions)),
+		prisma.budget.findMany(page(cursor.budgets)),
+		prisma.transfer.findMany(page(cursor.transfers)),
+		prisma.retirementGoal.findMany(page(cursor.retirementGoals)),
+		prisma.debt.findMany(page(cursor.debts)),
+		prisma.reserveGoal.findMany(page(cursor.reserveGoals)),
+		prisma.capture.findMany(page(cursor.captures)),
+		prisma.merchantRule.findMany(page(cursor.merchantRules)),
+	]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
 	// Cabe num `number` sem perda: o teto de MAX_AMOUNT_CENTS fica bem abaixo de 2^53.
@@ -224,6 +251,13 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			updatedAt: row.updatedAt.toISOString(),
 			deletedAt: iso(row.deletedAt),
 		})),
+		/**
+		 * Capturas e regras aprendidas (v19). A tradução mora em `domain/captureWire.ts`:
+		 * o `id` que viaja é o fingerprint, `postedAt`/`createdAt` vão verbatim e o
+		 * `amountCents` sai de bigint para number — ver os comentários de lá.
+		 */
+		captures: captures.map(captureToWire),
+		merchantRules: merchantRules.map(merchantRuleToWire),
 	};
 
 	/**
@@ -244,6 +278,15 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		retirementGoals: advance(retirementGoals, cursor.retirementGoals),
 		debts: advance(debts, cursor.debts),
 		reserveGoals: advance(reserveGoals, cursor.reserveGoals),
+		/**
+		 * As duas chaves do v19 precisam sair aqui mesmo quando não houve nada para
+		 * entregar: é por elas que o app sabe que este servidor conhece as capturas
+		 * (`onlyKnownCollections`, em app/sync/types.ts). Faltando a chave, o app segura as
+		 * linhas em vez de marcá-las como enviadas — que é o certo, mas a caixa de entrada
+		 * ficaria sem sincronizar.
+		 */
+		captures: advance(captures, cursor.captures),
+		merchantRules: advance(merchantRules, cursor.merchantRules),
 	};
 
 	res.json({
@@ -251,9 +294,19 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		/** O cliente guarda isto e devolve no próximo pull. */
 		cursor: nextCursor,
 		/** Verdadeiro enquanto houver mais para buscar: o cliente repete o pull. */
-		hasMore: [categories, accounts, transactions, recurringTransactions, budgets, transfers, retirementGoals, debts, reserveGoals].some(
-			(rows) => rows.length === env.syncPageSize
-		),
+		hasMore: [
+			categories,
+			accounts,
+			transactions,
+			recurringTransactions,
+			budgets,
+			transfers,
+			retirementGoals,
+			debts,
+			reserveGoals,
+			captures,
+			merchantRules,
+		].some((rows) => rows.length === env.syncPageSize),
 		changes,
 	});
 };
@@ -379,6 +432,8 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const retirementGoals = partitionRows('retirementGoals', changes.retirementGoals, retirementGoalSchema, rejected);
 	const debts = partitionRows('debts', changes.debts, debtSchema, rejected);
 	const reserveGoals = partitionRows('reserveGoals', changes.reserveGoals, reserveGoalSchema, rejected);
+	const captures = partitionRows('captures', changes.captures, captureSchema, rejected);
+	const merchantRules = partitionRows('merchantRules', changes.merchantRules, merchantRuleSchema, rejected);
 
 	let applied = 0;
 
@@ -772,6 +827,86 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 					create: { id: row.id, userId, ...data },
 					update: data,
 				});
+				applied += 1;
+			}
+
+			// --- Capturas ---------------------------------------------------------
+			// A caixa de entrada. O `id` que chega é o fingerprint da notificação, então
+			// o mesmo aviso capturado em dois aparelhos cai na mesma linha e o
+			// last-write-wins resolve: quem revisou por último manda. Uma lápide que
+			// chega não é ressuscitada — `isStale` compara `updatedAt`, e apagar aqui é
+			// escrever `deletedAt`, nunca remover a linha.
+			//
+			// `suggestedCategory` não é verificado contra as categorias conhecidas, ao
+			// contrário de `Transaction.category`: é um palpite do parser, e devolver a
+			// captura inteira em `rejected` por causa dele seria a perda de dado que esta
+			// coleção existe para evitar. O app ignora o palpite enquanto a categoria não
+			// chega. O mesmo vale para `accountId`, `transactionId` e `transferId`.
+			for (const row of captures) {
+				const current = await tx.capture.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'captures', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = captureColumns(row);
+
+				// SAVEPOINT aqui, e não só nos orçamentos, por causa do texto cru: `title` e
+				// `text` vêm da notificação sem passar por tratamento nenhum, e o Postgres
+				// recusa um TEXT com byte NUL. Sem o isolamento, uma única notificação
+				// esquisita derrubaria a remessa com 500 e travaria o sync daquele aparelho.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.capture.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'captures', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += 1;
+			}
+
+			// --- Regras aprendidas -------------------------------------------------
+			// O `id` é a própria `merchantKey`, derivada do mesmo texto nos dois
+			// aparelhos: duas aprendizagens do mesmo lugar convergem sem conflito de id.
+			// `categoryId` também não é verificado — ver o comentário das capturas.
+			for (const row of merchantRules) {
+				const current = await tx.merchantRule.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'merchantRules', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = merchantRuleColumns(row);
+
+				// A chave vem de texto de notificação normalizado; mesmo isolamento das
+				// capturas, pelo mesmo motivo.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.merchantRule.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'merchantRules', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
 				applied += 1;
 			}
 		},

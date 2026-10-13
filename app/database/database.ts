@@ -70,6 +70,9 @@ import {
 	DEFAULT_CLOSING_DAYS_BEFORE,
 	defaultRoleFor,
 	CAPTURE_V7_COLUMNS,
+	INBOX_V19_COLUMNS,
+	identityColumnOf,
+	type MerchantRule,
 	CREATE_ACCOUNTS_TABLE,
 	CREATE_TRANSFERS_TABLE,
 	TRANSACTION_V7_COLUMNS,
@@ -183,6 +186,16 @@ interface ReserveGoalDB extends SyncColumnsDB {
 	targetMonths: number;
 	customMonthlyCostCents: number | null;
 }
+
+/**
+ * Uma captura como a tabela a guarda: `autoConfirmed` é inteiro, e o `id` é **o id
+ * local** — a identidade que viaja é o `fingerprint`.
+ */
+interface CaptureDB extends SyncColumnsDB, Omit<Capture, 'autoConfirmed' | 'updatedAt' | 'deletedAt'> {
+	autoConfirmed: number;
+}
+
+interface MerchantRuleDB extends SyncColumnsDB, Omit<MerchantRule, 'updatedAt' | 'deletedAt'> {}
 
 interface RetirementGoalDB extends SyncColumnsDB {
 	id: string;
@@ -588,6 +601,7 @@ export const migrationLadder = (): MigrationStep[] => [
 	[16, migrateYieldAndFees],
 	[17, migrateReserve],
 	[18, migratePhantomAppAccounts],
+	[19, migrateSyncedInbox],
 ];
 
 /**
@@ -773,7 +787,30 @@ const migrateYieldAndFees = async (): Promise<void> => {
  * real. Marca a lápide como suja, para a limpeza subir no próximo sync.
  */
 const migratePhantomAppAccounts = async (): Promise<void> => {
-	if (!(await tableExists('accounts'))) return;
+	const removed = await repairPhantomAppAccounts();
+	console.log(`Migrated phantom app accounts (${removed})`);
+};
+
+/**
+ * O reparo das contas fantasma, idempotente, rodável a qualquer momento.
+ *
+ * Era só a migração v18, e migração roda **uma vez**, antes de qualquer login: numa
+ * instalação nova ela não acha nada (as tabelas acabaram de nascer vazias) e o login em
+ * seguida baixa as contas inventadas de volta do servidor. Foi o que aconteceu com o
+ * dono: ele está na 1.2.7 e tem de volta as seis contas "WhatsApp", "Gmail", "Messages",
+ * "Google", "99" e "OnlineBanking". Por isso o reparo também roda depois de cada pull
+ * (ver `pullAll` em `sync/engine.ts`) — ele põe a lápide suja, e a remoção sobe.
+ *
+ * As condições são as mesmas, apertadas, da migração: só conta **vazia** — sem
+ * lançamento, sem transferência e sem captura apontando para ela —, âncora zerada, sem
+ * chave de extrato, nome igual ao do banco e marca desconhecida. Com qualquer dado
+ * atrelado, a conta fica: pode ser um banco que a lista de marcas não conhece, e nesse
+ * caso o dinheiro é real.
+ *
+ * Devolve quantas lápides pôs, para quem chama registrar.
+ */
+export const repairPhantomAppAccounts = async (): Promise<number> => {
+	if (!(await tableExists('accounts'))) return 0;
 
 	const bound = (
 		await db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE deletedAt IS NULL AND packageName IS NOT NULL')
@@ -788,11 +825,16 @@ const migratePhantomAppAccounts = async (): Promise<void> => {
 			account.name === account.bankName &&
 			brandFor(account.bankName) === null
 	);
-	if (phantoms.length === 0) return;
+	if (phantoms.length === 0) return 0;
 
 	const hasCaptures = await tableExists('captures');
 	const timestamp = nowTimestamp();
+	let removed = 0;
 	for (const account of phantoms) {
+		// As capturas contam **com lápide e tudo**: uma captura apagada que apontava para a
+		// conta ainda é sinal de que ali passou dinheiro de verdade, e na dúvida a conta
+		// fica. Contar só as vivas dependeria da coluna `deletedAt`, que no v18 — quando
+		// este reparo nasceu como migração — ainda não existia em `captures`.
 		const inUse = await db.getFirstAsync<{ total: number }>(
 			`SELECT (SELECT COUNT(*) FROM transactions WHERE accountId = ? AND deletedAt IS NULL)
 						+ (SELECT COUNT(*) FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL)
@@ -808,9 +850,31 @@ const migratePhantomAppAccounts = async (): Promise<void> => {
 			timestamp,
 			account.id,
 		]);
+		removed += 1;
 	}
 
-	console.log('Migrated phantom app accounts');
+	return removed;
+};
+
+/**
+ * v18 -> v19: a caixa de entrada e as regras aprendidas entram no sync.
+ *
+ * Só acréscimo de coluna (`deletedAt` e `dirty`), no padrão dos outros passos. As linhas
+ * que já estão no aparelho nascem **sujas**, pelo `DEFAULT 1` da coluna: é o que faz as
+ * compras que estavam esperando revisão — e tudo o que o app já aprendeu sobre cada
+ * estabelecimento — subirem para a conta no primeiro sync depois da atualização, em vez
+ * de continuarem a um desinstalar de distância do esquecimento.
+ */
+const migrateSyncedInbox = async (): Promise<void> => {
+	for (const table of ['captures', 'merchant_rules']) {
+		if (!(await tableExists(table))) continue;
+		for (const [name, sql] of INBOX_V19_COLUMNS) {
+			if (await tableHasColumn(table, name)) continue;
+			await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${name} ${sql}`);
+		}
+	}
+
+	console.log('Migrated capture inbox and merchant rules to synchronisable rows');
 };
 
 const migrateReserve = async (): Promise<void> => {
@@ -1559,7 +1623,13 @@ export const moveAccountLedger = async (fromId: string, toId: string, cardLast4:
 			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
 			[toId, cardLast4, timestamp, fromId]
 		);
-		await db.runAsync('UPDATE captures SET accountId = ? WHERE accountId = ?', [toId, fromId]);
+		// A captura também sincroniza desde o v19: mover a conta dela é uma edição, e sem
+		// `dirty` o outro aparelho continuaria mostrando a compra no cartão que não existe.
+		await db.runAsync('UPDATE captures SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ?', [
+			toId,
+			timestamp,
+			fromId,
+		]);
 	});
 };
 
@@ -2809,7 +2879,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -2837,7 +2907,22 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 		]),
 		db.getAllAsync<DebtDB>('SELECT * FROM debts WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<ReserveGoalDB>('SELECT * FROM reserve_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<CaptureDB>('SELECT * FROM captures WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<MerchantRuleDB>('SELECT * FROM merchant_rules WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
+
+	// O `relatedId` ("é duplicata daquela?") é um id local, que não significa nada do
+	// outro lado: ele sobe como o **fingerprint** do item relacionado. Uma consulta só
+	// para todos os relacionados desta remessa, inclusive os que não estão subindo agora.
+	const relatedIds = [...new Set(captures.map((row) => row.relatedId).filter((id): id is string => Boolean(id)))];
+	const fingerprintOfLocalId = new Map<string, string>();
+	if (relatedIds.length > 0) {
+		const related = await db.getAllAsync<{ id: string; fingerprint: string }>(
+			`SELECT id, fingerprint FROM captures WHERE id IN (${relatedIds.map(() => '?').join(', ')})`,
+			relatedIds
+		);
+		for (const row of related) fingerprintOfLocalId.set(row.id, row.fingerprint);
+	}
 
 	return {
 		categories: categories.map((row) => ({
@@ -2941,6 +3026,45 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		captures: captures.map((row) => ({
+			// A identidade da linha no servidor é o fingerprint; o id local fica aqui.
+			id: row.fingerprint,
+			packageName: row.packageName,
+			appLabel: row.appLabel,
+			title: row.title,
+			text: row.text,
+			postedAt: row.postedAt,
+			amountCents: row.amountCents,
+			direction: row.direction,
+			kind: row.kind,
+			counterparty: row.counterparty ?? null,
+			merchantKey: row.merchantKey ?? null,
+			cardLast4: row.cardLast4 ?? null,
+			status: row.status,
+			question: row.question ?? null,
+			// Um relacionado que já saiu deste aparelho (podado, por exemplo) sobe como
+			// nulo: melhor a pergunta sem o ponteiro do que um ponteiro para o nada.
+			relatedFingerprint: row.relatedId ? (fingerprintOfLocalId.get(row.relatedId) ?? null) : null,
+			suggestedCategory: row.suggestedCategory ?? null,
+			transactionId: row.transactionId ?? null,
+			autoConfirmed: Boolean(row.autoConfirmed),
+			reason: row.reason ?? null,
+			accountId: row.accountId ?? null,
+			transferId: row.transferId ?? null,
+			installments: row.installments ?? null,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
+		merchantRules: merchantRules.map((row) => ({
+			// A identidade é a própria chave do estabelecimento.
+			id: row.merchantKey,
+			categoryId: row.categoryId ?? null,
+			treatAs: row.treatAs,
+			confirmations: row.confirmations,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 		debts: debts.map((row) => ({
 			id: row.id,
 			name: row.name,
@@ -3007,9 +3131,18 @@ export const countLocalData = async (): Promise<LocalDataCounts> => {
 	return { ...counts, total: Object.values(counts).reduce((sum, value) => sum + value, 0) };
 };
 
-/** Todos os ids de uma tabela sincronizada, apagados inclusive. */
+/**
+ * Todas as identidades de uma tabela sincronizada, apagadas inclusive.
+ *
+ * "Identidade" é a do protocolo, não a chave local: em `captures` é o `fingerprint` e em
+ * `merchant_rules` é o `merchantKey` (ver `identityColumnOf`). É o que a substituição
+ * compara com os ids que vêm do servidor — comparar o id local das capturas faria a
+ * substituição apagar da conta exatamente as capturas que este aparelho também tem.
+ */
 export const getSyncedIds = async (table: SyncedTable): Promise<Set<string>> => {
-	const rows = await db.getAllAsync<{ id: string }>(`SELECT id FROM ${table}`);
+	const rows = await db.getAllAsync<{ id: string }>(
+		`SELECT ${identityColumnOf(table)} AS id FROM ${table}`
+	);
 	return new Set(rows.map((row) => row.id));
 };
 
@@ -3017,6 +3150,10 @@ export const getSyncedIds = async (table: SyncedTable): Promise<Set<string>> => 
  * Regrava todas as linhas sincronizadas com um carimbo e as marca para subir. É o passo
  * de "este aparelho é a verdade": com o carimbo depois de tudo o que a conta tem, cada
  * linha daqui vence a da conta no último-escreve-vence.
+ *
+ * Inclui a caixa de entrada e as regras desde o v19: "subir deste aparelho" tem de
+ * valer para tudo o que o aparelho tem, senão a caixa da conta sobreviveria à
+ * substituição e voltaria no pull seguinte.
  */
 export const stampEverything = async (timestamp: string): Promise<void> => {
 	await db.withTransactionAsync(async () => {
@@ -3026,10 +3163,30 @@ export const stampEverything = async (timestamp: string): Promise<void> => {
 	});
 };
 
-/** Quantas linhas ainda faltam subir. Alimenta o indicador de status do sync. */
+/**
+ * Quantas linhas ainda faltam subir, lápides incluídas. Alimenta o indicador de status
+ * do sync. Desde o v19 conta também a caixa de entrada e as regras aprendidas.
+ */
 export const countDirtyRows = async (): Promise<number> => {
 	const subqueries = SYNCED_TABLES.map(
 		(table) => `(SELECT COUNT(*) FROM ${table} WHERE dirty = 1)`
+	).join(' + ');
+
+	const row = await db.getFirstAsync<{ count: number }>(`SELECT ${subqueries} AS count`);
+	return row?.count ?? 0;
+};
+
+/**
+ * Quantas linhas **vivas** ainda não subiram, somando as tabelas sincronizadas.
+ *
+ * É o número para dizer ao dono o que ainda não está na conta — "32 coisas suas só
+ * existem neste aparelho". Difere de `countDirtyRows` de propósito: as lápides sujas
+ * também faltam subir, mas anunciá-las como dado em risco seria mentira, porque o que
+ * elas carregam é uma remoção, e perdê-las não perde nada que o usuário tenha.
+ */
+export const countUnsyncedRows = async (): Promise<number> => {
+	const subqueries = SYNCED_TABLES.map(
+		(table) => `(SELECT COUNT(*) FROM ${table} WHERE dirty = 1 AND deletedAt IS NULL)`
 	).join(' + ');
 
 	const row = await db.getFirstAsync<{ count: number }>(`SELECT ${subqueries} AS count`);
@@ -3042,6 +3199,9 @@ export const countDirtyRows = async (): Promise<number> => {
  * Compara `updatedAt` em vez de limpar pelo id sozinho: se o usuário editou a linha
  * enquanto o push estava no ar, a versão que subiu já é antiga, e apagar a marca faria
  * a edição mais recente nunca sair deste aparelho.
+ *
+ * O `id` de cada linha é o do protocolo, então a comparação é pela coluna de identidade
+ * da tabela: `fingerprint` nas capturas, `merchantKey` nas regras.
  */
 export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 	const byTable: Array<[SyncedTable, Array<{ id: string; updatedAt: string }>]> = [
@@ -3054,15 +3214,18 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['retirement_goals', changes.retirementGoals ?? []],
 		['debts', changes.debts ?? []],
 		['reserve_goals', changes.reserveGoals ?? []],
+		['captures', changes.captures ?? []],
+		['merchant_rules', changes.merchantRules ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
 		for (const [table, rows] of byTable) {
+			const identity = identityColumnOf(table);
 			for (const row of rows) {
-				await db.runAsync(`UPDATE ${table} SET dirty = 0 WHERE id = ? AND updatedAt = ?`, [
-					row.id,
-					row.updatedAt,
-				]);
+				await db.runAsync(
+					`UPDATE ${table} SET dirty = 0 WHERE ${identity} = ? AND updatedAt = ?`,
+					[row.id, row.updatedAt]
+				);
 			}
 		}
 	});
@@ -3111,6 +3274,36 @@ export const reassignToUncategorized = async (
 };
 
 /**
+ * As colunas de uma captura que vêm do protocolo, na ordem. Fora da lista ficam as três
+ * que não viajam como vêm: `id` (local, nunca sai do aparelho), `fingerprint` (a
+ * identidade, que chega como o `id` da linha) e `relatedId` (traduzido do fingerprint do
+ * item relacionado, numa segunda passada).
+ */
+const CAPTURE_SYNC_COLUMNS = [
+	'packageName',
+	'appLabel',
+	'title',
+	'text',
+	'postedAt',
+	'amountCents',
+	'direction',
+	'kind',
+	'counterparty',
+	'merchantKey',
+	'cardLast4',
+	'status',
+	'question',
+	'suggestedCategory',
+	'transactionId',
+	'autoConfirmed',
+	'reason',
+	'accountId',
+	'transferId',
+	'installments',
+	'createdAt',
+];
+
+/**
  * Grava as linhas vindas do servidor, resolvendo o conflito linha a linha.
  *
  * A versão do servidor só vence quando é estritamente mais nova; no empate o local
@@ -3120,7 +3313,7 @@ export const reassignToUncategorized = async (
 export const applyPulledChanges = async (changes: SyncChanges): Promise<void> => {
 	const isStale = async (table: SyncedTable, id: string, updatedAt: string): Promise<boolean> => {
 		const local = await db.getFirstAsync<{ updatedAt: string }>(
-			`SELECT updatedAt FROM ${table} WHERE id = ?`,
+			`SELECT updatedAt FROM ${table} WHERE ${identityColumnOf(table)} = ?`,
 			[id]
 		);
 		// Sem linha local a resposta é não: é uma criação, e ela tem que entrar.
@@ -3382,6 +3575,115 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				[row.id, ...values, row.updatedAt, row.deletedAt ?? null]
 			);
 		}
+
+		// As regras aprendidas: a identidade é a própria `merchantKey`, então o upsert é o
+		// merge inteiro — duas aprendizagens do mesmo estabelecimento convergem por
+		// `updatedAt`, sem conflito de id.
+		for (const row of changes.merchantRules ?? []) {
+			if (await isStale('merchant_rules', row.id, row.updatedAt)) continue;
+
+			await db.runAsync(
+				`INSERT INTO merchant_rules (merchantKey, categoryId, treatAs, confirmations, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT (merchantKey) DO UPDATE SET
+           categoryId = excluded.categoryId, treatAs = excluded.treatAs,
+           confirmations = excluded.confirmations, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.categoryId ?? null, row.treatAs, row.confirmations, row.updatedAt, row.deletedAt ?? null]
+			);
+		}
+
+		/**
+		 * A caixa de entrada, em **duas passadas**.
+		 *
+		 * O `id` que chega é o fingerprint, e a linha local pode já existir com outro id
+		 * local (o mesmo aviso capturado nos dois aparelhos): casa-se pelo fingerprint e
+		 * mantém-se o id daqui, porque é ele que o histórico, o "reverter" e o `relatedId`
+		 * de outras capturas apontam. A segunda passada traduz os ponteiros entre itens,
+		 * depois de todas as linhas existirem: um item e a duplicata dele podem vir na
+		 * mesma página em qualquer ordem, e resolver na mesma passada daria resultado
+		 * diferente conforme a ordem em que o servidor mandou.
+		 */
+		const localIdOf = new Map<string, string>();
+		/** Só os fingerprints que esta leva realmente gravou: ver a segunda passada. */
+		const written = new Set<string>();
+		for (const row of changes.captures ?? []) {
+			const local = await db.getFirstAsync<{ id: string; updatedAt: string }>(
+				'SELECT id, updatedAt FROM captures WHERE fingerprint = ?',
+				[row.id]
+			);
+			const localId = local?.id ?? generateUniqueId();
+			// O mapa guarda a tradução mesmo da linha que não foi gravada: ela pode ser o
+			// **relacionado** de outra, e nesse caso a tradução continua valendo.
+			localIdOf.set(row.id, localId);
+			// Sem linha local é criação, e ela entra. Com linha local, o empate fica com o
+			// daqui, que pode ter decisão ainda não enviada.
+			if (local && local.updatedAt >= row.updatedAt) continue;
+			written.add(row.id);
+
+			const values = [
+				row.packageName,
+				row.appLabel,
+				row.title,
+				row.text,
+				row.postedAt,
+				row.amountCents,
+				row.direction,
+				row.kind,
+				row.counterparty ?? null,
+				row.merchantKey ?? null,
+				row.cardLast4 ?? null,
+				row.status,
+				row.question ?? null,
+				row.suggestedCategory ?? null,
+				row.transactionId ?? null,
+				row.autoConfirmed ? 1 : 0,
+				row.reason ?? null,
+				row.accountId ?? null,
+				row.transferId ?? null,
+				row.installments ?? null,
+				row.createdAt,
+			];
+			// `relatedId` entra nulo e é resolvido na passada seguinte.
+			await db.runAsync(
+				`INSERT INTO captures (id, fingerprint, ${CAPTURE_SYNC_COLUMNS.join(', ')}, relatedId, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ${CAPTURE_SYNC_COLUMNS.map(() => '?').join(', ')}, NULL, ?, ?, 0)
+         ON CONFLICT (fingerprint) DO UPDATE SET
+           ${CAPTURE_SYNC_COLUMNS.map((column) => `${column} = excluded.${column}`).join(', ')},
+           relatedId = NULL, updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[localId, row.id, ...values, row.updatedAt, row.deletedAt ?? null]
+			);
+		}
+
+		for (const row of changes.captures ?? []) {
+			if (!row.relatedFingerprint) continue;
+			// A linha que perdeu no último-escreve-vence não é tocada aqui tampouco: o
+			// ponteiro que vale é o da versão local, que é a mais nova.
+			if (!written.has(row.id)) continue;
+			const localId = localIdOf.get(row.id);
+			if (!localId) continue;
+
+			let relatedLocalId = localIdOf.get(row.relatedFingerprint) ?? null;
+			if (!relatedLocalId) {
+				const related = await db.getFirstAsync<{ id: string }>(
+					'SELECT id FROM captures WHERE fingerprint = ?',
+					[row.relatedFingerprint]
+				);
+				relatedLocalId = related?.id ?? null;
+			}
+
+			// O relacionado não existe deste lado: o aviso que ele compara nunca passou por
+			// aqui (o outro aparelho capturou de um app que este não tem, ou a captura já foi
+			// podada). O ponteiro fica nulo e **a pergunta cai** — "é duplicata daquela?" sem
+			// a "daquela" é uma pergunta impossível de responder, e a tela mostraria um item
+			// a comparar com nada. O item continua no status que o servidor mandou: pendente
+			// segue pendente, para o usuário decidir sozinho.
+			await db.runAsync(
+				`UPDATE captures SET relatedId = ?, question = CASE WHEN ? IS NULL THEN NULL ELSE question END
+         WHERE id = ?`,
+				[relatedLocalId, relatedLocalId, localId]
+			);
+		}
 	});
 };
 
@@ -3409,6 +3711,11 @@ export const clearSyncState = async (): Promise<void> => {
  *
  * Used when claiming local data into a freshly linked account: nothing on the device has
  * ever been to the server, so the whole ledger is pending regardless of its flags.
+ *
+ * Desde o v19 isto inclui `captures` e `merchant_rules` — vem de `SYNCED_TABLES`, de
+ * propósito. Sem elas, "juntar" no login subia o livro-caixa e deixava a caixa de entrada
+ * para trás: exatamente as compras que esperavam revisão, que são as que não existem em
+ * nenhum outro lugar.
  */
 export const markEverythingDirty = async (): Promise<void> => {
 	await db.withTransactionAsync(async () => {
@@ -3423,6 +3730,12 @@ export const markEverythingDirty = async (): Promise<void> => {
  *
  * This is the "discard this device's data" branch of first sign-in, where the local
  * ledger is meant to disappear rather than propagate — so DELETE, not tombstones.
+ *
+ * A caixa de entrada e as regras aprendidas vão com o resto (vêm de `SYNCED_TABLES`):
+ * quem escolhe "usar os dados da conta" está dizendo que o rascunho deste aparelho não
+ * vale, e deixá-lo aqui o faria subir depois como se fosse da conta. O pull seguinte
+ * traz a caixa de entrada da conta. A fila nativa já foi esvaziada, então apagar os
+ * fingerprints não faz nenhum aviso ser interpretado duas vezes.
  */
 export const clearSyncedData = async (): Promise<void> => {
 	await db.withTransactionAsync(async () => {
@@ -3440,6 +3753,17 @@ export const clearSyncedData = async (): Promise<void> => {
  * em cima das que já existem (mesmo id) — apagá-las antes deixaria todo lançamento do
  * próprio backup apontando para id inexistente. O preço conhecido é o do achado 6.6: as
  * categorias que só o aparelho tinha continuam na lista depois de importar.
+ *
+ * As **regras aprendidas também ficam**, pelo mesmo motivo: não são dinheiro, são hábito
+ * ("o iFood é alimentação"), e a importação as regrava por `merchantKey`. Apagar o
+ * aprendizado faria o app voltar a perguntar o que já estava respondido, sem que ninguém
+ * tenha pedido isso ao mandar apagar os lançamentos.
+ *
+ * A **caixa de entrada ganha lápide**, e isto é novo no v19. Antes as capturas eram
+ * locais e sobreviviam ao reset com os ponteiros consertados; agora elas sincronizam, e
+ * uma caixa de entrada viva depois de "apagar meus dados" significaria que a compra
+ * pendente continua na conta e volta no próximo pull — ou pior, reaparece em outro
+ * aparelho. A lápide é suja, para a remoção subir.
  */
 export const resetDatabase = async (): Promise<void> => {
 	const timestamp = nowTimestamp();
@@ -3455,19 +3779,19 @@ export const resetDatabase = async (): Promise<void> => {
 				);
 			}
 
-			// As capturas são locais e não têm lápide, mas apontam para o livro: uma
-			// captura confirmada guarda o `transactionId` que ela criou, e a de troca de
-			// bolso, o `transferId`. Depois das lápides acima, esses ponteiros apontam
-			// todos para linha apagada — o histórico anunciava compras que o app não
-			// tinha mais, e o "reverter" tentava apagar o que já não existia. Elas saem
-			// do jogo com o motivo registrado, em vez de serem apagadas: o texto cru é o
-			// que permite reprocessar um aviso, e o `fingerprint` é o que impede a mesma
-			// notificação de virar dinheiro duas vezes.
+			// As capturas apontam para o livro: uma captura confirmada guarda o
+			// `transactionId` que ela criou, e a de troca de bolso, o `transferId`. Depois
+			// das lápides acima, esses ponteiros apontam todos para linha apagada — o
+			// histórico anunciava compras que o app não tinha mais, e o "reverter" tentava
+			// apagar o que já não existia. Elas saem do jogo com o motivo registrado antes
+			// de receberem a própria lápide: a linha continua no disco, e o texto cru e o
+			// `fingerprint` com ela — é o que impede a mesma notificação de virar dinheiro
+			// duas vezes se ela voltar a ser capturada.
 			await db.runAsync(
 				`UPDATE captures
          SET status = 'ignored', reason = 'data_reset', transactionId = NULL, transferId = NULL,
-             question = NULL, updatedAt = ?
-         WHERE transactionId IS NOT NULL OR transferId IS NOT NULL`,
+             question = NULL, updatedAt = ?, dirty = 1
+         WHERE deletedAt IS NULL AND (transactionId IS NOT NULL OR transferId IS NOT NULL)`,
 				[timestamp]
 			);
 
@@ -3475,9 +3799,17 @@ export const resetDatabase = async (): Promise<void> => {
 			// ("é duplicata daquela?") compara com itens que acabaram de perder o
 			// lançamento. A pergunta cai; o item continua pendente, para o usuário decidir.
 			await db.runAsync(
-				`UPDATE captures SET question = NULL, relatedId = NULL, updatedAt = ?
-         WHERE status = 'pending' AND question IS NOT NULL`,
+				`UPDATE captures SET question = NULL, relatedId = NULL, updatedAt = ?, dirty = 1
+         WHERE deletedAt IS NULL AND status = 'pending' AND question IS NOT NULL`,
 				[timestamp]
+			);
+
+			// E a caixa de entrada inteira ganha lápide: "apagar meus dados" tem de valer
+			// para a compra que estava esperando revisão também, e a lápide é o que faz a
+			// remoção chegar à conta e aos outros aparelhos em vez de voltar no pull.
+			await db.runAsync(
+				`UPDATE captures SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
+				[timestamp, timestamp]
 			);
 		});
 
@@ -3562,6 +3894,8 @@ export default {
 	normalizeAccountDraft,
 	getTransfersByDateRange,
 	countDirtyRows,
+	countUnsyncedRows,
+	repairPhantomAppAccounts,
 	markChangesClean,
 	hasCategory,
 	markCategoryDirty,

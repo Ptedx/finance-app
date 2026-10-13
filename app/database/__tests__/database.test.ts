@@ -171,7 +171,11 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 		// que o app não tem mais nem o "reverter" tentar apagar o que não existe.
 		expect(repaired[0].sql).toContain("status = 'ignored'");
 		expect(repaired[0].sql).toContain("reason = 'data_reset'");
-		expect(repaired[0].sql).toContain('WHERE transactionId IS NOT NULL OR transferId IS NOT NULL');
+		expect(repaired[0].sql).toContain('(transactionId IS NOT NULL OR transferId IS NOT NULL)');
+		// A captura sincroniza desde o v19: o conserto também precisa subir, e só as vivas
+		// são consertadas (uma podada já não aponta para nada que a tela leia).
+		expect(repaired[0].sql).toContain('dirty = 1');
+		expect(repaired[0].sql).toContain('deletedAt IS NULL');
 
 		// Dentro da mesma transação das lápides.
 		const begin = mockStatements.findIndex((s) => s.sql === 'BEGIN');
@@ -184,6 +188,21 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 	it('as capturas não são apagadas: o fingerprint é o que impede o aviso de virar dinheiro duas vezes', async () => {
 		await resetDatabase();
 		expect(sqlOf(matching('DELETE FROM captures'))).toEqual([]);
+	});
+
+	it('a caixa de entrada ganha lápide suja: "apagar meus dados" vale para a compra a revisar também', async () => {
+		await resetDatabase();
+
+		const tombstoned = matching('UPDATE captures SET deletedAt = ?');
+		expect(tombstoned).toHaveLength(1);
+		expect(tombstoned[0].sql).toContain('dirty = 1');
+		// Só as vivas: a lápide de uma captura já podada não é reescrita.
+		expect(tombstoned[0].sql).toContain('WHERE deletedAt IS NULL');
+	});
+
+	it('as regras aprendidas ficam: não são dinheiro, e apagá-las faria o app voltar a perguntar o respondido', async () => {
+		await resetDatabase();
+		expect(sqlOf(matching('merchant_rules'))).toEqual([]);
 	});
 
 	it('as categorias do usuário ficam — o backup que vem a seguir aponta para elas', async () => {
@@ -206,6 +225,8 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 			'retirement_goals',
 			'debts',
 			'reserve_goals',
+			// A caixa de entrada entra na lista no v19, depois do conserto dos ponteiros.
+			'captures',
 		]);
 	});
 });

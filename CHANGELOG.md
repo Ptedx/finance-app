@@ -4,6 +4,51 @@ Versões do app Spendr. A versão de cada build é o `version` do `app.json`, e 
 versão lançada tem uma tag `vX.Y.Z` na `main`. Como lançar e como voltar atrás:
 [docs/versionamento.md](docs/versionamento.md).
 
+## [1.2.8] — 2026-10-13
+
+Logado numa conta, nada mais existe só no aparelho. A versão nasceu de uma perda real: o
+app foi desinstalado e **duas semanas de compras foram embora** — elas estavam na caixa de
+entrada, esperando revisão, e a caixa de entrada não sincronizava nem entrava no backup.
+
+### A caixa de entrada vai para a nuvem
+
+- **As capturas e as regras aprendidas passam a sincronizar.** Desinstalar o app e entrar
+  na conta devolve a fila de revisão, e o app não esquece mais a categoria de cada
+  estabelecimento. A identidade de uma captura entre aparelhos é a impressão digital da
+  notificação, não o id local — é o que permite o mesmo aviso ter sido capturado em dois
+  celulares sem conflito.
+- **A tela da conta diz o que ainda não subiu**: "N itens ainda só existem neste aparelho",
+  com o aviso de sincronizar antes de desinstalar ou trocar de celular. Quando não há nada
+  pendente, ela diz isso também — a pergunta "o que existe aqui que não existe na minha
+  conta?" passou a ter resposta na tela.
+- A poda das capturas antigas virou lápide: apagar de verdade faria a linha voltar no
+  próximo pull.
+
+### O backup passa a ser a foto do aparelho
+
+- **Formato 4**: o arquivo leva a caixa de entrada (com o texto cru da notificação, a conta
+  resolvida e a decisão de cada item), as regras aprendidas e as preferências (moeda,
+  idioma, taxa do CDI, avisos dispensados). Biometria não viaja: arquivo nenhum liga
+  autenticação em aparelho nenhum.
+- **Dois caminhos silenciosos para um arquivo vazio foram fechados.** O export lia as três
+  maiores coleções do estado da tela, não do banco: se a carga falhasse — e ela falha em
+  silêncio — ou se o toque viesse antes de ela terminar, o arquivo saía vazio **com aviso de
+  sucesso**. E um arquivo truncado na escrita era compartilhado como se estivesse bom.
+- **O aviso do export passou a dizer o que entrou, linha por linha.** Era o que teria
+  mostrado a falta de outubro antes de desinstalar o app. Falha parcial nomeia a coleção que
+  ficou de fora, no arquivo e na tela; e os avisos passaram pelo i18n — o mais importante
+  deles, "não desinstale o app confiando neste arquivo", estava em inglês.
+- A categoria "sem categoria", que a lista da tela esconde, e as lápides de categoria também
+  viajam: a categoria apagada voltava a aparecer nos seletores depois de uma importação.
+
+### Contas inventadas
+
+- **A limpeza das contas fantasma virou reparo, e roda depois de sincronizar.** Ela era só
+  migração, e migração roda antes de as tabelas existirem: numa instalação nova não achava
+  nada e o login baixava as contas de volta do servidor. Agora roda quando o pull termina
+  inteiro — nunca a cada página, senão uma conta cujos lançamentos ainda não chegaram
+  pareceria vazia.
+
 ## [1.2.7] — 2026-10-11
 
 Correções da revisão dos seis fluxos ([docs/revisao-fluxos-2026-10-11.md](docs/revisao-fluxos-2026-10-11.md)).

@@ -1,4 +1,4 @@
-import type { CategoryNature, CategoryType } from '../database/schema';
+import type { Capture, CategoryNature, CategoryType, MerchantRule } from '../database/schema';
 
 /**
  * O formato que trafega entre o app e a API.
@@ -148,6 +148,61 @@ export interface WireDebt extends WireMeta {
 	sortOrder: number;
 }
 
+/**
+ * Uma notificação capturada, como ela viaja entre aparelhos.
+ *
+ * **A identidade aqui é o `fingerprint`, não o id local.** O mesmo aviso do banco
+ * capturado em dois aparelhos nasce com dois ids aleatórios e um único fingerprint — e a
+ * coluna é UNIQUE. Se o id local viajasse, o segundo aparelho receberia uma linha que não
+ * cabe na tabela dele. Então o `id` desta linha **é** o fingerprint; o id local nunca sai
+ * do aparelho, e quem aplica casa pelo fingerprint e mantém o id que já tinha.
+ *
+ * Pela mesma razão `relatedId` viaja como o **fingerprint** do item relacionado: o id
+ * local dele não significa nada do outro lado.
+ */
+export interface WireCapture extends WireMeta {
+	/** O `fingerprint` da captura. É a identidade da linha no servidor. */
+	id: string;
+	packageName: string;
+	appLabel: string;
+	title: string;
+	text: string;
+	postedAt: string;
+	amountCents: number;
+	direction: Capture['direction'];
+	kind: string;
+	counterparty: string | null;
+	merchantKey: string | null;
+	cardLast4: string | null;
+	status: Capture['status'];
+	question: Capture['question'];
+	/** O fingerprint do item relacionado, nulo quando ele não é conhecido deste lado. */
+	relatedFingerprint: string | null;
+	suggestedCategory: string | null;
+	transactionId: string | null;
+	autoConfirmed: boolean;
+	reason: string | null;
+	accountId: string | null;
+	transferId: string | null;
+	installments: number | null;
+	createdAt: string;
+}
+
+/**
+ * Uma regra aprendida ("o iFood é alimentação", "isto é conta minha", "ignore isto").
+ *
+ * A identidade é a própria chave do estabelecimento, que os dois aparelhos derivam do
+ * mesmo texto — então duas aprendizagens do mesmo lugar convergem por `updatedAt`, sem
+ * conflito de id. É o que faz esta coleção ser a mais simples de todas.
+ */
+export interface WireMerchantRule extends WireMeta {
+	/** O `merchantKey`. */
+	id: string;
+	categoryId: string | null;
+	treatAs: MerchantRule['treatAs'];
+	confirmations: number;
+}
+
 export interface SyncChanges {
 	categories: WireCategory[];
 	transactions: WireTransaction[];
@@ -162,6 +217,12 @@ export interface SyncChanges {
 	debts?: WireDebt[];
 	/** Coleção do v17, idem. */
 	reserveGoals?: WireReserveGoal[];
+	/**
+	 * Coleções do v19, idem. A caixa de entrada era local por desenho, e desinstalar o app
+	 * levava embora o que estava esperando revisão: logado numa conta, isso é perda de dado.
+	 */
+	captures?: WireCapture[];
+	merchantRules?: WireMerchantRule[];
 }
 
 /**
@@ -182,6 +243,8 @@ export interface SyncCursor {
 	retirementGoals: number;
 	debts: number;
 	reserveGoals: number;
+	captures: number;
+	merchantRules: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -194,6 +257,8 @@ export const EMPTY_CURSOR: SyncCursor = {
 	retirementGoals: 0,
 	debts: 0,
 	reserveGoals: 0,
+	captures: 0,
+	merchantRules: 0,
 };
 
 /**
@@ -211,6 +276,8 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	retirementGoals: 14,
 	debts: 15,
 	reserveGoals: 17,
+	captures: 19,
+	merchantRules: 19,
 };
 
 /**
@@ -302,6 +369,8 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	retirementGoals: [],
 	debts: [],
 	reserveGoals: [],
+	captures: [],
+	merchantRules: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -313,7 +382,12 @@ export const countChanges = (changes: SyncChanges): number =>
 	(changes.transfers?.length ?? 0) +
 	(changes.retirementGoals?.length ?? 0) +
 	(changes.debts?.length ?? 0) +
-	(changes.reserveGoals?.length ?? 0);
+	(changes.reserveGoals?.length ?? 0) +
+	// Sem estas duas, uma remessa que só tem caixa de entrada é contada como zero
+	// mudanças — e quem decide se vale enviar nunca envia. A coleção existe justamente
+	// porque perder a caixa de entrada é perder dado.
+	(changes.captures?.length ?? 0) +
+	(changes.merchantRules?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

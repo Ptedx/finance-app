@@ -713,6 +713,9 @@ account: {
 		statusOffline_other: 'Offline — {{count}} modifiche verranno caricate più tardi',
 		statusError: 'Sincronizzazione non riuscita. Riproverà automaticamente.',
 		lastSynced: 'Ultima sincronizzazione {{date}}',
+		onlyHere_one: "{{count}} elemento esiste ancora solo su questo dispositivo. Sincronizza prima di disinstallare l'app o cambiare telefono.",
+		onlyHere_other: "{{count}} elementi esistono ancora solo su questo dispositivo. Sincronizza prima di disinstallare l'app o cambiare telefono.",
+		allSafe: 'Tutto quello che è qui è anche nel tuo account.',
 		claimTitle: 'Questo account ha già dei dati',
 		claimExplanation:
 			'Questo dispositivo e l\'account hanno dati diversi. Scegli quale lato vale.',

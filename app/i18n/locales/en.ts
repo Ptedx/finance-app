@@ -711,6 +711,9 @@ account: {
 		statusOffline_other: 'Offline — {{count}} changes will upload later',
 		statusError: "Couldn't sync. It will retry automatically.",
 		lastSynced: 'Last synced {{date}}',
+		onlyHere_one: '{{count}} item still only exists on this device. Sync before uninstalling the app or switching phones.',
+		onlyHere_other: '{{count}} items still only exist on this device. Sync before uninstalling the app or switching phones.',
+		allSafe: 'Everything here is in your account too.',
 		claimTitle: 'This account already has data',
 		claimExplanation:
 			'This device and the account have different data. Choose which side wins.',
