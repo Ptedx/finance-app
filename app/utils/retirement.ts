@@ -15,6 +15,7 @@
 import { shiftMonthKey } from './dateUtils';
 import { FULL_BASIS_POINTS } from './metrics';
 import type { Cents } from './money';
+import type { YieldBasis } from './yield';
 
 /** A margem reinvestida por padrão: +25% sobre a renda desejada. */
 export const DEFAULT_REINVEST_BP = 2_500;
@@ -55,6 +56,12 @@ export interface RetirementInput {
 	monthlyContributionCents: Cents;
 	/** Rendimento captado nas reservas nos últimos 12 meses; nulo sem histórico. */
 	realizedYield12mCents: Cents | null;
+	/**
+	 * Se esse rendimento foi lançado no livro, estimado, ou os dois (`utils/yield.ts`).
+	 * Ausente ou nula, a tela não diz nada sobre a origem — e o insight de rendimento
+	 * baixo não pode recomendar nada em cima de uma base só estimada.
+	 */
+	realizedYieldBasis?: YieldBasis | null;
 	/** Saldo médio das reservas nesses 12 meses; nulo sem histórico. */
 	averageCapital12mCents: Cents | null;
 	/** Mês de hoje, `YYYY-MM`: é daqui que a data de chegada é contada. */
@@ -70,7 +77,8 @@ export interface RetirementInput {
 export type GoalReach =
 	| { kind: 'reached' }
 	| { kind: 'eta'; months: number; month: string; years: number }
-	| { kind: 'never'; reason: 'no-contribution' | 'beyond-horizon' | 'no-yield' };
+	/** `withdrawing`: o aporte médio é negativo (houve resgate), e por isso a meta não chega. */
+	| { kind: 'never'; reason: 'no-contribution' | 'beyond-horizon' | 'no-yield' | 'withdrawing' };
 
 export interface ProjectionPoint {
 	monthOffset: number;
@@ -97,6 +105,13 @@ export interface RetirementReadModel {
 	expectedYieldBp: number;
 	/** O rendimento de fato observado nas reservas, ao ano; nulo sem histórico. */
 	realizedYieldBp: number | null;
+	/** De onde veio esse rendimento: do livro, da estimativa, ou dos dois. Nulo junto com ele. */
+	realizedYieldBasis: YieldBasis | null;
+	/**
+	 * O aporte médio é negativo: o dono resgatou mais do que guardou. A premissa vale para
+	 * o ETA, para a curva e para a frase — nenhuma delas finge que o aporte é zero.
+	 */
+	isWithdrawing: boolean;
 	/** Capital de hoje sobre o necessário, 0..10.000; nulo sem capital necessário. */
 	progressBp: number | null;
 	monthlyContributionCents: Cents;
@@ -199,16 +214,40 @@ export interface HorizonInput {
 	requiredCapitalCents: Cents | null;
 	monthlyRate: number;
 	months: number;
+	/**
+	 * Por quantos meses o aporte ainda vai para a reserva de emergência antes de vir para a
+	 * meta ("reserva primeiro"). Ausente ou 0: o aporte conta desde o mês 1. Nulo: a reserva
+	 * não enche no ritmo de hoje, e não há aporte que a meta receba — nulo, não um número.
+	 */
+	delayMonths?: number | null;
 }
 
-/** O aporte mensal que leva o capital ao necessário em exatamente `months` meses. */
-export const contributionForHorizon = ({ capitalCents, requiredCapitalCents: required, monthlyRate: rate, months }: HorizonInput): Cents | null => {
+/**
+ * O aporte mensal que leva o capital ao necessário em exatamente `months` meses.
+ *
+ * O atraso da reserva entra aqui, como já entra no ETA e na projeção: o dinheiro só começa
+ * a ir para a meta no mês seguinte ao que a reserva enche, então são `months − atraso`
+ * aportes, todos rendendo até o fim do horizonte. Resolvido como se fosse desde o mês 1, o
+ * número saía sistematicamente **baixo** — com a reserva em 4 de 12 meses e 30 meses para
+ * enchê-la, o card prometia 20 anos com um aporte que chegava em 23.
+ *
+ * O atraso é o do ritmo de hoje, o mesmo que o ETA usa. Guardando o aporte maior que o card
+ * pede, a reserva encheria mais rápido e o atraso seria menor — ou seja, o número devolvido
+ * é conservador, e é o lado seguro para dimensionar um aporte.
+ */
+export const contributionForHorizon = ({ capitalCents, requiredCapitalCents: required, monthlyRate: rate, months, delayMonths = 0 }: HorizonInput): Cents | null => {
 	if (required === null || required <= 0 || months <= 0) return null;
 	const capital = Math.max(0, safe(capitalCents));
 	if (capital >= required) return 0;
-	if (rate <= 0) return Math.ceil((required - capital) / months);
+	if (delayMonths === null) return null;
+	// Reserva que só enche depois do horizonte: nenhum aporte chega à meta nesse prazo.
+	const paying = months - Math.max(0, Math.floor(safe(delayMonths)));
+	if (paying <= 0) return null;
+	if (rate <= 0) return Math.ceil((required - capital) / paying);
 	const growth = (1 + rate) ** months;
-	return Math.max(0, Math.ceil(((required - capital * growth) * rate) / (growth - 1)));
+	// Valor futuro de `paying` aportes no fim do horizonte: ((1+i)^paying − 1) / i.
+	const annuity = ((1 + rate) ** paying - 1) / rate;
+	return Math.max(0, Math.ceil((required - capital * growth) / annuity));
 };
 
 export interface ProjectionInput {
@@ -221,19 +260,23 @@ export interface ProjectionInput {
 
 /**
  * A curva do capital mês a mês, separando o que saiu do bolso do que os juros fizeram.
- * Aporte negativo (a reserva vem encolhendo) projeta como zero: a curva mostra o que o
- * capital de hoje faria sozinho, não uma sangria.
+ *
+ * Aporte negativo (o dono resgatou) **desce**: a curva conta a mesma história que o ETA e
+ * que a frase do card. Antes ela grampeava o aporte em zero e mostrava o capital de hoje
+ * crescendo sozinho, enquanto o ETA usava o aporte negativo e a frase imprimia
+ * "R$ 0,00/mês" — três premissas diferentes no mesmo cartão. O piso é zero: o capital
+ * acaba, não fica negativo.
  */
 export const projectCapital = ({ capitalCents, contributionCents, monthlyRate: rate, months, maxPoints = PROJECTION_MAX_POINTS }: ProjectionInput): ProjectionPoint[] => {
 	const capital = Math.max(0, safe(capitalCents));
-	const contribution = Math.max(0, safe(contributionCents));
+	const contribution = safe(contributionCents);
 	const total = Math.max(0, Math.floor(months));
 	const step = Math.max(1, Math.ceil(total / Math.max(1, maxPoints)));
 
 	const points: ProjectionPoint[] = [];
 	const push = (offset: number) => {
-		const totalCents = futureValueCents(capital, contribution, rate, offset);
-		const contributedCents = Math.round(capital + contribution * offset);
+		const totalCents = Math.max(0, futureValueCents(capital, contribution, rate, offset));
+		const contributedCents = Math.max(0, Math.round(capital + contribution * offset));
 		points.push({ monthOffset: offset, contributedCents, totalCents, interestCents: totalCents - contributedCents });
 	};
 	for (let offset = 0; offset < total; offset += step) push(offset);
@@ -343,16 +386,24 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
 	const rate = monthlyRate(goal.expectedYieldBp);
 	const contribution = safe(input.monthlyContributionCents);
 	const delay = input.contributionDelayMonths === undefined ? 0 : input.contributionDelayMonths;
-	const plan = retirementContributionPlan(contribution, delay);
+	// Aporte médio negativo: **uma premissa só**, a de que o dinheiro está saindo. "Reserva
+	// primeiro" não se aplica a um resgate (não há aporte a rotear), e grampear em zero era o
+	// que fazia ETA, curva e frase contarem três histórias diferentes.
+	const isWithdrawing = contribution < 0;
+	const plan = isWithdrawing ? { contributionCents: contribution, steps: [] as ContributionStep[] } : retirementContributionPlan(contribution, delay);
 
 	const reachInput: ReachInput = { capitalCents, contributionCents: plan.contributionCents, monthlyRate: rate, requiredCapitalCents: requiredCapital };
-	const reach = reachOf(reachInput, input.asOfMonth, plan.steps);
+	const found = reachOf(reachInput, input.asOfMonth, plan.steps);
+	// Com resgate, "não chega" tem um motivo próprio: não é falta de aporte, é saída de
+	// dinheiro. Se mesmo resgatando o capital cresce o bastante para chegar, a data vale —
+	// ela foi calculada com o mesmo aporte negativo da curva.
+	const reach: GoalReach = isWithdrawing && found.kind === 'never' && found.reason !== 'no-yield' ? { kind: 'never', reason: 'withdrawing' } : found;
 
 	const projectionMonths = reach.kind === 'eta' ? reach.months : reach.kind === 'reached' ? 0 : NEVER_PROJECTION_MONTHS;
-	// Sem atraso, a projeção de sempre (fórmula fechada); com atraso, mês a mês com o degrau.
+	// Sem degrau, a projeção de sempre (fórmula fechada); com atraso, mês a mês com o degrau.
 	const projection =
-		delay === 0
-			? projectCapital({ capitalCents, contributionCents: contribution, monthlyRate: rate, months: projectionMonths })
+		plan.steps.length === 0
+			? projectCapital({ capitalCents, contributionCents: plan.contributionCents, monthlyRate: rate, months: projectionMonths })
 			: projectCapitalStepped({ capitalCents, contributionCents: plan.contributionCents, monthlyRate: rate, steps: plan.steps, months: projectionMonths });
 
 	return {
@@ -363,6 +414,8 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
 		passiveIncomeNowCents: passiveIncomeCents(capitalCents, goal.expectedYieldBp),
 		expectedYieldBp: Math.max(0, safe(goal.expectedYieldBp)),
 		realizedYieldBp: realizedYieldBp(input.realizedYield12mCents, input.averageCapital12mCents),
+		realizedYieldBasis: realizedYieldBp(input.realizedYield12mCents, input.averageCapital12mCents) === null ? null : (input.realizedYieldBasis ?? null),
+		isWithdrawing,
 		progressBp: progressBp(capitalCents, requiredCapital),
 		monthlyContributionCents: contribution,
 		contributionDelayMonths: delay,
@@ -370,7 +423,13 @@ export const buildRetirementReadModel = (input: RetirementInput): RetirementRead
 		projection,
 		contributionByHorizon: CONTRIBUTION_HORIZONS_YEARS.map((years) => ({
 			years,
-			monthlyCents: contributionForHorizon({ capitalCents, requiredCapitalCents: requiredCapital, monthlyRate: rate, months: years * MONTHS_IN_YEAR }),
+			monthlyCents: contributionForHorizon({
+				capitalCents,
+				requiredCapitalCents: requiredCapital,
+				monthlyRate: rate,
+				months: years * MONTHS_IN_YEAR,
+				delayMonths: delay,
+			}),
 		})),
 	};
 };

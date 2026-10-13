@@ -37,7 +37,11 @@ const WealthScreen = () => {
 	const { debts, summary, refresh: refreshDebts } = useDebts();
 	const { goal } = useRetirementGoal();
 	const { goal: reserveGoal, save: saveReserveGoal } = useReserveGoal();
-	const { reserve, reserveComputedCostCents, priorities, refresh: refreshReports } = useReportsData(3, goal);
+	// Ancorado em **hoje**, não no mês escolhido na Home: esta tela fala do presente — a
+	// cascata da reserva, o capital e o saldo das dívidas são os de hoje —, e as médias
+	// precisam terminar no mesmo lugar. Com o mês selecionado, escolher dezembro mudava a
+	// meta da reserva, o "em quantos meses enche" e a data da aposentadoria.
+	const { reserve, reserveComputedCostCents, priorities, refresh: refreshReports } = useReportsData(3, goal, 'today');
 	const [editingReserve, setEditingReserve] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { STORAGE_KEYS } from './storageUtils';
 
 /**
  * Lembrete para criar conta.
@@ -8,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * uma única vez, e só depois de o usuário ter algo a perder.
  */
 
-const DISMISSED_KEY = '@spendr_account_reminder_dismissed';
+const DISMISSED_KEY = STORAGE_KEYS.accountReminderDismissed;
 
 /**
  * Quantos lançamentos antes de sugerir a conta.

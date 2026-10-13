@@ -398,3 +398,77 @@ describe('extractStatementCounterparty', () => {
 		expect(extractStatementCounterparty('', '•••.123.456-••')).toBeNull();
 	});
 });
+
+/**
+ * Itaú/Bradesco/Santander mandam os dois saldos: o contábil (`LEDGERBAL`) e o
+ * disponível (`AVAILBAL`), que soma o limite do cheque especial. Os dois usam
+ * `BALAMT` e `DTASOF`, e o disponível vem **depois** no arquivo.
+ */
+const BOTH_BALANCES_SGML = `OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+ENCODING:USASCII
+CHARSET:1252
+
+<OFX>
+<BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STMTRS><CURDEF>BRL
+<BANKACCTFROM><BANKID>341<ACCTID>1234 56789-0<ACCTTYPE>CHECKING</BANKACCTFROM>
+<BANKTRANLIST><DTSTART>20260901<DTEND>20260914
+<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260904<TRNAMT>-89,90<FITID>202609040001<MEMO>MERCADO</STMTTRN>
+</BANKTRANLIST>
+<LEDGERBAL><BALAMT>150,00<DTASOF>20260914</LEDGERBAL>
+<AVAILBAL><BALAMT>5150,00<DTASOF>20260915</AVAILBAL>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>`;
+
+/** O mesmo arquivo, em XML, com as folhas fechadas. */
+const BOTH_BALANCES_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<OFX>
+  <BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>BRL</CURDEF>
+    <BANKACCTFROM><BANKID>033</BANKID><ACCTID>99887766</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>
+    <BANKTRANLIST><DTSTART>20260901</DTSTART><DTEND>20260914</DTEND>
+      <STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20260904</DTPOSTED><TRNAMT>-10.00</TRNAMT><FITID>a1</FITID><MEMO>MERCADO</MEMO></STMTTRN>
+    </BANKTRANLIST>
+    <LEDGERBAL><BALAMT>150.00</BALAMT><DTASOF>20260914</DTASOF></LEDGERBAL>
+    <AVAILBAL><BALAMT>5150.00</BALAMT><DTASOF>20260915</DTASOF></AVAILBAL>
+  </STMTRS></STMTTRNRS></BANKMSGSRSV1>
+</OFX>`;
+
+/** Arquivo que só traz o disponível: não há âncora, e inventar uma é pior que não ter. */
+const ONLY_AVAILBAL_SGML = `OFXHEADER:100
+DATA:OFXSGML
+
+<OFX>
+<BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>BRL
+<BANKACCTFROM><BANKID>237<ACCTID>555<ACCTTYPE>CHECKING</BANKACCTFROM>
+<BANKTRANLIST><DTSTART>20260901<DTEND>20260914</BANKTRANLIST>
+<AVAILBAL><BALAMT>5150,00<DTASOF>20260915</AVAILBAL>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>`;
+
+describe('saldo do extrato: contábil, nunca o disponível', () => {
+	it('o AVAILBAL que vem depois não sobrescreve o LEDGERBAL (SGML)', () => {
+		const account = parseOfx(BOTH_BALANCES_SGML).accounts[0];
+		// 150,00 é o saldo; 5.150,00 é saldo + cheque especial.
+		expect(account.ledgerBalanceCents).toBe(15_000);
+		expect(account.ledgerDate).toBe('2026-09-14');
+	});
+
+	it('o AVAILBAL que vem depois não sobrescreve o LEDGERBAL (XML)', () => {
+		const account = parseOfx(BOTH_BALANCES_XML).accounts[0];
+		expect(account.ledgerBalanceCents).toBe(15_000);
+		expect(account.ledgerDate).toBe('2026-09-14');
+	});
+
+	it('só com AVAILBAL não há âncora — nulo, não o limite', () => {
+		const account = parseOfx(ONLY_AVAILBAL_SGML).accounts[0];
+		expect(account.ledgerBalanceCents).toBeNull();
+		expect(account.ledgerDate).toBeNull();
+	});
+
+	it('as outras chaves da conta continuam lidas com o nome simples', () => {
+		const account = parseOfx(BOTH_BALANCES_SGML).accounts[0];
+		expect(account.accountKey).toBe('341:1234 56789-0');
+		expect(account.bankName).toBe('Itaú');
+		expect(account.currency).toBe('BRL');
+		expect(account.entries).toHaveLength(1);
+	});
+});

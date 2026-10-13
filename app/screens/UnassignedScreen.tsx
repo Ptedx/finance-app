@@ -22,18 +22,26 @@ const UnassignedScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { transactions } = useTransactions();
-	const { activeAccounts, unassignedNetCents, assignUnassigned } = useAccounts();
+	const { activeAccounts, unassignedNetCents, assignUnassigned, unassignedBeforeAnchor } = useAccounts();
 	const [targetId, setTargetId] = useState<string | null>(null);
 	const [moving, setMoving] = useState(false);
 
 	const unassigned = useMemo(() => transactions.filter((tx) => tx.accountId === null), [transactions]);
 	const target = activeAccounts.find((account) => account.id === targetId);
 
-	const handleMove = () => {
+	const handleMove = async () => {
 		if (!target) return;
+		// O saldo da conta só conta o que é datado **depois** da âncora dela. Um lançamento
+		// antigo movido para uma conta criada hoje sai do total de "sem conta" e não reaparece
+		// no saldo da conta: o "Em caixa" pula no instante do toque. Avisar antes é o mínimo —
+		// mexer na âncora por conta própria seria reescrever o saldo que o usuário informou.
+		const beforeAnchor = await unassignedBeforeAnchor(target.id);
+		const confirmBody = t('accounts.unassignedScreen.confirmBody', { count: unassigned.length, account: target.name });
+		const warning =
+			beforeAnchor > 0 ? t('accounts.unassignedScreen.beforeAnchorWarning', { count: beforeAnchor, account: target.name }) : null;
 		Alert.alert(
 			t('accounts.unassignedScreen.confirmTitle'),
-			t('accounts.unassignedScreen.confirmBody', { count: unassigned.length, account: target.name }),
+			warning ? `${confirmBody}\n\n${warning}` : confirmBody,
 			[
 				{ text: t('accounts.edit.cancel'), style: 'cancel' },
 				{
@@ -41,8 +49,8 @@ const UnassignedScreen = () => {
 					onPress: async () => {
 						try {
 							setMoving(true);
-							const changed = await assignUnassigned(target.id);
-							AccessibilityInfo.announceForAccessibility(t('accounts.unassignedScreen.moved', { count: changed }));
+							const { moved } = await assignUnassigned(target.id);
+							AccessibilityInfo.announceForAccessibility(t('accounts.unassignedScreen.moved', { count: moved }));
 							router.back();
 						} finally {
 							setMoving(false);
@@ -83,7 +91,7 @@ const UnassignedScreen = () => {
 					<>
 						<AccountPicker selectedAccountId={targetId} onSelect={setTargetId} />
 						<Pressable
-							onPress={handleMove}
+							onPress={() => void handleMove()}
 							disabled={!target || moving}
 							accessibilityRole="button"
 							accessibilityLabel={t('accounts.unassignedScreen.moveAll', { count: unassigned.length })}

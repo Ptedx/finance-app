@@ -42,9 +42,12 @@ export const owedCents = (balanceCents: number): number => Math.max(0, -balanceC
 
 export interface AccountsOverview {
 	/**
-	 * O dinheiro disponível para pagar contas: contas que não são cartão nem reserva, mais
-	 * os lançamentos sem conta. A reserva fica de fora de propósito — ela não vai ser usada
-	 * para pagar a fatura, e contá-la aqui faria parecer que sim.
+	 * O dinheiro disponível para pagar contas: contas que não são cartão, nem reserva, nem
+	 * externas, mais os lançamentos sem conta. A reserva fica de fora de propósito — ela não
+	 * vai ser usada para pagar a fatura, e contá-la aqui faria parecer que sim. A conta
+	 * `external` (a PJ, por exemplo) também: o dinheiro da empresa não é o seu caixa, e o
+	 * quadro do mês já a ignora — somá-la aqui fazia "Em caixa" errar por um valor que
+	 * crescia todo mês.
 	 */
 	cashCents: number;
 	/** O que está guardado nas reservas. Dinheiro seu, mas fora do caixa. */
@@ -65,7 +68,8 @@ export const summarizeAccounts = (
 	let cardsOwedCents = 0;
 
 	for (const account of accounts) {
-		if (account.archived) continue;
+		// Arquivada sai dos totais de hoje; a externa nunca entrou neles.
+		if (account.archived || account.role === 'external') continue;
 		const balance = balances.get(account.id) ?? account.openingBalanceCents;
 		if (account.kind === 'credit_card') cardsOwedCents += owedCents(balance);
 		else if (account.role === 'reserve') savedCents += balance;

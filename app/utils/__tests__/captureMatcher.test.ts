@@ -5,6 +5,7 @@ import {
 	fingerprintOf,
 	findTransferCounterpart,
 	findWalletDuplicate,
+	findWalletSuspect,
 	type KnownCapture,
 	learnFromConfirmation,
 	matchesOwnName,
@@ -97,6 +98,78 @@ describe('duplicata carteira + banco (Samsung Pay)', () => {
 	it('dois avisos de carteira não são par um do outro', () => {
 		const first = known({ id: 'sp1', packageName: SAMSUNG_PAY });
 		expect(findWalletDuplicate(candidate({ packageName: SAMSUNG_PAY }), [first])).toBeUndefined();
+	});
+});
+
+/**
+ * Achado 7.4: a duplicata de carteira casava só por valor e direção, numa janela de 12
+ * horas. Duas compras de R$ 20,00 no mesmo dia viravam uma, sem pergunta, e a fatura do
+ * app fechava menor que a do banco. Valor redondo e repetido é o caso comum.
+ */
+describe('duplicata de carteira: a identidade decide, e a dúvida pergunta', () => {
+	const walletNoDetails = (overrides: Partial<KnownCapture> = {}): KnownCapture =>
+		known({ id: 'sp', packageName: SAMSUNG_PAY, merchantKey: null, cardLast4: null, accountId: null, ...overrides });
+
+	it('duas compras de R$ 20,00 no mesmo dia, uma às 9h pela carteira e outra às 18h no cartão, viram pergunta', () => {
+		const wallet = walletNoDetails({ amountCents: 2000, postedAt: T0 });
+		const decision = decide(
+			candidate({
+				packageName: NUBANK,
+				postedAt: plus(9 * HOUR),
+				amountCents: 2000,
+				counterparty: 'PADARIA',
+				merchantKey: 'padaria',
+			}),
+			context({ recent: [wallet] })
+		);
+		expect(decision).toEqual({ action: 'ask_duplicate', relatedId: 'sp' });
+	});
+
+	it('sem nada que confirme a identidade, nem no mesmo minuto decide sozinho', () => {
+		const wallet = walletNoDetails();
+		const blind = candidate({ counterparty: null, merchantKey: null, cardLast4: null, accountId: null });
+		expect(findWalletDuplicate(blind, [wallet])).toBeUndefined();
+		expect(decide(blind, context({ recent: [wallet] }))).toEqual({ action: 'ask_duplicate', relatedId: 'sp' });
+	});
+
+	it('o final do cartão confirma a identidade mesmo quando a carteira não diz o lugar', () => {
+		const wallet = walletNoDetails({ cardLast4: '1534' });
+		const decision = decide(
+			candidate({ cardLast4: '1534', postedAt: plus(2 * MIN) }),
+			context({ recent: [wallet] })
+		);
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
+	});
+
+	it('a conta também confirma: os dois avisos caíram no mesmo cartão', () => {
+		const wallet = walletNoDetails({ accountId: 'nu-card' });
+		const decision = decide(
+			candidate({ counterparty: null, merchantKey: null, accountId: 'nu-card', postedAt: plus(MIN) }),
+			context({ recent: [wallet] })
+		);
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
+	});
+
+	it('estabelecimentos diferentes são duas compras, e não há nem o que perguntar', () => {
+		const wallet = known({ id: 'sp', packageName: SAMSUNG_PAY, merchantKey: 'posto ipiranga' });
+		const other = candidate({ counterparty: 'PADARIA', merchantKey: 'padaria' });
+		expect(findWalletDuplicate(other, [wallet])).toBeUndefined();
+		expect(findWalletSuspect(other, [wallet])).toBeUndefined();
+		expect(decide(other, context({ recent: [wallet] })).action).toBe('pending');
+	});
+
+	it('finais de cartão diferentes também separam as duas compras', () => {
+		const wallet = walletNoDetails({ cardLast4: '1534' });
+		expect(findWalletSuspect(candidate({ cardLast4: '9999', merchantKey: null }), [wallet])).toBeUndefined();
+	});
+
+	it('passadas as quatro horas de certeza, o mesmo lugar ainda rende uma pergunta', () => {
+		const wallet = known({ id: 'sp', packageName: SAMSUNG_PAY, postedAt: T0 });
+		expect(findWalletDuplicate(candidate({ postedAt: plus(5 * HOUR) }), [wallet])).toBeUndefined();
+		expect(decide(candidate({ postedAt: plus(5 * HOUR) }), context({ recent: [wallet] }))).toEqual({
+			action: 'ask_duplicate',
+			relatedId: 'sp',
+		});
 	});
 });
 

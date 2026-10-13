@@ -5,10 +5,11 @@ import {
 	addAccount,
 	addTransaction,
 	addTransfer,
-	assignUnassignedTransactions,
+	assignUnassignedToAccount,
+	countUnassignedOnOrBeforeAnchor,
+	type UnassignedAssignment,
 	deleteAccount,
 	deleteTransfersOf,
-	findCardPayment,
 	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
@@ -39,13 +40,15 @@ import {
 	cycleRuleOf,
 	existingInstallmentDates,
 	invoicesClosingBetween,
+	isSameCardPayment,
 	planCardAdjustment,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
+import { externalTransfersInByMonth, investmentIncomeRows, lastInvestmentIncomeDateByAccount } from '../utils/reportSeries';
 import { parseCardNames, withCardName } from '../utils/cardNames';
-import { addDays, getISODate, todayISO } from '../utils/dateUtils';
+import { addDays, getISODate, monthKeyOf, monthKeyRange, shiftMonthKey, todayISO } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
 import { type CdiRate, loadCachedCdi, refreshCdi } from '../api/cdi';
@@ -104,6 +107,12 @@ interface AccountsContextType {
 	balances: Map<string, number>;
 	/** Rendimento estimado desde a última âncora, por conta que rende (ver utils/yield.ts). */
 	accruedYield: Map<string, number>;
+	/**
+	 * O mesmo rendimento estimado, só dos últimos 12 meses, por conta. É a estimativa que o
+	 * "rendeu nos últimos 12 meses" soma ao rendimento lançado — sem ela o indicador
+	 * afirmava 0% num investimento que rende.
+	 */
+	accruedYield12m: Map<string, number>;
 	/** A taxa CDI em uso, do Banco Central; nula enquanto nenhuma foi obtida. */
 	cdi: CdiRate | null;
 	/** Resumo de cada cartão (ativo ou arquivado). */
@@ -132,9 +141,10 @@ interface AccountsContextType {
 	periodTransfers: Transfer[];
 	/**
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
-	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`).
+	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`). `null` é "não
+	 * informei": aquela fatura fica valendo o que já valia.
 	 */
-	adjustCardInvoices: (cardId: string, openCents: number, closedCents: number) => Promise<void>;
+	adjustCardInvoices: (cardId: string, openCents: number | null, closedCents: number | null) => Promise<void>;
 	/**
 	 * Pagamento de fatura: transferência da conta (ou de fora) para o cartão. Devolve falso
 	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
@@ -154,10 +164,28 @@ interface AccountsContextType {
 	/** Dá nome a um cartão (físico, virtual ou de débito) pelo final; nome vazio tira. */
 	renameCard: (accountId: string, last4: string, name: string | null) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
-	assignUnassigned: (accountId: string) => Promise<number>;
+	assignUnassigned: (accountId: string) => Promise<UnassignedAssignment>;
+	/**
+	 * Quantos lançamentos sem conta são datados antes ou na âncora desta conta — e portanto
+	 * somem do total sem reaparecer no saldo dela. Para a tela avisar **antes** do toque.
+	 */
+	unassignedBeforeAnchor: (accountId: string) => Promise<number>;
 }
 
 const AccountsContext = createContext<AccountsContextType | undefined>(undefined);
+
+/** O que a estimativa de rendimento precisa saber de uma conta que rende. */
+interface YieldAccountInput {
+	anchorCents: number;
+	anchorDate: string;
+	flows: YieldFlow[];
+	percentOfCdiBp: number;
+	/** A data do último rendimento lançado na conta; nula sem nenhum. */
+	lastPostedYieldDate: string | null;
+}
+
+/** Quantos meses a janela do "rendeu nos últimos 12 meses" cobre, contando o de hoje. */
+const YIELD_WINDOW_MONTHS = 12;
 
 /** Nota do lançamento de ajuste: o mesmo texto em qualquer idioma, é um marcador. */
 const ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
@@ -200,7 +228,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [accounts, setAccounts] = useState<Account[]>([]);
 	// Saldo registrado (âncora + movimentos). O exposto soma o rendimento estimado.
 	const [rawBalances, setBalances] = useState<Map<string, number>>(new Map());
-	const [yieldInputs, setYieldInputs] = useState<Map<string, { anchorCents: number; anchorDate: string; flows: YieldFlow[]; percentOfCdiBp: number }>>(new Map());
+	const [yieldInputs, setYieldInputs] = useState<Map<string, YieldAccountInput>>(new Map());
 	const [cdi, setCdi] = useState<CdiRate | null>(null);
 	const [cardSummaries, setCardSummaries] = useState<Map<string, CardSummary>>(new Map());
 	const [month, setMonth] = useState<MonthOverview | null>(null);
@@ -235,8 +263,19 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				getTransfersByDateRange(startDate, endDate),
 			]);
 
+			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período: é
+			// receita do mês, e no livro é transferência. O mapa é por mês e conta, mas aqui só há
+			// transferências do período pedido, então vale somar todos os meses de cada conta.
+			const live = list.filter((account) => !account.deletedAt);
+			const fromExternalByKey = externalTransfersInByMonth(transfersInPeriod, live);
+			const fromExternalByAccount = new Map<string, number>();
+			for (const [key, cents] of fromExternalByKey) {
+				const accountId = key.slice(key.indexOf('|') + 1);
+				fromExternalByAccount.set(accountId, (fromExternalByAccount.get(accountId) ?? 0) + cents);
+			}
+
 			const nextSummaries = new Map<string, CardSummary>();
-			const nextYieldInputs = new Map<string, { anchorCents: number; anchorDate: string; flows: YieldFlow[]; percentOfCdiBp: number }>();
+			const nextYieldInputs = new Map<string, YieldAccountInput>();
 			const activity: AccountMonthActivity[] = [];
 
 			for (const account of list) {
@@ -244,15 +283,29 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 				const period = await getAccountActivity(account.id, startDate, endDate);
 				const isCard = account.kind === 'credit_card';
+				// Rendimento é só a receita em categoria de rendimento de investimento. Sem isto,
+				// toda receita que encostasse numa conta de reserva — o Pix de um amigo, um
+				// reembolso — era anunciada como rentabilidade que não houve.
+				const investmentIncomeCents =
+					account.role === 'reserve'
+						? investmentIncomeRows(
+								(await getAccountTransactions(account.id)).filter((tx) => tx.date >= startDate && tx.date <= endDate)
+							).reduce((total, row) => total + row.cents, 0)
+						: 0;
 				activity.push({
 					accountId: account.id,
 					name: account.name,
 					kind: account.kind,
-					role: account.archived ? 'external' : account.role,
+					// O papel de verdade, inclusive de conta arquivada: trocá-lo por `external` aqui
+					// reescrevia o passado — arquivar um cartão apagava as faturas dele dos meses
+					// fechados. Arquivada fica fora dos totais de hoje, nunca de um mês fechado.
+					role: account.role,
 					incomeCents: period.incomeCents,
+					investmentIncomeCents,
 					expenseCents: period.expenseCents,
 					passThroughCents: period.passThroughCents,
 					transfersInCents: period.transfersInCents,
+					transfersInFromExternalCents: fromExternalByAccount.get(account.id) ?? 0,
 					transfersOutCents: period.transfersOutCents,
 					purchasesOriginatedCents: isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined,
 					envelopeMonthlyCents: account.envelopeMonthlyCents,
@@ -276,6 +329,13 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 						anchorDate: account.openingBalanceDate,
 						flows,
 						percentOfCdiBp: account.yieldCdiBp ?? 0,
+						// Ou se lança o rendimento, ou se estima — nunca os dois no mesmo período. O
+						// último rendimento lançado cobre tudo até a data dele; antes dela quem vale é
+						// o livro. Sem isto, a receita de rendimento já estava no saldo e continuava
+						// sendo estimada por cima, compondo sobre a duplicata: inflava reserva,
+						// capital, patrimônio e progresso da meta, e podia declarar a reserva cheia
+						// antes da hora.
+						lastPostedYieldDate: lastInvestmentIncomeDateByAccount(ownTransactions).get(account.id) ?? null,
 					});
 				}
 
@@ -354,7 +414,27 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		if (!cdi) return result;
 		const today = todayISO();
 		for (const [accountId, input] of yieldInputs) {
-			result.set(accountId, accruedYieldCents({ ...input, today, cdiAnnualBp: cdi.annualBp }));
+			result.set(accountId, accruedYieldCents({ ...input, notBefore: input.lastPostedYieldDate, today, cdiAnnualBp: cdi.annualBp }));
+		}
+		return result;
+	}, [yieldInputs, cdi]);
+
+	/**
+	 * O mesmo rendimento estimado, recortado nos últimos 12 meses: é o que o indicador
+	 * "rendeu nos últimos 12 meses" precisa para não afirmar 0% num CDB de 120% do CDI,
+	 * onde o acréscimo é estimado em memória e nada é lançado no livro. O recorte usa a
+	 * data mais recente entre o começo da janela e o último rendimento lançado — o livro
+	 * responde pelo período que ele cobre, a estimativa só pelo resto.
+	 */
+	const accruedYield12m = useMemo(() => {
+		const result = new Map<string, number>();
+		if (!cdi) return result;
+		const today = todayISO();
+		const windowStart = monthKeyRange(shiftMonthKey(monthKeyOf(today), -(YIELD_WINDOW_MONTHS - 1))).startDate;
+		const notBeforeWindow = addDays(windowStart, -1);
+		for (const [accountId, input] of yieldInputs) {
+			const notBefore = input.lastPostedYieldDate !== null && input.lastPostedYieldDate > notBeforeWindow ? input.lastPostedYieldDate : notBeforeWindow;
+			result.set(accountId, accruedYieldCents({ ...input, notBefore, today, cdiAnnualBp: cdi.annualBp }));
 		}
 		return result;
 	}, [yieldInputs, cdi]);
@@ -425,7 +505,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	const adjustCardInvoices = useCallback(
-		async (cardId: string, openCents: number, closedCents: number) => {
+		async (cardId: string, openCents: number | null, closedCents: number | null) => {
 			const card = (await getAccounts()).find((account) => account.id === cardId);
 			if (!card) return;
 			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
@@ -451,7 +531,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 			const today = todayISO();
 			const plan = planCardAdjustment(card, entries, movements, today, openCents, closedCents);
-			await setAccountAnchor(card.id, plan.anchorCents, plan.anchorDate);
+			// Sem a fatura fechada informada não há âncora nova: mexer nela zeraria a fechada
+			// que o usuário não falou nada sobre.
+			if (plan.anchor) await setAccountAnchor(card.id, plan.anchor.cents, plan.anchor.date);
 			if (plan.adjustmentCents !== 0) {
 				const isIncome = plan.adjustmentCents < 0;
 				await addTransaction({
@@ -471,8 +553,20 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const recordCardPayment = useCallback(
 		async (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => {
-			// A notificação do banco pode ter registrado este pagamento antes do toque.
-			if (await findCardPayment(cardId, amountCents, date, 5)) {
+			// A notificação do banco pode ter registrado este pagamento antes do toque. Casar
+			// só por valor e janela de dias, porém, engolia a segunda metade de uma fatura paga
+			// em duas parcelas iguais: `isSameCardPayment` exige a mesma conta de origem, o
+			// mesmo valor e no máximo um dia de diferença.
+			const payments = await getAccountTransfers(cardId);
+			const already = payments.some(
+				(transfer) =>
+					transfer.toAccountId === cardId &&
+					isSameCardPayment(
+						{ fromAccountId: transfer.fromAccountId, amountCents: transfer.amountCents, date: transfer.date },
+						{ fromAccountId, amountCents, date }
+					)
+			);
+			if (already) {
 				await refresh();
 				return false;
 			}
@@ -488,7 +582,13 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (input: ExistingInstallmentsInput) => {
 			const card = accounts.find((account) => account.id === input.cardId);
 			if (!card) return 0;
-			const dates = existingInstallmentDates(input.currentIndex, input.totalCount, cycleRuleOf(card), todayISO());
+			const dates = existingInstallmentDates(
+				input.currentIndex,
+				input.totalCount,
+				cycleRuleOf(card),
+				todayISO(),
+				card.openingBalanceDate
+			);
 			const group = generateUniqueId();
 			for (const { index, date } of dates) {
 				await addTransaction({
@@ -608,12 +708,17 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const assignUnassigned = useCallback(
 		async (accountId: string) => {
-			const changed = await assignUnassignedTransactions(accountId);
+			const result = await assignUnassignedToAccount(accountId);
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
-			return changed;
+			return result;
 		},
 		[refresh, refreshData]
+	);
+
+	const unassignedBeforeAnchor = useCallback(
+		async (accountId: string) => countUnassignedOnOrBeforeAnchor(accountId),
+		[]
 	);
 
 	const activeAccounts = useMemo(() => accounts.filter((account) => !account.archived).sort(byOrder), [accounts]);
@@ -677,6 +782,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			activeAccounts,
 			balances,
 			accruedYield,
+			accruedYield12m,
 			cdi,
 			cardSummaries,
 			cardsTotals,
@@ -699,6 +805,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			takeNotifications,
 			renameCard,
 			assignUnassigned,
+			unassignedBeforeAnchor,
 		}),
 		[
 			accounts,
@@ -708,6 +815,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			activeAccounts,
 			balances,
 			accruedYield,
+			accruedYield12m,
 			cdi,
 			cardSummaries,
 			cardsTotals,
@@ -730,6 +838,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			takeNotifications,
 			renameCard,
 			assignUnassigned,
+			unassignedBeforeAnchor,
 		]
 	);
 

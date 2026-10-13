@@ -57,6 +57,8 @@ export interface KnownCapture {
 	transactionId: string | null;
 	/** A conta ou cartão em que a captura caiu. Opcional para quem não precisa. */
 	accountId?: string | null;
+	/** Final do cartão, quando o aviso o trazia. Opcional para quem não precisa. */
+	cardLast4?: string | null;
 }
 
 export interface Candidate {
@@ -68,6 +70,10 @@ export interface Candidate {
 	counterparty: string | null;
 	merchantKey: string | null;
 	neutral: boolean;
+	/** Final do cartão, quando o aviso o trazia. Opcional: as linhas de extrato não têm. */
+	cardLast4?: string | null;
+	/** A conta ou cartão que o resolvedor achou para este aviso. Opcional. */
+	accountId?: string | null;
 }
 
 export type MerchantTreatment = 'transaction' | 'transfer' | 'ignore';
@@ -118,10 +124,13 @@ export interface DecisionContext {
 }
 
 // Janelas de tempo. Carteira e banco avisam com segundos de diferença, mas alguns
-// bancos atrasam a notificação da compra no cartão em horas — daí 12h para a certeza.
+// bancos atrasam a notificação da compra no cartão em horas — daí quatro horas para a
+// certeza, e doze para a pergunta. Era uma certeza de doze horas, e isso fundia duas
+// compras de R$ 20,00 do mesmo dia (achado 7.4): valor redondo repetido é o caso comum.
 // Entre dois bancos, avisos a menos de 3 minutos com o mesmo valor são suspeitos.
 // Uma transferência entre contas próprias pode levar até um dia útil (TED).
-export const WALLET_DUPLICATE_WINDOW_MS = 12 * 60 * 60 * 1000;
+export const WALLET_DUPLICATE_WINDOW_MS = 4 * 60 * 60 * 1000;
+export const WALLET_SUSPECT_WINDOW_MS = 12 * 60 * 60 * 1000;
 export const SUSPECT_DUPLICATE_WINDOW_MS = 3 * 60 * 1000;
 export const TRANSFER_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_AUTO_CONFIRM_THRESHOLD = 3;
@@ -189,12 +198,48 @@ export const fingerprintOf = (raw: RawCapture): string => {
 // Buscas
 // ---------------------------------------------------------------------------
 
+/** Dois sinais iguais: só quando os dois lados têm o sinal. Nulo não confirma nada. */
+const agrees = (a: string | null | undefined, b: string | null | undefined): boolean =>
+	Boolean(a) && Boolean(b) && a === b;
+
+/** Dois sinais que os dois lados têm e que não batem: são compras diferentes. */
+const conflicts = (a: string | null | undefined, b: string | null | undefined): boolean =>
+	Boolean(a) && Boolean(b) && a !== b;
+
 /**
- * A mesma compra vista pela carteira e pelo banco.
+ * O par carteira + banco: um dos dois é carteira, o outro não; mesmo valor, ambos saída,
+ * ambos vivos. É a forma do par — quem decide se é a **mesma** compra é a identidade.
+ */
+const isWalletPair = (known: KnownCapture, candidate: Candidate): boolean =>
+	isLive(known) &&
+	known.direction === 'out' &&
+	candidate.direction === 'out' &&
+	known.amountCents === candidate.amountCents &&
+	!isStatementPackage(known.packageName) &&
+	isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName);
+
+/** Estabelecimento, final do cartão ou conta: o que os dois lados têm, e não bate. */
+const identityConflicts = (known: KnownCapture, candidate: Candidate): boolean =>
+	conflicts(known.merchantKey, candidate.merchantKey) ||
+	conflicts(known.cardLast4, candidate.cardLast4) ||
+	conflicts(known.accountId, candidate.accountId);
+
+/** Pelo menos um sinal comparável que confirma: o mesmo lugar, o mesmo plástico, a mesma conta. */
+const identityAgrees = (known: KnownCapture, candidate: Candidate): boolean =>
+	agrees(known.merchantKey, candidate.merchantKey) ||
+	agrees(known.cardLast4, candidate.cardLast4) ||
+	agrees(known.accountId, candidate.accountId);
+
+/**
+ * A mesma compra vista pela carteira e pelo banco, **com certeza**.
  *
- * Um dos dois é carteira, o outro não; mesmo valor, ambos saída, dentro da janela.
  * O par pode estar em qualquer status vivo — se o usuário já confirmou o aviso da
  * carteira antes de o banco avisar, o do banco é que vira duplicata.
+ *
+ * Valor e direção não bastam: R$ 20,00 é um valor que se repete no mesmo dia, e casar só
+ * por valor fundia duas compras numa (achado 7.4), fechando a fatura do app menor que a
+ * do banco, sem perguntar nada. Para decidir sozinho é preciso um sinal que confirme —
+ * o estabelecimento, o final do cartão ou a conta — e nenhum que desminta.
  */
 export const findWalletDuplicate = (
 	candidate: Candidate,
@@ -202,13 +247,30 @@ export const findWalletDuplicate = (
 ): KnownCapture | undefined =>
 	recent.find(
 		(known) =>
-			isLive(known) &&
-			known.direction === 'out' &&
-			candidate.direction === 'out' &&
-			known.amountCents === candidate.amountCents &&
-			!isStatementPackage(known.packageName) &&
-			isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName) &&
+			isWalletPair(known, candidate) &&
+			identityAgrees(known, candidate) &&
+			!identityConflicts(known, candidate) &&
 			msBetween(known.postedAt, candidate.postedAt) <= WALLET_DUPLICATE_WINDOW_MS
+	);
+
+/**
+ * O par carteira + banco de identidade **indefinida**: mesmo valor e mesma direção, mas
+ * sem nada que confirme ser a mesma compra (o aviso da carteira muitas vezes não traz
+ * estabelecimento nem conta) ou com horas de diferença.
+ *
+ * Aqui o app não decide: pergunta. Duas compras de R$ 20,00 no mesmo dia, uma às 9h pela
+ * carteira e outra às 18h no cartão, são duas — e eram uma só, em silêncio. Quando a
+ * identidade **desmente** (outro estabelecimento, outro final) nem pergunta: são duas.
+ */
+export const findWalletSuspect = (
+	candidate: Candidate,
+	recent: KnownCapture[]
+): KnownCapture | undefined =>
+	recent.find(
+		(known) =>
+			isWalletPair(known, candidate) &&
+			!identityConflicts(known, candidate) &&
+			msBetween(known.postedAt, candidate.postedAt) <= WALLET_SUSPECT_WINDOW_MS
 	);
 
 /**
@@ -332,6 +394,13 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 	const statementTwin = findStatementTwin(candidate, context.recent);
 	if (statementTwin) return { action: 'duplicate', relatedId: statementTwin.id, reason: 'statement' };
 
+	// 1c. Carteira + banco com o mesmo valor, sem nada que confirme ser a mesma compra:
+	// pergunta. Vem antes do neutro de propósito — a fatura paga pela carteira e pelo
+	// banco com identidade indefinida é exatamente o caso em que registrar as duas
+	// debitaria a conta duas vezes, e perguntar custa um toque.
+	const walletSuspect = findWalletSuspect(candidate, context.recent);
+	if (walletSuspect) return { action: 'ask_duplicate', relatedId: walletSuspect.id };
+
 	// 2. Movimentos que não são receita nem despesa.
 	if (candidate.neutral) {
 		return {
@@ -411,7 +480,10 @@ export const candidateFrom = (
 		kind: CaptureKind;
 		counterparty: string | null;
 		neutral: boolean;
-	}
+		cardLast4?: string | null;
+	},
+	/** A conta que o resolvedor achou, quando já é conhecida: entra na identidade. */
+	accountId: string | null = null
 ): Candidate => ({
 	packageName: raw.packageName,
 	postedAt: raw.postedAt,
@@ -421,12 +493,15 @@ export const candidateFrom = (
 	counterparty: parsed.counterparty,
 	merchantKey: merchantKeyOf(parsed.counterparty),
 	neutral: parsed.neutral,
+	cardLast4: parsed.cardLast4 ?? null,
+	accountId,
 });
 
 export default {
 	decide,
 	fingerprintOf,
 	findWalletDuplicate,
+	findWalletSuspect,
 	findStatementTwin,
 	findSuspectedDuplicate,
 	findTransferCounterpart,

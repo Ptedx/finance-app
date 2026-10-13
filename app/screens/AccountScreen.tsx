@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, Stack } from 'expo-router';
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
@@ -20,6 +20,7 @@ import {
 // deste app já usam o do safe-area-context, que respeita os insets nas duas plataformas.
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '../api/client';
+import { countUnsyncedRows } from '../database/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useSync } from '../contexts/SyncContext';
@@ -40,6 +41,16 @@ const AccountScreen: React.FC = () => {
 	const { status, pending, lastSyncedAt, syncNow } = useSync();
 	const { refreshData } = useTransactions();
 	const { currentCurrency } = useCurrency();
+
+	/**
+	 * Quantas linhas vivas ainda não subiram.
+	 *
+	 * O `pending` da fila conta operações, não dados: ele zera assim que a fila esvazia,
+	 * mesmo que a remessa tenha sido recusada. Este número vem do banco e responde a
+	 * pergunta que custou duas semanas de lançamentos ao dono: "o que existe aqui que não
+	 * existe na minha conta?". É o que ele precisava ver antes de desinstalar o app.
+	 */
+	const [unsynced, setUnsynced] = useState<number | null>(null);
 
 	const [mode, setMode] = useState<Mode>('signUp');
 	const [email, setEmail] = useState('');
@@ -148,6 +159,25 @@ const AccountScreen: React.FC = () => {
 		if (status === 'offline') return '#FFCC5C';
 		return pending > 0 ? '#FFCC5C' : '#4CAF50';
 	};
+
+	useEffect(() => {
+		let alive = true;
+		if (!account) {
+			setUnsynced(null);
+			return;
+		}
+		countUnsyncedRows()
+			.then((count) => {
+				if (alive) setUnsynced(count);
+			})
+			.catch(() => {
+				// Na dúvida não afirma nada: um número errado aqui é pior que nenhum.
+				if (alive) setUnsynced(null);
+			});
+		return () => {
+			alive = false;
+		};
+	}, [account, status, lastSyncedAt]);
 
 	const header = (
 		<Stack.Screen
@@ -265,6 +295,14 @@ const AccountScreen: React.FC = () => {
 							<Text style={styles.cardSubvalue}>
 								{t('account.lastSynced', { date: formatFullDate(lastSyncedAt) })}
 							</Text>
+						)}
+
+						{unsynced === null ? null : unsynced > 0 ? (
+							<Text style={styles.onlyHere} accessibilityLiveRegion="polite">
+								{t('account.onlyHere', { count: unsynced })}
+							</Text>
+						) : (
+							<Text style={styles.allSafe}>{t('account.allSafe')}</Text>
 						)}
 
 						<TouchableOpacity
@@ -436,6 +474,18 @@ const styles = StyleSheet.create({
 		marginBottom: 6,
 	},
 	cardValue: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
+	onlyHere: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#FFCC5C',
+		marginTop: 8,
+	},
+	allSafe: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#4CAF50',
+		marginTop: 8,
+	},
 	cardSubvalue: { color: '#8E8E93', fontSize: 13, marginTop: 4 },
 	statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	statusDot: { width: 8, height: 8, borderRadius: 4 },

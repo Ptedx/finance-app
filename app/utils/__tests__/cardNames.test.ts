@@ -86,6 +86,16 @@ describe('planDebitCardConversions — débito não tem fatura', () => {
 		expect(planDebitCardConversions([nubankCard, interPF])).toEqual([]);
 		expect(planDebitCardConversions([debitInter])).toEqual([]);
 	});
+
+	it('com duas contas correntes do banco não converte: o palpite jogaria meses na conta errada', () => {
+		// A de todo dia e a do envelope, as duas do Inter e nenhuma externa. A migração roda
+		// sozinha e move o histórico com lápide nas transferências: na dúvida, não mexe — a
+		// conversão continua disponível na tela do cartão, com o usuário escolhendo a conta.
+		const interDia = account({ id: 'inter-dia', name: 'Inter', role: 'main', bankName: 'Inter', packageName: 'br.com.intermedium' });
+		expect(planDebitCardConversions([interDia, interPF, debitInter])).toEqual([]);
+		// Nem mesmo quando uma delas é a principal: ser a principal não diz que o débito é dela.
+		expect(planDebitCardConversions([interDia, account({ id: 'inter-2', name: 'Inter 2', role: 'envelope', bankName: 'Inter' }), debitInter])).toEqual([]);
+	});
 });
 
 describe('final nomeado decide a fatura', () => {

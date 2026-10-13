@@ -25,16 +25,20 @@ export const DEBT_KIND_ICONS: Record<DebtKind, React.ComponentProps<typeof Ionic
  * Uma dívida na lista: nome, parcela, quantas já foram e quando quita, a barra do que já
  * foi pago e o saldo devedor de hoje. O saldo sai da âncora projetada — nunca de um número
  * guardado que envelhece.
+ *
+ * Quitada é quitada, tenha sido arquivada ou simplesmente terminada no prazo: a linha diz
+ * só isso, sem parcela, sem barra e sem o chip "Amortize" de uma dívida que não existe mais.
  */
 const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void; verdict?: DebtVerdict }> = ({ debt, onPress, verdict }) => {
 	const { t } = useTranslation();
 	const state = debtStateOn(termsOf(debt), todayISO());
+	const isPaidOff = debt.archived || state.settled;
 	const paid = Math.max(0, debt.installmentsTotal - state.remaining);
 	const progress = debt.installmentsTotal > 0 ? Math.min(100, Math.round((paid / debt.installmentsTotal) * 100)) : 0;
 	const installment = state.next?.installmentCents ?? debt.installmentCents;
 	const payoff = state.payoffDate ? formatMonthYear(state.payoffDate) : null;
 
-	const detail = debt.archived
+	const detail = isPaidOff
 		? t('debts.row.paidOff')
 		: [
 				t('debts.row.installment', { amount: formatCents(installment) }),
@@ -62,13 +66,13 @@ const DebtRow: React.FC<{ debt: Debt; onPress: (debt: Debt) => void; verdict?: D
 				<Text style={styles.detail} numberOfLines={2}>
 					{detail}
 				</Text>
-				{verdict && !debt.archived ? (
+				{verdict && !isPaidOff ? (
 					<View style={styles.verdict} accessible={false}>
 						<Ionicons name={VERDICT_ICON[verdict]} size={14} color={VERDICT_COLOR[verdict]} />
 						<Text style={[styles.verdictText, { color: VERDICT_COLOR[verdict] }]}>{t(`reports.debts.verdict.${verdict}`)}</Text>
 					</View>
 				) : null}
-				{!debt.archived ? (
+				{!isPaidOff ? (
 					<View style={styles.track} accessible={false}>
 						<View style={[styles.fill, { width: `${Math.max(2, progress)}%` }]} />
 					</View>

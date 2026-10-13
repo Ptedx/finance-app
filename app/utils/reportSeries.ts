@@ -12,13 +12,14 @@
  * Puro: nada de React Native, nada de banco.
  */
 
-import type { Account, Category, Transaction } from '../database/schema';
+import type { Account, Category, Transaction, Transfer } from '../database/schema';
 import { type CardEntry, type CardSummary, invoicesClosingBetween } from './cardMath';
 import type { DebtMonthLine } from './debt';
 import { lastDayOfMonth, monthKeyOf, monthKeyRange, shiftMonthKey } from './dateUtils';
 import { type CategoryTotal, categoryDeltas, FULL_BASIS_POINTS } from './metrics';
 import type { Cents } from './money';
 import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from './monthOverview';
+import type { YieldBasis } from './yield';
 
 export type MonthKey = string;
 
@@ -45,11 +46,112 @@ export interface MonthCategoryRow {
 	totalCents: Cents;
 }
 
+/** Quanto da receita de uma conta num mês é rendimento de investimento. */
+export interface MonthInvestmentIncomeRow {
+	month: MonthKey;
+	accountId: string;
+	cents: Cents;
+}
+
+/**
+ * As categorias de receita que contam como rendimento de investimento.
+ *
+ * É a `investment` ("Investment"/Rendimentos) semeada em `DEFAULT_CATEGORIES`: a única do
+ * app cujo significado é "o dinheiro guardado rendeu". Qualquer outra receita que caia numa
+ * conta de reserva (`gift`, `refund`, `salary`…) é receita comum do mês — o Pix de um amigo
+ * que cai na poupança não é rentabilidade. Uma categoria de rendimento criada à mão pelo
+ * usuário precisa ser passada em `investmentIncomeRows`, que aceita o conjunto de ids.
+ */
+export const INVESTMENT_INCOME_CATEGORY_IDS: ReadonlySet<string> = new Set(['investment']);
+
+/** A parte de rendimento da receita de cada conta, por mês, a partir das linhas do livro. */
+export const investmentIncomeRows = (
+	transactions: Pick<Transaction, 'accountId' | 'date' | 'isIncome' | 'amountCents' | 'category'>[],
+	categoryIds: ReadonlySet<string> = INVESTMENT_INCOME_CATEGORY_IDS
+): MonthInvestmentIncomeRow[] => {
+	const byKey = new Map<string, MonthInvestmentIncomeRow>();
+	for (const transaction of transactions) {
+		if (!transaction.isIncome || !transaction.accountId || !categoryIds.has(transaction.category)) continue;
+		const month = monthKeyOf(transaction.date);
+		const key = `${month}|${transaction.accountId}`;
+		const row = byKey.get(key) ?? { month, accountId: transaction.accountId, cents: 0 };
+		row.cents += transaction.amountCents;
+		byKey.set(key, row);
+	}
+	return [...byKey.values()];
+};
+
+/**
+ * A data do último rendimento **lançado** em cada conta. Conta sem nenhum fica fora do mapa.
+ *
+ * Mesmo critério de `investmentIncomeRows` e do mesmo conjunto de categorias, de propósito:
+ * é daqui que a estimativa do CDI sabe até onde o livro já respondeu, e dois critérios
+ * diferentes para "rendimento lançado" fariam o período ser contado duas vezes ou nenhuma
+ * (ver `notBefore` em `utils/yield.ts`).
+ */
+export const lastInvestmentIncomeDateByAccount = (
+	transactions: Pick<Transaction, 'accountId' | 'date' | 'isIncome' | 'amountCents' | 'category'>[],
+	categoryIds: ReadonlySet<string> = INVESTMENT_INCOME_CATEGORY_IDS
+): Map<string, string> => {
+	const byAccount = new Map<string, string>();
+	for (const transaction of transactions) {
+		if (!transaction.isIncome || !transaction.accountId || !categoryIds.has(transaction.category)) continue;
+		const current = byAccount.get(transaction.accountId);
+		if (current === undefined || transaction.date > current) byAccount.set(transaction.accountId, transaction.date);
+	}
+	return byAccount;
+};
+
+/**
+ * Quanto cada conta sua recebeu de contas `external` em cada mês, por `mês|contaId`.
+ *
+ * É o lado de quem recebe do contrato do papel `external`: o pró-labore que a PJ manda para
+ * a principal é transferência no livro e receita no mês. Transferência entre duas contas
+ * suas não entra (não é renda nova), nem de uma externa para outra externa (nada disso é
+ * seu), nem de fora do app (`fromAccountId` nulo não diz de quem é o dinheiro).
+ */
+export const externalIncomeTransfers = (
+	transfers: Pick<Transfer, 'date' | 'fromAccountId' | 'toAccountId' | 'amountCents'>[],
+	accounts: Pick<Account, 'id' | 'role'>[]
+): Array<{ month: MonthKey; toAccountId: string; amountCents: Cents }> => {
+	const roleById = new Map(accounts.map((account) => [account.id, account.role]));
+	const found: Array<{ month: MonthKey; toAccountId: string; amountCents: Cents }> = [];
+	for (const transfer of transfers) {
+		const { fromAccountId, toAccountId } = transfer;
+		if (!fromAccountId || !toAccountId) continue;
+		if (roleById.get(fromAccountId) !== 'external') continue;
+		const toRole = roleById.get(toAccountId);
+		if (toRole === undefined || toRole === 'external') continue;
+		found.push({ month: monthKeyOf(transfer.date), toAccountId, amountCents: transfer.amountCents });
+	}
+	return found;
+};
+
+/** O mesmo, somado por `mês|contaId`, que é como o quadro do mês lê. */
+export const externalTransfersInByMonth = (
+	transfers: Pick<Transfer, 'date' | 'fromAccountId' | 'toAccountId' | 'amountCents'>[],
+	accounts: Pick<Account, 'id' | 'role'>[]
+): Map<string, Cents> => {
+	const byKey = new Map<string, Cents>();
+	for (const entry of externalIncomeTransfers(transfers, accounts)) {
+		const key = `${entry.month}|${entry.toAccountId}`;
+		byKey.set(key, (byKey.get(key) ?? 0) + entry.amountCents);
+	}
+	return byKey;
+};
+
 export interface MonthPoint {
 	month: MonthKey;
 	overview: MonthOverview;
 	/** O mês de hoje: ainda está acontecendo, então fica fora das médias. */
 	isCurrent: boolean;
+	/**
+	 * Um mês que ainda não começou. O seletor de período oferece os meses futuros do ano
+	 * corrente, e sem esta marca eles entravam nas médias como **meses fechados** — gasto
+	 * de parcela já comprada e poupança zero —, derrubando o custo essencial, a meta da
+	 * reserva e o aporte médio que dimensiona a aposentadoria.
+	 */
+	isFuture: boolean;
 }
 
 /** `count` chaves de mês terminando em `end`, da mais antiga para a mais nova. */
@@ -84,13 +186,26 @@ export interface MonthSeriesInput {
 	transfers: MonthTransferRow[];
 	/** Todas as linhas de cada cartão, por id: as faturas de vários meses saem daqui. */
 	cardEntries: Map<string, CardEntry[]>;
+	/**
+	 * As transferências do período, linha a linha. Só as somas por conta não dizem **de
+	 * quem** o dinheiro veio, e é disso que depende saber se a entrada é renda da PJ.
+	 */
+	transferLines?: Pick<Transfer, 'date' | 'fromAccountId' | 'toAccountId' | 'amountCents'>[];
+	/** A parte de rendimento da receita de cada conta de reserva (`investmentIncomeRows`). */
+	investmentIncome?: MonthInvestmentIncomeRow[];
 	currentMonth: MonthKey;
 }
 
 /**
- * Um quadro do mês por chave, na ordem de `months`. Conta arquivada vira externa, conta
- * desconhecida é descartada e `accountId` nulo vira "sem conta" — as mesmas regras do
- * `AccountsContext`.
+ * Um quadro do mês por chave, na ordem de `months`. Conta desconhecida é descartada e
+ * `accountId` nulo vira "sem conta".
+ *
+ * O papel usado é sempre o papel **de verdade** da conta, inclusive na arquivada. Trocá-lo
+ * por `external` reescrevia o passado: arquivar um cartão antigo apagava as faturas dele de
+ * todos os meses fechados, arquivar uma reserva zerava a poupança daqueles meses, e média
+ * de gasto, taxa de poupança histórica e projeção da meta passavam a usar meses que não
+ * aconteceram daquele jeito. `archived` tira a conta dos totais de hoje (`summarizeAccounts`),
+ * nunca de um mês que já fechou.
  */
 export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 	const byId = new Map(input.accounts.map((account) => [account.id, account]));
@@ -98,6 +213,8 @@ export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 	for (const row of input.activity) activityBy.set(`${row.month}|${row.accountId ?? ''}`, row);
 	const transfersBy = new Map<string, MonthTransferRow>();
 	for (const row of input.transfers) transfersBy.set(`${row.month}|${row.accountId}`, row);
+	const fromExternalBy = externalTransfersInByMonth(input.transferLines ?? [], input.accounts);
+	const investmentBy = new Map((input.investmentIncome ?? []).map((row) => [`${row.month}|${row.accountId}`, row.cents]));
 
 	return input.months.map((month) => {
 		const { startDate, endDate } = monthKeyRange(month);
@@ -111,11 +228,13 @@ export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 				accountId: account.id,
 				name: account.name,
 				kind: account.kind,
-				role: account.archived ? 'external' : account.role,
+				role: account.role,
 				incomeCents: rows?.incomeCents ?? 0,
+				investmentIncomeCents: investmentBy.get(`${month}|${account.id}`) ?? 0,
 				expenseCents: rows?.expenseCents ?? 0,
 				passThroughCents: rows?.passThroughCents ?? 0,
 				transfersInCents: transfers?.inCents ?? 0,
+				transfersInFromExternalCents: fromExternalBy.get(`${month}|${account.id}`) ?? 0,
 				transfersOutCents: transfers?.outCents ?? 0,
 				invoiceCents: isCard ? invoicesClosingBetween(account, input.cardEntries.get(account.id) ?? [], startDate, endDate) : undefined,
 				envelopeMonthlyCents: account.envelopeMonthlyCents,
@@ -132,13 +251,35 @@ export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 			},
 		});
 
-		return { month, overview, isCurrent: month === input.currentMonth };
+		return { month, overview, isCurrent: month === input.currentMonth, isFuture: month > input.currentMonth };
 	});
 };
 
-/** Média de `pick` nos últimos `k` meses fechados; nula sem nenhum. */
+/**
+ * Há quantos meses seguidos a taxa de poupança cai, terminando no último mês da série.
+ *
+ * O mesmo substrato de `consecutiveSavingsRateDrops` em `metrics.ts`, mas lido do quadro do
+ * mês em vez da soma crua do período — é a base única da tela de Relatórios. Mês sem receita
+ * corta a sequência: não se sabe se a taxa caiu ou se aquele mês simplesmente não tem taxa.
+ */
+export const savingsRateDropsEnding = (series: MonthPoint[]): number => {
+	let drops = 0;
+	for (let index = series.length - 1; index > 0; index -= 1) {
+		const current = series[index].overview.savingsRateBp;
+		const previous = series[index - 1].overview.savingsRateBp;
+		if (current === null || previous === null || current >= previous) break;
+		drops += 1;
+	}
+	return drops;
+};
+
+/**
+ * Média de `pick` nos últimos `k` meses fechados; nula sem nenhum. Mês futuro não é mês
+ * fechado: com dezembro selecionado, os meses que ainda não aconteceram entravam na média
+ * com poupança zero e puxavam o aporte médio para baixo.
+ */
 export const averageClosedMonths = (series: MonthPoint[], pick: (overview: MonthOverview) => Cents, k: number): Cents | null => {
-	const closed = series.filter((point) => !point.isCurrent).slice(-Math.max(1, k));
+	const closed = series.filter((point) => !point.isCurrent && !point.isFuture).slice(-Math.max(1, k));
 	if (closed.length === 0) return null;
 	return Math.round(closed.reduce((sum, point) => sum + pick(point.overview), 0) / closed.length);
 };
@@ -318,8 +459,35 @@ export const averageReserveCapitalCents = (series: MonthPoint[], currentSavedCen
 	return Math.round(window.reduce((sum, value) => sum + value, 0) / window.length);
 };
 
-/** Rendimento captado nas reservas nos últimos 12 meses da série. */
+/** Rendimento **lançado** nas reservas nos últimos 12 meses da série. */
 export const realizedYield12mCents = (series: MonthPoint[]): Cents => series.slice(-12).reduce((sum, point) => sum + point.overview.yieldCents, 0);
+
+export interface Yield12m {
+	/** Nulo quando não há nem lançamento nem estimativa: "não dá para responder". */
+	cents: Cents | null;
+	/** De onde o número veio; nulo junto com ele. */
+	basis: YieldBasis | null;
+}
+
+/**
+ * O rendimento dos últimos 12 meses: o que o livro registrou mais o que o app estimou
+ * para o período que nenhum lançamento cobre (`estimatedCents`, de `utils/yield.ts`).
+ *
+ * O indicador **não pode afirmar 0%** quando o app tem uma estimativa. Antes, só o
+ * lançado contava: num CDB de 120% do CDI, em que o acréscimo é estimado em memória e
+ * nada é lançado no livro, a tela anunciava "rendeu 0% ao ano" e o insight sugeria trocar
+ * de investimento. Sem lançamento e sem estimativa o valor é nulo — não zero —, e a
+ * `basis` diz à tela que o número é estimativa e ao insight que não é base para
+ * recomendar nada.
+ */
+export const yield12m = (series: MonthPoint[], estimatedCents: Cents | null): Yield12m => {
+	const posted = realizedYield12mCents(series);
+	const estimated = estimatedCents ?? 0;
+	if (posted <= 0 && estimated <= 0) return { cents: null, basis: null };
+	if (estimated <= 0) return { cents: posted, basis: 'posted' };
+	if (posted <= 0) return { cents: estimated, basis: 'estimated' };
+	return { cents: posted + estimated, basis: 'mixed' };
+};
 
 /** Quanto do mês já passou, em pontos-base: 0 num mês futuro, 10.000 num mês fechado. */
 export const monthElapsedBp = (month: MonthKey, today: string): number => {
@@ -343,8 +511,18 @@ export interface IncomeComposition {
 	passThroughCount: number;
 }
 
-/** A renda do período como a tela conta: entradas, repasses e o líquido. */
-export const incomeComposition = (transactions: Pick<Transaction, 'amountCents' | 'isIncome' | 'category'>[], passThroughCategoryIds: Set<string>): IncomeComposition => {
+/**
+ * A renda do período como a tela conta: entradas, repasses e o líquido.
+ *
+ * As transferências que vieram de uma conta `external` entram como entradas: para quem
+ * recebe pela PJ elas **são** a renda do mês, e sem elas a tela anunciava "renda considerada
+ * R$ 0,00" logo abaixo de um quadro do mês que dizia R$ 12.000.
+ */
+export const incomeComposition = (
+	transactions: Pick<Transaction, 'amountCents' | 'isIncome' | 'category'>[],
+	passThroughCategoryIds: Set<string>,
+	externalTransfersIn: Pick<Transfer, 'amountCents'>[] = []
+): IncomeComposition => {
 	let grossCents = 0;
 	let passThroughCents = 0;
 	let incomeCount = 0;
@@ -357,6 +535,10 @@ export const incomeComposition = (transactions: Pick<Transaction, 'amountCents' 
 			passThroughCents += transaction.amountCents;
 			passThroughCount += 1;
 		}
+	}
+	for (const transfer of externalTransfersIn) {
+		grossCents += transfer.amountCents;
+		incomeCount += 1;
 	}
 	return { grossCents, passThroughCents, netCents: grossCents - passThroughCents, incomeCount, passThroughCount };
 };
@@ -405,9 +587,83 @@ export const findDuplicateIncomes = (transactions: Pick<Transaction, 'id' | 'amo
 	return found;
 };
 
+/** Marca que `processRecurringTransactions` põe na nota do que ela mesma lançou. */
+export const AUTO_NOTE_PREFIX = '[Auto] ';
+
+/** Até quantos dias de distância a recorrente e a cobrança de verdade são a mesma coisa. */
+export const DOUBLE_CHARGE_WINDOW_DAYS = 5;
+
+export interface RecurringDoubleCharge {
+	amountCents: Cents;
+	note: string;
+	ids: [string, string];
+	dates: [string, string];
+}
+
+/**
+ * A recorrente e a cobrança de verdade, as duas no mesmo mês.
+ *
+ * Uma assinatura cadastrada como recorrente **e** cobrada no cartão entra duas vezes: a
+ * recorrente lança no dia combinado, sem conta, e a notificação do banco lança a compra
+ * na fatura. O gasto do mês e o "já comprometido" ficam inflados pelo valor de toda
+ * assinatura — justamente o caso mais comum de recorrente.
+ *
+ * O par é preciso porque um dos lados tem de ser lançamento da própria recorrente
+ * (`[Auto]`) e o outro não: duas compras iguais na semana não disparam. Isto **avisa**,
+ * não apaga: qual dos dois sai é decisão de quem lançou, e o app não tem como saber se a
+ * cobrança do mês realmente aconteceu.
+ */
+export const findRecurringDoubleCharges = (
+	transactions: Pick<Transaction, 'id' | 'amountCents' | 'isIncome' | 'date' | 'note'>[]
+): RecurringDoubleCharge[] => {
+	const expenses = transactions
+		.filter((transaction) => !transaction.isIncome)
+		.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+	const isAuto = (note: string): boolean => note.startsWith(AUTO_NOTE_PREFIX);
+	const found: RecurringDoubleCharge[] = [];
+	const used = new Set<string>();
+
+	for (let i = 0; i < expenses.length; i += 1) {
+		const a = expenses[i];
+		if (used.has(a.id)) continue;
+		for (let j = i + 1; j < expenses.length; j += 1) {
+			const b = expenses[j];
+			if (used.has(b.id)) continue;
+			if (daysApart(a.date, b.date) > DOUBLE_CHARGE_WINDOW_DAYS) break;
+			if (b.amountCents !== a.amountCents) continue;
+			// Um dos dois é da recorrente e o outro não: é o que separa a cobrança dobrada de
+			// duas compras de mesmo valor na mesma semana.
+			if (isAuto(a.note) === isAuto(b.note)) continue;
+			const auto = isAuto(a.note) ? a : b;
+			found.push({
+				amountCents: a.amountCents,
+				note: auto.note.slice(AUTO_NOTE_PREFIX.length),
+				ids: [a.id, b.id],
+				dates: [a.date, b.date],
+			});
+			used.add(a.id);
+			used.add(b.id);
+			break;
+		}
+	}
+	return found;
+};
+
 /**
  * Todo arquivo sob app/ é tratado como rota pelo expo-router, e uma rota sem export
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { buildMonthSeries, rankCategories, rankSpendSources, committedMonths, findDuplicateIncomes };
+export default {
+	buildMonthSeries,
+	externalIncomeTransfers,
+	externalTransfersInByMonth,
+	investmentIncomeRows,
+	lastInvestmentIncomeDateByAccount,
+	yield12m,
+	rankCategories,
+	rankSpendSources,
+	committedMonths,
+	findDuplicateIncomes,
+	findRecurringDoubleCharges,
+};
