@@ -282,6 +282,39 @@ export const buildSavingsRateInsights = (
 };
 
 /**
+ * As frases que falam da fatia de custo fixo, e só elas.
+ *
+ * Mesmo motivo de `SAVINGS_RATE_INSIGHT_IDS`: a grade de saúde mede o custo fixo contra a
+ * receita do quadro do mês, que conta o pró-labore vindo de uma conta `external`; a soma crua
+ * do período não conta. Quem recebe pela PJ via "custo fixo 23%" na grade e "300% da renda
+ * comprometida" no insight. Quem monta a tela passa aqui a fatia calculada na mesma base.
+ */
+export const FIXED_COST_INSIGHT_IDS: InsightId[] = ['fixed-cost-heavy'];
+
+export const buildFixedCostInsights = ({
+	monthlyFixedCents,
+	basisPoints,
+}: {
+	monthlyFixedCents: Cents;
+	basisPoints: number | null;
+}): Insight[] => {
+	if (basisPoints === null || basisPoints < HEAVY_FIXED_COST_BASIS_POINTS) return [];
+	return [
+		{
+			id: 'fixed-cost-heavy',
+			severity: 'attention',
+			title: `${percentText(basisPoints)} of your income is committed to fixed costs before you choose anything.`,
+			params: {
+				percent: percentText(basisPoints),
+				amount: formatCents(monthlyFixedCents),
+			},
+			basisPoints,
+			valueCents: monthlyFixedCents,
+		},
+	];
+};
+
+/**
  * As frases que o mês sustenta, da mais urgente para a menos.
  *
  * Cada regra é independente e silencia sozinha quando falta dado: um mês sem renda não
@@ -292,22 +325,7 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 	const insights: Insight[] = [...buildSavingsRateInsights(metrics.savingsRate, metrics.consecutiveDrops)];
 
 	// --- Custo fixo e fôlego -----------------------------------------------
-	if (
-		metrics.fixedCostBasisPoints !== null &&
-		metrics.fixedCostBasisPoints >= HEAVY_FIXED_COST_BASIS_POINTS
-	) {
-		insights.push({
-			id: 'fixed-cost-heavy',
-			severity: 'attention',
-			title: `${percentText(metrics.fixedCostBasisPoints)} of your income is committed to fixed costs before you choose anything.`,
-			params: {
-				percent: percentText(metrics.fixedCostBasisPoints),
-				amount: formatCents(metrics.monthlyFixedCents),
-			},
-			basisPoints: metrics.fixedCostBasisPoints,
-			valueCents: metrics.monthlyFixedCents,
-		});
-	}
+	insights.push(...buildFixedCostInsights({ monthlyFixedCents: metrics.monthlyFixedCents, basisPoints: metrics.fixedCostBasisPoints }));
 
 	if (metrics.runwayMonths !== null) {
 		if (metrics.runwayMonths < THIN_RUNWAY_MONTHS) {
@@ -584,6 +602,7 @@ export default {
 	computeWealthMetrics,
 	buildInsights,
 	buildSavingsRateInsights,
+	buildFixedCostInsights,
 	buildGoalInsights,
 	buildDebtInsights,
 	mergeInsights,

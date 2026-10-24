@@ -352,6 +352,11 @@ export interface DebitCardSpend {
  * De onde saiu o gasto do mês: cada cartão de crédito (a fatura), cada cartão de débito
  * (por final), o Pix da conta principal (o que sobrou depois do débito), cada envelope e
  * o que não tem conta. É o "qual cartão gasta mais".
+ *
+ * Segue a regra do quadro do mês (`buildMonthOverview`), para que as origens somem o
+ * "Gastou": a despesa lançada numa reserva é gasto, no mesmo bolso do Pix e do débito da
+ * principal, e a conta arquivada conta pelo papel de verdade (ver `buildMonthSeries`). Antes
+ * só a principal viva entrava, e o ranking somava metade do "Gastou".
  */
 export const rankSpendSources = (point: MonthPoint, accounts: Account[], debitCards: DebitCardSpend[], activity: MonthAccountRow[]): SpendSourceRow[] => {
 	const rows: SpendSourceRow[] = [];
@@ -366,7 +371,7 @@ export const rankSpendSources = (point: MonthPoint, accounts: Account[], debitCa
 
 	const activityOf = new Map(activity.filter((row) => row.month === point.month).map((row) => [row.accountId ?? '', row]));
 	for (const account of accounts) {
-		if (account.archived || account.role !== 'main') continue;
+		if (account.role !== 'main' && account.role !== 'reserve') continue;
 		const row = activityOf.get(account.id);
 		let remaining = (row?.expenseCents ?? 0) - (row?.passThroughCents ?? 0);
 		for (const debit of debitCards) {
@@ -541,6 +546,45 @@ export const incomeComposition = (
 		incomeCount += 1;
 	}
 	return { grossCents, passThroughCents, netCents: grossCents - passThroughCents, incomeCount, passThroughCount };
+};
+
+/**
+ * A renda do mês **do quadro do mês**, com as contagens das linhas que ele de fato conta.
+ *
+ * `incomeComposition` soma todo `isIncome` do período, e o quadro não: o estorno no cartão
+ * abate a fatura, o rendimento da reserva é rendimento, a devolução no envelope reduz o gasto
+ * dele, e nada do que acontece dentro de uma conta `external` é seu. O herói dos Relatórios
+ * anunciava "renda considerada R$ 5.280" sobre um quadro que dizia R$ 5.000. Aqui os valores
+ * são os do quadro (`incomeCents`, `grossIncomeCents`, `passThroughCents`), e as contagens
+ * vêm só das linhas que ele soma: receita na principal, sem conta, ou na reserva fora das
+ * categorias de rendimento; repasse na principal, na reserva ou sem conta; e o que chegou
+ * de uma conta `external`. Sem quadro (ainda carregando), os valores saem dessas linhas.
+ */
+export const monthIncomeComposition = (
+	overview: Pick<MonthOverview, 'incomeCents' | 'grossIncomeCents' | 'passThroughCents'> | null,
+	transactions: Pick<Transaction, 'accountId' | 'amountCents' | 'isIncome' | 'category'>[],
+	accounts: Pick<Account, 'id' | 'role'>[],
+	passThroughCategoryIds: Set<string>,
+	externalTransfersIn: Pick<Transfer, 'amountCents'>[] = [],
+	investmentCategoryIds: ReadonlySet<string> = INVESTMENT_INCOME_CATEGORY_IDS
+): IncomeComposition => {
+	const roleById = new Map(accounts.map((account) => [account.id, account.role]));
+	const counted = transactions.filter((transaction) => {
+		// Sem conta conta como se fosse da principal; conta desconhecida o quadro descarta.
+		if (!transaction.accountId) return true;
+		const role = roleById.get(transaction.accountId);
+		if (role === 'main') return true;
+		if (role === 'reserve') return !(transaction.isIncome && investmentCategoryIds.has(transaction.category));
+		return false;
+	});
+	const lines = incomeComposition(counted, passThroughCategoryIds, externalTransfersIn);
+	if (!overview) return lines;
+	return {
+		...lines,
+		grossCents: overview.grossIncomeCents,
+		passThroughCents: overview.passThroughCents,
+		netCents: overview.incomeCents,
+	};
 };
 
 /** Abaixo disto duas receitas iguais são coincidência comum (duas gorjetas), não duplicata. */

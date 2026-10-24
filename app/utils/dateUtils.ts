@@ -161,6 +161,12 @@ export const getMonthRange = (
 	endDate: getISODate(new Date(year, month, 0)),
 });
 
+/**
+ * O primeiro dia do mês (`YYYY-MM-01`). `month` é 1-12, o mesmo formato do `PeriodContext`:
+ * não some 1 — o rótulo do acerto de conta fazia isso e mostrava o mês seguinte.
+ */
+export const monthStartISO = (year: number, month: number): string => `${year}-${two(month)}-01`;
+
 export const getMonthName = (month: number): string => monthLong(languageOf(locale), month);
 
 /**
@@ -214,6 +220,7 @@ export default {
 	addYearsClamped,
 	getCurrentMonthRange,
 	getMonthRange,
+	monthStartISO,
 	formatMonthYear,
 	monthKeyOf,
 	shiftMonthKey,

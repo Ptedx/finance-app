@@ -1,15 +1,18 @@
 import { buildHealthIndicators, type HealthInput } from '../healthScore';
 import {
 	buildDebtInsights,
+	buildFixedCostInsights,
 	buildGoalInsights,
 	buildInsights,
 	buildSavingsRateInsights,
 	computeWealthMetrics,
+	FIXED_COST_INSIGHT_IDS,
 	type Insight,
 	mergeInsights,
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthSnapshot,
 } from '../insights';
+import { fixedCostShare } from '../metrics';
 import { buildMonthOverview } from '../monthOverview';
 import { buildRetirementReadModel, type RetirementInput } from '../retirement';
 
@@ -147,6 +150,76 @@ describe('a taxa de poupança tem uma base só', () => {
 			...idsOf(buildSavingsRateInsights({ incomeCents: 100, netCents: 5, basisPoints: 500 })),
 		]);
 		for (const id of produced) expect(SAVINGS_RATE_INSIGHT_IDS).toContain(id);
+	});
+});
+
+/**
+ * O mesmo para o custo fixo (SPD-032): a grade de saúde lê a receita do quadro do mês e o
+ * insight lia a receita crua do período. Quem recebe pela PJ (entrada vinda de conta
+ * `external`) via "custo fixo 23%" na grade e "300% da renda comprometida" no insight.
+ */
+describe('o custo fixo tem uma base só', () => {
+	const fixed = 300_000;
+	// Receita lançada R$ 1.000 + pró-labore de R$ 12.000 que chega da PJ por transferência.
+	const pj = buildMonthOverview({
+		accounts: [
+			{
+				accountId: 'nu',
+				name: 'Nubank PF',
+				kind: 'checking',
+				role: 'main',
+				incomeCents: 100_000,
+				expenseCents: 50_000,
+				transfersInCents: 1_200_000,
+				transfersInFromExternalCents: 1_200_000,
+				transfersOutCents: 0,
+			},
+		],
+		unassigned: { incomeCents: 0, expenseCents: 0 },
+	});
+
+	it('cenário PJ: a frase e a grade dão o mesmo percentual (23%, sem alerta)', () => {
+		expect(pj.incomeCents).toBe(1_300_000);
+		const grid = fixedCostShare({ monthlyFixedCents: fixed, incomeCents: pj.incomeCents });
+		expect(grid).toBe(2_308);
+		const insights = buildFixedCostInsights({ monthlyFixedCents: fixed, basisPoints: grid });
+		expect(insights.find((i) => i.id === 'fixed-cost-heavy')?.basisPoints ?? grid).toBe(grid);
+		expect(idsOf(insights)).toEqual([]);
+
+		// A base crua, que a tela troca: 3.000 / 1.000 = 300%.
+		const raw = buildInsights(
+			computeWealthMetrics(
+				snapshotOf({
+					periodTotals: { incomeCents: 100_000, expenseCents: 50_000 },
+					recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: fixed, isIncome: false, active: true }],
+				})
+			)
+		);
+		expect(raw.find((i) => i.id === 'fixed-cost-heavy')?.basisPoints).toBe(30_000);
+	});
+
+	it('custo fixo pesado pela receita do quadro: a frase traz o percentual da grade', () => {
+		const grid = fixedCostShare({ monthlyFixedCents: 900_000, incomeCents: pj.incomeCents });
+		expect(grid).toBe(6_923);
+		expect(buildFixedCostInsights({ monthlyFixedCents: 900_000, basisPoints: grid })).toEqual([
+			expect.objectContaining({ id: 'fixed-cost-heavy', basisPoints: grid, valueCents: 900_000, params: expect.objectContaining({ percent: '69%' }) }),
+		]);
+		// Abaixo da metade da renda do quadro não há alerta.
+		expect(buildFixedCostInsights({ monthlyFixedCents: 600_000, basisPoints: fixedCostShare({ monthlyFixedCents: 600_000, incomeCents: pj.incomeCents }) })).toEqual([]);
+	});
+
+	it('sem receita no quadro não há frase', () => {
+		expect(buildFixedCostInsights({ monthlyFixedCents: fixed, basisPoints: null })).toEqual([]);
+	});
+
+	it('a frase do helper é a mesma de buildInsights, e está na lista que a tela troca', () => {
+		const insights = buildInsights(
+			computeWealthMetrics(snapshotOf({ recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: 9_000_00, isIncome: false, active: true }] }))
+		);
+		const fromHelper = buildFixedCostInsights({ monthlyFixedCents: 9_000_00, basisPoints: 9_000 });
+		expect(fromHelper).toHaveLength(1);
+		expect(insights.find((i) => i.id === 'fixed-cost-heavy')).toEqual(fromHelper[0]);
+		for (const id of idsOf(fromHelper)) expect(FIXED_COST_INSIGHT_IDS).toContain(id);
 	});
 });
 
