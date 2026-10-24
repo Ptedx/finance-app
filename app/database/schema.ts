@@ -268,8 +268,14 @@ export const DATABASE_NAME = 'spendr.db';
  * 20 — `bills` é criada (contas a pagar: vencimento todo mês, e uma por dívida ativa,
  *     ligada pela `debtId`) e entra em `SYNCED_TABLES`. Só tabela nova: um app v19 abre
  *     um banco v20, não roda migração e ignora a tabela.
+ * 21 — `preferences` é criada e entra em `SYNCED_TABLES`: moeda, idioma, taxa do CDI, o
+ *     liga/desliga dos lembretes e a dispensa do aviso de contas moravam só no
+ *     AsyncStorage, e logar em outro aparelho abria o app com a moeda e o idioma do
+ *     aparelho. A tabela guarda o `updatedAt`, a lápide e a marca de cada chave; o
+ *     AsyncStorage continua sendo o que as telas leem (ver `sync/preferences.ts`). Só
+ *     tabela nova: um app v20 abre um banco v21 e ignora a tabela.
  */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -285,6 +291,7 @@ export const SYNCED_TABLES = [
 	'captures',
 	'merchant_rules',
 	'bills',
+	'preferences',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -297,10 +304,12 @@ export type SyncedTable = (typeof SYNCED_TABLES)[number];
  * nasce com dois ids aleatórios e um único fingerprint (a coluna é UNIQUE), então o id
  * local não significa nada do outro lado e nunca sai daqui. Em `merchant_rules` é o
  * próprio `merchantKey`, que já é a chave primária. Ver `WireCapture` em `sync/types.ts`.
+ * Em `preferences` é a `key` do AsyncStorage, a mesma em todo aparelho.
  */
 export const SYNC_IDENTITY_COLUMNS: Partial<Record<SyncedTable, string>> = {
 	captures: 'fingerprint',
 	merchant_rules: 'merchantKey',
+	preferences: 'key',
 };
 
 /** A coluna de identidade de uma tabela sincronizada; `id` quando ela não tem outra. */
@@ -679,6 +688,20 @@ ${SYNC_COLUMNS_SQL}
 `;
 
 /**
+ * Preferências (v21): uma linha por chave do AsyncStorage que viaja no sync
+ * (`SYNCED_PREFERENCE_KEYS`). `value` é o texto que o AsyncStorage guarda, sem tradução;
+ * a lápide mantém o último valor. O AsyncStorage continua sendo o que as telas leem — a
+ * tabela existe pelo `updatedAt`, pela lápide e pela marca de "ainda não subiu".
+ */
+export const CREATE_PREFERENCES_TABLE = `
+  CREATE TABLE IF NOT EXISTS preferences (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
  * `sync_state` holds the pull cursor. It is a table rather than an AsyncStorage key so
  * that advancing the cursor and applying the rows it covers happen in one SQLite
  * transaction — a cursor saved without its data would silently skip those changes forever.
@@ -844,6 +867,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_captures_dirty ON captures (dirty);
   CREATE INDEX IF NOT EXISTS idx_merchant_rules_dirty ON merchant_rules (dirty);
   CREATE INDEX IF NOT EXISTS idx_bills_dirty ON bills (dirty);
+  CREATE INDEX IF NOT EXISTS idx_preferences_dirty ON preferences (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -1051,5 +1075,6 @@ export default {
 	CREATE_DEBTS_TABLE,
 	CREATE_BILLS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
+	CREATE_PREFERENCES_TABLE,
 	DEFAULT_CATEGORIES,
 };

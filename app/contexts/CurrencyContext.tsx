@@ -3,7 +3,10 @@ import { getLocales } from 'expo-localization';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
+import { setPreference } from '../database/database';
 import i18n, { appLanguage } from '../i18n';
+import { onPreferencesChanged } from '../sync/preferenceEvents';
+import * as syncQueue from '../sync/queue';
 import { configureDateLocale } from '../utils/dateUtils';
 import { resolveFormatLocale } from '../utils/locale';
 import { configureMoney } from '../utils/money';
@@ -49,6 +52,24 @@ const detectDeviceCurrency = (): Currency => {
 };
 
 /**
+ * A moeda guardada no AsyncStorage, se for uma que o app conhece.
+ *
+ * O texto guardado é o objeto inteiro em JSON, mas só o código é levado a sério: desde o
+ * v21 ele também chega pela rede (sync de preferências), e um símbolo vindo de fora não
+ * pode virar a formatação de todo valor na tela. Código desconhecido ou JSON ilegível
+ * contam como "nenhuma escolha".
+ */
+const resolveSavedCurrency = (saved: string | null): Currency | null => {
+	if (!saved) return null;
+	try {
+		const code = (JSON.parse(saved) as Partial<Currency> | null)?.code;
+		return AVAILABLE_CURRENCIES.find((currency) => currency.code === code) ?? null;
+	} catch {
+		return null;
+	}
+};
+
+/**
  * O locale de números e datas: o idioma do app com a região do aparelho quando combina.
  * Um aparelho em português sempre vê "R$ 1.234,50" e "22/07", mesmo com região dos EUA.
  */
@@ -89,7 +110,7 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 			try {
 				const savedCurrency = await AsyncStorage.getItem(STORAGE_KEYS.selectedCurrency);
-				applyCurrency(savedCurrency ? (JSON.parse(savedCurrency) as Currency) : currentCurrency);
+				applyCurrency(resolveSavedCurrency(savedCurrency) ?? currentCurrency);
 			} catch (error) {
 				console.error('Failed to load currency setting:', error);
 				applyCurrency(FALLBACK_CURRENCY);
@@ -99,14 +120,30 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		loadCurrency();
 	}, []);
 
+	// A moeda que chegou pelo sync (outro aparelho escolheu depois) vale na hora. O pull
+	// já gravou no AsyncStorage; aqui só se relê e aplica — não é uma escolha nova, então
+	// nada sobe de volta nem vai para o perfil. Lápide = a moeda do aparelho.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: applyCurrency só usa setters estáveis
+	useEffect(
+		() =>
+			onPreferencesChanged((keys) => {
+				if (!keys.includes(STORAGE_KEYS.selectedCurrency)) return;
+				AsyncStorage.getItem(STORAGE_KEYS.selectedCurrency)
+					.then((saved) => applyCurrency(resolveSavedCurrency(saved) ?? detectDeviceCurrency()))
+					.catch((error) => console.warn('Failed to apply the synced currency:', error));
+			}),
+		[]
+	);
+
 	const setCurrency = async (currency: Currency) => {
 		try {
-			await AsyncStorage.setItem(STORAGE_KEYS.selectedCurrency, JSON.stringify(currency));
+			// AsyncStorage (de onde se lê) e a linha suja da coleção `preferences`, que leva
+			// a escolha para os outros aparelhos da conta (v21).
+			await setPreference(STORAGE_KEYS.selectedCurrency, JSON.stringify(currency));
 			applyCurrency(currency);
+			syncQueue.schedule();
 
-			// A moeda é uma preferência do perfil, não uma linha sincronizável: um único
-			// valor, sem histórico e sem conflito de linha. O AsyncStorage segue como
-			// cache local para a escolha valer antes mesmo de haver rede.
+			// O perfil também guarda a moeda (`baseCurrency`), para o servidor saber dela.
 			syncProfilePreferences({ baseCurrency: currency.code });
 		} catch (error) {
 			console.error('Failed to save currency setting:', error);

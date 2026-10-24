@@ -13,7 +13,8 @@ import {
 	occurrencesBetween,
 	type RecurrenceRule,
 } from '../utils/recurrence';
-import { STORAGE_KEYS } from '../utils/storageUtils';
+import { STORAGE_KEYS, SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
+import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile, stampAfter } from '../sync/preferences';
 import {
 	type Budget,
 	type Capture,
@@ -29,6 +30,7 @@ import {
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_DEBTS_TABLE,
 	CREATE_BILLS_TABLE,
+	CREATE_PREFERENCES_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	ACCOUNT_V17_COLUMNS,
@@ -197,6 +199,12 @@ interface BillDB extends SyncColumnsDB {
 	paidByRef: string | null;
 	active: number;
 	sortOrder: number;
+}
+
+/** Uma linha de `preferences` (v21): a chave do AsyncStorage e o texto guardado nela. */
+interface PreferenceDB extends SyncColumnsDB {
+	key: string;
+	value: string;
 }
 
 interface ReserveGoalDB extends SyncColumnsDB {
@@ -621,6 +629,7 @@ export const migrationLadder = (): MigrationStep[] => [
 	[18, migratePhantomAppAccounts],
 	[19, migrateSyncedInbox],
 	[20, migrateBills],
+	[21, migratePreferences],
 ];
 
 /**
@@ -916,6 +925,17 @@ const migrateBills = async (): Promise<void> => {
 	await db.execAsync(CREATE_BILLS_TABLE);
 };
 
+/**
+ * v20 -> v21: as preferências ganham uma tabela sincronizada. Só tabela nova, como o v20.
+ *
+ * Nada é copiado do AsyncStorage aqui: a reconciliação que roda antes de cada push
+ * (`reconcilePreferences`) descobre os valores que já existem e os grava com o carimbo de
+ * semente. Copiar aqui daria no mesmo, só que num momento em que a sessão nem existe.
+ */
+const migratePreferences = async (): Promise<void> => {
+	await db.execAsync(CREATE_PREFERENCES_TABLE);
+};
+
 /** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
 const migrateDebts = async (): Promise<void> => {
 	await db.execAsync(CREATE_DEBTS_TABLE);
@@ -1133,6 +1153,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_DEBTS_TABLE}
       ${CREATE_RESERVE_GOALS_TABLE}
       ${CREATE_BILLS_TABLE}
+      ${CREATE_PREFERENCES_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -3103,7 +3124,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules, bills] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules, bills, preferences] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -3134,6 +3155,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 		db.getAllAsync<CaptureDB>('SELECT * FROM captures WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<MerchantRuleDB>('SELECT * FROM merchant_rules WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<BillDB>('SELECT * FROM bills WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<PreferenceDB>('SELECT * FROM preferences WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
 
 	// O `relatedId` ("é duplicata daquela?") é um id local, que não significa nada do
@@ -3327,6 +3349,13 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		// A chave do AsyncStorage viaja como o `id` da linha; `dirty` não sai daqui.
+		preferences: preferences.map((row) => ({
+			id: row.key,
+			value: row.value,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt ?? null,
+		})),
 	};
 };
 
@@ -3339,17 +3368,35 @@ export interface LocalDataCounts {
 	transfers: number;
 	debts: number;
 	customCategories: number;
+	/** Desde que a contagem passou a cobrir todas as coleções do sync. */
+	captures: number;
+	merchantRules: number;
+	retirementGoals: number;
+	reserveGoals: number;
+	bills: number;
 	total: number;
 }
 
 /**
- * As linhas vivas deste aparelho que são dados do usuário. As categorias padrão ficam de
- * fora: todo aparelho nasce com elas, então não dizem que há algo a proteger.
+ * As linhas vivas deste aparelho que são dados do usuário, em **todas** as coleções do sync.
+ *
+ * Contava sete tabelas. Um aparelho que só tinha a caixa de entrada, as regras aprendidas,
+ * as metas ou as contas a pagar era "vazio", e o login numa conta com histórico seguia sem
+ * perguntar — e depois o push mesclava os dois lados em silêncio.
+ *
+ * Fica de fora o que todo aparelho tem sem o usuário ter feito nada, porque contar isso
+ * faria todo login perguntar:
+ *  - as categorias padrão, semeadas na abertura (`seedMissingDefaultCategories`);
+ *  - as preferências: o CDI chega sozinho do Banco Central, e moeda e idioma juntam chave
+ *    a chave pelo carimbo, sem nada a escolher entre os dois lados.
+ * A instalação nova não cria conta, meta, regra nem conta a pagar sozinha: contas nascem
+ * do usuário ou da primeira notificação de banco (que exige o acesso que ele concedeu), e
+ * as contas a pagar de dívida (`ensureDebtBills`) só existem com uma dívida, que já conta.
  */
 export const countLocalData = async (): Promise<LocalDataCounts> => {
 	const defaultIds = DEFAULT_CATEGORIES.map((category) => category.id);
 	const placeholders = defaultIds.map(() => '?').join(', ');
-	const row = await db.getFirstAsync<Omit<LocalDataCounts, 'total'>>(
+	const row = await db.getFirstAsync<Partial<Omit<LocalDataCounts, 'total'>>>(
 		`SELECT
        (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL) AS transactions,
        (SELECT COUNT(*) FROM recurring_transactions WHERE deletedAt IS NULL) AS recurringTransactions,
@@ -3357,7 +3404,12 @@ export const countLocalData = async (): Promise<LocalDataCounts> => {
        (SELECT COUNT(*) FROM accounts WHERE deletedAt IS NULL) AS accounts,
        (SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL) AS transfers,
        (SELECT COUNT(*) FROM debts WHERE deletedAt IS NULL) AS debts,
-       (SELECT COUNT(*) FROM categories WHERE deletedAt IS NULL AND id NOT IN (${placeholders})) AS customCategories`,
+       (SELECT COUNT(*) FROM categories WHERE deletedAt IS NULL AND id NOT IN (${placeholders})) AS customCategories,
+       (SELECT COUNT(*) FROM captures WHERE deletedAt IS NULL) AS captures,
+       (SELECT COUNT(*) FROM merchant_rules WHERE deletedAt IS NULL) AS merchantRules,
+       (SELECT COUNT(*) FROM retirement_goals WHERE deletedAt IS NULL) AS retirementGoals,
+       (SELECT COUNT(*) FROM reserve_goals WHERE deletedAt IS NULL) AS reserveGoals,
+       (SELECT COUNT(*) FROM bills WHERE deletedAt IS NULL) AS bills`,
 		defaultIds
 	);
 	const counts = {
@@ -3368,6 +3420,11 @@ export const countLocalData = async (): Promise<LocalDataCounts> => {
 		transfers: row?.transfers ?? 0,
 		debts: row?.debts ?? 0,
 		customCategories: row?.customCategories ?? 0,
+		captures: row?.captures ?? 0,
+		merchantRules: row?.merchantRules ?? 0,
+		retirementGoals: row?.retirementGoals ?? 0,
+		reserveGoals: row?.reserveGoals ?? 0,
+		bills: row?.bills ?? 0,
 	};
 	return { ...counts, total: Object.values(counts).reduce((sum, value) => sum + value, 0) };
 };
@@ -3458,6 +3515,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['captures', changes.captures ?? []],
 		['merchant_rules', changes.merchantRules ?? []],
 		['bills', changes.bills ?? []],
+		['preferences', changes.preferences ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -3845,6 +3903,47 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
+		/**
+		 * As preferências (v21). Duas diferenças das outras coleções:
+		 *
+		 * - **o empate**: com a linha daqui já enviada (`dirty = 0`), o empate fica com o
+		 *   servidor. Dois aparelhos que descobriram a mesma chave com o carimbo de semente
+		 *   sobem carimbos iguais, e o servidor guarda o último a chegar (o empate dele é de
+		 *   quem envia); sem esta regra o primeiro ficaria com o valor dele para sempre. Com
+		 *   a linha daqui ainda por subir, o empate continua sendo daqui, como no resto;
+		 * - **o espelho**: quem lê a moeda e o idioma lê do AsyncStorage, então a versão
+		 *   vencedora vai para lá **antes** da tabela. Na ordem inversa, morrer entre as duas
+		 *   gravações deixaria a tabela nova e o AsyncStorage velho — e a reconciliação
+		 *   seguinte tomaria o valor velho por uma escolha nova e o subiria por cima da
+		 *   conta. Nesta ordem, o pior caso é ela subir de volta o mesmo valor que chegou.
+		 *
+		 * Só as chaves de `SYNCED_PREFERENCE_KEYS` chegam ao AsyncStorage: a linha vem da
+		 * rede, e escrever qualquer chave seria deixar o servidor mandar no estado do app —
+		 * a biometria mora ali. As outras ficam só na tabela, para "subir deste aparelho" não
+		 * apagar da conta o que uma versão mais nova do app gravou lá.
+		 */
+		for (const row of changes.preferences ?? []) {
+			const local = await db.getFirstAsync<{ updatedAt: string; dirty: number }>(
+				'SELECT updatedAt, dirty FROM preferences WHERE key = ?',
+				[row.id]
+			);
+			if (local && (local.updatedAt > row.updatedAt || (local.updatedAt === row.updatedAt && local.dirty === 1))) continue;
+
+			if (isMirroredPreference(row.id)) {
+				if (row.deletedAt) await AsyncStorage.removeItem(row.id);
+				else await AsyncStorage.setItem(row.id, row.value);
+			}
+
+			await db.runAsync(
+				`INSERT INTO preferences (key, value, updatedAt, deletedAt, dirty)
+         VALUES (?, ?, ?, ?, 0)
+         ON CONFLICT (key) DO UPDATE SET
+           value = excluded.value, updatedAt = excluded.updatedAt,
+           deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, row.value, row.updatedAt, row.deletedAt ?? null]
+			);
+		}
+
 		// As regras aprendidas: a identidade é a própria `merchantKey`, então o upsert é o
 		// merge inteiro — duas aprendizagens do mesmo estabelecimento convergem por
 		// `updatedAt`, sem conflito de id.
@@ -3954,6 +4053,87 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 	});
+};
+
+// ---------------------------------------------------------------------------
+// Preferências (v21)
+// ---------------------------------------------------------------------------
+
+const UPSERT_DIRTY_PREFERENCE = `INSERT INTO preferences (key, value, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT (key) DO UPDATE SET
+       value = excluded.value, updatedAt = excluded.updatedAt,
+       deletedAt = excluded.deletedAt, dirty = 1`;
+
+/**
+ * Grava uma preferência escolhida agora: no AsyncStorage, que é de onde as telas leem, e
+ * na tabela, suja e carimbada, para subir. `null` apaga — sai do AsyncStorage e vira
+ * lápide com o último valor.
+ *
+ * O AsyncStorage vem primeiro e é o que pode falhar para quem chama: a escolha tem de valer
+ * aqui mesmo sem banco. A tabela é o sync, e falhar nela só atrasa a subida — a
+ * reconciliação do próximo push encontra a diferença e marca a linha.
+ *
+ * Chave que não viaja (`SYNCED_PREFERENCE_KEYS`) vai só para o AsyncStorage.
+ */
+export const setPreference = async (key: string, value: string | null): Promise<void> => {
+	if (value === null) await AsyncStorage.removeItem(key);
+	else await AsyncStorage.setItem(key, value);
+
+	if (!SYNCED_PREFERENCE_KEYS.includes(key)) return;
+
+	try {
+		const current = await db.getFirstAsync<{ value: string; updatedAt: string }>(
+			'SELECT value, updatedAt FROM preferences WHERE key = ?',
+			[key]
+		);
+		if (value === null && !current) return;
+
+		const stamp = stampAfter(nowTimestamp(), current?.updatedAt);
+		await db.runAsync(UPSERT_DIRTY_PREFERENCE, [
+			key,
+			value ?? (current as { value: string }).value,
+			stamp,
+			value === null ? stamp : null,
+		]);
+	} catch (error) {
+		console.warn(`Preferências: ${key} gravada, mas não marcada para subir:`, error);
+	}
+};
+
+/**
+ * Passa para a tabela o que mudou no AsyncStorage sem passar por `setPreference` — o CDI
+ * que o app buscou, um aviso dispensado, o liga/desliga dos lembretes, um backup
+ * importado — e o que já estava lá antes do v21. Roda antes de cada push e antes de
+ * "subir deste aparelho". O que gravar é decidido em `planPreferenceReconcile`.
+ *
+ * Devolve quantas linhas ficaram sujas.
+ */
+export const reconcilePreferences = async (): Promise<number> => {
+	const [rows, pairs] = await Promise.all([
+		db.getAllAsync<PreferenceDB>('SELECT key, value, updatedAt, deletedAt FROM preferences'),
+		AsyncStorage.multiGet([...SYNCED_PREFERENCE_KEYS]),
+	]);
+
+	const stored: Record<string, string | null> = {};
+	for (const [key, value] of pairs) stored[key] = value;
+
+	const current: PreferenceRow[] = rows.map((row) => ({
+		key: row.key,
+		value: row.value,
+		updatedAt: row.updatedAt,
+		deletedAt: row.deletedAt ?? null,
+	}));
+	const writes = planPreferenceReconcile(current, stored, nowTimestamp());
+	if (writes.length === 0) return 0;
+
+	await db.withTransactionAsync(async () => {
+		for (const write of writes) {
+			await db.runAsync(UPSERT_DIRTY_PREFERENCE, [write.key, write.value, write.updatedAt, write.deletedAt]);
+		}
+	});
+
+	return writes.length;
 };
 
 export const getSyncState = async (key: string): Promise<string | null> => {
@@ -4176,6 +4356,8 @@ export default {
 	markCategoryDirty,
 	reassignToUncategorized,
 	applyPulledChanges,
+	setPreference,
+	reconcilePreferences,
 	getSyncState,
 	setSyncState,
 	clearSyncState,

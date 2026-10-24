@@ -19,6 +19,11 @@ export const STORAGE_KEYS = {
 	 */
 	language: '@spendr_language',
 	accountReminderDismissed: '@spendr_account_reminder_dismissed',
+	/**
+	 * O liga/desliga dos lembretes (`utils/notificationUtils.ts`). A permissão do sistema
+	 * não mora aqui e não viaja: cada aparelho pede a sua.
+	 */
+	notificationsEnabled: '@spendr_notifications_enabled',
 } as const;
 
 /**
@@ -42,6 +47,26 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.captureAccessDismissed,
 	STORAGE_KEYS.language,
 	STORAGE_KEYS.accountReminderDismissed,
+	STORAGE_KEYS.notificationsEnabled,
+];
+
+/**
+ * As preferências que viajam **no sync** (coleção `preferences`, v21): logado numa conta,
+ * outro aparelho abre com a mesma moeda, o mesmo idioma, os mesmos lembretes ligados.
+ *
+ * As do backup menos uma: `captureAccessDismissed`. O que esse aviso diz — "o Android não
+ * está entregando notificações a este app" — é de cada aparelho, e o acesso que ele pede
+ * não viaja. Levar a dispensa para o celular novo esconderia ali o único caminho até a
+ * tela do sistema onde o acesso é ligado. Reaparecer um aviso dispensado é barato.
+ *
+ * A ordem é a da reconciliação (`sync/preferences.ts`); não tem outro significado.
+ */
+export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
+	STORAGE_KEYS.selectedCurrency,
+	STORAGE_KEYS.cdiRate,
+	STORAGE_KEYS.language,
+	STORAGE_KEYS.accountReminderDismissed,
+	STORAGE_KEYS.notificationsEnabled,
 ];
 
 /**
@@ -109,6 +134,7 @@ export const resetAsyncStorage = async (keysToPreserve: string[] = []): Promise<
 export default {
 	STORAGE_KEYS,
 	BACKED_UP_PREFERENCE_KEYS,
+	SYNCED_PREFERENCE_KEYS,
 	exportPreferences,
 	importPreferences,
 	resetAsyncStorage,

@@ -31,6 +31,40 @@ export interface ClaimCounts {
 	device: LocalDataCounts;
 }
 
+/** O que um lado tem, nos nomes do resumo que a tela mostra (`settings.exportSummary`). */
+export type ClaimSummaryParams = {
+	transactions: number;
+	categories: number;
+	accounts: number;
+	transfers: number;
+	recurring: number;
+	budgets: number;
+	debts: number;
+	captures: number;
+	rules: number;
+};
+
+/**
+ * Os números de um lado da pergunta, prontos para a tela.
+ *
+ * Os dois lados no mesmo formato: antes a conta mostrava só lançamentos e recorrências, e
+ * uma conta cuja diferença estava nas contas, na caixa de entrada ou nas dívidas aparecia
+ * como "0 lançamentos" — a pergunta parecia sem motivo. O que falta vira zero, nunca
+ * `undefined` na tela: um servidor anterior manda só as quatro contagens de sempre, e uma
+ * pergunta gravada por uma versão anterior do app tem a forma de antes.
+ */
+export const claimSummaryParams = (counts: Partial<Record<keyof LocalDataCounts, number>>): ClaimSummaryParams => ({
+	transactions: counts.transactions ?? 0,
+	categories: counts.customCategories ?? 0,
+	accounts: counts.accounts ?? 0,
+	transfers: counts.transfers ?? 0,
+	recurring: counts.recurringTransactions ?? 0,
+	budgets: counts.budgets ?? 0,
+	debts: counts.debts ?? 0,
+	captures: counts.captures ?? 0,
+	rules: counts.merchantRules ?? 0,
+});
+
 /** A escolha que falta, e de qual conta ela é. */
 export interface PendingClaim {
 	/** A conta conectada quando a pergunta nasceu. */
@@ -110,4 +144,4 @@ export const endSyncSession = async (): Promise<void> => {
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { readPendingClaim, savePendingClaim, clearPendingClaim, beginSessionFor, endSyncSession };
+export default { readPendingClaim, savePendingClaim, clearPendingClaim, beginSessionFor, endSyncSession, claimSummaryParams };

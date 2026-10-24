@@ -75,6 +75,24 @@ jest.mock('../../sync/engine', () => ({
 	resetCursor: jest.fn(async () => undefined),
 }));
 
+/** O acesso de leitura de notificações do Android: o módulo nativo, programável por teste. */
+const mockCapture = { supported: true, enabled: false };
+jest.mock('../../../modules/spendr-captures', () => ({
+	isCaptureSupported: () => mockCapture.supported,
+	isCaptureEnabled: () => mockCapture.enabled,
+}));
+
+const mockStorage = new Map<string, string>();
+jest.mock('@react-native-async-storage/async-storage', () => ({
+	getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
+	setItem: jest.fn(async (key: string, value: string) => {
+		mockStorage.set(key, value);
+	}),
+	removeItem: jest.fn(async (key: string) => {
+		mockStorage.delete(key);
+	}),
+}));
+
 jest.mock('../../sync/queue', () => ({
 	start: jest.fn(),
 	stop: jest.fn(),
@@ -88,6 +106,7 @@ import { login } from '../../api/auth';
 import { clearSyncState, markEverythingDirty } from '../../database/database';
 import { readPendingClaim, savePendingClaim } from '../../sync/claim';
 import * as syncQueue from '../../sync/queue';
+import { STORAGE_KEYS } from '../../utils/storageUtils';
 import { AuthProvider, type ClaimChoice, useAuth } from '../AuthContext';
 
 /** A fila é mock: ligá-la é o que o claim pendente tem de impedir. */
@@ -129,6 +148,11 @@ const CLAIM = {
 			transfers: 0,
 			debts: 0,
 			customCategories: 0,
+			captures: 0,
+			merchantRules: 0,
+			retirementGoals: 0,
+			reserveGoals: 0,
+			bills: 0,
 			total: 41,
 		},
 	},
@@ -136,6 +160,9 @@ const CLAIM = {
 
 beforeEach(() => {
 	mockSyncState.clear();
+	mockStorage.clear();
+	mockCapture.supported = true;
+	mockCapture.enabled = false;
 	jest.clearAllMocks();
 });
 
@@ -232,5 +259,64 @@ describe('responder a escolha', () => {
 		// Nada foi cumprido, então nada foi apagado: a próxima abertura pergunta de novo.
 		expect(await readPendingClaim()).toEqual(CLAIM);
 		expect(queueStart).not.toHaveBeenCalled();
+	});
+});
+
+describe('o acesso às notificações, que não viaja com a conta', () => {
+	const PROFILE = {
+		id: 'conta-1',
+		email: 'eu@exemplo.com',
+		name: 'Eu',
+		baseCurrency: 'BRL',
+		language: 'pt',
+	};
+
+	/** Entra na conta a partir do modo anônimo (sem sessão guardada). */
+	const signInFresh = async () => {
+		const { loadTokens } = jest.requireMock('../../api/tokens') as { loadTokens: jest.Mock };
+		loadTokens.mockResolvedValueOnce(null);
+		const api = await mount();
+		(login as jest.Mock).mockResolvedValueOnce(PROFILE);
+		await act(async () => {
+			await api().signIn({ email: 'eu@exemplo.com', password: 'x' });
+		});
+		return api;
+	};
+
+	it('primeiro login num Android sem o acesso: o aviso de captura dispensado volta a valer', async () => {
+		// O aviso foi dispensado aqui (ou veio num backup). Sem o acesso, a captura não
+		// funciona neste aparelho, e o aviso é o caminho que leva à tela do sistema.
+		mockStorage.set(STORAGE_KEYS.captureAccessDismissed, '1');
+
+		await signInFresh();
+
+		expect(mockStorage.has(STORAGE_KEYS.captureAccessDismissed)).toBe(false);
+	});
+
+	it('com o acesso já ligado, nada muda', async () => {
+		mockCapture.enabled = true;
+		mockStorage.set(STORAGE_KEYS.captureAccessDismissed, '1');
+
+		await signInFresh();
+
+		expect(mockStorage.get(STORAGE_KEYS.captureAccessDismissed)).toBe('1');
+	});
+
+	it('sem o módulo (iOS, web), nada muda', async () => {
+		mockCapture.supported = false;
+		mockStorage.set(STORAGE_KEYS.captureAccessDismissed, '1');
+
+		await signInFresh();
+
+		expect(mockStorage.get(STORAGE_KEYS.captureAccessDismissed)).toBe('1');
+	});
+
+	it('entrar de novo na mesma conta não insiste', async () => {
+		mockSyncState.set('syncAccountId', 'conta-1');
+		mockStorage.set(STORAGE_KEYS.captureAccessDismissed, '1');
+
+		await signInFresh();
+
+		expect(mockStorage.get(STORAGE_KEYS.captureAccessDismissed)).toBe('1');
 	});
 });

@@ -225,6 +225,20 @@ export interface WireBill extends WireMeta {
 	sortOrder: number;
 }
 
+/**
+ * Uma preferência (v21): moeda, idioma, taxa do CDI, lembretes ligados. A identidade é a
+ * chave do AsyncStorage, que é a mesma em todo aparelho — então duas escolhas da mesma
+ * preferência convergem por `updatedAt`, como as regras aprendidas.
+ *
+ * `value` é o texto que o AsyncStorage guarda, sem tradução (a moeda e o idioma são JSON).
+ * A lápide leva o último valor: o servidor valida a linha inteira, viva ou apagada.
+ */
+export interface WirePreference extends WireMeta {
+	/** A chave do AsyncStorage (`STORAGE_KEYS`). */
+	id: string;
+	value: string;
+}
+
 export interface SyncChanges {
 	categories: WireCategory[];
 	transactions: WireTransaction[];
@@ -247,6 +261,8 @@ export interface SyncChanges {
 	merchantRules?: WireMerchantRule[];
 	/** Coleção do v20 (contas a pagar), idem. */
 	bills?: WireBill[];
+	/** Coleção do v21 (preferências), idem. */
+	preferences?: WirePreference[];
 }
 
 /**
@@ -270,6 +286,7 @@ export interface SyncCursor {
 	captures: number;
 	merchantRules: number;
 	bills: number;
+	preferences: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -285,6 +302,7 @@ export const EMPTY_CURSOR: SyncCursor = {
 	captures: 0,
 	merchantRules: 0,
 	bills: 0,
+	preferences: 0,
 };
 
 /**
@@ -305,6 +323,7 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	captures: 19,
 	merchantRules: 19,
 	bills: 20,
+	preferences: 21,
 };
 
 /**
@@ -378,11 +397,26 @@ export interface PushResponse {
 export interface SyncStatusResponse {
 	/** Se a conta já tem dados próprios. Decide o fluxo do primeiro login. */
 	hasData: boolean;
+	/**
+	 * As linhas vivas de cada coleção de dado do usuário. As quatro primeiras são as de
+	 * sempre; as outras entraram quando o status passou a enxergar todas as coleções, e
+	 * um servidor anterior a isso não as manda — por isso opcionais na chegada. As
+	 * preferências não estão aqui de propósito: juntam chave a chave pelo carimbo, e um
+	 * aparelho que só escolheu o idioma não pode fazer o login perguntar.
+	 */
 	counts: {
 		transactions: number;
 		recurringTransactions: number;
 		budgets: number;
 		customCategories: number;
+		accounts?: number;
+		transfers?: number;
+		debts?: number;
+		retirementGoals?: number;
+		reserveGoals?: number;
+		captures?: number;
+		merchantRules?: number;
+		bills?: number;
 	};
 }
 
@@ -399,6 +433,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	captures: [],
 	merchantRules: [],
 	bills: [],
+	preferences: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -416,7 +451,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	// porque perder a caixa de entrada é perder dado.
 	(changes.captures?.length ?? 0) +
 	(changes.merchantRules?.length ?? 0) +
-	(changes.bills?.length ?? 0);
+	(changes.bills?.length ?? 0) +
+	(changes.preferences?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

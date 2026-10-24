@@ -6,9 +6,11 @@ import type { Bill, RecurringTransaction } from '../database/schema';
 import { type BillReminder, billReminders } from './billReminders';
 import { getISODate, parseISODate } from './dateUtils';
 import { formatCents } from './money';
+import { STORAGE_KEYS } from './storageUtils';
 
-// Keys for storing notification settings
-const NOTIFICATIONS_ENABLED_KEY = '@spendr_notifications_enabled';
+// Keys for storing notification settings. O liga/desliga mora em `STORAGE_KEYS` porque
+// viaja no backup e no sync (`preferences`), e o nome tem de ser um só.
+const NOTIFICATIONS_ENABLED_KEY = STORAGE_KEYS.notificationsEnabled;
 const PUSH_TOKEN_KEY = '@spendr_push_token';
 const SCHEDULED_NOTIFICATIONS_KEY = '@spendr_scheduled_notifications';
 

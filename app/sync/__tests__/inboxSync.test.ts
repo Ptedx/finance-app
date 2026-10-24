@@ -30,6 +30,7 @@ jest.mock('../../database/database', () => ({
 	markCategoryDirty: jest.fn(async () => undefined),
 	markChangesClean: jest.fn(async () => undefined),
 	reassignToUncategorized: jest.fn(async () => undefined),
+	reconcilePreferences: jest.fn(async () => 0),
 	repairPhantomAppAccounts: jest.fn(async () => 0),
 	setSyncState: jest.fn(async () => undefined),
 	stampEverything: jest.fn(async () => undefined),

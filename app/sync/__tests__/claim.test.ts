@@ -43,6 +43,11 @@ const COUNTS: ClaimCounts = {
 		transfers: 3,
 		debts: 0,
 		customCategories: 0,
+		captures: 0,
+		merchantRules: 0,
+		retirementGoals: 0,
+		reserveGoals: 0,
+		bills: 0,
 		total: 47,
 	},
 };

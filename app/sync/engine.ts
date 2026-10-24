@@ -9,12 +9,14 @@ import {
 	markCategoryDirty,
 	markChangesClean,
 	reassignToUncategorized,
+	reconcilePreferences,
 	repairPhantomAppAccounts,
 	setSyncState,
 	stampEverything,
 } from '../database/database';
 import { SCHEMA_VERSION } from '../database/schema';
 import { nowTimestamp } from '../utils/dateUtils';
+import { emitPreferencesChanged } from './preferenceEvents';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
 import { EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncChanges, type SyncCursor } from './types';
 
@@ -97,6 +99,21 @@ const parseCursor = (stored: string | null): SyncCursor | null => {
 	}
 };
 
+/**
+ * Passa para a tabela `preferences` o que mudou no AsyncStorage por fora (o CDI, um aviso
+ * dispensado, o liga/desliga dos lembretes, um backup importado).
+ *
+ * Uma falha aqui não pode parar o sync: o resto da remessa é dinheiro, e a preferência
+ * que não foi conferida agora é conferida no próximo push.
+ */
+const reconcilePreferencesSafely = async (): Promise<void> => {
+	try {
+		await reconcilePreferences();
+	} catch (error) {
+		console.warn('Sync: não foi possível conferir as preferências:', error);
+	}
+};
+
 const readCursor = async (): Promise<SyncCursor> => {
 	const own = parseCursor(await getSyncState(CURSOR_KEY));
 	if (own) return own;
@@ -142,6 +159,11 @@ export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
 		if (!response.hasMore) break;
 	}
 	const server = mergePages(pages);
+
+	// Antes de ler o que existe aqui: num aparelho que nunca sincronizou, as preferências
+	// só estão no AsyncStorage. Sem esta passada a moeda da conta viraria lápide — "não
+	// existe neste aparelho" — e o pull do fim apagaria a moeda daqui também.
+	await reconcilePreferencesSafely();
 
 	const localIds = {} as Record<Collection, Set<string>>;
 	for (const collection of COLLECTIONS) {
@@ -191,6 +213,10 @@ export const pullAll = async (): Promise<number> => {
 		await applyPulledChanges(response.changes);
 		await setSyncState(CURSOR_KEY, JSON.stringify(response.cursor));
 		await setSyncState(SERVER_COLLECTIONS_KEY, JSON.stringify(Object.keys(response.cursor)));
+
+		// A moeda e o idioma já estão no AsyncStorage; as telas vivas releem e aplicam
+		// sem reiniciar o app (`CurrencyContext`, `LanguageContext`).
+		emitPreferencesChanged((response.changes.preferences ?? []).map((row) => row.id));
 
 		cursor = response.cursor;
 		received += countAllChanges(response.changes);
@@ -289,6 +315,9 @@ export const pushAll = async (): Promise<number> => {
 	const resentCategories = new Set<string>();
 	const known = await readServerCollections();
 
+	// O que mudou no AsyncStorage por fora vira linha suja antes de ler o que está sujo.
+	await reconcilePreferencesSafely();
+
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const changes = onlyKnownCollections(await getDirtyChanges(PAGE_SIZE), known);
 		const pending = countAllChanges(changes);
@@ -316,6 +345,8 @@ export const pushAll = async (): Promise<number> => {
 			captures: (changes.captures ?? []).filter((r) => !rejected.has(`captures:${r.id}`)),
 			merchantRules: (changes.merchantRules ?? []).filter((r) => !rejected.has(`merchantRules:${r.id}`)),
 			bills: (changes.bills ?? []).filter((r) => !rejected.has(`bills:${r.id}`)),
+			// Nas preferências o `id` é a chave do AsyncStorage, nos dois sentidos.
+			preferences: (changes.preferences ?? []).filter((r) => !rejected.has(`preferences:${r.id}`)),
 		});
 
 		sent += response.applied;

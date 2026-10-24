@@ -1,6 +1,8 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import { isCaptureEnabled, isCaptureSupported } from '../../modules/spendr-captures';
 import * as authApi from '../api/auth';
 import { ApiError, isApiConfigured, setSessionLostHandler } from '../api/client';
 import { fetchSyncStatus } from '../api/sync';
@@ -17,6 +19,29 @@ import {
 } from '../sync/claim';
 import { pullAll, replaceAccountWithDevice, resetCursor } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
+import { STORAGE_KEYS } from '../utils/storageUtils';
+
+/**
+ * O acesso de leitura de notificações é do aparelho, não da conta: logar num celular novo
+ * traz a caixa de entrada, as regras e as preferências, mas a captura só volta a funcionar
+ * quando o usuário liga o acesso na tela do sistema — e nada no app dizia isso.
+ *
+ * O caminho até lá já existe: o aviso "Captura desligada" da tela inicial
+ * (`CaptureReviewBanner`), que abre a tela do sistema. Ele só fica escondido quando foi
+ * dispensado **neste** aparelho (a dispensa não viaja no sync, ver
+ * `SYNCED_PREFERENCE_KEYS`) — ou num backup restaurado. No primeiro login nesta conta,
+ * com a captura disponível e desligada, a dispensa é esquecida e o aviso volta a valer.
+ *
+ * Falhar aqui não pode atrapalhar o login: é um aviso.
+ */
+const rearmCaptureAccessPrompt = async (): Promise<void> => {
+	try {
+		if (!isCaptureSupported() || isCaptureEnabled()) return;
+		await AsyncStorage.removeItem(STORAGE_KEYS.captureAccessDismissed);
+	} catch (error) {
+		console.warn('Não foi possível reativar o aviso de captura desligada:', error);
+	}
+};
 
 /**
  * O que fazer quando este aparelho e a conta têm dados. Escolhido pelo usuário — ver
@@ -179,7 +204,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		async (accountId: string) => {
 			// Conta diferente da última: cursor, último sync e claim velho vão embora
 			// antes de qualquer coisa subir ou descer.
-			await beginSessionFor(accountId);
+			const firstSession = await beginSessionFor(accountId);
+			if (firstSession) await rearmCaptureAccessPrompt();
 
 			const [status, device] = await Promise.all([fetchSyncStatus(), countLocalData()]);
 
@@ -218,7 +244,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			setAccount(profile);
 			// Conta recém-criada nunca tem histórico: o claim é sempre automático. O
 			// estado de sync de qualquer conta anterior sai de cena do mesmo jeito.
-			await beginSessionFor(profile.id);
+			if (await beginSessionFor(profile.id)) await rearmCaptureAccessPrompt();
 			await markEverythingDirty();
 			syncQueue.start();
 		},

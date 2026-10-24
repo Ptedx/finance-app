@@ -1,6 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getLocales } from 'expo-localization';
 import i18next from 'i18next';
+import { setPreference } from '../database/database';
+import { onPreferencesChanged } from '../sync/preferenceEvents';
+import * as syncQueue from '../sync/queue';
 import { STORAGE_KEYS } from '../utils/storageUtils';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
@@ -22,6 +25,26 @@ export const AVAILABLE_LANGUAGES: Language[] = [
 const LANGUAGE_STORAGE_KEY = STORAGE_KEYS.language;
 const DEFAULT_LANGUAGE = AVAILABLE_LANGUAGES[0];
 
+/** Idioma do aparelho, quando o app tem strings para ele; inglês se não tem. */
+const detectDeviceLanguage = (): Language => {
+	const deviceLocale = getLocales()[0]?.languageCode ?? 'en';
+	return AVAILABLE_LANGUAGES.find((language) => language.code === deviceLocale) ?? DEFAULT_LANGUAGE;
+};
+
+/**
+ * O idioma guardado, se for um que o app tem. Desde o v21 ele também chega pela rede (sync
+ * de preferências): só o código conta, e um código sem strings no app não troca nada.
+ */
+const resolveSavedLanguage = (saved: string | null): Language | null => {
+	if (!saved) return null;
+	try {
+		const code = (JSON.parse(saved) as Partial<Language> | null)?.code;
+		return AVAILABLE_LANGUAGES.find((language) => language.code === code) ?? null;
+	} catch {
+		return null;
+	}
+};
+
 interface LanguageContextType {
 	currentLanguage: Language;
 	setLanguage: (lang: Language) => Promise<void>;
@@ -37,20 +60,10 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	useEffect(() => {
 		const loadLanguage = async () => {
 			try {
-				const saved = await AsyncStorage.getItem(LANGUAGE_STORAGE_KEY);
-				if (saved) {
-					const lang = JSON.parse(saved) as Language;
-					setCurrentLanguage(lang);
-					await i18next.changeLanguage(lang.code);
-				} else {
-					// Idioma do aparelho, quando o app tem strings para ele; inglês se não tem.
-					const deviceLocale = getLocales()[0]?.languageCode ?? 'en';
-					const detected =
-						AVAILABLE_LANGUAGES.find((language) => language.code === deviceLocale) ??
-						DEFAULT_LANGUAGE;
-					setCurrentLanguage(detected);
-					await i18next.changeLanguage(detected.code);
-				}
+				const saved = resolveSavedLanguage(await AsyncStorage.getItem(LANGUAGE_STORAGE_KEY));
+				const lang = saved ?? detectDeviceLanguage();
+				setCurrentLanguage(lang);
+				await i18next.changeLanguage(lang.code);
 			} catch (error) {
 				console.error('Failed to load language setting:', error);
 			}
@@ -58,13 +71,34 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		loadLanguage();
 	}, []);
 
+	// O idioma que chegou pelo sync vale na hora, como a moeda (`CurrencyContext`): o pull
+	// já gravou no AsyncStorage, e aplicar não é escolher — nada sobe de volta. Lápide = o
+	// idioma do aparelho.
+	useEffect(
+		() =>
+			onPreferencesChanged((keys) => {
+				if (!keys.includes(LANGUAGE_STORAGE_KEY)) return;
+				AsyncStorage.getItem(LANGUAGE_STORAGE_KEY)
+					.then(async (saved) => {
+						const lang = resolveSavedLanguage(saved) ?? detectDeviceLanguage();
+						await i18next.changeLanguage(lang.code);
+						setCurrentLanguage(lang);
+					})
+					.catch((error) => console.warn('Failed to apply the synced language:', error));
+			}),
+		[]
+	);
+
 	const setLanguage = async (lang: Language) => {
 		try {
-			await AsyncStorage.setItem(LANGUAGE_STORAGE_KEY, JSON.stringify(lang));
+			// AsyncStorage e a linha suja de `preferences` (v21), que leva a escolha para os
+			// outros aparelhos da conta.
+			await setPreference(LANGUAGE_STORAGE_KEY, JSON.stringify(lang));
 			await i18next.changeLanguage(lang.code);
 			setCurrentLanguage(lang);
+			syncQueue.schedule();
 
-			// Idioma é preferência de perfil, como a moeda: um valor só, sem conflito.
+			// O perfil também guarda o idioma, para o servidor saber dele.
 			syncProfilePreferences({ language: lang.code });
 		} catch (error) {
 			console.error('Failed to save language setting:', error);

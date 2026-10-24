@@ -179,7 +179,8 @@ const emptyChanges = (overrides: Partial<SyncChanges> = {}): SyncChanges => ({
 
 describe('migração v20', () => {
 	it('a escada chega ao v20 e o passo 20 cria a tabela `bills` com as colunas de sync', async () => {
-		expect(SCHEMA_VERSION).toBe(20);
+		// O v21 (preferências) veio depois; o passo 20 continua no lugar dele.
+		expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(20);
 		const ladder = migrationLadder();
 		expect(ladder.map(([version]) => version)).toEqual(
 			Array.from({ length: SCHEMA_VERSION }, (_, index) => index + 1)
@@ -203,29 +204,30 @@ describe('migração v20', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v19 roda só o passo 20 e grava a versão nele', async () => {
+	it('um banco v19 roda o passo 20 (e o 21, que veio depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(19, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
-		expect(reached).toBe(20);
-		expect(versions).toEqual([20]);
-		// Só o CREATE da tabela nova: nenhum passo anterior repetido.
-		expect(mockStatements.map((statement) => flat(statement.sql).slice(0, 34))).toEqual([
-			'CREATE TABLE IF NOT EXISTS bills (',
+		expect(reached).toBe(SCHEMA_VERSION);
+		expect(versions).toEqual([20, 21]);
+		// Só os CREATE das tabelas novas: nenhum passo anterior repetido.
+		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
+			'CREATE TABLE IF NOT EXISTS bills',
+			'CREATE TABLE IF NOT EXISTS preferences',
 		]);
 	});
 
-	it('um banco v20 reabre sem refazer nada', async () => {
+	it('um banco v20 não refaz o passo 20', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(20, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
-		expect(reached).toBe(20);
-		expect(versions).toEqual([]);
-		expect(mockStatements).toEqual([]);
+		expect(reached).toBe(SCHEMA_VERSION);
+		expect(versions).not.toContain(20);
+		expect(matching('bills')).toEqual([]);
 	});
 
 	it('`bills` entra no sync', () => {
@@ -249,14 +251,22 @@ describe('a abertura do banco', () => {
 	it('v19 migra para o v20, e a abertura também garante a tabela', async () => {
 		const statements = await openAt(19);
 		expect(statements).toContain('PRAGMA user_version = 20');
+		expect(statements).toContain('PRAGMA user_version = 21');
 		expect(
 			statements.filter((sql) => sql.includes('CREATE TABLE IF NOT EXISTS bills'))
 		).toHaveLength(2);
 		expect(statements.some((sql) => sql.includes('idx_bills_dirty'))).toBe(true);
 	});
 
-	it('v20 não grava versão nenhuma', async () => {
+	it('v20 migra para o v21 sem tocar em `bills` além do CREATE IF NOT EXISTS da abertura', async () => {
 		const statements = await openAt(20);
+		expect(statements).toContain('PRAGMA user_version = 21');
+		expect(statements.filter((sql) => sql.includes('CREATE TABLE IF NOT EXISTS bills'))).toHaveLength(1);
+		expect(statements.filter((sql) => sql.includes('CREATE TABLE IF NOT EXISTS preferences'))).toHaveLength(2);
+	});
+
+	it('a versão atual não grava versão nenhuma', async () => {
+		const statements = await openAt(SCHEMA_VERSION);
 		expect(statements.filter((sql) => sql.startsWith('PRAGMA user_version ='))).toEqual([]);
 	});
 });

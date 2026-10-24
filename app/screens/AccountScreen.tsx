@@ -25,6 +25,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { claimSummaryParams } from '../sync/claim';
 import { formatFullDate } from '../utils/dateUtils';
 
 type Mode = 'signIn' | 'signUp';
@@ -215,22 +216,21 @@ const AccountScreen: React.FC = () => {
 					<Text style={styles.title}>{t('account.claimTitle')}</Text>
 					<Text style={styles.paragraph}>{t('account.claimExplanation')}</Text>
 
+					{/*
+					 * Os dois lados no mesmo resumo, com a caixa de entrada, as contas e as
+					 * dívidas: a pergunta passou a nascer de qualquer coleção, e mostrar só
+					 * lançamentos fazia uma diferença na caixa de entrada parecer "0 e 0".
+					 * O texto é o do resumo do backup, que já lista exatamente isso.
+					 */}
 					{claimCounts ? (
 						<View style={styles.card} accessible>
 							<Text style={styles.cardLabel}>{t('account.claimDevice')}</Text>
 							<Text style={styles.paragraph}>
-								{t('account.claimCounts', {
-									transactions: claimCounts.device.transactions,
-									accounts: claimCounts.device.accounts,
-									recurring: claimCounts.device.recurringTransactions,
-								})}
+								{t('settings.exportSummary', claimSummaryParams(claimCounts.device))}
 							</Text>
 							<Text style={styles.cardLabel}>{t('account.claimAccount')}</Text>
 							<Text style={styles.paragraph}>
-								{t('account.claimAccountCounts', {
-									transactions: claimCounts.account.transactions,
-									recurring: claimCounts.account.recurringTransactions,
-								})}
+								{t('settings.exportSummary', claimSummaryParams(claimCounts.account))}
 							</Text>
 						</View>
 					) : null}
