@@ -161,6 +161,36 @@ export const debtSchema = z.object({
 	...syncMeta,
 });
 
+/** Mês de calendário (`YYYY-MM`), sem dia nem fuso. */
+const calendarMonth = z
+	.string()
+	.regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Mês deve estar no formato YYYY-MM');
+
+/**
+ * Uma conta a pagar (aluguel, luz, escola…): vence todo mês no `dueDay`.
+ *
+ * `amountCents` nulo **quer dizer** "o valor varia" — não é um campo esquecido, e não pode
+ * virar 0 em lugar nenhum. `paidThrough` é o último mês já pago e `paidByRef` a referência
+ * desse pagamento, guardados como chegam. Ids que apontam para outras coleções
+ * (`accountId`, `category`, `debtId`) não são verificados, como nas capturas: uma conta
+ * que chega antes da dívida ou da categoria continua valendo.
+ */
+export const billSchema = z.object({
+	id: z.string().min(1).max(64),
+	name: z.string().min(1).max(120),
+	dueDay: z.number().int().min(1).max(31),
+	amountCents: amountCents.min(0).nullish(),
+	accountId: z.string().min(1).max(64).nullish(),
+	category: z.string().min(1).max(64).nullish(),
+	matchHint: z.string().max(200).nullish(),
+	debtId: z.string().min(1).max(64).nullish(),
+	paidThrough: calendarMonth.nullish(),
+	paidByRef: z.string().min(1).max(64).nullish(),
+	active: z.boolean(),
+	sortOrder: z.number().int(),
+	...syncMeta,
+});
+
 /** A meta de aposentadoria (v14 do app): uma linha por usuário, de id fixo. */
 export const retirementGoalSchema = z.object({
 	id: z.string().min(1).max(64),
@@ -287,6 +317,7 @@ export const pushBodySchema = z.object({
 			reserveGoals: rows(),
 			captures: rows(),
 			merchantRules: rows(),
+			bills: rows(),
 		})
 		.default({
 			categories: [],
@@ -300,6 +331,7 @@ export const pushBodySchema = z.object({
 			reserveGoals: [],
 			captures: [],
 			merchantRules: [],
+			bills: [],
 		}),
 });
 
@@ -333,6 +365,9 @@ export const cursorSchema = z.object({
 	// app/sync/types.ts. Sem elas, o app guarda as linhas para quando o servidor souber.
 	captures: z.number().int().nonnegative().default(0),
 	merchantRules: z.number().int().nonnegative().default(0),
+	// Contas a pagar, idem: a chave sai no cursor do pull mesmo vazia, e é por ela que o app
+	// sabe que este servidor conhece `bills`.
+	bills: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -347,6 +382,7 @@ const EMPTY_CURSOR = {
 	reserveGoals: 0,
 	captures: 0,
 	merchantRules: 0,
+	bills: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -378,4 +414,5 @@ export type DebtPayload = z.infer<typeof debtSchema>;
 export type ReserveGoalPayload = z.infer<typeof reserveGoalSchema>;
 export type CapturePayload = z.infer<typeof captureSchema>;
 export type MerchantRulePayload = z.infer<typeof merchantRuleSchema>;
+export type BillPayload = z.infer<typeof billSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;
