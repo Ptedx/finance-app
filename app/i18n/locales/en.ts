@@ -636,6 +636,19 @@ const en = {
 		biometricNotAvailableMsg: 'Biometric authentication is not available on this device.',
 	},
 
+	diagnostics: {
+		exportItem: 'Export diagnostics',
+		confirmTitle: 'Export diagnostics',
+		confirmMsg:
+			'The file holds a log of what the app did on this device, to help track down a problem. It may contain text from your bank notifications. Share it only with whoever is investigating.',
+		confirmAction: 'Export',
+		emptyTitle: 'Nothing to export',
+		emptyMsg: 'The diagnostics log is still empty.',
+		unavailableMsg: 'This device cannot share files.',
+		failedTitle: 'Export Failed',
+		failedMsg: 'Could not create the diagnostics file. Please try again.',
+	},
+
 	welcome: {
 		title: 'Welcome to Spendr',
 		subtitle:

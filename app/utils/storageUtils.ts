@@ -24,6 +24,12 @@ export const STORAGE_KEYS = {
 	 * não mora aqui e não viaja: cada aparelho pede a sua.
 	 */
 	notificationsEnabled: '@spendr_notifications_enabled',
+	/**
+	 * Id aleatório desta instalação, para o diário de diagnóstico (`diagnostics/diary.ts`).
+	 * Não viaja no backup nem no sync: identifica este aparelho, e um outro com o mesmo id
+	 * misturaria os diários dos dois.
+	 */
+	diagnosticsInstallId: '@spendr_diagnostics_install_id',
 } as const;
 
 /**

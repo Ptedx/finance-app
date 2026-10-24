@@ -13,9 +13,10 @@ import expo.modules.kotlin.modules.ModuleDefinition
 /**
  * A ponte JavaScript ↔ serviço de notificações.
  *
- * Quatro funções e um evento: saber se o acesso está ligado, abrir a tela do sistema
- * para ligá-lo, esvaziar a fila e contar o que há nela; o evento `onCaptured` avisa que
- * chegou notificação nova enquanto o app está aberto.
+ * Cinco funções e um evento: saber se o acesso está ligado, abrir a tela do sistema
+ * para ligá-lo, esvaziar a fila e contar o que há nela, e esvaziar o diário do serviço
+ * (`drainDiagnostics`, SPD-015); o evento `onCaptured` avisa que chegou notificação nova
+ * enquanto o app está aberto.
  */
 class SpendrCapturesModule : Module() {
   private val context: Context
@@ -28,7 +29,7 @@ class SpendrCapturesModule : Module() {
 
     Events("onCaptured")
 
-    Function("isEnabled") { isListenerEnabled() }
+    Function("isEnabled") { CaptureListenerService.isEnabled(context) }
 
     Function("openSettings") {
       val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
@@ -40,20 +41,11 @@ class SpendrCapturesModule : Module() {
 
     Function("pendingCount") { CaptureStore.pendingCount(context) }
 
+    Function("drainDiagnostics") { DiagnosticsStore.drain(context) }
+
     OnStartObserving { registerReceiver() }
     OnStopObserving { unregisterReceiver() }
     OnDestroy { unregisterReceiver() }
-  }
-
-  /**
-   * O Android guarda os listeners autorizados numa lista "pacote/serviço:pacote/serviço".
-   * Não há API pública mais direta que funcione em todas as versões suportadas.
-   */
-  private fun isListenerEnabled(): Boolean {
-    val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-      ?: return false
-    val pkg = context.packageName
-    return enabled.split(":").any { it == pkg || it.startsWith("$pkg/") }
   }
 
   private fun registerReceiver() {

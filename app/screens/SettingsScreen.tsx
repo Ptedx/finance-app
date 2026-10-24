@@ -29,6 +29,7 @@ import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { resetDatabase } from '../database/database';
+import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import * as biometricUtils from '../utils/biometricUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
@@ -103,6 +104,7 @@ const SettingsScreen = () => {
 	const [isResetting, setIsResetting] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
+	const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false);
 	const [isTogglingNotifications, setIsTogglingNotifications] = useState(false);
 
 	const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -292,6 +294,35 @@ const SettingsScreen = () => {
 							Alert.alert(t('settings.authFailed'), t('settings.resetAuthFailed'));
 						}
 					);
+				},
+			},
+		]);
+	};
+
+	/**
+	 * O diário do aparelho num arquivo, para mandar a quem for depurar. Pede confirmação
+	 * antes: o arquivo pode ter texto de notificação do banco (DEC-11 b).
+	 */
+	const handleExportDiagnostics = () => {
+		Alert.alert(t('diagnostics.confirmTitle'), t('diagnostics.confirmMsg'), [
+			{ text: t('settings.cancel'), style: 'cancel' },
+			{
+				text: t('diagnostics.confirmAction'),
+				onPress: async () => {
+					try {
+						setIsExportingDiagnostics(true);
+						const result = await exportDiagnostics(t('diagnostics.exportItem'));
+						if (result.status === 'empty') {
+							Alert.alert(t('diagnostics.emptyTitle'), t('diagnostics.emptyMsg'));
+						} else if (result.status === 'unavailable') {
+							Alert.alert(t('diagnostics.failedTitle'), t('diagnostics.unavailableMsg'));
+						}
+					} catch (error) {
+						console.error('Error exporting diagnostics:', error);
+						Alert.alert(t('diagnostics.failedTitle'), t('diagnostics.failedMsg'));
+					} finally {
+						setIsExportingDiagnostics(false);
+					}
 				},
 			},
 		]);
@@ -509,6 +540,12 @@ const SettingsScreen = () => {
 				<View style={styles.section}>
 					<Text style={styles.sectionTitle}>{t('settings.about')}</Text>
 					{renderSettingsItem('information-circle-outline', t('settings.aboutSpendr'), handleAbout)}
+					{renderSettingsItem(
+						'bug-outline',
+						t('diagnostics.exportItem'),
+						handleExportDiagnostics,
+						isExportingDiagnostics ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+					)}
 				</View>
 
 				{/* A versão do app instalado, lida da configuração embutida no build — é por ela que se

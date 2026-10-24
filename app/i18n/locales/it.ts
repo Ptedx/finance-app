@@ -638,6 +638,19 @@ const it = {
 			"L'autenticazione biometrica non è disponibile su questo dispositivo.",
 	},
 
+	diagnostics: {
+		exportItem: 'Esporta diagnostica',
+		confirmTitle: 'Esporta diagnostica',
+		confirmMsg:
+			"Il file contiene il registro di ciò che l'app ha fatto su questo dispositivo, per aiutare a trovare un problema. Può contenere testi delle notifiche della tua banca. Condividilo solo con chi deve indagare.",
+		confirmAction: 'Esporta',
+		emptyTitle: 'Niente da esportare',
+		emptyMsg: 'Il registro di diagnostica è ancora vuoto.',
+		unavailableMsg: 'Questo dispositivo non può condividere file.',
+		failedTitle: 'Esportazione Fallita',
+		failedMsg: 'Impossibile creare il file di diagnostica. Riprova.',
+	},
+
 	welcome: {
 		title: 'Benvenuto su Spendr',
 		subtitle:

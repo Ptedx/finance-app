@@ -20,6 +20,7 @@ import { RecurringTransactionsProvider } from './contexts/RecurringTransactionsC
 import { SyncProvider } from './contexts/SyncContext';
 import { TransactionsProvider } from './contexts/TransactionsContext';
 import { initDatabase } from './database/database';
+import { startDiagnostics } from './diagnostics/lifecycle';
 import biometricUtils from './utils/biometricUtils';
 import { isOnboardingCompleted } from './utils/onboardingUtils';
 
@@ -37,6 +38,9 @@ export default function RootLayout() {
 	const [biometricCheckComplete, setBiometricCheckComplete] = useState(false);
 	const [onboardingChecked, setOnboardingChecked] = useState(false);
 	const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false);
+
+	// Diário de diagnóstico: `app_start`, `app_foreground` e o que o serviço nativo anotou.
+	useEffect(() => startDiagnostics(), []);
 
 	const handleBiometricSuccess = () => {
 		setShowBiometricAuth(false);

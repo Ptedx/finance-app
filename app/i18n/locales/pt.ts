@@ -630,6 +630,19 @@ const pt = {
 		biometricNotAvailableMsg: 'A autenticação biométrica não está disponível neste aparelho.',
 	},
 
+	diagnostics: {
+		exportItem: 'Exportar diagnóstico',
+		confirmTitle: 'Exportar diagnóstico',
+		confirmMsg:
+			'O arquivo traz o registro do que o app fez neste aparelho, para ajudar a achar um problema. Pode conter textos de notificações do seu banco. Compartilhe só com quem vai investigar.',
+		confirmAction: 'Exportar',
+		emptyTitle: 'Nada para exportar',
+		emptyMsg: 'O registro de diagnóstico ainda está vazio.',
+		unavailableMsg: 'Este aparelho não tem como compartilhar arquivos.',
+		failedTitle: 'Falha ao exportar',
+		failedMsg: 'Não foi possível gerar o arquivo de diagnóstico. Tente de novo.',
+	},
+
 	welcome: {
 		title: 'Bem-vindo ao Spendr',
 		subtitle:
