@@ -1,9 +1,11 @@
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
-import { addDebt, deleteDebt, getDebts, initDatabase, updateDebt } from '../database/database';
+import { addDebt, deleteDebt, ensureDebtBills, getBills, getDebts, initDatabase, updateBill, updateDebt } from '../database/database';
 import type { Debt, DebtDraft } from '../database/schema';
 import * as syncQueue from '../sync/queue';
+import { emitBillsChanged } from '../utils/billEvents';
+import { billDraftOf, dueDatePassed, initialPaidThrough, needsInitialPaidThrough } from '../utils/billRules';
 import { todayISO } from '../utils/dateUtils';
 import { type DebtsSummary, type ExtraPaymentResult, summarizeDebts, termsAfterExtraPayment, termsOf } from '../utils/debt';
 import { useSync } from './SyncContext';
@@ -14,6 +16,10 @@ import { useSync } from './SyncContext';
  * Fino de propósito: guarda as linhas e o resto sai de `utils/debt.ts`. Recarrega quando
  * o app volta ao primeiro plano (o dia pode ter virado e uma parcela vencido) e quando um
  * sync termina (outro aparelho pode ter cadastrado ou amortizado uma dívida).
+ *
+ * Cada dívida viva é também uma conta a pagar (é de lá que vem o lembrete do vencimento):
+ * toda carga — e criar, editar, quitar e amortizar passam por ela — chama
+ * `ensureDebtBills` e avisa as contas a pagar quando alguma linha mudou.
  */
 
 interface DebtsContextType {
@@ -53,6 +59,25 @@ export const draftOf = (debt: Debt): DebtDraft => ({
 	sortOrder: debt.sortOrder,
 });
 
+/**
+ * As contas a pagar das dívidas, alinhadas à lista inteira de dívidas. A conta que
+ * `ensureDebtBills` acabou de criar nasce sem mês pago; ela ganha o mês de partida pelo
+ * padrão da tela de contas ("este mês já está pago?" → sim quando o vencimento deste mês já
+ * passou), para a parcela que a pessoa já pagou não acender como atrasada.
+ */
+const syncDebtBills = async (debts: Debt[]): Promise<void> => {
+	let written = await ensureDebtBills(debts);
+	const today = todayISO();
+	for (const bill of await getBills()) {
+		if (!needsInitialPaidThrough(bill)) continue;
+		await updateBill(bill.id, { ...billDraftOf(bill), paidThrough: initialPaidThrough(today, dueDatePassed(bill.dueDay, today)) });
+		written += 1;
+	}
+	if (written === 0) return;
+	syncQueue.schedule();
+	emitBillsChanged();
+};
+
 export const DebtsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 	const [debts, setDebts] = useState<Debt[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
@@ -61,7 +86,10 @@ export const DebtsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 	const refresh = useCallback(async () => {
 		try {
 			await initDatabase();
-			setDebts(await getDebts());
+			const rows = await getDebts();
+			setDebts(rows);
+			// Uma falha aqui não esconde as dívidas: a lista já está na tela.
+			await syncDebtBills(rows).catch((error) => console.error('Error syncing debt bills:', error));
 		} catch (error) {
 			console.error('Error loading debts:', error);
 		} finally {

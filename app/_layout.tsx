@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
 import { AuthProvider } from './contexts/AuthContext';
+import { BillsProvider } from './contexts/BillsContext';
 import { BudgetProvider } from './contexts/BudgetContext';
 import { AccountsProvider } from './contexts/AccountsContext';
 import { CapturesProvider } from './contexts/CapturesContext';
@@ -208,9 +209,14 @@ export default function RootLayout() {
 							<AccountsProvider>
 								<CapturesProvider>
 								<DebtsProvider>
+								{/* Depende só do SyncProvider (recarrega quando um sync termina); fica
+								    aqui dentro para a Home e os Ajustes, e para ouvir o aviso que o
+								    DebtsProvider dá quando as contas das dívidas mudam. */}
+								<BillsProvider>
 									<StatusBar style="light" />
 									<Slot />
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
+								</BillsProvider>
 								</DebtsProvider>
 								</CapturesProvider>
 							</AccountsProvider>

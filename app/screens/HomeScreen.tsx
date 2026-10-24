@@ -6,11 +6,13 @@ import { Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, Vie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccountReminderBanner from '../components/AccountReminderBanner';
 import AccountsOverview from '../components/AccountsOverview';
+import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
 import IncomeSection from '../components/IncomeSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
 import { useAccounts } from '../contexts/AccountsContext';
+import { useBills } from '../contexts/BillsContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -18,7 +20,8 @@ import { useTransactions } from '../contexts/TransactionsContext';
 /**
  * Tela inicial, organizada pela ordem das perguntas de quem abre o app:
  *
- *  1. **Tem algo para eu fazer?** — lançamentos capturados esperando revisão.
+ *  1. **Tem algo para eu fazer?** — lançamentos capturados esperando revisão e as
+ *     contas do mês: o que vence, o que atrasou e quanto ainda falta pagar.
  *  2. **Como está o mês?** — receita, gastos por bolso, guardado, sobrou.
  *  3. **O que os cartões pedem?** — fatura aberta, o que vence, limite. Visual de
  *     carteira: a cor do banco identifica o cartão antes de qualquer texto.
@@ -38,6 +41,7 @@ const HomeScreen = () => {
 	const insets = useSafeAreaInsets();
 	const { refreshData } = useTransactions();
 	const { refresh: refreshAccounts } = useAccounts();
+	const { refresh: refreshBills } = useBills();
 	const { processTransactions } = useRecurringTransactions();
 	const { syncNow } = useSync();
 	const [refreshing, setRefreshing] = useState(false);
@@ -54,6 +58,7 @@ const HomeScreen = () => {
 			await processTransactions();
 			await refreshData();
 			await refreshAccounts();
+			await refreshBills();
 			// Puxar para atualizar também alinha com o servidor, quando há sessão.
 			syncNow();
 		} catch (error) {
@@ -61,7 +66,7 @@ const HomeScreen = () => {
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, refreshAccounts, processTransactions, syncNow]);
+	}, [refreshData, refreshAccounts, refreshBills, processTransactions, syncNow]);
 
 	return (
 		<View style={styles.container}>
@@ -90,6 +95,7 @@ const HomeScreen = () => {
 			>
 				<AccountReminderBanner />
 				<CaptureReviewBanner />
+				<BillsMonthCard />
 				<MonthOverviewCard />
 				<CardsSection />
 				<AccountsOverview />

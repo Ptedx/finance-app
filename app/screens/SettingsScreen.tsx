@@ -21,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import { useAuth } from '../contexts/AuthContext';
+import { useBills } from '../contexts/BillsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -46,6 +47,7 @@ const SettingsScreen = () => {
 	const { refreshData } = useTransactions();
 	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
+	const { rescheduleReminders: rescheduleBillReminders } = useBills();
 	const { authenticate } = useBiometricAuth();
 	const {
 		supported: captureSupported,
@@ -158,6 +160,9 @@ const SettingsScreen = () => {
 			} else {
 				await notificationUtils.cancelAllNotifications();
 			}
+			// Os lembretes das contas a pagar seguem a chave: ligada, voltam a ser agendados
+			// com as contas atuais; desligada, a remarcação só cancela.
+			await rescheduleBillReminders();
 			setNotifications(newValue);
 		} catch (error) {
 			console.error('Error toggling notifications:', error);
@@ -402,6 +407,7 @@ const SettingsScreen = () => {
 					)}
 					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
 					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards/index'))}
+					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills/index'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),
