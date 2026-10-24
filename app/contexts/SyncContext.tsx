@@ -1,5 +1,6 @@
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
+import { startDiaryUploads } from '../diagnostics/upload';
 import { getLastSyncedAt } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
 
@@ -29,8 +30,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			}
 		});
 
+		// O diário de diagnóstico sobe junto com o sync (SPD-016): depois de um sync que deu
+		// certo e ao voltar ao primeiro plano, só com sessão e no máximo a cada 6 h.
+		const stopDiaryUploads = startDiaryUploads();
+
 		return () => {
 			unsubscribe();
+			stopDiaryUploads();
 		};
 	}, []);
 

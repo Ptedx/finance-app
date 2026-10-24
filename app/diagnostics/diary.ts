@@ -74,6 +74,7 @@ const AREAS: readonly string[] = ['capture', 'native', 'sync', 'session', 'remin
 
 const FILE_PATTERN = /^diary-(\d+)\.jsonl$/;
 const CURSOR_FILE = 'uploaded-until.txt';
+const UPLOAD_STAMP_FILE = 'last-upload-at.txt';
 
 // ---------------------------------------------------------------------------
 // Corte nos limites do contrato
@@ -205,8 +206,8 @@ const directory = (): Directory => new Directory(Paths.document, DIARY_DIRECTORY
 
 const fileName = (seq: number): string => `diary-${String(seq).padStart(6, '0')}.jsonl`;
 
-/** Bytes em UTF-8, sem `Buffer` (não existe no React Native). */
-const utf8Length = (text: string): number => {
+/** Bytes em UTF-8, sem `Buffer` (não existe no React Native). O envio mede o lote com ela. */
+export const utf8Length = (text: string): number => {
 	let bytes = 0;
 	for (let i = 0; i < text.length; i++) {
 		const code = text.charCodeAt(i);
@@ -491,6 +492,36 @@ export const markUploaded = async (untilId: string): Promise<boolean> => {
 		const dir = directory();
 		if (!dir.exists) dir.create({ intermediates: true, idempotent: true });
 		cursorFile().write(String(untilId));
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const uploadStampFile = (): File => new File(directory(), UPLOAD_STAMP_FILE);
+
+/**
+ * Quando terminou o último envio ao servidor (milissegundos), para o intervalo entre
+ * envios valer de uma abertura do app para a outra (`upload.ts`). Sem registro ou
+ * ilegível: `null`, e o envio acontece.
+ */
+export const readUploadStamp = async (): Promise<number | null> => {
+	try {
+		const file = uploadStampFile();
+		if (!file.exists) return null;
+		const millis = Number((await file.text()).trim());
+		return Number.isFinite(millis) && millis > 0 ? millis : null;
+	} catch {
+		return null;
+	}
+};
+
+/** Grava o instante do último envio. Falso se não conseguiu (o próximo gatilho envia de novo). */
+export const writeUploadStamp = async (at: number): Promise<boolean> => {
+	try {
+		const dir = directory();
+		if (!dir.exists) dir.create({ intermediates: true, idempotent: true });
+		uploadStampFile().write(String(Math.floor(at)));
 		return true;
 	} catch {
 		return false;

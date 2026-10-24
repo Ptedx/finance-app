@@ -127,9 +127,12 @@ import {
 	markUploaded,
 	pendingInQueue,
 	readEvents,
+	readUploadStamp,
 	recordEvent,
 	resetDiaryForTests,
 	sanitizeEvent,
+	utf8Length,
+	writeUploadStamp,
 } from '../diary';
 import { exportDiagnostics } from '../export';
 
@@ -425,6 +428,38 @@ describe('leitura e marcação do que já subiu', () => {
 	it('sem diário ainda: lista vazia', async () => {
 		expect(await readEvents()).toEqual([]);
 		expect(await readEvents({ pendingOnly: true })).toEqual([]);
+	});
+});
+
+describe('instante do último envio (SPD-016)', () => {
+	it('sem envio ainda: null; gravado, volta igual', async () => {
+		expect(await readUploadStamp()).toBeNull();
+		expect(await writeUploadStamp(1_761_300_000_000)).toBe(true);
+		expect(await readUploadStamp()).toBe(1_761_300_000_000);
+	});
+
+	it('arquivo ilegível ou disco fora do ar: null e false, sem lançar', async () => {
+		await writeUploadStamp(1_761_300_000_000);
+		const [path] = [...mockFs.files.keys()].filter((key) => key.includes('last-upload'));
+		mockFs.files.set(path, 'lixo');
+		expect(await readUploadStamp()).toBeNull();
+
+		mockFs.failWrites = true;
+		expect(await writeUploadStamp(1)).toBe(false);
+	});
+
+	it('não aparece como evento do diário', async () => {
+		logEvent('app', 'a');
+		await writeUploadStamp(1_761_300_000_000);
+		expect((await readEvents()).map((event) => event.event)).toEqual(['a']);
+	});
+});
+
+describe('tamanho em UTF-8', () => {
+	it('conta acento, emoji e ASCII como o servidor recebe', () => {
+		for (const text of ['abc', 'ação', '💳 cartão', '{"a":"ç"}', '']) {
+			expect(utf8Length(text)).toBe(Buffer.byteLength(text, 'utf8'));
+		}
 	});
 });
 

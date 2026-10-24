@@ -57,6 +57,12 @@ export const subscribe = (listener: Listener): (() => void) => {
 
 export const getState = (): QueueState => state;
 
+/**
+ * A fila está ligada: há sessão e nenhuma escolha de dados pendente. É o "logado" de quem
+ * roda junto do sync sem ser ele (o envio do diário, `diagnostics/upload.ts`).
+ */
+export const isEnabled = (): boolean => enabled;
+
 const clearTimers = (): void => {
 	if (debounceTimer) clearTimeout(debounceTimer);
 	if (retryTimer) clearTimeout(retryTimer);
@@ -184,4 +190,4 @@ export const syncImmediately = (): void => {
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { start, stop, schedule, syncImmediately, subscribe, getState, notifyDataChanged };
+export default { start, stop, schedule, syncImmediately, subscribe, getState, isEnabled, notifyDataChanged };

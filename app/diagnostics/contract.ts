@@ -38,7 +38,7 @@ export interface DiagnosticEvent {
 	installId: string;
 }
 
-/** Um envio ao servidor: `POST /diagnostics`, autenticado. */
+/** Um envio ao servidor: `POST /api/diagnostics`, autenticado. */
 export interface DiagnosticBatch {
 	schemaVersion: typeof DIAGNOSTIC_SCHEMA_VERSION;
 	/** De 1 a 500 eventos; corpo até 512 KB. */
@@ -49,6 +49,11 @@ export interface DiagnosticBatch {
 export interface DiagnosticBatchResult {
 	accepted: number;
 	duplicates: number;
+	/**
+	 * Os que o servidor recusou, com a posição no lote e o motivo. Opcional: servidor mais
+	 * antigo não manda. Recusado não volta a subir: reenviar daria a mesma recusa.
+	 */
+	rejected?: { index: number; id: string | null; reason: string }[];
 }
 
 export const DIAGNOSTIC_LIMITS = {
