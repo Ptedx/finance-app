@@ -1,13 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Device from 'expo-device';
+import i18next from 'i18next';
 import { Platform } from 'react-native';
-import type { RecurringTransaction } from '../database/schema';
+import type { Bill, RecurringTransaction } from '../database/schema';
+import { type BillReminder, billReminders } from './billReminders';
+import { getISODate, parseISODate } from './dateUtils';
 import { formatCents } from './money';
 
 // Keys for storing notification settings
 const NOTIFICATIONS_ENABLED_KEY = '@spendr_notifications_enabled';
 const PUSH_TOKEN_KEY = '@spendr_push_token';
 const SCHEDULED_NOTIFICATIONS_KEY = '@spendr_scheduled_notifications';
+
+/** Canal Android dos lembretes de contas a pagar. */
+const BILLS_CHANNEL_ID = 'bills';
+
+/** Prefixo dos identificadores dos lembretes de conta: `bill:<billId>:<mês>:<kind>:<n>`. */
+const BILL_IDENTIFIER_PREFIX = 'bill:';
 
 // Lazy-load expo-notifications to avoid crashing in Expo Go (SDK 53+
 // removed remote notifications from Expo Go on Android).
@@ -57,6 +66,14 @@ export const registerForPushNotificationsAsync = async (): Promise<string | null
 			await Notifications.setNotificationChannelAsync('recurring-transactions', {
 				name: 'Recurring Transactions',
 				description: 'Notifications for upcoming recurring transactions',
+				importance: Notifications.AndroidImportance.HIGH,
+				vibrationPattern: [0, 250, 250, 250],
+				lightColor: '#15E8FE',
+			});
+
+			await Notifications.setNotificationChannelAsync(BILLS_CHANNEL_ID, {
+				name: i18next.t('reminders.channelName'),
+				description: i18next.t('reminders.channelDescription'),
 				importance: Notifications.AndroidImportance.HIGH,
 				vibrationPattern: [0, 250, 250, 250],
 				lightColor: '#15E8FE',
@@ -125,6 +142,15 @@ const getNotificationIdentifier = (transactionId: string): string => {
 };
 
 /**
+ * Marca de "já agendado" de uma ocorrência: recorrente + data do vencimento.
+ *
+ * Era só o id da recorrente, e a marca nunca saía — então só o primeiro vencimento era
+ * lembrado (REM-02). Por ocorrência, cada vencimento agenda o seu.
+ */
+const getOccurrenceKey = (transactionId: string, dueDate: Date): string =>
+	`${transactionId}:${getISODate(dueDate)}`;
+
+/**
  * Schedule a notification for an upcoming recurring transaction.
  * No-ops silently when running in Expo Go.
  */
@@ -139,19 +165,25 @@ export const scheduleTransactionNotification = async (
 		const isEnabled = await areNotificationsEnabled();
 		if (!isEnabled) return null;
 
+		const occurrenceKey = getOccurrenceKey(transaction.id, dueDate);
 		const scheduledNotifications = await getScheduledNotifications();
-		if (scheduledNotifications[transaction.id]) return null;
+		if (scheduledNotifications[occurrenceKey]) return null;
 
 		const notificationDate = new Date(dueDate);
 		notificationDate.setDate(notificationDate.getDate() - 1);
 
 		if (notificationDate < new Date()) return null;
 
-		const amount = formatCents(transaction.amountCents);
-
 		const content = {
-			title: transaction.isIncome ? 'Upcoming Income' : 'Upcoming Expense',
-			body: `${transaction.note || 'Recurring transaction'} - ${amount} due tomorrow`,
+			title: i18next.t(
+				transaction.isIncome
+					? 'reminders.recurring.incomeTitle'
+					: 'reminders.recurring.expenseTitle'
+			),
+			body: i18next.t('reminders.recurring.body', {
+				name: transaction.note || i18next.t('reminders.recurring.fallbackName'),
+				amount: formatCents(transaction.amountCents),
+			}),
 			data: { transactionId: transaction.id },
 			sound: true,
 		};
@@ -169,7 +201,7 @@ export const scheduleTransactionNotification = async (
 			identifier,
 		});
 
-		await markNotificationScheduled(transaction.id);
+		await markNotificationScheduled(occurrenceKey);
 		return notificationId;
 	} catch (error) {
 		console.error('Error scheduling transaction notification:', error);
@@ -212,7 +244,8 @@ export const checkAndScheduleNotifications = async (
 		for (const transaction of transactions) {
 			if (!transaction.active || !transaction.nextDue) continue;
 
-			const dueDate = new Date(transaction.nextDue);
+			// Data de calendário, em hora local: `new Date('2026-11-10')` seria meia-noite UTC.
+			const dueDate = parseISODate(transaction.nextDue);
 			if (dueDate >= now && dueDate <= thirtyDaysFromNow) {
 				await scheduleTransactionNotification(transaction, dueDate);
 			}
@@ -236,6 +269,106 @@ export const cancelAllNotifications = async (): Promise<void> => {
 	}
 };
 
+/** `bill:<billId>:<mês>:<kind>:<n>` — o mesmo aviso tem sempre o mesmo identificador. */
+const billReminderIdentifier = (reminder: BillReminder): string =>
+	`${BILL_IDENTIFIER_PREFIX}${reminder.billId}:${reminder.month}:${reminder.kind}:${reminder.n}`;
+
+const billReminderContent = (
+	bill: Bill,
+	reminder: BillReminder
+): { title: string; body: string } => {
+	// O dia em que vence de fato: o 31 de uma conta vira 30 em novembro.
+	const day = Number(reminder.dueDate.slice(8, 10));
+	const amount = bill.amountCents === null ? null : formatCents(bill.amountCents);
+	const values = { name: bill.name, amount, day };
+
+	switch (reminder.kind) {
+		case 'soon':
+			return {
+				title: i18next.t('reminders.bill.soonTitle'),
+				body: i18next.t(
+					amount ? 'reminders.bill.soonBody' : 'reminders.bill.soonBodyNoAmount',
+					values
+				),
+			};
+		case 'today':
+			return {
+				title: i18next.t('reminders.bill.todayTitle'),
+				body: i18next.t(
+					amount ? 'reminders.bill.todayBody' : 'reminders.bill.todayBodyNoAmount',
+					values
+				),
+			};
+		case 'late':
+			return {
+				title: i18next.t('reminders.bill.lateTitle'),
+				body: i18next.t('reminders.bill.lateBody', values),
+			};
+	}
+};
+
+/** Uma remarcação por vez: duas chamadas seguidas não intercalam cancelar e agendar. */
+let billScheduling: Promise<unknown> = Promise.resolve();
+
+/**
+ * Remarca do zero os lembretes das contas a pagar: cancela todos os agendados `bill:` e
+ * agenda os dos próximos 45 dias (`billReminders`). Chamar sempre que as contas mudarem
+ * (criar, editar, dar baixa, apagar) e na abertura do app — é isso que mantém os avisos
+ * remarcados todo mês.
+ *
+ * Com as notificações desligadas, só cancela. No Expo Go não faz nada.
+ * Devolve quantos lembretes ficaram agendados.
+ */
+export const scheduleBillReminders = (bills: Bill[], now: Date = new Date()): Promise<number> => {
+	const run = billScheduling.then(() => rescheduleBillReminders(bills, now));
+	billScheduling = run.catch(() => undefined);
+	return run;
+};
+
+const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number> => {
+	const Notifications = getNotifications();
+	if (!Notifications) return 0;
+
+	try {
+		const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+		for (const request of scheduled) {
+			if (request.identifier.startsWith(BILL_IDENTIFIER_PREFIX)) {
+				await Notifications.cancelScheduledNotificationAsync(request.identifier);
+			}
+		}
+
+		if (!(await areNotificationsEnabled())) return 0;
+
+		const billsById = new Map(bills.map((bill) => [bill.id, bill]));
+		let count = 0;
+
+		for (const reminder of billReminders(bills, now)) {
+			const bill = billsById.get(reminder.billId);
+			if (!bill) continue;
+
+			await Notifications.scheduleNotificationAsync({
+				identifier: billReminderIdentifier(reminder),
+				content: {
+					...billReminderContent(bill, reminder),
+					data: { billId: bill.id, month: reminder.month, kind: reminder.kind },
+					sound: true,
+				},
+				trigger: {
+					type: Notifications.SchedulableTriggerInputTypes.DATE,
+					date: reminder.at,
+					channelId: Platform.OS === 'android' ? BILLS_CHANNEL_ID : undefined,
+				},
+			});
+			count += 1;
+		}
+
+		return count;
+	} catch (error) {
+		console.error('Error scheduling bill reminders:', error);
+		return 0;
+	}
+};
+
 const getScheduledNotifications = async (): Promise<Record<string, boolean>> => {
 	try {
 		const value = await AsyncStorage.getItem(SCHEDULED_NOTIFICATIONS_KEY);
@@ -246,20 +379,26 @@ const getScheduledNotifications = async (): Promise<Record<string, boolean>> => 
 	}
 };
 
-const markNotificationScheduled = async (transactionId: string): Promise<void> => {
+const markNotificationScheduled = async (occurrenceKey: string): Promise<void> => {
 	try {
 		const scheduled = await getScheduledNotifications();
-		scheduled[transactionId] = true;
+		scheduled[occurrenceKey] = true;
 		await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduled));
 	} catch (error) {
 		console.error('Error marking notification as scheduled:', error);
 	}
 };
 
+/**
+ * Tira as marcas da recorrente: as por ocorrência (`<id>:<data>`) e a antiga, só pelo id,
+ * que instalações anteriores deixaram gravada.
+ */
 const clearScheduledNotification = async (transactionId: string): Promise<void> => {
 	try {
 		const scheduled = await getScheduledNotifications();
-		delete scheduled[transactionId];
+		for (const key of Object.keys(scheduled)) {
+			if (key === transactionId || key.startsWith(`${transactionId}:`)) delete scheduled[key];
+		}
 		await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduled));
 	} catch (error) {
 		console.error('Error clearing scheduled notification:', error);
@@ -274,4 +413,5 @@ export default {
 	cancelTransactionNotification,
 	checkAndScheduleNotifications,
 	cancelAllNotifications,
+	scheduleBillReminders,
 };

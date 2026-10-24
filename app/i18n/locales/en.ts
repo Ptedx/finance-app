@@ -1310,6 +1310,27 @@ account: {
 		settingsReview: 'Review captured entries',
 		tabBadge: '{{count}} entries to review',
 	},
+
+	reminders: {
+		channelName: 'Bills',
+		channelDescription: 'Due date reminders for your bills',
+		bill: {
+			soonTitle: 'Due in 3 days',
+			soonBody: '{{name}} — {{amount}} on day {{day}}',
+			soonBodyNoAmount: '{{name}} is due on day {{day}}',
+			todayTitle: 'Due today',
+			todayBody: '{{name}} — {{amount}}',
+			todayBodyNoAmount: '{{name}} is due today',
+			lateTitle: 'Overdue bill',
+			lateBody: '{{name}} was due on day {{day}}. Already paid? Mark it in the app.',
+		},
+		recurring: {
+			expenseTitle: 'Due tomorrow',
+			incomeTitle: 'Income tomorrow',
+			body: '{{name}} — {{amount}}',
+			fallbackName: 'Recurring transaction',
+		},
+	},
 } as const;
 
 export default en;
