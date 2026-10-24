@@ -693,3 +693,86 @@ describe('invoiceMonthOf — em qual fatura a parcela cai', () => {
 		expect(invoiceMonthOf('2026-09-26', null)).toBe('2026-09');
 	});
 });
+
+describe('estorno maior que a fatura — o crédito que sobra abate a fatura seguinte', () => {
+	const monthRange = (key: string): [string, string] => {
+		const [year, month] = key.split('-').map(Number);
+		return [`${key}-01`, buildClampedDate(year, month, 31)];
+	};
+	const refund = (date: string, amountCents: number) => purchase(date, amountCents, { isIncome: true, category: 'refund' });
+	/** 12 parcelas de R$ 100 de uma compra de R$ 1.200 em 01/10, uma por fatura. */
+	const twelveParcels = (): CardEntry[] =>
+		cardInstallmentDates('2026-10-01', 12, NUBANK).map((date, index) =>
+			purchase(date, 10_000, { installmentGroup: 'tv', installmentIndex: index + 1, installmentCount: 12, note: `TV (${index + 1}/12)` })
+		);
+	const twelveMonths = Array.from({ length: 12 }, (_, i) => `${2026 + Math.floor((9 + i) / 12)}-${String(((9 + i) % 12) + 1).padStart(2, '0')}`);
+
+	it('fatura negativa mostra 0 no mês e o crédito vai abatendo as seguintes até acabar', () => {
+		// Setembro R$ 1.000. Outubro: estorno de R$ 1.000 e compra de R$ 200 → −R$ 800, crédito.
+		// Novembro R$ 300 (some no crédito, sobra R$ 500). Dezembro R$ 600 → R$ 100 a pagar.
+		const s = settings({ openingBalanceDate: '2026-08-31' });
+		const entries = [
+			purchase('2026-09-10', 100_000),
+			refund('2026-10-01', 100_000),
+			purchase('2026-10-05', 20_000),
+			purchase('2026-10-30', 30_000),
+			purchase('2026-12-10', 60_000),
+		];
+		const months = ['2026-09', '2026-10', '2026-11', '2026-12'].map((key) => invoicesClosingBetween(s, entries, ...monthRange(key)));
+		expect(months).toEqual([100_000, 0, 0, 10_000]);
+		// Somando os meses: compras menos estornos, sem o estorno sumir nem contar duas vezes.
+		expect(invoicesClosingBetween(s, entries, '2026-09-01', '2026-12-31')).toBe(110_000);
+	});
+
+	it('o crédito informado na âncora também abate as faturas seguintes', () => {
+		const s = settings({ openingBalanceCents: 50_000, openingBalanceDate: '2026-09-15' });
+		const entries = [purchase('2026-09-20', 10_000), purchase('2026-10-01', 30_000), purchase('2026-10-30', 25_000)];
+		expect(['2026-09', '2026-10', '2026-11'].map((key) => invoicesClosingBetween(s, entries, ...monthRange(key)))).toEqual([0, 0, 15_000]);
+	});
+
+	it('compra parcelada estornada inteira: nenhum mês cobra parcela', () => {
+		const s = settings({ openingBalanceDate: '2026-09-30' });
+		const entries = [...twelveParcels(), refund('2026-10-10', 120_000)];
+		expect(twelveMonths.map((key) => invoicesClosingBetween(s, entries, ...monthRange(key)))).toEqual(new Array(12).fill(0));
+	});
+
+	it('compra parcelada estornada pela metade: o crédito cobre as próximas faturas e as últimas voltam a cobrar', () => {
+		// Sem vínculo do estorno com a compra, o crédito é do cartão: abate a fatura seguinte, e
+		// a seguinte, até acabar. Outubro −R$ 500 → crédito; novembro a março somem nele.
+		const s = settings({ openingBalanceDate: '2026-09-30' });
+		const entries = [...twelveParcels(), refund('2026-10-10', 60_000)];
+		const months = twelveMonths.map((key) => invoicesClosingBetween(s, entries, ...monthRange(key)) ?? 0);
+		expect(months).toEqual([0, 0, 0, 0, 0, 0, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+		expect(months.reduce((a, b) => a + b, 0)).toBe(60_000);
+	});
+
+	it('resumo: estorno da parcelada inteira zera o comprometido e não sobra crédito solto', () => {
+		const s = settings({ openingBalanceDate: '2026-09-30' });
+		const summary = buildCardSummary(s, [...twelveParcels(), refund('2026-10-10', 120_000)], [], '2026-10-15');
+		expect(summary).toMatchObject({ owedCents: 0, creditCents: 0, futureCommittedCents: 0, limitUsedCents: 0 });
+		const future = summary.invoices.filter((i) => i.offset > 0);
+		expect(future).toHaveLength(11);
+		// A fatura continua mostrando a parcela (é o que a lista dela soma); o crédito que a cobre vem ao lado.
+		expect(future.every((i) => i.amountCents === 10_000 && i.creditAppliedCents === 10_000)).toBe(true);
+		expect(summary.invoices.find((i) => i.offset === 0)).toMatchObject({ amountCents: -110_000, creditAppliedCents: 0 });
+		// Sem vínculo do estorno com a compra, o plano de parcelas não é apagado (ver relatório do card).
+		expect(summary.installmentPlans).toHaveLength(1);
+	});
+
+	it('resumo: estorno menor que o que falta das parcelas abate o comprometido e o crédito acaba nele', () => {
+		const s = settings({ openingBalanceDate: '2026-09-30' });
+		const summary = buildCardSummary(s, [...twelveParcels(), refund('2026-10-10', 30_000)], [], '2026-10-15');
+		expect(summary).toMatchObject({ owedCents: 0, creditCents: 0, futureCommittedCents: 90_000, limitUsedCents: 90_000 });
+	});
+
+	it('crédito de uma fatura antiga abate a fechada: o que se paga além disso é antecipação da aberta', () => {
+		// Agosto só com estorno (−R$ 100). Setembro R$ 300, dos quais o banco cobra R$ 200.
+		// Pagando R$ 300, R$ 100 são antecipação da aberta.
+		const s = settings({ openingBalanceDate: '2026-07-31' });
+		const entries = [refund('2026-08-10', 10_000), purchase('2026-09-10', 30_000)];
+		const summary = buildCardSummary(s, entries, [payment('2026-09-30', 30_000)], '2026-09-30');
+		expect(summary).toMatchObject({ toPayCents: 0, closedStatus: 'paid', creditCents: 10_000 });
+		expect(summary.invoices.find((i) => i.offset === -1)).toMatchObject({ amountCents: 30_000, creditAppliedCents: 10_000 });
+		expect(summary.invoices.find((i) => i.offset === 0)?.paidCents).toBe(10_000);
+	});
+});

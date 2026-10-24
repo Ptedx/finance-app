@@ -29,6 +29,13 @@
  * (transferência para o cartão) subtrai do devido. Assim o valor devido, a fatura aberta
  * e a fechada sempre fecham entre si.
  *
+ * ## Crédito levado adiante
+ *
+ * Estorno maior que as compras do ciclo deixa a fatura negativa. Como no banco, isso é
+ * crédito: abate a fatura seguinte, e a próxima, até acabar (`carriedCredit`). A fatura
+ * continua com o próprio valor — é o que a lista de lançamentos dela soma — e o que ela
+ * cobra de verdade é esse valor menos o crédito que chegou a ela.
+ *
  * ## Pagamento
  *
  * Pagamento não é gasto: é transferência da conta para o cartão, e abate o devido. O
@@ -196,6 +203,54 @@ export const invoiceAmount = (
 	return total + 0;
 };
 
+/** A chave `YYYY-MM` da fatura `delta` meses depois de `key`. */
+const shiftKey = (key: string, delta: number): string => {
+	const [year, month] = key.split('-').map(Number);
+	const [ty, tm] = shiftYearMonth(year, month, delta);
+	return `${ty}-${pad(tm)}`;
+};
+
+/**
+ * O crédito que chega a cada fatura vindo das anteriores: devolve uma função da chave
+ * (`YYYY-MM`) da fatura para esse crédito.
+ *
+ * Fatura negativa — estorno maior que as compras do ciclo, ou "fatura atual" informada
+ * como crédito — não some. O banco leva o que sobra para a fatura seguinte, e dela para a
+ * próxima, até acabar; aqui é igual. Anda as faturas em ordem desde a primeira com valor,
+ * e cada uma consome o crédito que chegou até o valor dela. Estornar uma compra parcelada
+ * inteira faz, assim, as parcelas seguintes não cobrarem nada.
+ *
+ * O estorno não é ligado à compra que ele devolve: o lançamento não guarda esse vínculo, e
+ * adivinhá-lo pelo valor erraria. O crédito é do cartão, como no banco, e vai para as
+ * próximas faturas em ordem.
+ *
+ * Pagamentos não entram: pagar a mais é tratado onde os pagamentos são lidos.
+ */
+export const carriedCredit = (settings: CardSettings, entries: CardEntry[], rule: CycleRule): ((key: string) => number) => {
+	// O mesmo valor de `invoiceAmount`, somado de uma vez por fatura.
+	const amounts = new Map<string, number>();
+	const add = (key: string, cents: number) => amounts.set(key, (amounts.get(key) ?? 0) + cents);
+	for (const entry of entries) {
+		if (entry.date > settings.openingBalanceDate) add(cycleFor(entry.date, rule).key, signed(entry));
+	}
+	if (settings.openingBalanceCents !== 0) add(cycleFor(settings.openingBalanceDate, rule).key, 0 - settings.openingBalanceCents);
+
+	// Data torta (sem `YYYY-MM-DD`) daria uma chave que nunca é alcançada e o laço não pararia.
+	const keys = [...amounts.keys()].filter((key) => /^\d{4}-\d{2}$/.test(key)).sort();
+	const first = keys[0];
+	const into = new Map<string, number>();
+	let credit = 0;
+	if (first !== undefined) {
+		const last = keys[keys.length - 1];
+		for (let key = first; key <= last; key = shiftKey(key, 1)) {
+			into.set(key, credit);
+			credit = Math.max(0, credit - (amounts.get(key) ?? 0));
+		}
+	}
+	// Antes da primeira fatura com valor não há crédito; depois da última, sobra o que sobrou.
+	return (key) => (first === undefined || key < first ? 0 : (into.get(key) ?? credit));
+};
+
 // ---------------------------------------------------------------------------
 // Resumo
 // ---------------------------------------------------------------------------
@@ -212,6 +267,11 @@ export interface InvoiceView {
 	 * ela é a fatura a pagar. Na aberta, pagamentos antecipados feitos desde o começo dela.
 	 */
 	paidCents: number;
+	/**
+	 * Crédito de faturas anteriores que esta consome (ver `carriedCredit`). `amountCents`
+	 * continua sendo a soma dos lançamentos dela; o que ela cobra é a diferença.
+	 */
+	creditAppliedCents: number;
 }
 
 export interface InstallmentPlan {
@@ -233,9 +293,12 @@ export interface CardSummary {
 	configured: boolean;
 	/** Tudo o que já caiu e não foi pago. */
 	owedCents: number;
-	/** Pagamento a mais: fica como crédito na próxima fatura. */
+	/**
+	 * Crédito (pagamento a mais, estorno) que sobra depois de cobrir as parcelas futuras: as
+	 * próximas faturas o consomem primeiro.
+	 */
 	creditCents: number;
-	/** Compras já feitas que cairão em faturas futuras (parcelas). */
+	/** Compras já feitas que cairão em faturas futuras (parcelas), menos o crédito que as cobre. */
 	futureCommittedCents: number;
 	limitCents: number | null;
 	/** Devido mais o comprometido — é o que o banco desconta do limite. */
@@ -337,15 +400,20 @@ export const buildCardSummary = (
 ): CardSummary => {
 	const owedNow = owedOn(settings, entries, movements, today);
 	const owedCents = Math.max(0, owedNow);
-	const creditCents = Math.max(0, -owedNow);
 
-	let futureCommittedCents = 0;
+	let futureSigned = 0;
 	for (const entry of entries) {
-		if (entry.date > today && entry.date > settings.openingBalanceDate) futureCommittedCents += signed(entry);
+		if (entry.date > today && entry.date > settings.openingBalanceDate) futureSigned += signed(entry);
 	}
-	futureCommittedCents = Math.max(0, futureCommittedCents);
+	const futureCents = Math.max(0, futureSigned);
+	// O crédito de hoje vai para as próximas faturas, que são justamente as que têm as parcelas
+	// futuras: estornar a compra parcelada inteira deixa R$ 0 comprometido, e não "R$ 1.100
+	// comprometido e R$ 1.100 de crédito" — que somava como dívida no patrimônio.
+	const absorbedCents = Math.min(Math.max(0, -owedNow), futureCents);
+	const creditCents = Math.max(0, -owedNow) - absorbedCents;
+	const futureCommittedCents = futureCents - absorbedCents;
 
-	const limitUsedCents = Math.max(0, owedNow + futureCommittedCents);
+	const limitUsedCents = Math.max(0, owedNow + futureCents);
 	const limitCents = settings.creditLimitCents && settings.creditLimitCents > 0 ? settings.creditLimitCents : null;
 	const limitAvailableCents = limitCents === null ? null : limitCents - limitUsedCents;
 	const limitUsagePercent = limitCents === null ? null : Math.round((limitUsedCents / limitCents) * 100);
@@ -413,12 +481,17 @@ export const buildCardSummary = (
 	else if (daysToDue <= DUE_SOON_DAYS) closedStatus = 'due_soon';
 	else closedStatus = 'due';
 
+	const creditInto = carriedCredit(settings, entries, rule);
+	const creditApplied = (cycle: InvoiceCycle, amountCents: number): number => Math.min(creditInto(cycle.key), Math.max(0, amountCents));
+
 	// O pagamento feito na janela de uma fatura quita ela até o valor dela; o que sobra
-	// da janela da fechada é pagamento antecipado da aberta.
+	// da janela da fechada é pagamento antecipado da aberta. Da fechada conta o que ela
+	// cobra: o crédito de faturas anteriores já abateu parte.
 	const closedWindowPaid = paymentsBetween(movements, closedCycle.closingDate, openCycle.closingDate);
+	const closedChargedCents = Math.max(0, closedInvoiceCents) - creditApplied(closedCycle, closedInvoiceCents);
 	const invoicePaidCents = (cycle: InvoiceCycle, offset: number, amountCents: number): number => {
 		if (offset > 0) return 0;
-		if (offset === 0) return Math.max(0, closedWindowPaid - Math.max(0, closedInvoiceCents));
+		if (offset === 0) return Math.max(0, closedWindowPaid - closedChargedCents);
 		const window = offset === -1 ? closedWindowPaid : paymentsBetween(movements, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate);
 		return Math.min(window, Math.max(0, amountCents));
 	};
@@ -430,7 +503,7 @@ export const buildCardSummary = (
 		const paidCents = invoicePaidCents(cycle, offset, amountCents);
 		if (offset < -1 && amountCents === 0 && paidCents === 0) continue;
 		if (offset > 0 && amountCents === 0) continue;
-		invoices.push({ cycle, amountCents, offset, paidCents });
+		invoices.push({ cycle, amountCents, offset, paidCents, creditAppliedCents: creditApplied(cycle, amountCents) });
 	}
 
 	return {
@@ -679,6 +752,12 @@ export const existingInstallmentDates = (
  * e `endDate` — a de setembro fecha em setembro e é paga logo depois. Inclui parcelas e
  * a "fatura atual" informada. Nulo quando o cartão não tem fechamento; aí quem chama usa
  * as compras datadas no período.
+ *
+ * Cada fatura entra pelo que **cobra**: o valor menos o crédito que chegou das anteriores
+ * (`carriedCredit`), nunca abaixo de zero. A fatura negativa conta 0 no mês dela e o
+ * crédito abate as seguintes — somando os meses, dá compras menos estornos. Antes, o
+ * negativo virava 0 no quadro e o estorno sumia, e a compra parcelada estornada seguia
+ * cobrando parcela todo mês.
  */
 export const invoicesClosingBetween = (
 	settings: CardSettings,
@@ -689,12 +768,13 @@ export const invoicesClosingBetween = (
 	const rule = cycleRuleOf(settings);
 	if (rule === null) return null;
 
+	const creditInto = carriedCredit(settings, entries, rule);
 	let total = 0;
 	// Um ciclo antes: `cycleFor` devolve a fatura que fecha *depois* da data, e a que fecha
 	// exatamente em `startDate` (fechamento dia 1) também é deste período.
 	let cycle = shiftCycle(cycleFor(startDate, rule), -1, rule);
 	while (cycle.closingDate <= endDate) {
-		if (cycle.closingDate >= startDate) total += invoiceAmount(cycle, settings, entries);
+		if (cycle.closingDate >= startDate) total += Math.max(0, invoiceAmount(cycle, settings, entries) - creditInto(cycle.key));
 		cycle = shiftCycle(cycle, 1, rule);
 	}
 	return total + 0;
@@ -714,6 +794,7 @@ export default {
 	invoiceAmount,
 	buildCardSummary,
 	buildInstallmentPlans,
+	carriedCredit,
 	existingInstallmentDates,
 	invoiceMonthOf,
 	daysBetween,

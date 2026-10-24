@@ -1,5 +1,5 @@
 import type { Account, Category } from '../../database/schema';
-import { buildCardSummary, type CardEntry } from '../cardMath';
+import { buildCardSummary, cardInstallmentDates, type CardEntry } from '../cardMath';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
@@ -754,5 +754,51 @@ describe('3.1 — a recorrente e a cobrança de verdade', () => {
 
 		expect(found).toHaveLength(1);
 		expect(found[0].ids).toEqual(['auto', 'card1']);
+	});
+});
+
+describe('estorno no cartão: o crédito que sobra abate a fatura seguinte', () => {
+	const refund = (date: string, amountCents: number): CardEntry => ({ ...purchase(date, amountCents), isIncome: true, category: 'refund' });
+	const pay = (date: string, amountCents: number) => ({ date, amountCents, inbound: true });
+	// Setembro R$ 1.000; outubro estorno de R$ 1.000 e R$ 200 de compra (−R$ 800); novembro
+	// R$ 300; dezembro R$ 600.
+	const entries = [
+		purchase('2026-09-10', R(1_000)),
+		refund('2026-10-01', R(1_000)),
+		purchase('2026-10-05', R(200)),
+		purchase('2026-10-30', R(300)),
+		purchase('2026-12-10', R(600)),
+	];
+
+	it('o gasto de cartão dos meses soma compras menos estornos: outubro e novembro ficam em 0', () => {
+		const series = buildMonthSeries({
+			months: ['2026-09', '2026-10', '2026-11', '2026-12'],
+			accounts: [card],
+			activity: [],
+			transfers: [],
+			cardEntries: new Map([['card', entries]]),
+			currentMonth: '2026-12',
+		});
+		expect(series.map((p) => p.overview.cardSpendCents)).toEqual([R(1_000), 0, 0, R(100)]);
+		expect(series.reduce((sum, p) => sum + p.overview.totalSpendCents, 0)).toBe(R(1_100));
+	});
+
+	it('já comprometido: a fatura coberta pelo crédito não vence nada', () => {
+		const summary = buildCardSummary(card, entries, [pay('2026-09-28', R(1_000))], '2026-11-10');
+		const months = committedMonths([{ id: 'card', name: 'Cartão Nubank', summary }], 0, '2026-11', 3);
+		// Novembro (vence em dezembro) some no crédito; dezembro (vence em janeiro) cobra R$ 100.
+		expect(months.map((m) => m.cardCents)).toEqual([0, R(100), 0]);
+	});
+
+	it('já comprometido: compra parcelada estornada inteira não deixa parcela nos próximos meses', () => {
+		const parcels = cardInstallmentDates('2026-10-01', 12, { closingDay: 25, dueDaysAfter: 7 }).map((date, index) => ({
+			...purchase(date, R(100)),
+			installmentGroup: 'tv',
+			installmentIndex: index + 1,
+			installmentCount: 12,
+		}));
+		const summary = buildCardSummary(card, [...parcels, refund('2026-10-10', R(1_200))], [], '2026-10-15');
+		const months = committedMonths([{ id: 'card', name: 'Cartão Nubank', summary }], 0, '2026-10', 3);
+		expect(months.map((m) => m.cardCents)).toEqual([0, 0, 0]);
 	});
 });

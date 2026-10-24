@@ -412,9 +412,13 @@ export interface CommittedMonth {
 
 /**
  * Os próximos `count` meses depois de `fromMonth`: o que vence de fatura em cada um (as
- * parcelas já compradas, menos o que já foi pago), o custo fixo das recorrências e as
- * parcelas das dívidas. Uma parcela que já tem recorrência cadastrada aparece, mas não soma
- * de novo — ela já está no custo fixo.
+ * parcelas já compradas, menos o crédito que chega de faturas anteriores e o que já foi
+ * pago), o custo fixo das recorrências e as parcelas das dívidas. Uma parcela que já tem
+ * recorrência cadastrada aparece, mas não soma de novo — ela já está no custo fixo.
+ *
+ * O crédito conta porque é o que o banco faz: estornar a compra parcelada inteira deixa a
+ * fatura do estorno negativa, e esse crédito cobre as parcelas seguintes — que, sem ele,
+ * apareciam aqui como R$ 100 por mês de uma compra devolvida.
  */
 export const committedMonths = (
 	cards: Array<{ id: string; name: string; summary: CardSummary }>,
@@ -431,7 +435,7 @@ export const committedMonths = (
 				name: card.name,
 				cents: card.summary.invoices
 					.filter((invoice) => invoice.offset >= -1 && monthKeyOf(invoice.cycle.dueDate) === month)
-					.reduce((sum, invoice) => sum + Math.max(0, invoice.amountCents - invoice.paidCents), 0),
+					.reduce((sum, invoice) => sum + Math.max(0, invoice.amountCents - invoice.creditAppliedCents - invoice.paidCents), 0),
 			}))
 			.filter((card) => card.cents > 0);
 		const cardCents = perCard.reduce((sum, card) => sum + card.cents, 0);

@@ -177,6 +177,10 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				break;
 			}
 			case 'card': {
+				// A fatura já chega pelo que cobra (`invoicesClosingBetween`): a negativa vem como 0 e
+				// o crédito dela já abateu as faturas seguintes, então o piso aqui não some com estorno
+				// nenhum. Ele só pesa no cartão sem fechamento, que cai nas compras menos estornos do
+				// período — sem as faturas, não há para onde levar o crédito.
 				const spend = Math.max(0, account.invoiceCents ?? account.expenseCents - account.incomeCents);
 				const purchases = account.purchasesOriginatedCents ?? 0;
 				cardSpendCents += spend;
