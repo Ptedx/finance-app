@@ -225,6 +225,8 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 			'retirement_goals',
 			'debts',
 			'reserve_goals',
+			// As contas a pagar entram no v20, junto com o resto do livro.
+			'bills',
 			// A caixa de entrada entra na lista no v19, depois do conserto dos ponteiros.
 			'captures',
 		]);

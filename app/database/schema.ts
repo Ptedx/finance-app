@@ -265,8 +265,11 @@ export const DATABASE_NAME = 'spendr.db';
  *     isso é perda de dado garantida, e as regras aprendidas iam pelo mesmo caminho: o
  *     app esquecia a categoria de cada estabelecimento. Só acréscimo de coluna: as
  *     linhas que já existem nascem sujas (o `DEFAULT 1`) e sobem no primeiro sync.
+ * 20 — `bills` é criada (contas a pagar: vencimento todo mês, e uma por dívida ativa,
+ *     ligada pela `debtId`) e entra em `SYNCED_TABLES`. Só tabela nova: um app v19 abre
+ *     um banco v20, não roda migração e ignora a tabela.
  */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -281,6 +284,7 @@ export const SYNCED_TABLES = [
 	'reserve_goals',
 	'captures',
 	'merchant_rules',
+	'bills',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -592,6 +596,39 @@ export interface Debt extends SyncMeta {
 	sortOrder: number;
 }
 
+/**
+ * Conta a pagar (v20): um compromisso com vencimento todo mês — boleto, conta de serviço,
+ * mensalidade. É dela que saem os lembretes e a lista "Contas do mês".
+ *
+ * Financiamento e consórcio também viram conta a pagar, ligadas pela `debtId`: o nome, o dia
+ * e o valor seguem a dívida, e o que a conta a pagar acrescenta é só se o mês já foi pago.
+ * Assim tudo que vence fica num lugar só, com um único jeito de dar baixa.
+ */
+export interface Bill extends SyncMeta {
+	id: string;
+	name: string;
+	/** Dia do vencimento, 1–31; em mês curto vale o último dia. */
+	dueDay: number;
+	/** Valor esperado em centavos. `null` = varia (a conta de celular): casa pelo nome e pela data. */
+	amountCents: number | null;
+	/** Conta que costuma pagar. `null` = qualquer uma. */
+	accountId: string | null;
+	category: string | null;
+	/**
+	 * Palavras que identificam o pagamento no aviso do banco ou no lançamento ("tim",
+	 * "unimed"), separadas por vírgula. `null` = usa o nome.
+	 */
+	matchHint: string | null;
+	/** Dívida de origem (financiamento, consórcio). `null` = conta cadastrada à mão. */
+	debtId: string | null;
+	/** Último mês pago, `YYYY-MM`. `null` = nenhum ainda. */
+	paidThrough: string | null;
+	/** Lançamento ou transferência que deu a última baixa, para não casar duas vezes. */
+	paidByRef: string | null;
+	active: boolean;
+	sortOrder: number;
+}
+
 export type DebtDraft = Omit<Debt, 'id' | keyof SyncMeta>;
 
 export const CREATE_DEBTS_TABLE = `
@@ -612,6 +649,30 @@ export const CREATE_DEBTS_TABLE = `
     accountId TEXT,
     category TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+export type BillDraft = Omit<Bill, 'id' | keyof SyncMeta>;
+
+/**
+ * Contas a pagar (v20). `amountCents` é anulável de propósito (a conta que varia), e
+ * `active` é inteiro, como o `archived` das dívidas. Sincronizada pelo `id`, como debts.
+ */
+export const CREATE_BILLS_TABLE = `
+  CREATE TABLE IF NOT EXISTS bills (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    dueDay INTEGER NOT NULL,
+    amountCents INTEGER,
+    accountId TEXT,
+    category TEXT,
+    matchHint TEXT,
+    debtId TEXT,
+    paidThrough TEXT,
+    paidByRef TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
     sortOrder INTEGER NOT NULL DEFAULT 0,
 ${SYNC_COLUMNS_SQL}
   );
@@ -782,6 +843,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_reserve_goals_dirty ON reserve_goals (dirty);
   CREATE INDEX IF NOT EXISTS idx_captures_dirty ON captures (dirty);
   CREATE INDEX IF NOT EXISTS idx_merchant_rules_dirty ON merchant_rules (dirty);
+  CREATE INDEX IF NOT EXISTS idx_bills_dirty ON bills (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;
@@ -987,6 +1049,7 @@ export default {
 	CREATE_INDEXES,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_DEBTS_TABLE,
+	CREATE_BILLS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	DEFAULT_CATEGORIES,
 };
