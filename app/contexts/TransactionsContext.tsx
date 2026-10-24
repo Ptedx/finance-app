@@ -29,6 +29,7 @@ import type {
 } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
+import { settleBillPayment, undoBillPayment } from '../utils/captureActions';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
 import { usePeriod } from './PeriodContext';
 
@@ -193,6 +194,18 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 	const addNewTransaction = async (transaction: TransactionDraft) => {
 		try {
 			const id = await addTransaction(transaction);
+			// A despesa à vista pode ser o pagamento de uma conta a pagar (REM-04). A baixa
+			// não falha: um erro nela fica no log e o lançamento continua gravado.
+			if (!transaction.isIncome && !(transaction.installmentCount && transaction.installmentCount > 1)) {
+				await settleBillPayment({
+					id,
+					amountCents: transaction.amountCents,
+					date: transaction.date,
+					accountId: transaction.accountId ?? null,
+					text: transaction.note,
+					isExpense: true,
+				});
+			}
 			await refreshData();
 			syncQueue.schedule();
 			return id;
@@ -223,7 +236,10 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
 	const removeTransaction = async (id: string) => {
 		try {
+			// A data diz qual mês a baixa que ele tenha dado tinha quitado.
+			const date = transactions.find((tx) => tx.id === id)?.date ?? null;
 			await deleteTransaction(id);
+			await undoBillPayment(id, date);
 			await refreshData();
 			syncQueue.schedule();
 		} catch (error) {

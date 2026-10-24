@@ -12,7 +12,7 @@
  * o teste passaria sem exercitar o filtro que foi acrescentado do lado de cá.
  */
 
-import type { Account, Capture, MerchantRule, Transfer } from '../../database/schema';
+import type { Account, Bill, Capture, MerchantRule, Transfer } from '../../database/schema';
 
 interface TransactionRow {
 	id: string;
@@ -31,6 +31,7 @@ const mockTransfers = new Map<string, Transfer>();
 const mockTransactions = new Map<string, TransactionRow>();
 const mockCaptures = new Map<string, Capture>();
 const mockRules = new Map<string, MerchantRule>();
+const mockBills = new Map<string, Bill>();
 const mockCounter = { value: 0 };
 const mockMakeId = (prefix: string): string => {
 	mockCounter.value += 1;
@@ -38,6 +39,8 @@ const mockMakeId = (prefix: string): string => {
 };
 
 jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
+
+jest.mock('../notificationUtils', () => ({ scheduleBillReminders: jest.fn(async () => 0) }));
 
 jest.mock('../../database/database', () => ({
 	addTransaction: jest.fn(async (row: Omit<TransactionRow, 'id'>) => {
@@ -106,6 +109,11 @@ jest.mock('../../database/database', () => ({
 	findAccountBySource: jest.fn(async () => null),
 	findAccountByKey: jest.fn(async () => null),
 	reassignCaptureLedger: jest.fn(async () => undefined),
+	getBills: jest.fn(async () => [...mockBills.values()].filter((bill) => !bill.deletedAt)),
+	updateBill: jest.fn(async (id: string, patch: Omit<Bill, 'id' | 'updatedAt' | 'deletedAt'>) => {
+		const found = mockBills.get(id);
+		if (found) mockBills.set(id, { ...found, ...patch });
+	}),
 }));
 
 jest.mock('../../database/captures', () => ({
@@ -132,8 +140,11 @@ jest.mock('../../database/captures', () => ({
 	findUnpairedTransferLeg: jest.fn(async () => null),
 }));
 
-import { applyDecision, markCaptureTransfer, revertCapture } from '../captureActions';
+import { getBills, updateBill } from '../../database/database';
+import { onBillsChanged } from '../billEvents';
+import { applyDecision, confirmCapture, markCaptureTransfer, revertCapture, settleBillPayment } from '../captureActions';
 import { getISODate } from '../dateUtils';
+import { scheduleBillReminders } from '../notificationUtils';
 
 /** O dia civil do aparelho, como `captureActions` o calcula: o teste roda em qualquer fuso. */
 const localDay = (postedAt: string): string => getISODate(new Date(postedAt));
@@ -241,6 +252,8 @@ beforeEach(() => {
 	mockTransactions.clear();
 	mockCaptures.clear();
 	mockRules.clear();
+	mockBills.clear();
+	jest.clearAllMocks();
 	for (const item of [CHECKING, CARD, OTHER_CARD]) mockAccounts.set(item.id, item);
 });
 
@@ -423,5 +436,200 @@ describe('"Desfazer" remove a regra que o toque criou (achado 7.3)', () => {
 		await revertCapture(capture.id);
 
 		expect(mockRules.get('conta reserva')).toMatchObject({ treatAs: 'transfer' });
+	});
+});
+
+describe('baixa automática da conta a pagar (REM-04)', () => {
+	const seedBill = (overrides: Partial<Bill> = {}): Bill => {
+		const bill: Bill = {
+			id: 'tim',
+			name: 'Celular',
+			dueDay: 15,
+			amountCents: null,
+			accountId: CHECKING.id,
+			category: null,
+			matchHint: 'tim',
+			debtId: null,
+			paidThrough: '2026-09',
+			paidByRef: null,
+			active: true,
+			sortOrder: 0,
+			updatedAt: '',
+			...overrides,
+		};
+		mockBills.set(bill.id, bill);
+		return bill;
+	};
+
+	/** Pagamento da TIM no dia 14, meio-dia UTC: dia 14 ou 15 no fuso do aparelho, outubro em todos. */
+	const timPayment = (overrides: Partial<Capture> = {}): Capture =>
+		seedCapture({
+			postedAt: '2026-10-14T12:00:00.000Z',
+			amountCents: 13_517,
+			kind: 'purchase',
+			counterparty: 'TIM S.A.',
+			merchantKey: 'tim s a',
+			...overrides,
+		});
+
+	/** Quem assina o aviso de "as contas mudaram", ligado a cada teste. */
+	const changed = jest.fn();
+	let stopListening: () => void = () => undefined;
+	beforeEach(() => {
+		stopListening = onBillsChanged(changed);
+	});
+	afterEach(() => stopListening());
+
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	it('confirmar a captura do pagamento dá baixa no mês, remarca os lembretes e avisa', async () => {
+		seedBill();
+		const capture = timPayment();
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(result?.transactionId).toBeTruthy();
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: result?.transactionId });
+		// Os lembretes são remarcados com as contas já relidas, com outubro pago.
+		expect(scheduleBillReminders).toHaveBeenCalledTimes(1);
+		expect((scheduleBillReminders as jest.Mock).mock.calls[0][0][0]).toMatchObject({ paidThrough: '2026-10' });
+		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('o lançamento confirmado sozinho pela regra também dá baixa', async () => {
+		seedBill();
+		const base = draft({
+			postedAt: '2026-10-14T12:00:00.000Z',
+			amountCents: 13_517,
+			kind: 'purchase',
+			counterparty: 'TIM S.A.',
+			merchantKey: 'tim s a',
+		});
+
+		await applyDecision(base, { action: 'auto_confirm', categoryId: 'other_expense' }, categories);
+
+		const posted = [...mockTransactions.values()][0];
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: posted.id });
+		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('o que não casa não grava nada nem avisa', async () => {
+		seedBill();
+		const capture = timPayment({ counterparty: 'PADARIA', merchantKey: 'padaria' });
+
+		await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(scheduleBillReminders).not.toHaveBeenCalled();
+		expect(changed).not.toHaveBeenCalled();
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+	});
+
+	it('recebimento e compra parcelada não pagam conta', async () => {
+		seedBill();
+		const income = timPayment({ direction: 'in', kind: 'pix_in' });
+		const parcelled = timPayment({ installments: 3 });
+
+		await confirmCapture(income.id, 'other_income', categories);
+		await confirmCapture(parcelled.id, 'other_expense', categories);
+
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-09');
+	});
+
+	it('falha da baixa não quebra a gravação do lançamento', async () => {
+		seedBill();
+		(getBills as jest.Mock).mockRejectedValueOnce(new Error('banco ocupado'));
+		const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+		const capture = timPayment();
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(result?.status).toBe('confirmed');
+		expect(mockCaptures.get(capture.id)?.status).toBe('confirmed');
+		expect(mockTransactions.get(result?.transactionId as string)).toBeDefined();
+		expect(errors).toHaveBeenCalled();
+		errors.mockRestore();
+	});
+
+	it('lembrete que não remarca não desfaz a baixa nem cala o aviso', async () => {
+		seedBill();
+		(scheduleBillReminders as jest.Mock).mockRejectedValueOnce(new Error('sem permissão'));
+		const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+		const match = await settleBillPayment({
+			id: 'tx-tim',
+			amountCents: 13_517,
+			date: '2026-10-14',
+			accountId: CHECKING.id,
+			text: 'TIM',
+			isExpense: true,
+		});
+
+		expect(match).toMatchObject({ month: '2026-10' });
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+		expect(changed).toHaveBeenCalledTimes(1);
+		errors.mockRestore();
+	});
+
+	it('o mesmo lançamento não dá baixa duas vezes', async () => {
+		seedBill({ paidThrough: '2026-09', paidByRef: 'tx-repetido' });
+
+		const match = await settleBillPayment({
+			id: 'tx-repetido',
+			amountCents: 13_517,
+			date: '2026-10-14',
+			accountId: CHECKING.id,
+			text: 'TIM',
+			isExpense: true,
+		});
+
+		expect(match).toBeNull();
+		expect(updateBill).not.toHaveBeenCalled();
+	});
+
+	it('desfazer a captura que deu a baixa desfaz a baixa', async () => {
+		seedBill();
+		const capture = timPayment();
+		await confirmCapture(capture.id, 'other_expense', categories);
+		changed.mockClear();
+		(scheduleBillReminders as jest.Mock).mockClear();
+
+		await revertCapture(capture.id);
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+		expect(scheduleBillReminders).toHaveBeenCalledTimes(1);
+		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('desfazer uma captura que não deu a última baixa não mexe na conta', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-outro' });
+		const capture = seedCapture({
+			status: 'confirmed',
+			postedAt: '2026-10-14T12:00:00.000Z',
+			transactionId: 'tx-meu',
+			counterparty: 'TIM S.A.',
+		});
+
+		await revertCapture(capture.id);
+
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-outro' });
+		expect(changed).not.toHaveBeenCalled();
+	});
+
+	it('a outra perna confirmada que vira transferência também desfaz a baixa que deu', async () => {
+		seedBill();
+		const confirmed = timPayment();
+		await confirmCapture(confirmed.id, 'other_expense', categories);
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-10');
+		const other = seedCapture({ postedAt: '2026-10-14T12:05:00.000Z', amountCents: 13_517, relatedId: confirmed.id });
+
+		await markCaptureTransfer(other.id);
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
 	});
 });

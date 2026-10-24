@@ -13,6 +13,10 @@
  *  - **transações** (uma, ou N parcelas de uma compra parcelada);
  *  - **transferências** entre contas do usuário, inclusive o pagamento da fatura;
  *  - nada, no caso de aplicação, resgate e do que o usuário descarta.
+ *
+ * E a baixa da conta a pagar (REM-04): o lançamento que é o pagamento dela marca o mês
+ * como pago (`settleBillPayment`), e apagá-lo desfaz a baixa (`undoBillPayment`). O
+ * `TransactionsContext` usa as mesmas duas para o lançamento digitado.
  */
 
 import {
@@ -35,8 +39,10 @@ import {
 	deleteTransfer,
 	findLiveTransfer,
 	getAccount,
+	getBills,
 	getTransfer,
 	reassignCaptureLedger,
+	updateBill,
 	updateTransfer,
 } from '../database/database';
 import type { Capture, Category, Transfer } from '../database/schema';
@@ -46,6 +52,8 @@ import {
 	findCheckingForCard,
 	resolveAccountForNotification,
 } from './accountResolver';
+import { emitBillsChanged } from './billEvents';
+import { type BillMatch, type BillMovement, billPaymentPatch, billPaymentUndo, matchBillPayment } from './billMatcher';
 import {
 	candidateFrom,
 	DEFAULT_AUTO_CONFIRM_THRESHOLD,
@@ -61,6 +69,7 @@ import { generateUniqueId } from './categoryEditUtils';
 import { addDays, getISODate } from './dateUtils';
 import { cardInstallmentDates, cycleRuleOf, daysBetween, isSameCardPayment } from './cardMath';
 import { splitInstallments } from './installments';
+import { scheduleBillReminders } from './notificationUtils';
 
 /** Quanto tempo para trás a decisão olha: um dia útil de TED, com folga. */
 const LOOKBACK_MS = 26 * 60 * 60 * 1000;
@@ -134,6 +143,77 @@ export const resolveCategoryId = (
 
 const localDateOf = (iso: string): string => getISODate(new Date(iso));
 
+// ---------------------------------------------------------------------------
+// Baixa automática das contas a pagar
+// ---------------------------------------------------------------------------
+
+/**
+ * Uma baixa (ou o desfazer) por vez: duas lidas das contas ao mesmo tempo gravariam uma
+ * por cima da outra.
+ */
+let billSettling: Promise<unknown> = Promise.resolve();
+
+const serialized = <T>(work: () => Promise<T>): Promise<T> => {
+	const run = billSettling.then(work);
+	billSettling = run.catch(() => undefined);
+	return run;
+};
+
+/**
+ * Depois de gravar: sobe pelo sync, remarca os lembretes com as contas relidas e avisa
+ * quem mostra. Lembrete que não remarca não desfaz a baixa, que já está gravada.
+ */
+const afterBillsWrite = async (): Promise<void> => {
+	syncQueue.schedule();
+	try {
+		await scheduleBillReminders(await getBills());
+	} catch (error) {
+		console.error('Failed to reschedule bill reminders:', error);
+	}
+	emitBillsChanged();
+};
+
+/**
+ * Dá baixa na conta a pagar que este lançamento paga, se houver uma (`billMatcher`).
+ * Devolve a conta e o mês quitados, ou `null`.
+ *
+ * Nunca falha: a baixa é um extra do lançamento, e um erro aqui não pode desfazer a
+ * gravação dele — fica no log e a conta continua pendente.
+ */
+export const settleBillPayment = (movement: BillMovement): Promise<BillMatch | null> =>
+	serialized(async () => {
+		try {
+			const match = matchBillPayment(await getBills(), movement);
+			if (!match) return null;
+			await updateBill(match.bill.id, billPaymentPatch(match.bill, match.month, movement.id));
+			await afterBillsWrite();
+			return match;
+		} catch (error) {
+			console.error('Failed to settle bill payment:', error);
+			return null;
+		}
+	});
+
+/**
+ * O lançamento `ref` foi apagado: a conta cuja última baixa foi ele volta a ficar pendente
+ * naquele mês. `date` (a do lançamento) diz qual mês ele tinha quitado. Nunca falha.
+ */
+export const undoBillPayment = (ref: string, date: string | null): Promise<void> =>
+	serialized(async () => {
+		try {
+			let changed = false;
+			for (const bill of await getBills()) {
+				const undo = billPaymentUndo(bill, ref, date);
+				if (!undo) continue;
+				await updateBill(bill.id, undo);
+				changed = true;
+			}
+			if (changed) await afterBillsWrite();
+		} catch (error) {
+			console.error('Failed to undo bill payment:', error);
+		}
+	});
+
 type Postable = Pick<
 	Capture,
 	'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt' | 'accountId' | 'installments' | 'cardLast4'
@@ -159,6 +239,15 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 			cardLast4: capture.cardLast4,
 		});
 		syncQueue.schedule();
+		// Compra parcelada não é pagamento de conta: só a de uma vez pode dar baixa.
+		await settleBillPayment({
+			id,
+			amountCents: capture.amountCents,
+			date,
+			accountId: capture.accountId,
+			text: capture.counterparty,
+			isExpense: capture.direction === 'out',
+		});
 		return id;
 	}
 
@@ -651,7 +740,10 @@ const learnTransfer = async (capture: Capture): Promise<void> => {
 	});
 };
 
-/** Apaga o que uma captura pôs no livro: a transação, ou todas as parcelas. */
+/**
+ * Apaga o que uma captura pôs no livro: a transação, ou todas as parcelas. A baixa que a
+ * transação tinha dado numa conta a pagar é desfeita junto.
+ */
 const removePostedTransactions = async (capture: Capture): Promise<void> => {
 	if (!capture.transactionId) return;
 	if (capture.installments && capture.installments > 1) {
@@ -660,6 +752,7 @@ const removePostedTransactions = async (capture: Capture): Promise<void> => {
 		await deleteTransaction(capture.transactionId);
 	}
 	syncQueue.schedule();
+	await undoBillPayment(capture.transactionId, localDateOf(capture.postedAt));
 };
 
 /** Vira transação (ou parcelas) com a categoria escolhida, e o app aprende o estabelecimento. */
@@ -821,4 +914,6 @@ export default {
 	answerCaptureDuplicate,
 	answerCaptureTransfer,
 	revertCapture,
+	settleBillPayment,
+	undoBillPayment,
 };
