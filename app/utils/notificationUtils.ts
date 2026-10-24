@@ -73,13 +73,7 @@ export const registerForPushNotificationsAsync = async (): Promise<string | null
 				lightColor: '#15E8FE',
 			});
 
-			await Notifications.setNotificationChannelAsync(BILLS_CHANNEL_ID, {
-				name: i18next.t('reminders.channelName'),
-				description: i18next.t('reminders.channelDescription'),
-				importance: Notifications.AndroidImportance.HIGH,
-				vibrationPattern: [0, 250, 250, 250],
-				lightColor: '#15E8FE',
-			});
+			await ensureBillsChannel(Notifications);
 		}
 
 		if (Device.isDevice) {
@@ -327,6 +321,24 @@ export const scheduleBillReminders = (bills: Bill[], now: Date = new Date()): Pr
 	return run;
 };
 
+/**
+ * Cria (ou atualiza) o canal Android dos lembretes de conta. O `registerForPushNotificationsAsync`
+ * também cria, mas só roda no onboarding e ao ligar a chave nos Ajustes: quem passou por eles
+ * antes da v20 não tem o canal, e aviso agendado num canal que não existe não aparece.
+ */
+const ensureBillsChannel = async (
+	Notifications: NonNullable<ReturnType<typeof getNotifications>>
+): Promise<void> => {
+	if (Platform.OS !== 'android') return;
+	await Notifications.setNotificationChannelAsync(BILLS_CHANNEL_ID, {
+		name: i18next.t('reminders.channelName'),
+		description: i18next.t('reminders.channelDescription'),
+		importance: Notifications.AndroidImportance.HIGH,
+		vibrationPattern: [0, 250, 250, 250],
+		lightColor: '#15E8FE',
+	});
+};
+
 const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number> => {
 	const Notifications = getNotifications();
 	if (!Notifications) return 0;
@@ -340,6 +352,8 @@ const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number
 		}
 
 		if (!(await areNotificationsEnabled())) return 0;
+
+		await ensureBillsChannel(Notifications);
 
 		const billsById = new Map(bills.map((bill) => [bill.id, bill]));
 		let count = 0;

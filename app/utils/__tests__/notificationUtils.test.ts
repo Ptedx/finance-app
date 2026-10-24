@@ -275,6 +275,37 @@ describe('scheduleBillReminders', () => {
 		});
 	});
 
+	it('no Android cria o canal bills antes de agendar, mesmo sem o onboarding novo', async () => {
+		// Quem passou pelo onboarding antes da v20 não tem o canal: aviso agendado num canal
+		// que não existe não aparece no Android.
+		const channelMock = Notifications.setNotificationChannelAsync as jest.Mock;
+		channelMock.mockClear();
+		const os = jest.replaceProperty(Platform, 'OS', 'android');
+		try {
+			await scheduleBillReminders([bill()], now);
+		} finally {
+			os.restore();
+		}
+
+		expect(channelMock).toHaveBeenCalledWith('bills', expect.any(Object));
+		expect(channelMock.mock.invocationCallOrder[0]).toBeLessThan(
+			scheduleMock.mock.invocationCallOrder[0]
+		);
+	});
+
+	it('no iOS não mexe em canal', async () => {
+		const channelMock = Notifications.setNotificationChannelAsync as jest.Mock;
+		channelMock.mockClear();
+		const os = jest.replaceProperty(Platform, 'OS', 'ios');
+		try {
+			await scheduleBillReminders([bill()], now);
+		} finally {
+			os.restore();
+		}
+
+		expect(channelMock).not.toHaveBeenCalled();
+	});
+
 	it('textos existem em inglês e italiano', async () => {
 		await i18n.changeLanguage('en');
 		await scheduleBillReminders([bill({ amountCents: null })], now);
