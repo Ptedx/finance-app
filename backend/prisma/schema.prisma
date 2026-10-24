@@ -61,6 +61,7 @@ model User {
   merchantRules         MerchantRule[]
   bills                 Bill[]
   preferences           Preference[]
+  diagnosticEvents      DiagnosticEvent[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -552,6 +553,36 @@ model Preference {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("preferences")
+}
+
+/// Diário de diagnóstico do aparelho (DEC-03), enviado quando o usuário está logado.
+///
+/// A forma é a de `app/diagnostics/contract.ts`, validada em `src/schemas/diagnostics.ts`.
+/// Não é coleção de sync: o servidor só recebe, nunca devolve ao app — por isso sem
+/// `serverSeq` nem gatilho. A chave (userId, id) faz o reenvio do mesmo evento ser
+/// ignorado. Fica 30 dias por `at` (a limpeza roda na subida e a cada 24 h) e é lida por
+/// SQL, na VM, para investigar.
+///
+/// `rawText` é texto de aviso de banco (DEC-11 b): nunca vai para o log.
+model DiagnosticEvent {
+  id         String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  at         DateTime
+  level      String
+  area       String
+  event      String
+  data       Json?
+  rawText    String?
+  appVersion String
+  platform   String
+  installId  String
+  receivedAt DateTime @default(now())
+
+  @@id([userId, id])
+  @@index([userId, at])
+  @@index([at])
+  @@map("diagnostic_events")
 }
 
 // ============================================

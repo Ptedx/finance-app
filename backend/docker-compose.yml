@@ -39,6 +39,13 @@ services:
       postgres:
         condition: service_healthy
     restart: always
+    # A API escreve uma linha JSON por requisição no stdout. Sem rotação o json-file do
+    # Docker cresce até encher o disco da VM; assim ficam no máximo 5 × 10 MB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   spendr_pgdata:

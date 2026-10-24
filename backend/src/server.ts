@@ -1,12 +1,18 @@
 import cors from 'cors';
 import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
+import { scheduleDiagnosticsRetention } from './domain/diagnostics.js';
 import { env } from './lib/env.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
+import { requestLog } from './middleware/requestLog.js';
 import routes from './routes/index.js';
+import { DIAGNOSTIC_BODY_LIMIT } from './schemas/diagnostics.js';
 
 const app = express();
+
+// Primeiro de tudo, para a linha sair também no 404, no 413 e no que o helmet recusar.
+app.use(requestLog());
 
 // A API roda atrás do nginx da VM. Sem isto, `req.ip` é sempre o do proxy e o
 // rate-limit trataria todos os usuários como um só cliente.
@@ -14,6 +20,10 @@ app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors(env.corsOrigins.length > 0 ? { origin: env.corsOrigins } : {}));
+
+// O diário de diagnóstico tem teto próprio, menor. Precisa vir antes do leitor geral: o
+// corpo já lido aqui é pulado por ele, e o contrário deixaria passar 5 MB nesta rota.
+app.use('/api/diagnostics', express.json({ limit: DIAGNOSTIC_BODY_LIMIT }));
 
 // Uma remessa de sync cheia passa bem do 100kb padrão do Express.
 app.use(express.json({ limit: '5mb' }));
@@ -42,6 +52,10 @@ app.use(errorHandler);
 const server = app.listen(env.port, () => {
 	console.log(`🚀 Spendr API ouvindo na porta ${env.port} (${env.nodeEnv})`);
 });
+
+// Retenção de 30 dias do diário de diagnóstico: agora e a cada 24 h. O timer não segura
+// o processo, então o desligamento abaixo continua igual.
+scheduleDiagnosticsRetention(prisma);
 
 // Docker manda SIGTERM ao parar: fechar o servidor e o pool antes de sair evita
 // derrubar requisições em andamento a cada deploy.

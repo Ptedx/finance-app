@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { login, logout, refresh, register } from '../controllers/auth.controller.js';
+import { postDiagnostics } from '../controllers/diagnostics.controller.js';
 import { getSyncStatus, pullData, pushData } from '../controllers/sync.controller.js';
 import { getMe, updateMe } from '../controllers/user.controller.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -32,6 +33,18 @@ const syncLimiter = rateLimit({
 	message: { error: 'Sincronizações demais. Aguarde um instante.', code: 'rate_limited' },
 });
 
+/**
+ * O diário sobe em lotes de até 500 eventos; mesmo um atraso de semanas cabe em poucos
+ * envios. O teto só impede que um laço do app encha a tabela.
+ */
+const diagnosticsLimiter = rateLimit({
+	windowMs: 60 * 1000,
+	limit: 30,
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
+	message: { error: 'Envios de diagnóstico demais. Aguarde um instante.', code: 'rate_limited' },
+});
+
 router.post('/auth/register', authLimiter, asyncHandler(register));
 router.post('/auth/login', authLimiter, asyncHandler(login));
 router.post('/auth/refresh', authLimiter, asyncHandler(refresh));
@@ -43,5 +56,9 @@ router.patch('/me', requireAuth, asyncHandler(updateMe));
 router.get('/sync/status', requireAuth, syncLimiter, asyncHandler(getSyncStatus));
 router.get('/sync/pull', requireAuth, syncLimiter, asyncHandler(pullData));
 router.post('/sync/push', requireAuth, syncLimiter, asyncHandler(pushData));
+
+// O teto de 512 KB do corpo desta rota fica no server.ts: o leitor de JSON roda antes do
+// router, e o geral (5 MB) já teria lido o corpo quando a requisição chegasse aqui.
+router.post('/diagnostics', requireAuth, diagnosticsLimiter, asyncHandler(postDiagnostics));
 
 export default router;

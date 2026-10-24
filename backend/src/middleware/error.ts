@@ -33,6 +33,29 @@ export const asyncHandler =
 	};
 
 /**
+ * Erro do leitor de corpo do `express.json`: corpo grande demais, JSON malformado, charset.
+ *
+ * É culpa do cliente (4xx), não do servidor, e não pode cair no "erro não tratado": lá o
+ * `console.error` imprimiria o objeto inteiro, e no JSON malformado ele carrega o corpo
+ * cru em `body` — com o `rawText` do diagnóstico, por exemplo. Nada dele sai daqui além
+ * do status e de uma mensagem fixa.
+ */
+const bodyReadError = (error: unknown): HttpError | null => {
+	if (typeof error !== 'object' || error === null) return null;
+	const { status, type } = error as { status?: unknown; type?: unknown };
+	if (typeof status !== 'number' || status < 400 || status >= 500 || typeof type !== 'string') {
+		return null;
+	}
+	if (type === 'entity.too.large') {
+		return new HttpError(413, 'Corpo da requisição grande demais.', 'payload_too_large');
+	}
+	if (type === 'entity.parse.failed') {
+		return new HttpError(400, 'JSON inválido.', 'invalid_json');
+	}
+	return new HttpError(status, 'Corpo da requisição inválido.', 'bad_request');
+};
+
+/**
  * Handler central de erros.
  *
  * Em produção nada além da mensagem sai daqui: stack traces e erros do Prisma revelam
@@ -59,6 +82,12 @@ export const errorHandler = (
 
 	if (error instanceof HttpError) {
 		res.status(error.status).json({ error: error.message, code: error.code });
+		return;
+	}
+
+	const bodyError = bodyReadError(error);
+	if (bodyError) {
+		res.status(bodyError.status).json({ error: bodyError.message, code: bodyError.code });
 		return;
 	}
 
