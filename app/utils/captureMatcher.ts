@@ -96,7 +96,7 @@ export type Decision =
 	| { action: 'ask_transfer'; relatedId: string }
 	/** Pagamento de fatura, aplicação, resgate: não é receita nem despesa. */
 	| { action: 'neutral'; reason: string }
-	/** Regra aprendida manda ignorar este estabelecimento. */
+	/** Regra aprendida manda ignorar este estabelecimento, ou o app que avisou (`app_rule`). */
 	| { action: 'ignore'; reason: string }
 	/** Fica na caixa de entrada com uma categoria sugerida. */
 	| { action: 'pending'; categoryId: string | null }
@@ -113,6 +113,11 @@ export interface DecisionContext {
 	autoConfirmThreshold: number;
 	/** Palpite de categoria quando não há regra. */
 	fallbackCategoryId: string | null;
+	/**
+	 * A regra do app que avisou (`app:<pacote>`), quando quem avisou não é banco nem
+	 * carteira. Quem chama só a passa nesse caso; o motor confere de novo (SPD-022).
+	 */
+	appRule?: MerchantRule;
 	/**
 	 * A contraparte é uma fonte externa de receita (a empresa do usuário, por exemplo):
 	 * o app aprendeu isso quando ele confirmou o que ela manda como receita. Um
@@ -134,6 +139,13 @@ export const WALLET_SUSPECT_WINDOW_MS = 12 * 60 * 60 * 1000;
 export const SUSPECT_DUPLICATE_WINDOW_MS = 3 * 60 * 1000;
 export const TRANSFER_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_AUTO_CONFIRM_THRESHOLD = 3;
+
+/**
+ * Quantos descartes do mesmo app que não é banco até o app passar a ignorá-lo (SPD-022).
+ * Três, como as confirmações que liberam o lançamento automático: uma vez é acaso, três
+ * é hábito.
+ */
+export const APP_IGNORE_THRESHOLD = 3;
 
 /**
  * Quanto o extrato pode atrasar em relação à notificação. A compra é avisada na hora
@@ -382,10 +394,82 @@ export const matchesOwnName = (counterparty: string | null, ownNames: string[]):
 };
 
 // ---------------------------------------------------------------------------
+// Apps que não são banco (SPD-022)
+// ---------------------------------------------------------------------------
+
+/**
+ * A regra de um app mora em `merchant_rules`, como a de um estabelecimento, com a chave
+ * `app:<pacote>`. Sincroniza e entra no backup sem nada novo, e não colide com chave de
+ * estabelecimento: `merchantKeyOf` só devolve letras, números e espaços.
+ */
+export const APP_RULE_PREFIX = 'app:';
+
+export const appRuleKeyOf = (packageName: string): string => `${APP_RULE_PREFIX}${packageName}`;
+
+/**
+ * Apps de SMS. Um pacote só junta todos os remetentes — o banco, a operadora, a loja —, e
+ * calar o pacote calaria também o SMS do banco: em produção já chegou SMS com valor (há uma
+ * conta fantasma "Messages"). Eles nunca aprendem "ignorar"; o aviso sem banco citado
+ * continua ignorado direto, como o de qualquer app que não é banco. Para incluir outro
+ * fabricante, basta acrescentar o pacote aqui.
+ *
+ * Mora aqui, e não em `accountResolver.ts` (que a reexporta), porque `decide()` precisa
+ * dela e este arquivo é puro: o resolvedor depende do banco de dados.
+ */
+export const SMS_PACKAGES: ReadonlySet<string> = new Set([
+	'com.google.android.apps.messaging',
+	'com.samsung.android.messaging',
+	'com.android.mms',
+	'com.android.messaging',
+	'com.motorola.messaging',
+	'com.oneplus.mms',
+	'com.miui.mms',
+]);
+
+export const isSmsPackage = (packageName: string): boolean => SMS_PACKAGES.has(packageName);
+
+/** A regra está ligada: o usuário já descartou avisos daquele app vezes suficientes. */
+export const isAppIgnored = (rule: MerchantRule | undefined): boolean =>
+	rule?.treatAs === 'ignore' && rule.confirmations >= APP_IGNORE_THRESHOLD;
+
+/**
+ * Mais um descarte de um aviso daquele app. A regra nasce no primeiro, como a de
+ * categoria nasce na primeira confirmação, e só passa a valer no terceiro.
+ */
+export const learnFromAppDismissal = (rule: MerchantRule | undefined, packageName: string): MerchantRule => ({
+	merchantKey: appRuleKeyOf(packageName),
+	categoryId: null,
+	treatAs: 'ignore',
+	confirmations: rule?.treatAs === 'ignore' ? rule.confirmations + 1 : 1,
+});
+
+/**
+ * Um descarte foi revertido: desconta. Abaixo de três a regra deixa de valer sozinha — o
+ * usuário acabou de dizer que um aviso daquele app importava. `null` quando não sobra
+ * descarte nenhum e a regra deve ser esquecida.
+ */
+export const forgetAppDismissal = (rule: MerchantRule): MerchantRule | null =>
+	rule.confirmations > 1 ? { ...rule, confirmations: rule.confirmations - 1 } : null;
+
+// ---------------------------------------------------------------------------
 // Decisão
 // ---------------------------------------------------------------------------
 
 export const decide = (candidate: Candidate, context: DecisionContext): Decision => {
+	// 0. O usuário descartou avisos deste app (que não é banco) vezes suficientes: ignora
+	// antes de qualquer pergunta, senão ele responderia sobre um app que mandou calar. A
+	// carteira, o extrato e o SMS nunca caem aqui, nem com uma regra gravada para eles.
+	const appRule = context.appRule;
+	if (
+		isAppIgnored(appRule) &&
+		appRule?.merchantKey === appRuleKeyOf(candidate.packageName) &&
+		!isWalletPackage(candidate.packageName) &&
+		!isSmsPackage(candidate.packageName) &&
+		!isStatementPackage(candidate.packageName)
+	) {
+		return { action: 'ignore', reason: 'app_rule' };
+	}
+
 	// 1. Carteira digital + banco: a mesma compra, com certeza. Fica a do banco.
 	const walletTwin = findWalletDuplicate(candidate, context.recent);
 	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id, reason: 'wallet' };
@@ -507,6 +591,11 @@ export default {
 	findTransferCounterpart,
 	matchesOwnName,
 	learnFromConfirmation,
+	learnFromAppDismissal,
+	forgetAppDismissal,
+	isAppIgnored,
+	appRuleKeyOf,
+	isSmsPackage,
 	candidateFrom,
 	isStatementPackage,
 	withinStatementLag,

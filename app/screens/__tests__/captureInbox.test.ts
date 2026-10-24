@@ -31,7 +31,7 @@ jest.mock('expo-sqlite', () => ({
 import type { Account, Capture } from '../../database/schema';
 import pt from '../../i18n/locales/pt';
 import { formatCents } from '../../utils/money';
-import { currencyWarning, destinationLabel, installmentsLabel } from '../CaptureInboxScreen';
+import { currencyWarning, destinationLabel, ignoredAppLabel, installmentsLabel, resolvedReasonLabel } from '../CaptureInboxScreen';
 
 /** `t` mínimo: busca a chave no português e interpola `{{assim}}`, como o i18next. */
 const t = (key: string, options: Record<string, unknown> = {}): string => {
@@ -125,5 +125,31 @@ describe('a compra em moeda estrangeira avisa no item (SPD-037)', () => {
 	it('os outros itens não dizem nada', () => {
 		expect(currencyWarning({ reason: null } as Capture, tWithDefault)).toBeNull();
 		expect(currencyWarning({ reason: 'rule' } as Capture, tWithDefault)).toBeNull();
+	});
+});
+
+describe('o app que o usuário ensinou a ignorar aparece com "desfazer" (SPD-022)', () => {
+	/** Como o i18next: chave ausente cai no `defaultValue`, interpolado. */
+	const tWithDefault = (key: string, options: Record<string, unknown> = {}): string => {
+		try {
+			return t(key, options);
+		} catch {
+			return String(options.defaultValue ?? key).replace(/\{\{(\w+)\}\}/g, (_match, name: string) => String(options[name]));
+		}
+	};
+
+	it('diz qual app está sendo ignorado', () => {
+		expect(ignoredAppLabel('WhatsApp', tWithDefault)).toBe('Avisos do WhatsApp estão sendo ignorados');
+	});
+
+	it('no histórico, o item ignorado pela regra diz o porquê', () => {
+		expect(resolvedReasonLabel({ reason: 'app_rule', appLabel: 'Mensagens' } as Capture, tWithDefault)).toBe(
+			'Avisos do Mensagens estão sendo ignorados'
+		);
+	});
+
+	it('os outros motivos continuam como antes', () => {
+		expect(resolvedReasonLabel({ reason: 'manual', appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('Sua escolha');
+		expect(resolvedReasonLabel({ reason: null, appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('');
 	});
 });

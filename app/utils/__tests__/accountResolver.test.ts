@@ -8,7 +8,7 @@ jest.mock('../../database/database', () => ({
 
 import { addAccount, findAccountByKey, findAccountBySource, getAccounts, updateAccount } from '../../database/database';
 import type { Account } from '../../database/schema';
-import { resolveAccountForNotification } from '../accountResolver';
+import { isNoBankNotice, isNonBankApp, isSmsPackage, resolveAccountForNotification, SMS_PACKAGES } from '../accountResolver';
 import type { ParsedCapture, RawCapture } from '../captureParser';
 
 const INTER = 'br.com.intermedium';
@@ -255,5 +255,111 @@ describe('conta arquivada ligada ao app (SPD-002)', () => {
 
 		expect((await resolveAccountForNotification(debitPurchase, parsed))?.id).toBe('inter-pf');
 		expect(mocked.addAccount).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * SPD-022 (DEC-08 a): aviso de app que não é banco e não cita banco nenhum é ignorado
+ * direto. As exceções são o que conta como banco: o app do banco, a carteira (que tem
+ * tratamento próprio) e o Mercado Pago, que é conta do usuário — onde fica a reserva.
+ */
+describe('o que conta como banco (SPD-022)', () => {
+	const MERCADO_PAGO = 'com.mercadopago.wallet';
+	const notice = (packageName: string, appLabel: string, title: string, text: string): RawCapture => ({
+		packageName,
+		appLabel,
+		title,
+		text,
+		postedAt: '2026-10-23T15:00:00.000Z',
+	});
+
+	it('conversa no WhatsApp citando Pix não diz de banco nenhum (C67)', () => {
+		const raw = notice('com.whatsapp', 'WhatsApp', 'Maria', 'Pix enviado! R$ 50,00, confere aí');
+		expect(isNonBankApp(raw)).toBe(true);
+		expect(isNoBankNotice(raw)).toBe(true);
+	});
+
+	it('"pedido enviado" do app de compras também não (C66)', () => {
+		expect(isNoBankNotice(notice('com.amazon.mShop.android.shopping', 'Amazon', 'Pedido enviado', 'Seu pedido de R$ 129,90 foi enviado.'))).toBe(true);
+	});
+
+	it('SMS e e-mail que citam o banco não são ignorados direto: seguem para a revisão', () => {
+		const sms = notice('com.google.android.apps.messaging', 'Mensagens', 'Bradesco', 'BRADESCO CARTOES: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00');
+		const mail = notice('com.google.android.gm', 'Gmail', 'Santander', 'Compra no cartão final 7890 aprovada: R$ 199,90 em LOJA ABC.');
+		expect(isNonBankApp(sms)).toBe(true);
+		expect(isNoBankNotice(sms)).toBe(false);
+		expect(isNoBankNotice(mail)).toBe(false);
+	});
+
+	it('os apps de SMS conhecidos estão na lista, e só eles', () => {
+		for (const sms of [
+			'com.google.android.apps.messaging',
+			'com.samsung.android.messaging',
+			'com.android.mms',
+			'com.android.messaging',
+			'com.motorola.messaging',
+			'com.oneplus.mms',
+			'com.miui.mms',
+		]) {
+			expect(SMS_PACKAGES.has(sms)).toBe(true);
+			expect(isSmsPackage(sms)).toBe(true);
+		}
+		for (const other of ['com.google.android.gm', 'com.whatsapp', INTER, 'com.mercadopago.wallet']) {
+			expect(isSmsPackage(other)).toBe(false);
+		}
+	});
+
+	it('o SMS continua sendo app que não é banco: sem banco citado, é ignorado direto', () => {
+		const raw = notice('com.samsung.android.messaging', 'Mensagens', 'Loja', 'Seu pedido de R$ 129,90 foi enviado.');
+		expect(isNonBankApp(raw)).toBe(true);
+		expect(isNoBankNotice(raw)).toBe(true);
+	});
+
+	it('o app do banco nunca é "app que não é banco", diga o texto o que disser', () => {
+		const raw = notice(INTER, 'Inter', 'Inter', 'Você tem uma nova mensagem de R$ 10,00');
+		expect(isNonBankApp(raw)).toBe(false);
+		expect(isNoBankNotice(raw)).toBe(false);
+	});
+
+	it('a carteira não cai nessas regras, mesmo sem citar banco: ela tem tratamento próprio', () => {
+		for (const wallet of ['com.samsung.android.spay', 'com.google.android.apps.walletnfcrel']) {
+			const raw = notice(wallet, 'Carteira', 'IFOOD', 'R$ 35,90 com Mastercard •••• 1534');
+			expect(isNonBankApp(raw)).toBe(false);
+			expect(isNoBankNotice(raw)).toBe(false);
+		}
+	});
+
+	it('o Mercado Pago é banco pelo pacote, com o nome de sempre ou com outro nome na tela', () => {
+		for (const appLabel of ['Mercado Pago', 'Carteira']) {
+			const raw = notice(MERCADO_PAGO, appLabel, 'Pagamento aprovado', 'Você pagou R$ 32,50 para LOJA DO ZE.');
+			expect(isNonBankApp(raw)).toBe(false);
+			expect(isNoBankNotice(raw)).toBe(false);
+		}
+	});
+
+	it('o aviso do Mercado Pago vira a conta do Mercado Pago, mesmo com outro nome na tela', async () => {
+		withAccounts([]);
+
+		await resolveAccountForNotification(
+			notice(MERCADO_PAGO, 'Carteira', 'Pagamento aprovado', 'Você pagou R$ 32,50 para LOJA DO ZE.'),
+			{ ...parsed, amountCents: 3250, counterparty: 'LOJA DO ZE' }
+		);
+
+		expect(mocked.addAccount).toHaveBeenCalledWith(
+			expect.objectContaining({ name: 'Mercado Pago', bankName: 'Mercado Pago', packageName: MERCADO_PAGO, kind: 'checking' })
+		);
+	});
+
+	it('e adota a conta Mercado Pago cadastrada à mão (a da reserva), em vez de criar outra', async () => {
+		withAccounts([account({ id: 'reserva', name: 'Reserva', role: 'reserve', bankName: 'Mercado Pago' })]);
+
+		const resolved = await resolveAccountForNotification(
+			notice(MERCADO_PAGO, 'Mercado Pago', 'Pix recebido', 'Você recebeu R$ 100,00 de FULANO.'),
+			{ ...parsed, amountCents: 10_000, direction: 'in', kind: 'pix_in', counterparty: 'FULANO' }
+		);
+
+		expect(resolved?.id).toBe('reserva');
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+		expect(mocked.updateAccount).toHaveBeenCalledWith(expect.objectContaining({ id: 'reserva', packageName: MERCADO_PAGO }));
 	});
 });

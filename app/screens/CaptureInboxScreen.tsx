@@ -103,6 +103,32 @@ export const currencyWarning = (
 			})
 		: null;
 
+/**
+ * "Avisos do WhatsApp estão sendo ignorados": o app que não é banco e que o usuário
+ * descartou três vezes (SPD-022). Aparece na caixa de entrada com "desfazer".
+ */
+export const ignoredAppLabel = (
+	app: string,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => t('captures.ignoredApp', { app, defaultValue: 'Avisos do {{app}} estão sendo ignorados' });
+
+/** O porquê de um item do histórico, ou vazio quando não há um para dizer. */
+export const resolvedReasonLabel = (
+	capture: Pick<Capture, 'reason' | 'appLabel'>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+	if (!capture.reason) return '';
+	// O item que a regra do app ignorou diz qual regra foi: é por ele que o usuário chega
+	// ao "desfazer" se o app calou um aviso que importava.
+	if (capture.reason === 'app_rule') {
+		return t('captures.reason.app_rule', {
+			app: capture.appLabel,
+			defaultValue: 'Avisos do {{app}} estão sendo ignorados',
+		});
+	}
+	return t(`captures.reason.${capture.reason}`, { defaultValue: '', app: capture.appLabel });
+};
+
 const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {
 	id: 'uncategorized',
 	name: 'Uncategorized',
@@ -356,9 +382,7 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert
 	const isIncome = capture.direction === 'in';
 	const category = categories.find((c) => c.id === capture.suggestedCategory);
 	const status = t(`captures.status.${capture.status}`, { defaultValue: capture.status });
-	const reason = capture.reason
-		? t(`captures.reason.${capture.reason}`, { defaultValue: '', app: capture.appLabel })
-		: '';
+	const reason = resolvedReasonLabel(capture, t);
 	const detail = capture.status === 'confirmed' && category ? category.name : reason;
 	const summary = `${status}. ${isIncome ? '+' : '−'} ${formatCents(capture.amountCents)}, ${
 		capture.counterparty ?? capture.appLabel
@@ -423,6 +447,7 @@ const CaptureInboxScreen = () => {
 		enabled,
 		pending,
 		resolved,
+		ignoredApps,
 		isLoading,
 		lastAction,
 		refresh,
@@ -433,6 +458,7 @@ const CaptureInboxScreen = () => {
 		answerDuplicate,
 		answerTransfer,
 		revert,
+		unignoreApp,
 		undo,
 		clearUndo,
 	} = useCaptures();
@@ -535,6 +561,16 @@ const CaptureInboxScreen = () => {
 		[revert, announce, t]
 	);
 
+	const handleUnignore = useCallback(
+		async (packageName: string, app: string) => {
+			await unignoreApp(packageName);
+			announce(
+				t('captures.announceUnignored', { app, defaultValue: 'Os avisos do {{app}} voltam para a revisão' })
+			);
+		},
+		[unignoreApp, announce, t]
+	);
+
 	const handleUndo = useCallback(async () => {
 		await undo();
 		announce(t('captures.announceReverted'));
@@ -631,6 +667,36 @@ const CaptureInboxScreen = () => {
 								revertLabel={t('captures.undo')}
 							/>
 						))}
+					</View>
+				)}
+
+				{/* SPD-022: o app que o usuário descartou três vezes fica calado, mas à vista e com
+				    "desfazer" — um aviso de banco repassado por ele não pode sumir sem rastro. */}
+				{ignoredApps.length > 0 && (
+					<View style={styles.section}>
+						<Text style={styles.sectionTitle} accessibilityRole="header">
+							{t('captures.ignoredAppsTitle', { defaultValue: 'Avisos ignorados' })}
+						</Text>
+						{ignoredApps.map((app) => {
+							const label = ignoredAppLabel(app.appLabel, t);
+							return (
+								<View key={app.packageName} style={styles.resolvedRow}>
+									<Text style={[styles.resolvedInfo, styles.resolvedTitle]}>{label}</Text>
+									<Pressable
+										onPress={() => handleUnignore(app.packageName, app.appLabel)}
+										accessibilityRole="button"
+										accessibilityLabel={`${t('captures.undo')}: ${label}`}
+										accessibilityHint={t('captures.unignoreHint', {
+											defaultValue: 'Os avisos deste app voltam para a revisão',
+										})}
+										style={({ pressed }) => [styles.revertButton, pressed && styles.buttonPressed]}
+									>
+										<Ionicons name="arrow-undo-outline" size={18} color={ACCENT} />
+										<Text style={styles.revertLabel}>{t('captures.undo')}</Text>
+									</Pressable>
+								</View>
+							);
+						})}
 					</View>
 				)}
 

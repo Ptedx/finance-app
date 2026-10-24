@@ -50,18 +50,23 @@ import type { Capture, Category, Transfer } from '../database/schema';
 import * as syncQueue from '../sync/queue';
 import {
 	findCardForInvoice,
+	canLearnToIgnore,
 	findCheckingForCard,
+	isNoBankNotice,
 	resolveAccountForNotification,
 } from './accountResolver';
 import { emitBillsChanged } from './billEvents';
 import { type BillMatch, type BillMovement, billPaymentPatch, billPaymentUndo, matchBillPayment } from './billMatcher';
 import {
+	appRuleKeyOf,
 	candidateFrom,
 	DEFAULT_AUTO_CONFIRM_THRESHOLD,
 	type Decision,
 	decide,
 	fingerprintOf,
+	forgetAppDismissal,
 	type KnownCapture,
+	learnFromAppDismissal,
 	learnFromConfirmation,
 	type MerchantRule,
 } from './captureMatcher';
@@ -717,11 +722,20 @@ export const ingestRawCaptures = async (
 		const parsed = parseCapture(raw);
 		if (!parsed) continue;
 
+		// App que não é banco e texto que não cita banco: não há de onde ter saído o dinheiro.
+		// Não grava nada — nem item na revisão, nem conta, nem o texto da conversa (SPD-022).
+		if (isNoBankNotice(raw)) continue;
+
 		const account = await resolveAccountForNotification(raw, parsed);
 		const candidate = candidateFrom(raw, parsed, account?.id ?? null);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
 		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
 		const rule = candidate.merchantKey ? toMerchantRule(await getMerchantRule(candidate.merchantKey)) : undefined;
+		// A regra do app só existe para quem não é banco nem SMS: o banco, o Mercado Pago, a
+		// carteira e o SMS nunca são ignorados por ela, nem com uma regra gravada para eles.
+		const appRule = canLearnToIgnore(raw)
+			? toMerchantRule(await getMerchantRule(appRuleKeyOf(raw.packageName)))
+			: undefined;
 		const fallbackCategoryId = resolveCategoryId(guessCategory(parsed), parsed.direction, options.categories);
 
 		const externalIncome = isExternalIncomeRule(rule, options.categories);
@@ -733,6 +747,7 @@ export const ingestRawCaptures = async (
 			autoConfirmThreshold: threshold,
 			fallbackCategoryId,
 			externalIncome,
+			appRule,
 		});
 
 		// Uma transferência "certa" cuja outra perna o usuário já confirmou como
@@ -862,8 +877,28 @@ export const confirmCapture = async (
 	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };
 };
 
+/**
+ * Descarta. Se o aviso veio de um app que não é banco nem SMS, conta o descarte: no
+ * terceiro daquele app, os avisos dele passam a ser ignorados sozinhos (SPD-022). Só conta
+ * o que estava pendente — descartar de novo o que já tinha saído da fila não é outro
+ * descarte. O SMS não conta: o pacote junta todos os remetentes, inclusive o banco.
+ */
 export const dismissCapture = async (id: string): Promise<void> => {
+	const capture = await getCapture(id);
 	await updateCapture(id, { status: 'dismissed', question: null, reason: 'manual' });
+	if (capture?.status === 'pending' && canLearnToIgnore(capture)) {
+		const key = appRuleKeyOf(capture.packageName);
+		await saveMerchantRule(learnFromAppDismissal(toMerchantRule(await getMerchantRule(key)), capture.packageName));
+	}
+};
+
+/**
+ * "Desfazer" o aprendizado: os avisos do app voltam para a revisão, e a contagem de
+ * descartes recomeça do zero. O que já foi ignorado fica no histórico, onde cada item
+ * pode ser revertido.
+ */
+export const stopIgnoringApp = async (packageName: string): Promise<void> => {
+	await deleteMerchantRule(appRuleKeyOf(packageName));
 };
 
 /**
@@ -946,6 +981,18 @@ export const revertCapture = async (id: string): Promise<void> => {
 		if (rule?.treatAs === 'transfer') await deleteMerchantRule(capture.merchantKey);
 	}
 
+	// O descarte à mão de um app que não é banco contou para a regra do app (SPD-022):
+	// reverter desconta. Abaixo de três, os avisos dele voltam para a revisão.
+	if (capture.status === 'dismissed' && capture.reason === 'manual' && canLearnToIgnore(capture)) {
+		const key = appRuleKeyOf(capture.packageName);
+		const rule = toMerchantRule(await getMerchantRule(key));
+		if (rule?.treatAs === 'ignore') {
+			const next = forgetAppDismissal(rule);
+			if (next) await saveMerchantRule(next);
+			else await deleteMerchantRule(key);
+		}
+	}
+
 	if (capture.transactionId && capture.reason !== 'statement_transaction') {
 		await removePostedTransactions(capture);
 	}
@@ -985,6 +1032,7 @@ export default {
 	resolveCategoryId,
 	confirmCapture,
 	dismissCapture,
+	stopIgnoringApp,
 	markCaptureTransfer,
 	answerCaptureDuplicate,
 	answerCaptureTransfer,

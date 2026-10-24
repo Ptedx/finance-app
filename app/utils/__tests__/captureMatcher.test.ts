@@ -1,4 +1,6 @@
 import {
+	APP_IGNORE_THRESHOLD,
+	appRuleKeyOf,
 	type Candidate,
 	type DecisionContext,
 	decide,
@@ -6,10 +8,15 @@ import {
 	findTransferCounterpart,
 	findWalletDuplicate,
 	findWalletSuspect,
+	forgetAppDismissal,
+	isAppIgnored,
 	type KnownCapture,
+	learnFromAppDismissal,
 	learnFromConfirmation,
 	matchesOwnName,
+	type MerchantRule,
 } from '../captureMatcher';
+import { merchantKeyOf } from '../captureParser';
 
 const T0 = '2026-09-14T15:00:00.000Z';
 const plus = (ms: number): string => new Date(new Date(T0).getTime() + ms).toISOString();
@@ -456,5 +463,77 @@ describe('fingerprintOf', () => {
 		const a = fingerprintOf({ ...base, postedAt: T0 });
 		expect(fingerprintOf({ ...base, text: 'R$ 2,00 em X', postedAt: T0 })).not.toBe(a);
 		expect(fingerprintOf({ ...base, packageName: INTER, postedAt: T0 })).not.toBe(a);
+	});
+});
+
+/**
+ * SPD-022: depois de 3 descartes do mesmo app que não é banco, os avisos dele passam a
+ * ser ignorados. A regra mora em `merchant_rules`, com a chave `app:<pacote>`, e usa a
+ * ação `ignore` que o motor já tinha.
+ */
+describe('app que o usuário descartou 3 vezes (SPD-022)', () => {
+	/** E-mail: app que não é banco e que não junta remetentes de SMS. */
+	const MAIL = 'com.google.android.gm';
+	const SMS = 'com.google.android.apps.messaging';
+	const appRule = (confirmations: number): MerchantRule => ({
+		merchantKey: appRuleKeyOf(MAIL),
+		categoryId: null,
+		treatAs: 'ignore',
+		confirmations,
+	});
+
+	it('a chave do app nunca colide com a de um estabelecimento', () => {
+		expect(appRuleKeyOf(MAIL)).toBe(`app:${MAIL}`);
+		// `merchantKeyOf` só devolve letras, números e espaços: "app:" não sai dele.
+		expect(merchantKeyOf(`app:${MAIL}`)).not.toBe(appRuleKeyOf(MAIL));
+	});
+
+	it('cada descarte soma um, e o terceiro liga a regra', () => {
+		const first = learnFromAppDismissal(undefined, MAIL);
+		expect(first).toEqual(appRule(1));
+		expect(isAppIgnored(first)).toBe(false);
+		const second = learnFromAppDismissal(first, MAIL);
+		expect(isAppIgnored(second)).toBe(false);
+		const third = learnFromAppDismissal(second, MAIL);
+		expect(third.confirmations).toBe(APP_IGNORE_THRESHOLD);
+		expect(isAppIgnored(third)).toBe(true);
+	});
+
+	it('reverter um descarte desconta um; o último some com a regra', () => {
+		expect(forgetAppDismissal(appRule(3))).toEqual(appRule(2));
+		expect(isAppIgnored(forgetAppDismissal(appRule(3)) ?? undefined)).toBe(false);
+		expect(forgetAppDismissal(appRule(1))).toBeNull();
+	});
+
+	it('com a regra ligada, o aviso daquele app é ignorado antes de qualquer outra pergunta', () => {
+		// Uma perna "provável" de transferência na caixa: sem a regra, viraria pergunta.
+		const recent = [known({ id: 'in', packageName: INTER, direction: 'in', kind: 'pix_in', merchantKey: null })];
+		const mail = candidate({ packageName: MAIL, kind: 'pix_out', counterparty: null, merchantKey: null });
+		expect(decide(mail, context({ recent, appRule: appRule(3) }))).toEqual({ action: 'ignore', reason: 'app_rule' });
+	});
+
+	it('com menos de 3 descartes, segue como hoje', () => {
+		expect(decide(candidate({ packageName: MAIL }), context({ appRule: appRule(2) })).action).toBe('pending');
+	});
+
+	it('nunca ignora a carteira nem a linha de extrato por essa regra', () => {
+		const wallet = candidate({ packageName: SAMSUNG_PAY });
+		expect(
+			decide(wallet, context({ appRule: { ...appRule(5), merchantKey: appRuleKeyOf(SAMSUNG_PAY) } })).action
+		).toBe('pending');
+		const statement = candidate({ packageName: 'ofx:nubank:0001' });
+		expect(
+			decide(statement, context({ appRule: { ...appRule(5), merchantKey: appRuleKeyOf('ofx:nubank:0001') } })).action
+		).toBe('pending');
+	});
+
+	it('pacote de SMS nunca é ignorado pela regra do app, nem com uma regra gravada para ele', () => {
+		// Um pacote de SMS junta todos os remetentes, inclusive o banco.
+		const rule = { ...appRule(5), merchantKey: appRuleKeyOf(SMS) };
+		expect(decide(candidate({ packageName: SMS }), context({ appRule: rule })).action).toBe('pending');
+	});
+
+	it('uma regra de outro app não vale para este', () => {
+		expect(decide(candidate({ packageName: 'com.whatsapp' }), context({ appRule: appRule(3) })).action).toBe('pending');
 	});
 });

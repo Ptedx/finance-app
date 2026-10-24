@@ -15,6 +15,7 @@
  * vezes: ali a lápide conta como existente, e está dito caso a caso.
  */
 
+import { isSmsPackage } from '../utils/captureMatcher';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { nowTimestamp } from '../utils/dateUtils';
 import { db } from './database';
@@ -365,6 +366,40 @@ export const getTransferMerchantKeys = async (): Promise<string[]> => {
 	return rows.map((row) => row.merchantKey);
 };
 
+/** Um app que não é banco e que o usuário ensinou a ignorar (SPD-022). */
+export interface IgnoredApp {
+	packageName: string;
+	/** O nome que o app tinha na captura mais recente dele; o pacote, se não há nenhuma. */
+	appLabel: string;
+}
+
+/**
+ * Os apps cujos avisos estão sendo ignorados: a regra `app:<pacote>` que já chegou a
+ * `threshold` descartes. É a lista que a caixa de entrada mostra com "desfazer".
+ *
+ * O nome vem da captura mais recente daquele pacote — **com lápide e tudo**: a regra
+ * dura mais que o histórico podado, e "Avisos do WhatsApp" diz mais que o pacote. Sem
+ * captura nenhuma (a regra veio de outro aparelho), fica o pacote. Regra de
+ * estabelecimento "ignorar" não entra: a chave dela nunca começa com `app:`. Nem o SMS,
+ * mesmo com uma regra gravada para ele (de outro aparelho): o SMS nunca é ignorado por ela.
+ */
+export const getIgnoredApps = async (threshold: number): Promise<IgnoredApp[]> => {
+	const rows = await db.getAllAsync<{ packageName: string; appLabel: string | null }>(
+		`SELECT substr(r.merchantKey, 5) AS packageName,
+            (SELECT c.appLabel FROM captures c
+              WHERE c.packageName = substr(r.merchantKey, 5)
+              ORDER BY c.postedAt DESC LIMIT 1) AS appLabel
+       FROM merchant_rules r
+      WHERE substr(r.merchantKey, 1, 4) = 'app:' AND r.treatAs = 'ignore'
+        AND r.confirmations >= ? AND r.deletedAt IS NULL
+      ORDER BY r.merchantKey`,
+		[threshold]
+	);
+	return rows
+		.filter((row) => !isSmsPackage(row.packageName))
+		.map((row) => ({ packageName: row.packageName, appLabel: row.appLabel ?? row.packageName }));
+};
+
 /**
  * A saída avisada pela conta PJ pelo mesmo app ("você enviou R$ X para VINICIUS") que
  * o motor tratou como transferência para fora, sem par. Quando o recebimento da PJ
@@ -449,4 +484,5 @@ export default {
 	saveMerchantRule,
 	deleteMerchantRule,
 	getTransferMerchantKeys,
+	getIgnoredApps,
 };

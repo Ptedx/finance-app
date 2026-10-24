@@ -10,8 +10,10 @@ import {
 } from '../../modules/spendr-captures';
 import {
 	countPendingCaptures,
+	getIgnoredApps,
 	getPendingCaptures,
 	getResolvedCaptures,
+	type IgnoredApp,
 	pruneResolvedCaptures,
 } from '../database/captures';
 import type { Capture } from '../database/schema';
@@ -23,7 +25,9 @@ import {
 	ingestRawCaptures,
 	markCaptureTransfer,
 	revertCapture,
+	stopIgnoringApp,
 } from '../utils/captureActions';
+import { APP_IGNORE_THRESHOLD } from '../utils/captureMatcher';
 import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
 import { useAccounts } from './AccountsContext';
 import { useAuth } from './AuthContext';
@@ -56,6 +60,8 @@ interface CapturesContextType {
 	/** O que já saiu da fila, mais recente primeiro, para histórico e "reverter". */
 	resolved: Capture[];
 	pendingCount: number;
+	/** Apps que não são banco e que o usuário ensinou a ignorar, com "desfazer" (SPD-022). */
+	ignoredApps: IgnoredApp[];
 	isLoading: boolean;
 	lastAction: UndoableAction | null;
 
@@ -67,6 +73,8 @@ interface CapturesContextType {
 	answerDuplicate: (id: string, same: boolean) => Promise<void>;
 	answerTransfer: (id: string, isTransfer: boolean) => Promise<void>;
 	revert: (id: string) => Promise<void>;
+	/** Os avisos daquele app voltam para a revisão. */
+	unignoreApp: (packageName: string) => Promise<void>;
 	undo: () => Promise<void>;
 	clearUndo: () => void;
 	/** Abre o seletor de arquivos e importa um extrato OFX. `null` se cancelado. */
@@ -86,6 +94,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [pending, setPending] = useState<Capture[]>([]);
 	const [resolved, setResolved] = useState<Capture[]>([]);
 	const [pendingCount, setPendingCount] = useState(0);
+	const [ignoredApps, setIgnoredApps] = useState<IgnoredApp[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [lastAction, setLastAction] = useState<UndoableAction | null>(null);
 
@@ -115,14 +124,16 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	const load = useCallback(async () => {
-		const [nextPending, nextResolved, count] = await Promise.all([
+		const [nextPending, nextResolved, count, nextIgnored] = await Promise.all([
 			getPendingCaptures(),
 			getResolvedCaptures(HISTORY_LIMIT),
 			countPendingCaptures(),
+			getIgnoredApps(APP_IGNORE_THRESHOLD),
 		]);
 		setPending(nextPending);
 		setResolved(nextResolved);
 		setPendingCount(count);
+		setIgnoredApps(nextIgnored);
 	}, []);
 
 	/**
@@ -261,6 +272,14 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[load, reloadLedger]
 	);
 
+	const unignoreApp = useCallback(
+		async (packageName: string) => {
+			await stopIgnoringApp(packageName);
+			await load();
+		},
+		[load]
+	);
+
 	const undo = useCallback(async () => {
 		const action = lastAction;
 		if (!action) return;
@@ -290,6 +309,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			pending,
 			resolved,
 			pendingCount,
+			ignoredApps,
 			isLoading,
 			lastAction,
 			refresh,
@@ -300,6 +320,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			answerDuplicate,
 			answerTransfer,
 			revert,
+			unignoreApp,
 			undo,
 			clearUndo,
 			importStatement,
@@ -310,6 +331,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			pending,
 			resolved,
 			pendingCount,
+			ignoredApps,
 			isLoading,
 			lastAction,
 			refresh,
@@ -319,6 +341,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			answerDuplicate,
 			answerTransfer,
 			revert,
+			unignoreApp,
 			undo,
 			clearUndo,
 			importStatement,

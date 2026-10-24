@@ -23,10 +23,13 @@ import {
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
-import type { ParsedCapture, RawCapture } from './captureParser';
+import { isSmsPackage, isStatementPackage } from './captureMatcher';
+import { isWalletPackage, type ParsedCapture, type RawCapture } from './captureParser';
 import { bankLabelOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
 
 export { bankLabelOf, cardHintOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
+/** Os apps de SMS, ao lado de `BANK_PACKAGES`. A lista mora no `captureMatcher` (puro). */
+export { isSmsPackage, SMS_PACKAGES } from './captureMatcher';
 import { addDays, getISODate, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
 
@@ -39,6 +42,55 @@ export const ACCOUNT_COLORS: Record<AccountKind, string> = {
 };
 
 const yesterday = (): string => addDays(todayISO(), -1);
+
+/**
+ * Apps de banco reconhecidos pelo pacote, e o banco de cada um.
+ *
+ * O banco costuma ser reconhecido pelo nome do app (`brandFor`), e o nome é o que o
+ * aparelho mostra — que o usuário ou o fabricante podem trocar. O Mercado Pago é a conta
+ * do usuário onde fica a reserva financeira (SPD-022): não pode depender do nome na tela
+ * para contar como banco, nem nunca cair nas regras de "app que não é banco".
+ */
+export const BANK_PACKAGES: ReadonlyMap<string, string> = new Map([['com.mercadopago.wallet', 'Mercado Pago']]);
+
+/**
+ * O aviso como o resto do resolvedor deve vê-lo: o app de banco conhecido pelo pacote
+ * avisa com o nome do banco, diga o aparelho o que disser. Só para decidir a conta — a
+ * captura guarda o nome original.
+ */
+const asBankApp = (raw: RawCapture): RawCapture => {
+	const bank = BANK_PACKAGES.get(raw.packageName);
+	return bank && !brandFor(raw.appLabel) ? { ...raw, appLabel: bank } : raw;
+};
+
+/**
+ * Quem avisou é um app que não é banco: SMS, e-mail, mensageiro, loja, app de corrida.
+ *
+ * Não é "de terceiro" (`isForeignApp`): a carteira também é terceiro, mas tem tratamento
+ * próprio (a duplicata com o banco, o banco citado no texto) e nunca cai nas regras de
+ * ignorar. Nem o app de banco, nem o Mercado Pago, nem a linha de extrato.
+ */
+export const isNonBankApp = (raw: Pick<RawCapture, 'packageName' | 'appLabel'>): boolean =>
+	!isWalletPackage(raw.packageName) &&
+	!isStatementPackage(raw.packageName) &&
+	!BANK_PACKAGES.has(raw.packageName) &&
+	isForeignApp(raw);
+
+/**
+ * O aviso não diz de banco nenhum: veio de um app que não é banco e o texto não cita
+ * banco. É a conversa no WhatsApp que fala de Pix, o "pedido enviado" da loja, o recibo
+ * da corrida. Antes virava item "Sem conta" na revisão, e o usuário descartava à mão
+ * todas as vezes (C66, C67); desde o SPD-022 é ignorado direto, sem item nem conta.
+ */
+export const isNoBankNotice = (raw: Pick<RawCapture, 'packageName' | 'appLabel' | 'title' | 'text'>): boolean =>
+	isNonBankApp(raw) && bankLabelOf(raw) === null;
+
+/**
+ * O app pode aprender "ignorar" depois de 3 descartes: não é banco e não é SMS. O SMS
+ * fica de fora porque o pacote junta todos os remetentes, inclusive o banco.
+ */
+export const canLearnToIgnore = (raw: Pick<RawCapture, 'packageName' | 'appLabel'>): boolean =>
+	isNonBankApp(raw) && !isSmsPackage(raw.packageName);
 
 const newAccountDraft = (
 	partial: Pick<Account, 'name' | 'kind' | 'bankName' | 'last4' | 'packageName' | 'accountKey'> &
@@ -75,13 +127,14 @@ const newAccountDraft = (
  *
  * Devolve `null` quando não dá para saber de onde saiu o dinheiro: o aviso veio de um
  * app que não é banco (SMS, e-mail, mensageiro, app de corrida) e o texto não cita banco
- * nenhum. A captura fica sem conta e o usuário a atribui em "Sem conta" — é melhor do
- * que inventar uma conta chamada "WhatsApp" ao lado das de verdade.
+ * nenhum. É melhor do que inventar uma conta chamada "WhatsApp" ao lado das de verdade —
+ * e esse aviso nem chega aqui desde o SPD-022 (`isNoBankNotice`): a ingestão o ignora.
  */
 export const resolveAccountForNotification = async (
-	raw: RawCapture,
+	notification: RawCapture,
 	parsed: ParsedCapture
 ): Promise<Account | null> => {
+	const raw = asBankApp(notification);
 	const purchaseEve = addDays(getISODate(new Date(raw.postedAt)), -1);
 	const accounts = await getAccounts();
 	const target = pickNotificationTarget(accounts, { ...raw, cardLast4: parsed.cardLast4 });
@@ -286,6 +339,10 @@ export const findCheckingForCard = async (card: Account): Promise<Account | null
 export default {
 	resolveAccountForNotification,
 	resolveAccountForStatement,
+	isNonBankApp,
+	isNoBankNotice,
+	canLearnToIgnore,
+	BANK_PACKAGES,
 	findCardForInvoice,
 	findCheckingForCard,
 	isCreditCardNotification,

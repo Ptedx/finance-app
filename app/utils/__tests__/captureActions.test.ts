@@ -140,18 +140,20 @@ jest.mock('../../database/captures', () => ({
 	findUnpairedTransferLeg: jest.fn(async () => null),
 }));
 
-import { getBills, updateBill } from '../../database/database';
+import { addAccount, findAccountBySource, getBills, updateBill } from '../../database/database';
 import { onBillsChanged } from '../billEvents';
 import {
 	applyDecision,
 	confirmCapture,
+	dismissCapture,
 	ingestRawCaptures,
 	markCaptureTransfer,
 	resettleBillPayment,
 	revertCapture,
 	settleBillPayment,
+	stopIgnoringApp,
 } from '../captureActions';
-import { candidateFrom } from '../captureMatcher';
+import { appRuleKeyOf, candidateFrom } from '../captureMatcher';
 import { parseCapture, type RawCapture } from '../captureParser';
 import { getISODate } from '../dateUtils';
 import { scheduleBillReminders } from '../notificationUtils';
@@ -863,5 +865,198 @@ describe('editar o lançamento que deu a baixa refaz a baixa (SPD-067)', () => {
 
 		expect(errors).toHaveBeenCalled();
 		errors.mockRestore();
+	});
+});
+
+/**
+ * SPD-022 (DEC-08 a): o app capturava aviso de qualquer app que parecesse ter valor —
+ * WhatsApp, Gmail, Messages, app de corrida — e em produção isso criou seis contas
+ * fantasma. O aviso de app que não é banco e não cita banco nenhum virava "Sem conta" na
+ * revisão, e o usuário descartava à mão todas as vezes (C66, C67; NOTIF-10, AUTO-04).
+ */
+describe('avisos de apps que não são banco (SPD-022)', () => {
+	const SMS = 'com.google.android.apps.messaging';
+	/** E-mail: app que não é banco e que não junta remetentes de SMS. É nele que se aprende. */
+	const MAIL = 'com.google.android.gm';
+	const MERCADO_PAGO = 'com.mercadopago.wallet';
+	const SAMSUNG = 'com.samsung.android.spay';
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	const raw = (packageName: string, appLabel: string, title: string, text: string, step = 0): RawCapture => ({
+		packageName,
+		appLabel,
+		title,
+		text,
+		postedAt: new Date(Date.parse('2026-10-23T15:00:00.000Z') + step * 10 * 60_000).toISOString(),
+	});
+	/** O SMS do Bradesco: app que não é banco, mas o texto cita o banco. Um valor por aviso. */
+	const bradescoSms = (index: number): RawCapture =>
+		raw(SMS, 'Mensagens', 'Bradesco', `BRADESCO CARTOES: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ ${40 + index},00 EM DROGASIL.`, index);
+	/** O e-mail do Santander: também não é banco, também cita o banco. */
+	const santanderMail = (index: number): RawCapture =>
+		raw(MAIL, 'Gmail', 'Santander', `Compra no cartão final 7890 aprovada: R$ ${40 + index},00 em LOJA ABC.`, index);
+	const ingest = (...raws: RawCapture[]) => ingestRawCaptures(raws, { ownNames: [], categories });
+	const ofPackage = (packageName: string): Capture[] =>
+		[...mockCaptures.values()].filter((capture) => capture.packageName === packageName);
+	const seedFrom = (packageName: string, appLabel: string): Capture =>
+		seedCapture({ packageName, appLabel, accountId: null, counterparty: null, merchantKey: null, kind: 'purchase' });
+	const dismissThree = async (packageName: string, appLabel: string): Promise<Capture[]> => {
+		const seeded = [seedFrom(packageName, appLabel), seedFrom(packageName, appLabel), seedFrom(packageName, appLabel)];
+		for (const capture of seeded) await dismissCapture(capture.id);
+		return seeded;
+	};
+
+	// A conta já ligada ao app vem direto, como no SQL de verdade.
+	beforeEach(() => {
+		(findAccountBySource as jest.Mock).mockImplementation(
+			async (packageName: string) => [...mockAccounts.values()].find((item) => item.packageName === packageName) ?? null
+		);
+	});
+	afterEach(() => {
+		(findAccountBySource as jest.Mock).mockImplementation(async () => null);
+	});
+
+	it('conversa no WhatsApp citando Pix é ignorada direto: nenhum item, nenhuma conta (C67)', async () => {
+		const summary = await ingest(raw('com.whatsapp', 'WhatsApp', 'Maria', 'Pix enviado! R$ 50,00, confere aí'));
+
+		expect(summary.inserted).toBe(0);
+		expect(mockCaptures.size).toBe(0);
+		expect(addAccount).not.toHaveBeenCalled();
+	});
+
+	it('"pedido enviado" do app de compras também (C66)', async () => {
+		await ingest(raw('com.amazon.mShop.android.shopping', 'Amazon', 'Pedido enviado', 'Seu pedido de R$ 129,90 foi enviado.'));
+
+		expect(mockCaptures.size).toBe(0);
+		expect(addAccount).not.toHaveBeenCalled();
+	});
+
+	it('o SMS que cita o banco segue como hoje: vai para a revisão, sem conta criada', async () => {
+		await ingest(bradescoSms(1));
+
+		expect(ofPackage(SMS)).toEqual([expect.objectContaining({ status: 'pending', accountId: null })]);
+		expect(addAccount).not.toHaveBeenCalled();
+	});
+
+	it('depois de 3 descartes do mesmo app, o aviso seguinte dele é ignorado e fica no histórico', async () => {
+		await dismissThree(MAIL, 'Gmail');
+		expect(mockRules.get(appRuleKeyOf(MAIL))).toMatchObject({ treatAs: 'ignore', confirmations: 3 });
+
+		await ingest(santanderMail(4));
+
+		const next = ofPackage(MAIL).find((capture) => capture.status !== 'dismissed');
+		expect(next).toMatchObject({ status: 'ignored', reason: 'app_rule' });
+	});
+
+	it('com 2 descartes ainda pergunta', async () => {
+		await dismissCapture(seedFrom(MAIL, 'Gmail').id);
+		await dismissCapture(seedFrom(MAIL, 'Gmail').id);
+
+		await ingest(santanderMail(3));
+
+		expect(ofPackage(MAIL).find((capture) => capture.status !== 'dismissed')?.status).toBe('pending');
+	});
+
+	it('descartar de novo o que já estava descartado não conta duas vezes', async () => {
+		const capture = seedFrom(MAIL, 'Gmail');
+		await dismissCapture(capture.id);
+		await dismissCapture(capture.id);
+
+		expect(mockRules.get(appRuleKeyOf(MAIL))?.confirmations).toBe(1);
+	});
+
+	it('desfazer o aprendizado volta a perguntar, e a contagem recomeça do zero', async () => {
+		await dismissThree(MAIL, 'Gmail');
+
+		await stopIgnoringApp(MAIL);
+		expect(mockRules.has(appRuleKeyOf(MAIL))).toBe(false);
+
+		await ingest(santanderMail(4));
+		const next = ofPackage(MAIL).find((capture) => capture.status !== 'dismissed');
+		expect(next?.status).toBe('pending');
+
+		await dismissCapture(next?.id as string);
+		expect(mockRules.get(appRuleKeyOf(MAIL))?.confirmations).toBe(1);
+	});
+
+	it('reverter um dos descartes desconta: o app volta a perguntar', async () => {
+		const [, , third] = await dismissThree(MAIL, 'Gmail');
+
+		await revertCapture(third.id);
+		expect(mockRules.get(appRuleKeyOf(MAIL))?.confirmations).toBe(2);
+
+		await ingest(santanderMail(4));
+		const next = ofPackage(MAIL).find((capture) => capture.status !== 'dismissed' && capture.id !== third.id);
+		expect(next?.status).toBe('pending');
+	});
+
+	// Um pacote de SMS junta todos os remetentes: calar "Mensagens" calaria também o SMS do
+	// banco. Em produção há uma conta fantasma "Messages", então SMS com valor chega.
+	it('3 descartes de SMS que cita banco não ensinam nada: o SMS seguinte ainda pergunta', async () => {
+		await dismissThree(SMS, 'Mensagens');
+		expect(mockRules.has(appRuleKeyOf(SMS))).toBe(false);
+
+		await ingest(bradescoSms(4));
+
+		expect(ofPackage(SMS).find((capture) => capture.status !== 'dismissed')?.status).toBe('pending');
+	});
+
+	it('nem uma regra "ignorar" do SMS vinda de outro aparelho cala o SMS', async () => {
+		mockRules.set(appRuleKeyOf(SMS), {
+			merchantKey: appRuleKeyOf(SMS),
+			categoryId: null,
+			treatAs: 'ignore',
+			confirmations: 5,
+			updatedAt: '',
+		});
+
+		await ingest(bradescoSms(1));
+
+		expect(ofPackage(SMS)).toEqual([expect.objectContaining({ status: 'pending' })]);
+	});
+
+	it('o SMS que não cita banco continua ignorado direto (regra 1)', async () => {
+		await ingest(raw(SMS, 'Mensagens', 'Loja', 'Seu pedido de R$ 129,90 foi enviado.'));
+
+		expect(mockCaptures.size).toBe(0);
+	});
+
+	it('descartar avisos do app do banco nunca ensina a ignorar o banco', async () => {
+		await dismissThree('com.nu.production', 'Nubank');
+
+		expect([...mockRules.keys()].some((key) => key.startsWith('app:'))).toBe(false);
+	});
+
+	it('nem da carteira, que tem tratamento próprio', async () => {
+		await dismissThree(SAMSUNG, 'Samsung Wallet');
+
+		expect([...mockRules.keys()].some((key) => key.startsWith('app:'))).toBe(false);
+	});
+
+	it('o Mercado Pago é banco: o aviso dele entra na conta dele, e descartá-lo não ensina a ignorá-lo', async () => {
+		const reserve = account({ id: 'mp', name: 'Reserva', role: 'reserve', bankName: 'Mercado Pago' });
+		mockAccounts.set(reserve.id, reserve);
+
+		await ingest(raw(MERCADO_PAGO, 'Mercado Pago', 'Pagamento aprovado', 'Você pagou R$ 32,50 para LOJA DO ZE.'));
+		expect(ofPackage(MERCADO_PAGO)).toEqual([expect.objectContaining({ status: 'pending', accountId: 'mp' })]);
+
+		await dismissThree(MERCADO_PAGO, 'Mercado Pago');
+		expect(mockRules.has(appRuleKeyOf(MERCADO_PAGO))).toBe(false);
+
+		// Mesmo com uma regra "ignorar" gravada para ele (vinda de outro aparelho, por
+		// exemplo), o aviso do Mercado Pago nunca é ignorado por ela.
+		mockRules.set(appRuleKeyOf(MERCADO_PAGO), {
+			merchantKey: appRuleKeyOf(MERCADO_PAGO),
+			categoryId: null,
+			treatAs: 'ignore',
+			confirmations: 9,
+			updatedAt: '',
+		});
+		await ingest(raw(MERCADO_PAGO, 'Mercado Pago', 'Pix recebido', 'Você recebeu R$ 100,00 de FULANO.', 2));
+		const received = ofPackage(MERCADO_PAGO).find((capture) => capture.amountCents === 10_000);
+		expect(received).toMatchObject({ status: 'pending', accountId: 'mp' });
 	});
 });
