@@ -428,6 +428,15 @@ export const SMS_PACKAGES: ReadonlySet<string> = new Set([
 
 export const isSmsPackage = (packageName: string): boolean => SMS_PACKAGES.has(packageName);
 
+/**
+ * Apps cujos avisos nunca são capturados, citem banco ou não (SPD-069, DEC-29). O
+ * OnlineBanking é um app que o usuário desenvolve para um banco: os avisos dele são de
+ * teste, não dinheiro dele. Para bloquear outro app, basta acrescentar o pacote aqui.
+ */
+export const BLOCKED_PACKAGES: ReadonlySet<string> = new Set(['com.mobileapp.basasuperapp']);
+
+export const isBlockedPackage = (packageName: string): boolean => BLOCKED_PACKAGES.has(packageName);
+
 /** A regra está ligada: o usuário já descartou avisos daquele app vezes suficientes. */
 export const isAppIgnored = (rule: MerchantRule | undefined): boolean =>
 	rule?.treatAs === 'ignore' && rule.confirmations >= APP_IGNORE_THRESHOLD;
@@ -596,6 +605,7 @@ export default {
 	isAppIgnored,
 	appRuleKeyOf,
 	isSmsPackage,
+	isBlockedPackage,
 	candidateFrom,
 	isStatementPackage,
 	withinStatementLag,

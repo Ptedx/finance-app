@@ -15,7 +15,7 @@
  * vezes: ali a lápide conta como existente, e está dito caso a caso.
  */
 
-import { isSmsPackage } from '../utils/captureMatcher';
+import { BLOCKED_PACKAGES, isSmsPackage } from '../utils/captureMatcher';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { nowTimestamp } from '../utils/dateUtils';
 import { db } from './database';
@@ -207,16 +207,24 @@ export const getRecentCaptures = async (sinceISO: string): Promise<Capture[]> =>
 	return rows.map(toCapture);
 };
 
+/**
+ * O pendente que veio de app bloqueado (SPD-069) não está na fila: o que já estava na caixa
+ * antes do bloqueio, e o que chegar pelo sync de um aparelho que ainda não bloqueava.
+ */
+const notBlocked = `packageName NOT IN (${[...BLOCKED_PACKAGES].map(() => '?').join(', ')})`;
+
 export const getPendingCaptures = async (): Promise<Capture[]> => {
 	const rows = await db.getAllAsync<CaptureRow>(
-		"SELECT * FROM captures WHERE status = 'pending' AND deletedAt IS NULL ORDER BY postedAt DESC"
+		`SELECT * FROM captures WHERE status = 'pending' AND deletedAt IS NULL AND ${notBlocked} ORDER BY postedAt DESC`,
+		[...BLOCKED_PACKAGES]
 	);
 	return rows.map(toCapture);
 };
 
 export const countPendingCaptures = async (): Promise<number> => {
 	const row = await db.getFirstAsync<{ count: number }>(
-		"SELECT COUNT(*) AS count FROM captures WHERE status = 'pending' AND deletedAt IS NULL"
+		`SELECT COUNT(*) AS count FROM captures WHERE status = 'pending' AND deletedAt IS NULL AND ${notBlocked}`,
+		[...BLOCKED_PACKAGES]
 	);
 	return row?.count ?? 0;
 };

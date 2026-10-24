@@ -8,7 +8,7 @@ jest.mock('../../database/database', () => ({
 
 import { addAccount, findAccountByKey, findAccountBySource, getAccounts, updateAccount } from '../../database/database';
 import type { Account } from '../../database/schema';
-import { isNoBankNotice, isNonBankApp, isSmsPackage, resolveAccountForNotification, SMS_PACKAGES } from '../accountResolver';
+import { isBlockedPackage, isNoBankNotice, isNonBankApp, isSmsPackage, resolveAccountForNotification, SMS_PACKAGES } from '../accountResolver';
 import type { ParsedCapture, RawCapture } from '../captureParser';
 
 const INTER = 'br.com.intermedium';
@@ -361,5 +361,34 @@ describe('o que conta como banco (SPD-022)', () => {
 		expect(resolved?.id).toBe('reserva');
 		expect(mocked.addAccount).not.toHaveBeenCalled();
 		expect(mocked.updateAccount).toHaveBeenCalledWith(expect.objectContaining({ id: 'reserva', packageName: MERCADO_PAGO }));
+	});
+});
+
+/**
+ * SPD-069 (DEC-29): o OnlineBanking (`com.mobileapp.basasuperapp`) é um app que o usuário
+ * desenvolve para um banco — não é conta dele, e nenhum aviso dele é capturado. E app de
+ * banco conhecido pelo pacote nunca é "app que não é banco", mesmo com um nome na tela que
+ * o app não reconhece: sem isso, o aviso dele que não cita o banco seria ignorado.
+ */
+describe('pacotes bloqueados e bancos conhecidos (SPD-069)', () => {
+	const notice = (packageName: string, appLabel: string, title: string, text: string): RawCapture => ({
+		packageName,
+		appLabel,
+		title,
+		text,
+		postedAt: '2026-10-23T15:00:00.000Z',
+	});
+
+	it('o OnlineBanking está bloqueado; os bancos, não', () => {
+		expect(isBlockedPackage('com.mobileapp.basasuperapp')).toBe(true);
+		for (const bank of ['com.nu.production', INTER, 'com.mercadopago.wallet', 'com.picpay']) {
+			expect(isBlockedPackage(bank)).toBe(false);
+		}
+	});
+
+	it('app de banco conhecido com um nome que o app não reconhece continua sendo banco', () => {
+		const raw = notice('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.');
+		expect(isNonBankApp(raw)).toBe(false);
+		expect(isNoBankNotice(raw)).toBe(false);
 	});
 });

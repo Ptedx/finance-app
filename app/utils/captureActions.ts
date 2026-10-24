@@ -70,6 +70,7 @@ import {
 	fingerprintOf,
 	forgetAppDismissal,
 	isAppIgnored,
+	isBlockedPackage,
 	type KnownCapture,
 	learnFromAppDismissal,
 	learnFromConfirmation,
@@ -726,6 +727,11 @@ export const ingestRawCaptures = async (
 		// e o que não for gravado aqui se perde.
 		try {
 		fingerprint = fingerprintOf(raw);
+		// App bloqueado (SPD-069): nada dele entra, nem citando banco. O diário guarda só o pacote.
+		if (isBlockedPackage(raw.packageName)) {
+			logCaptureDecision({ raw, fingerprint, outcome: { step: 'blocked' } });
+			continue;
+		}
 		if (await hasCaptureFingerprint(fingerprint)) {
 			logCaptureDecision({ raw, fingerprint, outcome: { step: 'already_seen' } });
 			continue;

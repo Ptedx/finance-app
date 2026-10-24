@@ -23,6 +23,8 @@ export type CaptureStep =
 	| { step: 'not_money' }
 	/** App que não é banco e texto que não cita banco (SPD-022). */
 	| { step: 'no_bank' }
+	/** App bloqueado: nada dele entra (SPD-069). */
+	| { step: 'blocked' }
 	| {
 			step: 'decided';
 			/** A decisão gravada. */
@@ -121,6 +123,10 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 		case 'no_bank':
 			data.outcome = 'ignored';
 			data.reason = 'no_bank';
+			break;
+		case 'blocked':
+			data.outcome = 'ignored';
+			data.reason = 'blocked';
 			break;
 		case 'decided': {
 			const shown = outcomeOf(outcome.decision, outcome.currencyReview === true);

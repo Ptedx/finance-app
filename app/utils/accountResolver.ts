@@ -23,13 +23,14 @@ import {
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
+import { isKnownBankPackage } from '../diagnostics/knownBanks';
 import { isSmsPackage, isStatementPackage } from './captureMatcher';
 import { isWalletPackage, type ParsedCapture, type RawCapture } from './captureParser';
 import { bankLabelOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
 
 export { bankLabelOf, cardHintOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
 /** Os apps de SMS, ao lado de `BANK_PACKAGES`. A lista mora no `captureMatcher` (puro). */
-export { isSmsPackage, SMS_PACKAGES } from './captureMatcher';
+export { BLOCKED_PACKAGES, isBlockedPackage, isSmsPackage, SMS_PACKAGES } from './captureMatcher';
 import { addDays, getISODate, todayISO } from './dateUtils';
 import type { OfxAccount } from './ofxParser';
 
@@ -69,11 +70,16 @@ const asBankApp = (raw: RawCapture): RawCapture => {
  * Não é "de terceiro" (`isForeignApp`): a carteira também é terceiro, mas tem tratamento
  * próprio (a duplicata com o banco, o banco citado no texto) e nunca cai nas regras de
  * ignorar. Nem o app de banco, nem o Mercado Pago, nem a linha de extrato.
+ *
+ * O app de banco conhecido pelo pacote (`KNOWN_BANK_PACKAGES`) também nunca é: o nome na
+ * tela pode ser um que `brandFor` não reconhece ("Carteira digital" no PicPay), e o aviso
+ * dele que não cita o banco seria ignorado direto (SPD-069).
  */
 export const isNonBankApp = (raw: Pick<RawCapture, 'packageName' | 'appLabel'>): boolean =>
 	!isWalletPackage(raw.packageName) &&
 	!isStatementPackage(raw.packageName) &&
 	!BANK_PACKAGES.has(raw.packageName) &&
+	!isKnownBankPackage(raw.packageName) &&
 	isForeignApp(raw);
 
 /**

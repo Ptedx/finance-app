@@ -1060,3 +1060,41 @@ describe('avisos de apps que não são banco (SPD-022)', () => {
 		expect(received).toMatchObject({ status: 'pending', accountId: 'mp' });
 	});
 });
+
+/**
+ * SPD-069 (DEC-29): nenhum aviso do OnlineBanking (`com.mobileapp.basasuperapp`) entra,
+ * nem citando banco; e o aviso de app de banco conhecido não é ignorado só porque o nome
+ * dele na tela não é reconhecido.
+ */
+describe('app bloqueado e banco conhecido (SPD-069)', () => {
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+	const raw = (packageName: string, appLabel: string, title: string, text: string): RawCapture => ({
+		packageName,
+		appLabel,
+		title,
+		text,
+		postedAt: '2026-10-23T15:00:00.000Z',
+	});
+	const ingest = (...raws: RawCapture[]) => ingestRawCaptures(raws, { ownNames: [], categories });
+
+	it('o aviso do OnlineBanking não entra, nem citando banco: nenhum item, nenhuma conta, nenhuma regra', async () => {
+		const summary = await ingest(
+			raw('com.mobileapp.basasuperapp', 'OnlineBanking', 'Nubank', 'Compra aprovada no cartão Nubank final 1234: R$ 10,00 em LOJA TESTE.')
+		);
+
+		expect(summary.inserted).toBe(0);
+		expect(mockCaptures.size).toBe(0);
+		expect(addAccount).not.toHaveBeenCalled();
+		expect(mockRules.size).toBe(0);
+	});
+
+	it('o aviso do PicPay com um nome na tela que o app não reconhece vai para a revisão', async () => {
+		const summary = await ingest(raw('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.'));
+
+		expect(summary.inserted).toBe(1);
+		expect([...mockCaptures.values()]).toEqual([expect.objectContaining({ packageName: 'com.picpay', status: 'pending' })]);
+	});
+});

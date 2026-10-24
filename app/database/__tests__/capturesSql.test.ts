@@ -62,7 +62,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	multiRemove: jest.fn(async () => undefined),
 }));
 
-import { deleteMerchantRule, getIgnoredApps, insertCapture, saveMerchantRule } from '../captures';
+import { countPendingCaptures, deleteMerchantRule, getIgnoredApps, getPendingCaptures, insertCapture, saveMerchantRule } from '../captures';
 import { db, initDatabase } from '../database';
 import type { Capture } from '../schema';
 
@@ -156,5 +156,27 @@ describeSql('apps ignorados, SQL de verdade (SPD-022)', () => {
 		await appRule(WHATSAPP, 3);
 
 		expect(await getIgnoredApps(3)).toEqual([{ packageName: WHATSAPP, appLabel: 'WhatsApp' }]);
+	});
+});
+
+/**
+ * SPD-069 (DEC-29): o que já estava na caixa vindo do OnlineBanking sai da fila — também o
+ * que chegar pelo sync de um aparelho que ainda não bloqueava.
+ */
+describeSql('app bloqueado fora da fila, SQL de verdade (SPD-069)', () => {
+	beforeAll(async () => {
+		jest.spyOn(console, 'log').mockImplementation(() => undefined);
+		await initDatabase();
+	});
+	beforeEach(async () => {
+		await db.execAsync('DELETE FROM captures; DELETE FROM merchant_rules;');
+	});
+
+	it('a fila e a contagem não trazem o pendente do OnlineBanking', async () => {
+		await insertCapture(capture({ status: 'pending', reason: null }));
+		await insertCapture(capture({ packageName: 'com.mobileapp.basasuperapp', appLabel: 'OnlineBanking', status: 'pending', reason: null }));
+
+		expect((await getPendingCaptures()).map((item) => item.packageName)).toEqual([MAIL]);
+		expect(await countPendingCaptures()).toBe(1);
 	});
 });
