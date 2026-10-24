@@ -227,3 +227,33 @@ describe('a conta de uma notificação', () => {
 		expect(mocked.updateAccount).not.toHaveBeenCalled();
 	});
 });
+
+describe('conta arquivada ligada ao app (SPD-002)', () => {
+	it('só a arquivada é do app: a captura fica sem conta, sem nascer outra no lugar dela', async () => {
+		withAccounts([account({ id: 'inter-velha', name: 'Inter', bankName: 'Inter', packageName: INTER, archived: true })]);
+
+		const resolved = await resolveAccountForNotification(debitPurchase, parsed);
+
+		expect(resolved).toBeNull();
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+		expect(mocked.updateAccount).not.toHaveBeenCalled();
+	});
+
+	it('não adota uma conta arquivada sem app como gêmea', async () => {
+		withAccounts([account({ id: 'inter-arquivada', name: 'Inter PF', bankName: 'Inter', archived: true })]);
+
+		await resolveAccountForNotification(debitPurchase, parsed);
+
+		expect(mocked.updateAccount).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'inter-arquivada' }));
+	});
+
+	it('arquivada ligada ao app + a do mesmo banco ativa sem app: vai para a ativa', async () => {
+		withAccounts([
+			account({ id: 'inter-velha', name: 'Inter', bankName: 'Inter', packageName: INTER, archived: true }),
+			account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter' }),
+		]);
+
+		expect((await resolveAccountForNotification(debitPurchase, parsed))?.id).toBe('inter-pf');
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+	});
+});

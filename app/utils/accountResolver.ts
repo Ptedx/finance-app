@@ -131,7 +131,8 @@ export const resolveAccountForNotification = async (
 
 	if (!isCard) {
 		// Contas do mesmo banco ainda sem app: a do extrato (OFX) ou a cadastrada à mão.
-		const twins = ofBank.filter((account) => account.packageName === null);
+		// Arquivada não vira gêmea: o usuário a tirou de cena (SPD-002).
+		const twins = ofBank.filter((account) => account.packageName === null && !account.archived);
 		// Com duas contas do mesmo banco (a PF e a PJ, por exemplo) o aviso não diz qual é:
 		// adivinhar poria dinheiro na conta errada, então a nova nasce como antes.
 		if (twins.length === 1) {
@@ -140,6 +141,14 @@ export const resolveAccountForNotification = async (
 			return { ...twin, packageName: raw.packageName };
 		}
 	}
+
+	// Ligada ao app só sobrou conta arquivada: o usuário a tirou de cena. Não nasce outra no
+	// lugar dela; a captura fica sem conta, para o usuário atribuir (SPD-002).
+	const archivedBound = ofBank.some(
+		(account) =>
+			account.archived && account.packageName === raw.packageName && account.last4 === last4
+	);
+	if (archivedBound) return null;
 
 	const id = await addAccount(
 		newAccountDraft({

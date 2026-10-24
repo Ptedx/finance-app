@@ -1509,18 +1509,24 @@ export const getAccount = async (id: string): Promise<Account | null> => {
 	return row ? convertAccount(row) : null;
 };
 
-/** A conta ligada a um app do banco e, para cartões, ao final do cartão. */
+/**
+ * A conta ligada a um app do banco e, para cartões, ao final do cartão.
+ *
+ * Arquivada nunca é destino de captura: arquivar a duplicata "Inter" que ainda estava
+ * ligada ao app fazia toda compra do Inter cair nela, longe da tela, em vez da "Inter
+ * PF" ativa. Arquivada continua arquivada e ligada; a captura segue sem ela.
+ */
 export const findAccountBySource = async (
 	packageName: string,
 	last4: string | null
 ): Promise<Account | null> => {
 	const row = last4
 		? await db.getFirstAsync<AccountDB>(
-				'SELECT * FROM accounts WHERE packageName = ? AND last4 = ? AND deletedAt IS NULL',
+				'SELECT * FROM accounts WHERE packageName = ? AND last4 = ? AND archived = 0 AND deletedAt IS NULL',
 				[packageName, last4]
 			)
 		: await db.getFirstAsync<AccountDB>(
-				"SELECT * FROM accounts WHERE packageName = ? AND last4 IS NULL AND kind <> 'credit_card' AND deletedAt IS NULL",
+				"SELECT * FROM accounts WHERE packageName = ? AND last4 IS NULL AND kind <> 'credit_card' AND archived = 0 AND deletedAt IS NULL",
 				[packageName]
 			);
 	return row ? convertAccount(row) : null;
@@ -1772,26 +1778,41 @@ export const getAccountActivity = async (
 };
 
 /**
- * Saldo de cada conta no fim de `asOfDate`: a âncora mais tudo que veio depois dela.
- * Uma só consulta para todas as contas; a tela inicial chama isto a cada recarga.
+ * Saldo de cada conta no fim de `asOfDate`, a partir da âncora (o saldo no fim de
+ * `openingBalanceDate`, com tudo até aquele dia já dentro dele).
+ *
+ * Depois da âncora: a âncora mais o que veio depois dela, até a data. **Antes** da
+ * âncora: a âncora menos o que houve entre a data e ela — desfazer os movimentos é o
+ * único jeito de chegar no saldo de um dia que a âncora já engoliu. Devolver a própria
+ * âncora ali fazia o envelope acertado no dia 16 "ter sobrado" R$ 850 do mês anterior,
+ * quando a sobra de verdade era R$ 150, e o teto do mês inchava.
+ *
+ * As duas metades são a mesma janela, entre a menor e a maior das duas datas, com o
+ * sinal trocado. Uma só consulta para todas as contas; a tela inicial chama isto a cada
+ * recarga.
  */
 export const getAccountBalances = async (asOfDate: string): Promise<Map<string, number>> => {
 	const rows = await db.getAllAsync<{ accountId: string; balanceCents: number }>(
 		`SELECT a.id AS accountId,
             a.openingBalanceCents
-            + COALESCE((SELECT SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE -t.amountCents END)
-                        FROM transactions t
-                        WHERE t.accountId = a.id AND t.deletedAt IS NULL
-                          AND t.date > a.openingBalanceDate AND t.date <= ?), 0)
-            - COALESCE((SELECT SUM(x.amountCents) FROM transfers x
-                        WHERE x.fromAccountId = a.id AND x.deletedAt IS NULL
-                          AND x.date > a.openingBalanceDate AND x.date <= ?), 0)
-            + COALESCE((SELECT SUM(x.amountCents) FROM transfers x
-                        WHERE x.toAccountId = a.id AND x.deletedAt IS NULL
-                          AND x.date > a.openingBalanceDate AND x.date <= ?), 0) AS balanceCents
-     FROM accounts a
+            + (CASE WHEN p.asOf >= a.openingBalanceDate THEN 1 ELSE -1 END) * (
+                COALESCE((SELECT SUM(CASE WHEN t.isIncome = 1 THEN t.amountCents ELSE -t.amountCents END)
+                          FROM transactions t
+                          WHERE t.accountId = a.id AND t.deletedAt IS NULL
+                            AND t.date > MIN(a.openingBalanceDate, p.asOf)
+                            AND t.date <= MAX(a.openingBalanceDate, p.asOf)), 0)
+              - COALESCE((SELECT SUM(x.amountCents) FROM transfers x
+                          WHERE x.fromAccountId = a.id AND x.deletedAt IS NULL
+                            AND x.date > MIN(a.openingBalanceDate, p.asOf)
+                            AND x.date <= MAX(a.openingBalanceDate, p.asOf)), 0)
+              + COALESCE((SELECT SUM(x.amountCents) FROM transfers x
+                          WHERE x.toAccountId = a.id AND x.deletedAt IS NULL
+                            AND x.date > MIN(a.openingBalanceDate, p.asOf)
+                            AND x.date <= MAX(a.openingBalanceDate, p.asOf)), 0)
+              ) AS balanceCents
+     FROM accounts a, (SELECT ? AS asOf) p
      WHERE a.deletedAt IS NULL`,
-		[asOfDate, asOfDate, asOfDate]
+		[asOfDate]
 	);
 	return new Map(rows.map((row) => [row.accountId, row.balanceCents]));
 };

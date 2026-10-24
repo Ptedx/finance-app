@@ -55,6 +55,7 @@ import {
 	assignUnassignedToAccount,
 	deleteAccount,
 	deleteTransfersOf,
+	findAccountBySource,
 	migrationLadder,
 	type MigrationStep,
 	resetDatabase,
@@ -120,6 +121,22 @@ describe('apagar uma conta', () => {
 		reset();
 		await deleteTransfersOf('conta');
 		expect(sqlOf(matching('UPDATE transfers', 'deletedAt = ?'))).toEqual(fromDelete);
+	});
+});
+
+describe('a conta de uma captura pelo app do banco', () => {
+	/*
+	 * O resultado (qual linha volta) está em `accountSql.test.ts`, no SQLite de verdade;
+	 * aqui fica a guarda que roda sem a flag do `node:sqlite`.
+	 */
+	it.each([
+		['conta corrente', null],
+		['cartão pelo final', '1534'],
+	])('%s: arquivada não entra na busca', async (_label, last4) => {
+		await findAccountBySource('br.com.intermedium', last4);
+		const [lookup] = matching('SELECT * FROM accounts', 'packageName = ?');
+		expect(lookup.sql).toContain('archived = 0');
+		expect(lookup.sql).toContain('deletedAt IS NULL');
 	});
 });
 
