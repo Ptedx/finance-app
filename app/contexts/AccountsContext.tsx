@@ -25,12 +25,13 @@ import {
 	setAccountAnchor,
 	setAccountBalanceToday,
 	updateAccount,
+	updateTransfer,
 } from '../database/database';
 import { getPendingCaptures } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Capture, Transfer } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import { type AccountsOverview, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
+import { type AccountsOverview, periodSpentCents, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
 import {
 	buildCardSummary,
 	cardInstallmentDates,
@@ -41,6 +42,7 @@ import {
 	existingInstallmentDates,
 	invoicesClosingBetween,
 	isSameCardPayment,
+	pickOpenCardPayment,
 	planCardAdjustment,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
@@ -376,7 +378,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setUnassignedNetCents(unassigned);
 			setPeriodTransfers(transfersInPeriod);
 			setPeriodSpentByAccount(
-				new Map(activity.map((item) => [item.accountId, Math.max(0, item.expenseCents - item.incomeCents)]))
+				new Map(activity.map((item) => [item.accountId, periodSpentCents(item, item.role)]))
 			);
 			setMonth(buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod }));
 		} catch (error) {
@@ -569,6 +571,24 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			if (already) {
 				await refresh();
 				return false;
+			}
+			// Com 0 ou 2+ cartões no banco, o aviso gravou o pagamento com destino em branco: é
+			// este mesmo movimento, e criar outro debitaria a conta duas vezes. Completa o destino.
+			if (fromAccountId !== null) {
+				const open = pickOpenCardPayment(await getAccountTransfers(fromAccountId), { fromAccountId, amountCents, date });
+				if (open) {
+					await updateTransfer({
+						id: open.id,
+						fromAccountId: open.fromAccountId,
+						toAccountId: cardId,
+						amountCents: open.amountCents,
+						date: open.date,
+						note: open.note,
+					});
+					syncQueue.schedule();
+					await refresh();
+					return false;
+				}
 			}
 			await addTransfer({ fromAccountId, toAccountId: cardId, amountCents, date, note: '' });
 			syncQueue.schedule();
