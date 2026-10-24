@@ -135,6 +135,49 @@ describe('aporte por horizonte', () => {
 	it('sem rendimento é a diferença dividida pelos meses', () => {
 		expect(contributionForHorizon({ capitalCents: R(100), requiredCapitalCents: R(1_300), monthlyRate: 0, months: 12 })).toBe(R(100));
 	});
+
+	describe('5.3 — "reserva primeiro" vale aqui também', () => {
+		it('sem rendimento, o atraso divide a diferença pelos meses que sobram', () => {
+			// 12 meses de horizonte, 6 deles enchendo a reserva: a diferença sai em 6 aportes.
+			expect(contributionForHorizon({ capitalCents: R(100), requiredCapitalCents: R(1_300), monthlyRate: 0, months: 12, delayMonths: 6 })).toBe(R(200));
+			expect(contributionForHorizon({ capitalCents: R(100), requiredCapitalCents: R(1_300), monthlyRate: 0, months: 12, delayMonths: 0 })).toBe(R(100));
+		});
+
+		it('o aporte com atraso é maior, e chega de fato no horizonte pedido', () => {
+			// O caso do achado: reserva que enche em 30 meses, meta de 20 anos. Antes o card
+			// pedia o aporte de quem começa no mês 1 — e a meta chegava em uns 23 anos.
+			const months = 240;
+			const delayMonths = 30;
+			const common = { capitalCents: R(20_000), requiredCapitalCents: R(1_500_000), monthlyRate: rate };
+			const withoutDelay = contributionForHorizon({ ...common, months }) as number;
+			const withDelay = contributionForHorizon({ ...common, months, delayMonths }) as number;
+			expect(withDelay).toBeGreaterThan(withoutDelay);
+
+			// Com o aporte certo e o atraso real, a meta chega dentro do horizonte.
+			const reached = monthsToReachStepped({
+				...common,
+				contributionCents: 0,
+				steps: [{ fromMonth: delayMonths + 1, addCents: withDelay }],
+			}) as number;
+			expect(reached).toBeLessThanOrEqual(months);
+			expect(reached).toBeGreaterThanOrEqual(months - 1);
+
+			// Com o aporte de antes, ela chegava depois do prazo prometido.
+			const late = monthsToReachStepped({
+				...common,
+				contributionCents: 0,
+				steps: [{ fromMonth: delayMonths + 1, addCents: withoutDelay }],
+			}) as number;
+			expect(late).toBeGreaterThan(months);
+		});
+
+		it('reserva que não enche, ou que enche depois do horizonte: nulo, não um número baixo', () => {
+			const common = { capitalCents: R(20_000), requiredCapitalCents: R(1_500_000), monthlyRate: rate };
+			expect(contributionForHorizon({ ...common, months: 60, delayMonths: null })).toBeNull();
+			expect(contributionForHorizon({ ...common, months: 60, delayMonths: 60 })).toBeNull();
+			expect(contributionForHorizon({ ...common, months: 60, delayMonths: 90 })).toBeNull();
+		});
+	});
 });
 
 describe('projeção', () => {
@@ -156,9 +199,14 @@ describe('projeção', () => {
 		expect(projectCapital({ capitalCents: 0, contributionCents: R(1), monthlyRate: rate, months: MAX_HORIZON_MONTHS }).length).toBeLessThanOrEqual(121);
 	});
 
-	it('aporte negativo projeta como zero', () => {
+	it('aporte negativo desce a curva, com piso em zero', () => {
+		// Antes a curva grampeava o aporte em zero e mostrava o capital parado, enquanto o ETA
+		// usava o aporte negativo: duas premissas no mesmo cartão.
 		const points = projectCapital({ capitalCents: R(1_000), contributionCents: -R(50), monthlyRate: 0, months: 12 });
-		expect(points[points.length - 1].totalCents).toBe(R(1_000));
+		expect(points[points.length - 1].totalCents).toBe(R(400));
+		const drained = projectCapital({ capitalCents: R(100), contributionCents: -R(50), monthlyRate: 0, months: 12 });
+		expect(drained[drained.length - 1].totalCents).toBe(0);
+		expect(drained[drained.length - 1].contributedCents).toBe(0);
 	});
 });
 
@@ -290,9 +338,70 @@ describe('reserva primeiro', () => {
 		expect(model.reach).toEqual({ kind: 'never', reason: 'no-contribution' });
 	});
 
+	it('o atraso entra no aporte-alvo dos horizontes', () => {
+		const base = buildRetirementReadModel(input({ trackedCapitalCents: R(20_000), monthlyContributionCents: R(3_000) }));
+		const delayed = buildRetirementReadModel(
+			input({ trackedCapitalCents: R(20_000), monthlyContributionCents: R(3_000), contributionDelayMonths: 30 })
+		);
+		for (const years of [5, 10, 15, 20]) {
+			const withoutDelay = base.contributionByHorizon.find((h) => h.years === years)?.monthlyCents as number;
+			const withDelay = delayed.contributionByHorizon.find((h) => h.years === years)?.monthlyCents as number;
+			expect(withDelay).toBeGreaterThan(withoutDelay);
+		}
+		// Reserva que nunca enche: não há aporte que a meta receba, e o card diz "—".
+		const never = buildRetirementReadModel(
+			input({ trackedCapitalCents: R(20_000), monthlyContributionCents: R(3_000), contributionDelayMonths: null })
+		);
+		expect(never.contributionByHorizon.every((h) => h.monthlyCents === null)).toBe(true);
+	});
+
 	it('o plano de aporte: base e degrau', () => {
 		expect(retirementContributionPlan(R(3_000), 0)).toEqual({ contributionCents: R(3_000), steps: [] });
 		expect(retirementContributionPlan(R(3_000), 5)).toEqual({ contributionCents: 0, steps: [{ fromMonth: 6, addCents: R(3_000) }] });
 		expect(retirementContributionPlan(R(3_000), null)).toEqual({ contributionCents: 0, steps: [] });
+	});
+});
+
+describe('5.6 — aporte negativo: uma premissa só', () => {
+	const withdrawing = (overrides: Partial<RetirementInput> = {}) =>
+		buildRetirementReadModel(input({ trackedCapitalCents: R(20_000), monthlyContributionCents: -R(300), ...overrides }));
+
+	it('não finge que o aporte é zero: a frase tem o número de verdade', () => {
+		expect(withdrawing().monthlyContributionCents).toBe(-R(300));
+		expect(withdrawing().isWithdrawing).toBe(true);
+		expect(buildRetirementReadModel(input({ monthlyContributionCents: 0 })).isWithdrawing).toBe(false);
+	});
+
+	it('no ritmo de hoje a meta não é alcançada, e o motivo é o resgate', () => {
+		expect(withdrawing().reach).toEqual({ kind: 'never', reason: 'withdrawing' });
+		// O atraso da reserva não muda isso: não há aporte a rotear, só dinheiro saindo.
+		expect(withdrawing({ contributionDelayMonths: 19 }).reach).toEqual({ kind: 'never', reason: 'withdrawing' });
+		expect(withdrawing({ contributionDelayMonths: null }).reach).toEqual({ kind: 'never', reason: 'withdrawing' });
+	});
+
+	it('a curva conta a mesma história: desce, em vez de crescer como se o aporte fosse zero', () => {
+		const model = withdrawing();
+		const last = model.projection[model.projection.length - 1];
+		const flat = projectCapital({ capitalCents: R(20_000), contributionCents: 0, monthlyRate: monthlyRate(1_000), months: last.monthOffset });
+		expect(last.totalCents).toBeLessThan(flat[flat.length - 1].totalCents);
+		expect(model.projection[0].totalCents).toBe(R(20_000));
+	});
+
+	it('rendimento zero continua sendo o motivo quando não há capital que resolva', () => {
+		expect(withdrawing({ goal: { ...input().goal, expectedYieldBp: 0 } }).reach).toEqual({ kind: 'never', reason: 'no-yield' });
+	});
+});
+
+describe('5.1 — de onde vem o "rendeu nos últimos 12 meses"', () => {
+	it('a origem acompanha o número, e desaparece junto com ele', () => {
+		const posted = buildRetirementReadModel(input({ realizedYield12mCents: R(900), averageCapital12mCents: R(10_000), realizedYieldBasis: 'posted' }));
+		expect(posted).toMatchObject({ realizedYieldBp: 900, realizedYieldBasis: 'posted' });
+
+		const estimated = buildRetirementReadModel(input({ realizedYield12mCents: R(1_800), averageCapital12mCents: R(10_000), realizedYieldBasis: 'estimated' }));
+		expect(estimated).toMatchObject({ realizedYieldBp: 1_800, realizedYieldBasis: 'estimated' });
+
+		// Sem rendimento conhecido não há percentual nem origem — e nada de zero.
+		const unknown = buildRetirementReadModel(input({ realizedYield12mCents: null, averageCapital12mCents: R(10_000), realizedYieldBasis: 'estimated' }));
+		expect(unknown).toMatchObject({ realizedYieldBp: null, realizedYieldBasis: null });
 	});
 });

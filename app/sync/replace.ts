@@ -19,7 +19,7 @@
 import type { SyncChanges } from './types';
 
 /** As coleções do sync, na ordem em que o servidor as grava. */
-export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts', 'reserveGoals'] as const;
+export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts', 'reserveGoals', 'captures', 'merchantRules'] as const;
 
 export type Collection = (typeof COLLECTIONS)[number];
 
@@ -34,6 +34,12 @@ export const TABLE_OF: Record<Collection, string> = {
 	retirementGoals: 'retirement_goals',
 	debts: 'debts',
 	reserveGoals: 'reserve_goals',
+	// As duas do v19. A identidade que a substituição compara é a do protocolo —
+	// `fingerprint` nas capturas, `merchantKey` nas regras —, e é ela que `getSyncedIds`
+	// devolve; comparar o id local das capturas apagaria da conta exatamente as que este
+	// aparelho também tem.
+	captures: 'captures',
+	merchantRules: 'merchant_rules',
 };
 
 /** Uma lista vazia por coleção — derivada de COLLECTIONS, para nenhuma ficar de fora. */

@@ -137,6 +137,24 @@ describe('reserva fora do "Em caixa"', () => {
 	});
 });
 
+describe('conta externa fora do "Em caixa"', () => {
+	it('o dinheiro da PJ não é o seu caixa', () => {
+		// A PJ marcada como externa entrava no caixa, enquanto o quadro do mês a ignorava:
+		// "Em caixa" errava por um valor que crescia todo mês.
+		const accounts = [account({ id: 'nu', role: 'main' }), account({ id: 'pj', name: 'PJ', role: 'external' })];
+		const balances = new Map([
+			['nu', 50_000],
+			['pj', 4_000_000],
+		]);
+		expect(summarizeAccounts(accounts, balances, 0)).toEqual({
+			cashCents: 50_000,
+			savedCents: 0,
+			cardsOwedCents: 0,
+			netCents: 50_000,
+		});
+	});
+});
+
 describe('patrimônio líquido', () => {
 	it('o que se tem menos o que se deve', () => {
 		expect(netWorth({ cashCents: 500_000, savedCents: 2_000_000, outsideCents: 1_000_000, cardsCents: 400_000, debtsCents: 8_600_000 })).toEqual({

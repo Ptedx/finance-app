@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,7 +14,7 @@ import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
-import { sameBank } from '../utils/accountResolver';
+import { findCheckingForCard } from '../utils/accountResolver';
 import { cycleRuleOf, existingInstallmentDates, invoiceMonthOf, type InvoiceView } from '../utils/cardMath';
 import { usageByCard } from '../utils/cardNames';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
@@ -421,13 +421,18 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 							);
 						}}
 					/>
+					{/* Sem fechamento não há fatura fechada para separar: o devido inteiro vai no campo da aberta, e repeti-lo no da fechada dobraria o valor do cartão. */}
 					<AdjustSheet
 						visible={sheet === 'adjust'}
 						onClose={() => setSheet(null)}
+						openNowCents={summary.configured ? summary.openInvoiceCents : summary.owedCents}
+						closedToPayCents={summary.configured ? summary.toPayCents : 0}
 						onConfirm={async (openCents, closedCents) => {
 							await adjustCardInvoices(card.id, openCents, closedCents);
 							setSheet(null);
-							AccessibilityInfo.announceForAccessibility(t('cards.adjust.done', { amount: formatCents(openCents + closedCents) }));
+							AccessibilityInfo.announceForAccessibility(
+								t('cards.adjust.done', { amount: formatCents((openCents ?? 0) + (closedCents ?? 0)) })
+							);
 						}}
 					/>
 					<RenameCardSheet
@@ -497,27 +502,40 @@ const PaySheet: React.FC<{
 	onConfirm: (fromAccountId: string | null, cents: number, date: string) => Promise<void>;
 }> = ({ visible, onClose, suggestedCents, accounts, card, onConfirm }) => {
 	const { t } = useTranslation();
-	// Quem paga a fatura costuma ser a conta do mesmo banco (o Nubank paga o cartão
-	// Nubank); sem ela, a conta principal.
-	const main =
-		accounts.find((account) => account.role !== 'external' && sameBank(account.bankName, card.bankName)) ??
-		accounts.find((account) => account.role === 'main') ??
-		accounts[0];
 	const [amount, setAmount] = useState('');
-	const [from, setFrom] = useState<string>(main?.id ?? 'outside');
+	const [from, setFrom] = useState<string | null>(null);
 	const [error, setError] = useState<string | undefined>();
+	const [fromError, setFromError] = useState<string | undefined>();
 	// A data decide qual fatura o pagamento quita: registrar hoje um pagamento de semanas
 	// atrás o jogaria na fatura errada.
 	const [day, setDay] = useState<'0' | '1' | '2'>('0');
 	const today = todayISO();
+	// O cartão troca de identidade a cada recarga das contas, e a folha depende só do id:
+	// uma recarga no meio do preenchimento não pode apagar o que já foi digitado.
+	const cardRef = useRef(card);
+	cardRef.current = card;
 
 	useEffect(() => {
 		if (!visible) return;
 		setAmount(suggestedCents > 0 ? centsToDisplayInput(suggestedCents) : '');
-		setFrom(main?.id ?? 'outside');
+		setFrom(null);
 		setDay('0');
 		setError(undefined);
-	}, [visible, suggestedCents, main?.id]);
+		setFromError(undefined);
+
+		// Quem paga a fatura é a conta **corrente** do banco do cartão: `findCheckingForCard`
+		// é quem sabe — ignora poupança e investimento e, com mais de uma, vence a principal.
+		// Marcar "a primeira conta do banco" punha a folha na caixinha do Nubank e debitava a
+		// fatura da reserva de emergência. Quando nem ele sabe, nada vem marcado: o dono
+		// escolhe, em vez de o app debitar a conta errada em silêncio.
+		let current = true;
+		void findCheckingForCard(cardRef.current).then((checking) => {
+			if (current) setFrom(checking?.id ?? null);
+		});
+		return () => {
+			current = false;
+		};
+	}, [visible, suggestedCents, card.id]);
 
 	const options: ChipOption<string>[] = [
 		...accounts.map((account) => ({ value: account.id, label: account.name, color: account.color })),
@@ -527,7 +545,14 @@ const PaySheet: React.FC<{
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.pay.title')} subtitle={t('cards.pay.subtitle')}>
 			<Field label={t('cards.pay.amount')} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" error={error} />
-			<ChipGroup label={t('cards.pay.from')} options={options} selected={from} onSelect={setFrom} hint={t('cards.pay.fromHint')} />
+			<ChipGroup
+				label={t('cards.pay.from')}
+				options={options}
+				selected={from}
+				onSelect={setFrom}
+				hint={t('cards.pay.fromHint')}
+				error={fromError}
+			/>
 			<ChipGroup
 				label={t('cards.pay.when')}
 				options={[
@@ -543,9 +568,13 @@ const PaySheet: React.FC<{
 				icon="checkmark"
 				onPress={async () => {
 					const cents = parseAmountToCents(amount);
-					if (cents === null || cents <= 0) {
-						setError(t('cards.edit.invalidAmount'));
-						AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
+					const amountError = cents === null || cents <= 0 ? t('cards.edit.invalidAmount') : undefined;
+					const accountError = from === null ? t('cards.pay.fromRequired') : undefined;
+					setError(amountError);
+					setFromError(accountError);
+					const messages = [amountError, accountError].filter(Boolean);
+					if (messages.length > 0 || cents === null || from === null) {
+						AccessibilityInfo.announceForAccessibility(messages.join('. '));
 						return;
 					}
 					await onConfirm(from === 'outside' ? null : from, cents, addDays(today, -Number(day)));
@@ -555,11 +584,22 @@ const PaySheet: React.FC<{
 	);
 };
 
-const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: (openCents: number, closedCents: number) => Promise<void> }> = ({
-	visible,
-	onClose,
-	onConfirm,
-}) => {
+/**
+ * "Acertar valor": o que o app do banco mostra agora em cada fatura.
+ *
+ * A folha chega **pré-preenchida com o que o app acha hoje** — é o que dá ao dono a
+ * chance de perceber que um dos números está errado, em vez de digitar no escuro. Um
+ * campo apagado é "não informei" (`null`), nunca "o banco mostra zero": só a fatura
+ * preenchida é acertada, e a outra fica exatamente como está.
+ */
+const AdjustSheet: React.FC<{
+	visible: boolean;
+	onClose: () => void;
+	/** O que o app acha da fatura aberta e do que falta pagar da fechada, para pré-preencher. */
+	openNowCents: number;
+	closedToPayCents: number;
+	onConfirm: (openCents: number | null, closedCents: number | null) => Promise<void>;
+}> = ({ visible, onClose, openNowCents, closedToPayCents, onConfirm }) => {
 	const { t } = useTranslation();
 	const [open, setOpen] = useState('');
 	const [closed, setClosed] = useState('');
@@ -567,14 +607,20 @@ const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: 
 
 	useEffect(() => {
 		if (!visible) return;
-		setOpen('');
-		setClosed('');
+		// Fatura sem valor fica em branco: "não informei" é a resposta certa para uma fatura
+		// fechada que o app não vê — e preencher "0,00" faria o dono confirmar um zero.
+		setOpen(openNowCents > 0 ? centsToDisplayInput(openNowCents) : '');
+		setClosed(closedToPayCents > 0 ? centsToDisplayInput(closedToPayCents) : '');
 		setError(undefined);
-	}, [visible]);
+	}, [visible, openNowCents, closedToPayCents]);
 
-	const openCents = open.trim() ? parseAmountToCents(open) : 0;
-	const closedCents = closed.trim() ? parseAmountToCents(closed) : 0;
-	const total = openCents !== null && closedCents !== null ? openCents + closedCents : null;
+	const openCents = open.trim() ? parseAmountToCents(open) : null;
+	const closedCents = closed.trim() ? parseAmountToCents(closed) : null;
+	const invalid =
+		(open.trim() !== '' && (openCents === null || openCents < 0)) ||
+		(closed.trim() !== '' && (closedCents === null || closedCents < 0));
+	const informed = [openCents, closedCents].filter((value): value is number => value !== null);
+	const total = invalid || informed.length === 0 ? null : informed.reduce((sum, value) => sum + value, 0);
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.adjust.title')} subtitle={t('cards.adjust.subtitle')}>
@@ -588,16 +634,18 @@ const AdjustSheet: React.FC<{ visible: boolean; onClose: () => void; onConfirm: 
 				hint={t('cards.adjust.closedHint')}
 				error={error}
 			/>
-			{total !== null && total > 0 ? (
+			{total !== null ? (
 				<Text style={styles.preview} accessibilityLiveRegion="polite">
-					{t('cards.adjust.preview', { amount: formatCents(total) })}
+					{informed.length === 2
+						? t('cards.adjust.preview', { amount: formatCents(total) })
+						: t('cards.adjust.previewPartial', { amount: formatCents(total) })}
 				</Text>
 			) : null}
 			<Button
 				label={t('cards.adjust.confirm')}
 				icon="checkmark"
 				onPress={async () => {
-					if (total === null || openCents === null || closedCents === null || openCents < 0 || closedCents < 0 || (!open.trim() && !closed.trim())) {
+					if (total === null) {
 						setError(t('cards.edit.invalidAmount'));
 						AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
 						return;
@@ -639,7 +687,9 @@ const InstallmentsSheet: React.FC<{
 	const totalCount = Number(total);
 	const valid =
 		Number.isInteger(currentIndex) && Number.isInteger(totalCount) && currentIndex >= 1 && totalCount >= 2 && totalCount <= 48 && currentIndex <= totalCount;
-	const dates = valid ? existingInstallmentDates(currentIndex, totalCount, cycleRuleOf(card), todayISO()) : [];
+	// A âncora entra: a prévia mostra as mesmas faturas que serão gravadas, inclusive quando
+	// o piso da âncora empurra a parcela atual para a fatura seguinte.
+	const dates = valid ? existingInstallmentDates(currentIndex, totalCount, cycleRuleOf(card), todayISO(), card.openingBalanceDate) : [];
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.installments.title')} subtitle={t('cards.installments.subtitle')}>

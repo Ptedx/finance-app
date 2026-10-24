@@ -1,25 +1,93 @@
 /**
- * Exportação: o CSV que sai do app tem que somar o mesmo que a tela.
+ * Exportação: o CSV que sai do app tem que somar o mesmo que a tela, e o backup tem
+ * que levar tudo que é dado do usuário.
  *
- * Só as funções puras são testadas (`transactionsToCSV`, `generateFinancialReport`);
- * o compartilhamento de arquivo e o banco são substituídos por mocks.
+ * O banco e o compartilhamento de arquivo são substituídos por mocks; o "disco" é o
+ * `mockFile` abaixo, que guarda o que foi escrito para a leitura de volta.
  */
+
+/** O arquivo escrito. `truncateTo` simula uma escrita que não cabe inteira no disco. */
+const mockFile = { written: '', truncateTo: null as number | null };
+
+jest.mock('i18next', () => ({
+	__esModule: true,
+	default: {
+		t: (key: string, values?: Record<string, unknown>) =>
+			values
+				? [key, ...Object.entries(values).map(([name, value]) => `${name}=${String(value)}`)].join(' ')
+				: key,
+	},
+}));
 
 jest.mock('../../database/database', () => ({
 	addCategory: jest.fn(),
 	addRecurringTransaction: jest.fn(),
 	addTransaction: jest.fn(),
-	getBudgets: jest.fn(async () => []),
+	getAccounts: jest.fn(async () => [{ id: 'conta-inter', name: 'Inter' }]),
+	getBudgets: jest.fn(async () => [
+		{ id: 'bud-1', year: 2026, month: 10, amountCents: 500_000, dirty: true, updatedAt: 'x' },
+	]),
 	getCategories: jest.fn(async () => []),
+	getCategoriesForBackup: jest.fn(async () => [
+		{ id: 'food', name: 'Food', updatedAt: 'x' },
+		{ id: 'uncategorized', name: 'Uncategorized', updatedAt: 'x' },
+	]),
+	getDebts: jest.fn(async () => []),
+	getRecurringTransactions: jest.fn(async () => []),
+	getReserveGoal: jest.fn(async () => null),
+	getRetirementGoal: jest.fn(async () => null),
+	getTransactions: jest.fn(async () => [{ id: 'tx-1', amountCents: 100, date: '2026-10-06' }]),
+	getTransfers: jest.fn(async () => [{ id: 'tr-1', amountCents: 200, date: '2026-10-09' }]),
 	resetDatabase: jest.fn(),
 	setBudget: jest.fn(),
 }));
+
+jest.mock('../../database/captures', () => ({
+	getAllCaptures: jest.fn(async () => [{ id: 'cap-1', status: 'pending', amountCents: 5_000 }]),
+	getMerchantRules: jest.fn(async () => [{ merchantKey: 'padaria', confirmations: 4 }]),
+}));
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+	getItem: jest.fn(async () => null),
+	multiGet: jest.fn(async () => [
+		['selectedCurrency', '{"code":"BRL"}'],
+		['cdiRate', '{"annualBp":1490}'],
+		['captureAccessDismissed', null],
+	]),
+	multiSet: jest.fn(async () => undefined),
+	setItem: jest.fn(async () => undefined),
+}));
+
 jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
-jest.mock('expo-file-system', () => ({ File: jest.fn(), Paths: { document: '/tmp' } }));
+
+// Sem `class` aqui de propósito: o babel compila classe com funções auxiliares que a
+// fábrica do `jest.mock` não tem permissão para alcançar.
+jest.mock('expo-file-system', () => ({
+	File: function MockFile() {
+		return {
+			uri: 'file:///tmp/backup.json',
+			write: (content: string) => {
+				mockFile.written =
+					mockFile.truncateTo === null ? content : content.slice(0, mockFile.truncateTo);
+			},
+			text: async () => mockFile.written,
+		};
+	},
+	Paths: { document: '/tmp' },
+}));
 jest.mock('expo-sharing', () => ({ shareAsync: jest.fn() }));
 
+import * as Sharing from 'expo-sharing';
+import { Alert } from 'react-native';
+import { getAllCaptures } from '../../database/captures';
+import { getTransactions } from '../../database/database';
 import type { Category, Transaction } from '../../database/schema';
-import { generateFinancialReport, transactionsToCSV } from '../exportUtils';
+import {
+	type DatabaseExportData,
+	exportDatabaseData,
+	generateFinancialReport,
+	transactionsToCSV,
+} from '../exportUtils';
 
 const category = (id: string, name: string, type: 'expense' | 'income' = 'expense'): Category => ({
 	id,
@@ -232,5 +300,102 @@ describe('generateFinancialReport', () => {
 		expect(report).toContain('"Food, drinks & ""snacks""",0.00,0.00%');
 		expect(report).not.toContain('NaN');
 		expect(report).not.toContain('Infinity');
+	});
+});
+
+/**
+ * O backup: o caso real de 12/10/2026, em que o arquivo saiu com 34 lançamentos de
+ * setembro, nenhum de outubro e nenhum aviso — porque as compras de outubro estavam na
+ * caixa de entrada, que não viajava, e porque nada no arquivo dizia o que faltava.
+ */
+describe('exportDatabaseData', () => {
+	let alert: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		mockFile.written = '';
+		mockFile.truncateTo = null;
+		alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+	});
+
+	afterEach(() => alert.mockRestore());
+
+	const written = (): DatabaseExportData => JSON.parse(mockFile.written) as DatabaseExportData;
+
+	it('leva a caixa de entrada, as regras aprendidas e as preferências', async () => {
+		await exportDatabaseData();
+		const backup = written();
+
+		expect(backup.formatVersion).toBe(4);
+		expect(backup.captures).toHaveLength(1);
+		expect(backup.captures?.[0]).toMatchObject({ id: 'cap-1', status: 'pending' });
+		expect(backup.merchantRules).toEqual([{ merchantKey: 'padaria', confirmations: 4 }]);
+		// Chave sem valor não entra: `null` seria indistinguível de uma escolha.
+		expect(backup.preferences).toEqual({
+			selectedCurrency: '{"code":"BRL"}',
+			cdiRate: '{"annualBp":1490}',
+		});
+		expect(backup.incomplete).toBeUndefined();
+	});
+
+	it('leva a `uncategorized`, que a lista da tela esconde — a diferença 15 x 16', async () => {
+		await exportDatabaseData();
+
+		expect(written().categories.map((c) => c.id)).toEqual(['food', 'uncategorized']);
+	});
+
+	it('o aviso de sucesso diz quantas linhas entraram', async () => {
+		await exportDatabaseData();
+
+		const [title, body] = alert.mock.calls[0] as [string, string];
+		expect(title).toBe('settings.exportSuccess');
+		expect(body).toContain('transactions=1');
+		expect(body).toContain('captures=1');
+		expect(body).toContain('rules=1');
+	});
+
+	it('uma coleção que não abre é nomeada no arquivo e no aviso', async () => {
+		(getAllCaptures as jest.Mock).mockImplementationOnce(async () => {
+			throw new Error('tabela corrompida');
+		});
+
+		await exportDatabaseData();
+
+		expect(written().incomplete).toEqual(['captures']);
+		const [title, body] = alert.mock.calls[0] as [string, string];
+		expect(title).toBe('settings.exportIncompleteTitle');
+		expect(body).toContain('captures');
+		// O resto do backup foi salvo: perder tudo por causa de uma parte é pior.
+		expect(written().transactions).toHaveLength(1);
+	});
+
+	it('se o livro-caixa não abre, nenhum arquivo é compartilhado', async () => {
+		(getTransactions as jest.Mock).mockImplementationOnce(async () => {
+			throw new Error('banco travado');
+		});
+
+		await expect(exportDatabaseData()).rejects.toThrow('banco travado');
+		expect(Sharing.shareAsync).not.toHaveBeenCalled();
+		expect(alert.mock.calls[0][0]).toBe('settings.exportFailed');
+	});
+
+	it('arquivo truncado não é compartilhado como se estivesse bom', async () => {
+		mockFile.truncateTo = 50;
+
+		await expect(exportDatabaseData()).rejects.toThrow(/incompleto/);
+		expect(Sharing.shareAsync).not.toHaveBeenCalled();
+		expect(alert.mock.calls[0][0]).toBe('settings.exportFailed');
+	});
+
+	it('o que um app antigo exige continua no mesmo lugar: v4 entra na 1.2.7', async () => {
+		await exportDatabaseData();
+		const backup = written();
+
+		// É exatamente o que `validateImportData` de uma versão anterior checa. As
+		// coleções novas são acréscimos, e um app antigo ignora chave que não conhece.
+		expect(Array.isArray(backup.transactions)).toBe(true);
+		expect(Array.isArray(backup.categories)).toBe(true);
+		expect(Array.isArray(backup.recurringTransactions)).toBe(true);
+		expect(typeof backup.exportDate).toBe('string');
 	});
 });

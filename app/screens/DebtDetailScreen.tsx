@@ -49,6 +49,9 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	}
 
 	const isConsortium = debt.kind === 'consortium';
+	// Quitada no prazo é quitada: a tela diz que acabou e não oferece "Simular", que para
+	// saldo zero devolvia nada sem explicar nada.
+	const isPaidOff = debt.archived || state.settled;
 	// Antecipar deixa de pagar juros e encargos: o custo que vale é o efetivo.
 	const costBp = effectiveRateBp(termsOf(debt), today);
 	const verdict = worthPayingOff({ debtRateBp: costBp, investmentYieldBp });
@@ -77,7 +80,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 			</View>
 
 			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-				{debt.archived ? <Text style={styles.banner}>{t('debts.detail.paidOffBanner')}</Text> : null}
+				{isPaidOff ? <Text style={styles.banner}>{t('debts.detail.paidOffBanner')}</Text> : null}
 
 				<View
 					style={styles.card}
@@ -114,7 +117,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 					) : null}
 				</View>
 
-				{!debt.archived && state.amortizes ? (
+				{!isPaidOff && state.amortizes ? (
 					<View style={styles.card}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('debts.verdict.title')}
@@ -142,7 +145,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 					</View>
 				) : null}
 
-				{!state.amortizes ? <Text style={styles.warning}>{t('debts.detail.neverPays')}</Text> : null}
+				{!state.amortizes && !isPaidOff ? <Text style={styles.warning}>{t('debts.detail.neverPays')}</Text> : null}
 
 				{state.upcoming.length > 0 ? (
 					<View style={styles.card}>

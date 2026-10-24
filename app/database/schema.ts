@@ -258,8 +258,15 @@ export const DATABASE_NAME = 'spendr.db';
  *     accounts gain `reservePurpose` (an investment-only reserve stays out of the cascade).
  * 18 — no column changes: accounts invented from a non-bank app ("WhatsApp", "Gmail",
  *     "99") are tombstoned, but only the empty ones. Nothing creates them any more.
+ * 19 — `captures` e `merchant_rules` entram no sync: ganham `deletedAt` e `dirty` e
+ *     passam a `SYNCED_TABLES`. A caixa de entrada era local por desenho ("o rascunho
+ *     de cada aparelho"), e desinstalar o app levava embora o que estava esperando
+ *     revisão — duas semanas de compras, no caso real de 12/10/2026. Logado numa conta
+ *     isso é perda de dado garantida, e as regras aprendidas iam pelo mesmo caminho: o
+ *     app esquecia a categoria de cada estabelecimento. Só acréscimo de coluna: as
+ *     linhas que já existem nascem sujas (o `DEFAULT 1`) e sobem no primeiro sync.
  */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -272,9 +279,29 @@ export const SYNCED_TABLES = [
 	'retirement_goals',
 	'debts',
 	'reserve_goals',
+	'captures',
+	'merchant_rules',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
+
+/**
+ * A coluna que identifica a linha **entre aparelhos** — a identidade que viaja no
+ * protocolo —, quando ela não é `id`.
+ *
+ * Em `captures` é o `fingerprint`: o mesmo aviso do banco capturado em dois aparelhos
+ * nasce com dois ids aleatórios e um único fingerprint (a coluna é UNIQUE), então o id
+ * local não significa nada do outro lado e nunca sai daqui. Em `merchant_rules` é o
+ * próprio `merchantKey`, que já é a chave primária. Ver `WireCapture` em `sync/types.ts`.
+ */
+export const SYNC_IDENTITY_COLUMNS: Partial<Record<SyncedTable, string>> = {
+	captures: 'fingerprint',
+	merchant_rules: 'merchantKey',
+};
+
+/** A coluna de identidade de uma tabela sincronizada; `id` quando ela não tem outra. */
+export const identityColumnOf = (table: SyncedTable): string =>
+	SYNC_IDENTITY_COLUMNS[table] ?? 'id';
 
 /**
  * Columns appended to every synchronisable table.
@@ -605,10 +632,15 @@ export const CREATE_SYNC_STATE_TABLE = `
 /**
  * A notificação de banco capturada e o que o app decidiu sobre ela.
  *
- * **Local, nunca sincronizada.** O que sobe para o servidor é a transação que o
- * usuário confirma; a caixa de entrada é o rascunho de cada aparelho. O texto bruto
- * (`title`, `text`) fica guardado de propósito: se o parser errar, dá para corrigir a
- * regra e reprocessar sem ter perdido nada.
+ * **Sincronizada desde o v19.** Era local ("o rascunho de cada aparelho") até o dia em
+ * que o dono desinstalou o app e perdeu duas semanas de compras: elas estavam aqui,
+ * pendentes de revisão, e em lugar nenhum além desta tabela. O texto bruto (`title`,
+ * `text`) fica guardado de propósito: se o parser errar, dá para corrigir a regra e
+ * reprocessar sem ter perdido nada.
+ *
+ * A identidade **entre aparelhos** é o `fingerprint`, não o `id`: ver `SYNC_IDENTITY_COLUMNS`
+ * e `WireCapture`. `deletedAt` é a lápide — a poda do histórico apaga com data, porque
+ * um DELETE de verdade faria a linha voltar no pull seguinte.
  *
  * `status`: pending (a revisar), confirmed (virou transação), dismissed (o usuário
  * descartou), duplicate (era o mesmo aviso de outro app), transfer (troca de bolso
@@ -647,6 +679,8 @@ export interface Capture {
 	installments: number | null;
 	createdAt: string;
 	updatedAt: string;
+	/** A lápide do v19. Ausente numa linha viva. */
+	deletedAt?: string;
 }
 
 /** Colunas que o v7 acrescenta em `captures`. */
@@ -657,8 +691,23 @@ export const CAPTURE_V7_COLUMNS: Array<[name: string, sql: string]> = [
 ];
 
 /**
+ * Colunas que o v19 acrescenta em `captures` e em `merchant_rules`: as duas tabelas já
+ * tinham `updatedAt`, então só falta a lápide e a marca de "ainda não subiu".
+ *
+ * `dirty` entra com `DEFAULT 1` — o mesmo padrão de `SYNC_COLUMNS_SQL` — e é isso que faz
+ * a caixa de entrada e as regras que já estão no aparelho subirem no primeiro sync depois
+ * da atualização, em vez de ficarem para trás como se já tivessem ido.
+ */
+export const INBOX_V19_COLUMNS: Array<[name: string, sql: string]> = [
+	['deletedAt', 'TEXT'],
+	['dirty', 'INTEGER NOT NULL DEFAULT 1'],
+];
+
+/**
  * O que o app aprendeu sobre um estabelecimento ou pessoa (`merchantKey`, ver
- * `merchantKeyOf`). Também local: é um hábito deste usuário neste aparelho.
+ * `merchantKeyOf`). Sincronizada desde o v19 pela própria `merchantKey`: os dois
+ * aparelhos a derivam do mesmo texto, então duas aprendizagens do mesmo lugar convergem
+ * por `updatedAt`, sem conflito de id.
  */
 export interface MerchantRule {
 	merchantKey: string;
@@ -666,6 +715,8 @@ export interface MerchantRule {
 	treatAs: 'transaction' | 'transfer' | 'ignore';
 	confirmations: number;
 	updatedAt: string;
+	/** A lápide do v19: esquecer uma regra é apagar com data, para a remoção propagar. */
+	deletedAt?: string;
 }
 
 export const CREATE_CAPTURES_TABLE = `
@@ -694,7 +745,7 @@ export const CREATE_CAPTURES_TABLE = `
     transferId TEXT,
     installments INTEGER,
     createdAt TEXT NOT NULL,
-    updatedAt TEXT NOT NULL
+${SYNC_COLUMNS_SQL}
   );
 `;
 
@@ -704,7 +755,7 @@ export const CREATE_MERCHANT_RULES_TABLE = `
     categoryId TEXT,
     treatAs TEXT NOT NULL DEFAULT 'transaction',
     confirmations INTEGER NOT NULL DEFAULT 0,
-    updatedAt TEXT NOT NULL
+${SYNC_COLUMNS_SQL}
   );
 `;
 
@@ -729,6 +780,8 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_retirement_goals_dirty ON retirement_goals (dirty);
   CREATE INDEX IF NOT EXISTS idx_debts_dirty ON debts (dirty);
   CREATE INDEX IF NOT EXISTS idx_reserve_goals_dirty ON reserve_goals (dirty);
+  CREATE INDEX IF NOT EXISTS idx_captures_dirty ON captures (dirty);
+  CREATE INDEX IF NOT EXISTS idx_merchant_rules_dirty ON merchant_rules (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
 `;

@@ -198,7 +198,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				router.back();
 			} else {
 				const id = await createAccount(draft);
-				if (invoiceCents !== null && invoiceCents > 0) await adjustCardInvoices(id, invoiceCents, 0);
+				// Só a fatura aberta foi informada: a fechada vai como `null` ("não informei"), e
+				// não como zero — o cartão novo pode ter uma fechada em aberto que ninguém
+				// declarou aqui, e zerá-la lançaria um estorno falso datado hoje.
+				if (invoiceCents !== null && invoiceCents > 0) await adjustCardInvoices(id, invoiceCents, null);
 				router.replace({ pathname: '/cards/[id]', params: { id } });
 			}
 		} finally {

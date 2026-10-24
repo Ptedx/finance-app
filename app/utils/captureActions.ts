@@ -17,6 +17,7 @@
 
 import {
 	type CaptureDraft,
+	deleteMerchantRule,
 	findUnpairedTransferLeg,
 	getCapture,
 	getMerchantRule,
@@ -38,7 +39,7 @@ import {
 	reassignCaptureLedger,
 	updateTransfer,
 } from '../database/database';
-import type { Capture, Category } from '../database/schema';
+import type { Capture, Category, Transfer } from '../database/schema';
 import * as syncQueue from '../sync/queue';
 import {
 	findCardForInvoice,
@@ -58,14 +59,22 @@ import {
 import { type CaptureKind, guessCategory, isWalletPackage, parseCapture, type RawCapture } from './captureParser';
 import { generateUniqueId } from './categoryEditUtils';
 import { addDays, getISODate } from './dateUtils';
-import { cardInstallmentDates, cycleRuleOf } from './cardMath';
+import { cardInstallmentDates, cycleRuleOf, daysBetween, isSameCardPayment } from './cardMath';
 import { splitInstallments } from './installments';
 
 /** Quanto tempo para trás a decisão olha: um dia útil de TED, com folga. */
 const LOOKBACK_MS = 26 * 60 * 60 * 1000;
 
-/** Uma transferência avisada pelos dois lados pode chegar com dias de diferença. */
-const TRANSFER_LINK_WINDOW_DAYS = 5;
+/**
+ * Quantos dias de diferença ainda podem ser o **mesmo** movimento visto duas vezes.
+ *
+ * Eram cinco, e cinco dias casavam movimentos diferentes: dois aportes de R$ 200 no mesmo
+ * mês (dia 3 e dia 6) viravam um só, e um Pix de R$ 1.500 era casado com o pagamento da
+ * fatura de R$ 1.500 de dois dias antes — reverter o Pix apagava o pagamento da fatura
+ * (achados 1.2 e 7.5). A conta e o cartão avisam o mesmo movimento no mesmo dia, ou na
+ * virada da meia-noite; um dia basta, e o que não couber nele vira outra transferência.
+ */
+const SAME_MOVEMENT_DAYS = 1;
 
 export interface IngestOptions {
 	/** Nomes do usuário: um Pix para si mesmo é troca de bolso. */
@@ -93,6 +102,8 @@ export const toKnownCapture = (capture: Capture): KnownCapture => ({
 	relatedId: capture.relatedId,
 	transactionId: capture.transactionId,
 	accountId: capture.accountId,
+	// Entram na identidade da duplicata de carteira: valor e direção não bastam.
+	cardLast4: capture.cardLast4,
 });
 
 export const toMerchantRule = (
@@ -176,13 +187,40 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 };
 
 /**
+ * Um lado conhecido casa com o mesmo lado conhecido, ou completa um lado em branco. Lado
+ * em branco **deste** aviso não casa com lado preenchido do que já está gravado: sem
+ * saber a contraparte não há como afirmar que é o mesmo movimento, e afirmar errado funde
+ * duas transferências numa.
+ */
+const sideFits = (mine: string | null, theirs: string | null): boolean =>
+	mine !== null ? theirs === null || theirs === mine : theirs === null;
+
+/**
+ * A transferência que já está no livro é este mesmo movimento?
+ *
+ * Identidade apertada de propósito: um dia de janela e as duas pontas compatíveis. Na
+ * dúvida o certo é **criar outra** — perder o pareamento rende um aviso a mais na caixa
+ * de entrada, enquanto fundir duas transferências faz dinheiro desaparecer do saldo de
+ * uma conta sem nada ter sido gasto.
+ */
+const isSameMovement = (
+	live: Pick<Transfer, 'fromAccountId' | 'toAccountId' | 'date'>,
+	from: string | null,
+	to: string | null,
+	date: string
+): boolean =>
+	Math.abs(daysBetween(live.date, date)) <= SAME_MOVEMENT_DAYS &&
+	sideFits(from, live.fromAccountId) &&
+	sideFits(to, live.toAccountId);
+
+/**
  * Registra (ou reaproveita) a transferência de um movimento entre contas.
  *
  * `from`/`to` nulos significam "uma conta que o app não acompanha, ou que ainda não
  * apareceu". Se a outra perna já criou a transferência com um lado nulo, este lado
- * a completa em vez de criar outra; e uma transferência viva com o mesmo valor, dias
- * próximos e lados compatíveis é reaproveitada — é o que impede o pagamento da
- * fatura de contar duas vezes quando a conta e o cartão avisam.
+ * a completa em vez de criar outra; e uma transferência viva que seja o mesmo movimento
+ * (`isSameMovement`) é reaproveitada — é o que impede o pagamento da fatura de contar
+ * duas vezes quando a conta e o cartão avisam.
  */
 const recordTransfer = async (
 	movement: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel'>,
@@ -205,14 +243,18 @@ const recordTransfer = async (
 		}
 	}
 
+	// `findLiveTransfer` ignora a ponta que este aviso não conhece: ela devolve qualquer
+	// transferência viva daquela conta, com aquele valor, na janela — inclusive uma que já
+	// tem a outra ponta preenchida (era assim que o Pix casava com o pagamento da fatura).
+	// A consulta mora em `database.ts`; o aperto da identidade é aqui.
 	const live = await findLiveTransfer({
 		amountCents: movement.amountCents,
 		fromAccountId: from,
 		toAccountId: to,
-		dateFrom: addDays(date, -TRANSFER_LINK_WINDOW_DAYS),
-		dateTo: addDays(date, TRANSFER_LINK_WINDOW_DAYS),
+		dateFrom: addDays(date, -SAME_MOVEMENT_DAYS),
+		dateTo: addDays(date, SAME_MOVEMENT_DAYS),
 	});
-	if (live) {
+	if (live && isSameMovement(live, from, to, date)) {
 		if ((live.fromAccountId === null && from) || (live.toAccountId === null && to)) {
 			await updateTransfer({
 				...live,
@@ -254,21 +296,29 @@ const recordInvoicePayment = async (
 	if (!capture.accountId) return null;
 	const account = await getAccount(capture.accountId);
 	if (!account) return null;
+	const date = localDateOf(capture.postedAt);
 
 	// O mesmo pagamento chega por caminhos diferentes — o aviso da conta, o aviso do
 	// cartão, o botão "Pagar fatura", o extrato — e cada um pode achar uma conta de origem
-	// diferente. Pagamento de mesmo valor para o mesmo cartão em poucos dias é o mesmo.
+	// diferente. Quem diz se dois são o mesmo pagamento é `isSameCardPayment`: mesmo valor,
+	// no máximo um dia de diferença e a mesma origem (origem em branco casa com qualquer
+	// uma). Casar só por valor numa janela de cinco dias fundia pagamentos distintos.
 	const payInto = async (cardId: string | null, from: string | null): Promise<string> => {
 		if (cardId) {
-			const date = localDateOf(capture.postedAt);
 			const live = await findLiveTransfer({
 				amountCents: capture.amountCents,
 				fromAccountId: null,
 				toAccountId: cardId,
-				dateFrom: addDays(date, -TRANSFER_LINK_WINDOW_DAYS),
-				dateTo: addDays(date, TRANSFER_LINK_WINDOW_DAYS),
+				dateFrom: addDays(date, -SAME_MOVEMENT_DAYS),
+				dateTo: addDays(date, SAME_MOVEMENT_DAYS),
 			});
-			if (live) {
+			if (
+				live &&
+				isSameCardPayment(
+					{ fromAccountId: live.fromAccountId, amountCents: live.amountCents, date: live.date },
+					{ fromAccountId: from, amountCents: capture.amountCents, date }
+				)
+			) {
 				if (live.fromAccountId === null && from) {
 					await updateTransfer({ ...live, fromAccountId: from });
 					syncQueue.schedule();
@@ -287,7 +337,43 @@ const recordInvoicePayment = async (
 
 	if (capture.direction !== 'out') return null;
 	const card = await findCardForInvoice(account);
-	return payInto(card?.id ?? null, account.id);
+	if (card) return payInto(card.id, account.id);
+
+	// Dois cartões no banco: não se sabe qual fatura foi paga e o destino fica em branco.
+	// Mas se o aviso do cartão já registrou este pagamento, é este mesmo movimento, e
+	// gravar outro debitaria a conta duas vezes. `findLiveTransfer` não sabe pedir "para
+	// qualquer cartão deste usuário": ela devolve o que sai desta conta e o filtro é aqui.
+	const live = await findLiveTransfer({
+		amountCents: capture.amountCents,
+		fromAccountId: account.id,
+		toAccountId: null,
+		dateFrom: addDays(date, -SAME_MOVEMENT_DAYS),
+		dateTo: addDays(date, SAME_MOVEMENT_DAYS),
+	});
+	if (live && live.fromAccountId === account.id && live.toAccountId !== null) {
+		const destination = await getAccount(live.toAccountId);
+		if (destination?.kind === 'credit_card') return live.id;
+	}
+	return recordTransfer(capture, account.id, null, null);
+};
+
+/**
+ * Aplicação e resgate: não é receita nem despesa, mas o dinheiro **saiu** da conta
+ * corrente e entrou na caixinha (ou voltou dela). Enquanto nada era gravado, a conta
+ * corrente ficava R$ 5.000 acima do real indefinidamente (achado 7.2) — nenhum lançamento
+ * datado depois da âncora a corrigia, e o saldo errado nunca se consertava sozinho.
+ *
+ * O app não sabe qual é a caixinha de destino e não deve chutar: vira transferência com o
+ * outro lado em branco, pelo mesmo mecanismo que o pagamento da fatura usa quando o banco
+ * tem dois cartões. Sem conta de origem conhecida não há o que gravar — a captura fica
+ * ignorada e o usuário atribui.
+ */
+const recordInvestmentMove = async (
+	capture: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel' | 'accountId' | 'direction'>
+): Promise<string | null> => {
+	if (!capture.accountId) return null;
+	const sides = transferSidesOf(capture, null);
+	return recordTransfer(capture, sides.from, sides.to, null);
 };
 
 // ---------------------------------------------------------------------------
@@ -378,7 +464,14 @@ export const applyDecision = async (
 			return { id, autoConfirmed: false };
 
 		case 'neutral': {
-			const transferId = decision.reason === 'invoice_payment' ? await recordInvoicePayment(base) : null;
+			// Neutro não é "nada aconteceu": o pagamento da fatura e o investimento movem
+			// dinheiro entre contas, e sem a transferência o saldo da conta fica errado.
+			const transferId =
+				decision.reason === 'invoice_payment'
+					? await recordInvoicePayment(base)
+					: decision.reason === 'investment'
+						? await recordInvestmentMove(base)
+						: null;
 			await insertCapture({ ...base, status: 'ignored', reason: decision.reason, transferId }, id);
 			return { id, autoConfirmed: false };
 		}
@@ -471,7 +564,7 @@ export const ingestRawCaptures = async (
 		if (!parsed) continue;
 
 		const account = await resolveAccountForNotification(raw, parsed);
-		const candidate = candidateFrom(raw, parsed);
+		const candidate = candidateFrom(raw, parsed, account?.id ?? null);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
 		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
 		const rule = candidate.merchantKey ? toMerchantRule(await getMerchantRule(candidate.merchantKey)) : undefined;
@@ -667,10 +760,23 @@ export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Pr
  *
  * Uma linha de extrato ligada a um lançamento digitado (`statement_transaction`) não
  * apaga esse lançamento ao reverter: ele não foi criado por ela, é do usuário.
+ *
+ * Desfaz também a **regra aprendida** que o toque em "Transferência" acabou de criar. A
+ * regra de transferência é gravada na primeira vez (a de categoria exige três
+ * confirmações) e nenhuma tela mostra ou apaga regras aprendidas: sem isto, um toque por
+ * engano fazia aquele estabelecimento desaparecer das despesas para sempre (achado 7.3).
  */
 export const revertCapture = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
 	if (!capture || capture.status === 'pending') return;
+
+	// `reason: 'manual'` é a marca do toque do usuário — e é exatamente nele que
+	// `markCaptureTransfer` grava a regra. Decisão automática ("o nome é o seu", "a outra
+	// ponta já foi reconhecida") não aprende nada, e aqui não há nada a apagar.
+	if (capture.status === 'transfer' && capture.reason === 'manual' && capture.merchantKey) {
+		const rule = await getMerchantRule(capture.merchantKey);
+		if (rule?.treatAs === 'transfer') await deleteMerchantRule(capture.merchantKey);
+	}
 
 	if (capture.transactionId && capture.reason !== 'statement_transaction') {
 		await removePostedTransactions(capture);

@@ -256,6 +256,20 @@ describe('parseCapture — o que não deve virar lançamento', () => {
 			'investment'
 		);
 	});
+
+	// A direção é o que diz de que lado da conta o dinheiro saiu ou entrou. Os dois eram
+	// "saída", e aí o resgate de R$ 5.000 debitava a conta corrente em vez de creditá-la
+	// (achado 7.2, agora que o investimento vira transferência).
+	it('aplicação sai da conta; resgate entra nela', () => {
+		expect(
+			parseCapture(raw({ title: 'Aplicação realizada', text: 'Aplicação de R$ 5.000,00 realizada com sucesso.' }))
+				?.direction
+		).toBe('out');
+		expect(parseCapture(raw({ title: 'Resgate', text: 'Resgate de R$ 5.000,00 concluído.' }))?.direction).toBe('in');
+		expect(
+			parseCapture(raw({ title: 'Resgate realizado', text: 'Resgate realizado: R$ 300,00 na sua conta.' }))?.direction
+		).toBe('in');
+	});
 });
 
 describe('parseCapture — casos reais do aparelho', () => {

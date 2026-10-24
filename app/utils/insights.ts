@@ -43,7 +43,7 @@ import {
 import { monthKeyName } from './dateUtils';
 import type { HealthIndicator } from './healthScore';
 import { type Cents, formatCents } from './money';
-import type { DuplicateIncome } from './reportSeries';
+import type { DuplicateIncome, RecurringDoubleCharge } from './reportSeries';
 import type { RetirementReadModel } from './retirement';
 
 // ---------------------------------------------------------------------------
@@ -158,6 +158,7 @@ export type InsightId =
 	| 'card-load-heavy'
 	| 'spending-above-pace'
 	| 'income-possibly-duplicated'
+	| 'expense-possibly-duplicated'
 	| 'debt-pay-first'
 	| 'debt-keep-investing';
 
@@ -216,17 +217,27 @@ const percentText = (basisPoints: number): string => `${Math.round(basisPoints /
 const monthsText = (months: number): string => months.toFixed(1);
 
 /**
- * As frases que o mês sustenta, da mais urgente para a menos.
+ * As frases que falam da taxa de poupança, e só elas.
  *
- * Cada regra é independente e silencia sozinha quando falta dado: um mês sem renda não
- * produz insight de taxa de poupança, um app sem recorrência não produz insight de custo
- * fixo. É preferível uma lista curta a uma lista que inventa.
+ * Separadas porque a mesma tela pode ter duas contas de "sobrou": a soma crua do período
+ * (receita menos despesa lançadas) e o quadro do mês (`buildMonthOverview`: fatura que
+ * **fecha**, envelope pelo combinado, reserva de fora). Com as duas vivas, a grade de saúde
+ * dizia "taxa de poupança 4%" e o insight logo abaixo, "54% da sua renda virou poupança".
+ * Quem monta a tela escolhe **uma** base e passa a taxa dela aqui.
  */
-export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot): Insight[] => {
-	const insights: Insight[] = [];
-	const { savingsRate: rate } = metrics;
+export const SAVINGS_RATE_INSIGHT_IDS: InsightId[] = [
+	'savings-rate-negative',
+	'savings-rate-low',
+	'savings-rate-healthy',
+	'savings-rate-falling',
+];
 
-	// --- Taxa de poupança --------------------------------------------------
+export const buildSavingsRateInsights = (
+	rate: Pick<SavingsRate, 'incomeCents' | 'netCents' | 'basisPoints'>,
+	consecutiveDrops = 0
+): Insight[] => {
+	const insights: Insight[] = [];
+
 	if (rate.netCents < 0 && rate.incomeCents > 0) {
 		insights.push({
 			id: 'savings-rate-negative',
@@ -257,15 +268,28 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 		}
 	}
 
-	if (metrics.consecutiveDrops >= MIN_CONSECUTIVE_DROPS) {
+	if (consecutiveDrops >= MIN_CONSECUTIVE_DROPS) {
 		insights.push({
 			id: 'savings-rate-falling',
 			severity: 'attention',
-			title: `Your savings rate has fallen ${metrics.consecutiveDrops} months in a row.`,
-			params: { months: metrics.consecutiveDrops },
-			months: metrics.consecutiveDrops,
+			title: `Your savings rate has fallen ${consecutiveDrops} months in a row.`,
+			params: { months: consecutiveDrops },
+			months: consecutiveDrops,
 		});
 	}
+
+	return insights;
+};
+
+/**
+ * As frases que o mês sustenta, da mais urgente para a menos.
+ *
+ * Cada regra é independente e silencia sozinha quando falta dado: um mês sem renda não
+ * produz insight de taxa de poupança, um app sem recorrência não produz insight de custo
+ * fixo. É preferível uma lista curta a uma lista que inventa.
+ */
+export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot): Insight[] => {
+	const insights: Insight[] = [...buildSavingsRateInsights(metrics.savingsRate, metrics.consecutiveDrops)];
 
 	// --- Custo fixo e fôlego -----------------------------------------------
 	if (
@@ -370,8 +394,31 @@ const monthText = (key: string): string => `${monthKeyName(key)} ${key.slice(0, 
  * vezes. Separadas de `buildInsights` porque os insumos vêm de outro lugar (a meta, o
  * histórico de meses, a lista do mês); quem monta a tela junta as duas listas.
  */
-export const buildGoalInsights = (retirement: RetirementReadModel | null, health: HealthIndicator[], duplicates: DuplicateIncome[]): Insight[] => {
+export const buildGoalInsights = (
+	retirement: RetirementReadModel | null,
+	health: HealthIndicator[],
+	duplicates: DuplicateIncome[],
+	doubleCharges: RecurringDoubleCharge[] = []
+): Insight[] => {
 	const insights: Insight[] = [];
+
+	// --- Gasto cobrado duas vezes: a recorrente e a cobrança de verdade ---------------
+	// Vem junto da receita duplicada porque é o mesmo estrago, do outro lado: enquanto os
+	// dois lançamentos existem, o gasto do mês e o "já comprometido" estão inflados.
+	for (const charge of doubleCharges) {
+		insights.push({
+			id: 'expense-possibly-duplicated',
+			severity: 'critical',
+			title: `${formatCents(charge.amountCents)} was charged twice for "${charge.note}" (${charge.dates[0]} and ${charge.dates[1]}): the recurring entry and the real charge. If it is the same money, delete one.`,
+			params: {
+				amount: formatCents(charge.amountCents),
+				note: charge.note,
+				first: charge.dates[0],
+				second: charge.dates[1],
+			},
+			valueCents: charge.amountCents,
+		});
+	}
 
 	// --- Receita possivelmente duplicada: antes de tudo, porque distorce o resto ------
 	for (const duplicate of duplicates) {
@@ -412,7 +459,10 @@ export const buildGoalInsights = (retirement: RetirementReadModel | null, health
 				valueCents: retirement.monthlyContributionCents,
 				months: reach.months,
 			});
-		} else if (reach.kind === 'never' && reach.reason === 'no-contribution') {
+			// Resgate entra aqui, e não em "seria preciso guardar X": com aporte médio negativo
+			// a frase "hoje são R$ 0,00" era falsa por arredondar o resgate para zero, e nada
+			// foi para a reserva — que é exatamente o que esta frase diz.
+		} else if (reach.kind === 'never' && (reach.reason === 'no-contribution' || reach.reason === 'withdrawing')) {
 			insights.push({
 				id: 'goal-no-contribution',
 				severity: 'attention',
@@ -434,7 +484,11 @@ export const buildGoalInsights = (retirement: RetirementReadModel | null, health
 			});
 		}
 
-		if (retirement.realizedYieldBp !== null && retirement.realizedYieldBp < retirement.expectedYieldBp * LOW_REALIZED_YIELD_RATIO) {
+		// "Trocar de investimento" é uma decisão de dinheiro de verdade: ela só se sustenta
+		// sobre rendimento **lançado** no livro. Com a base só estimada (o acréscimo do CDI
+		// que o app deriva em memória e nada lança), o número é uma conta do próprio app
+		// sobre a taxa contratada — a frase chegava a sugerir trocar um CDB de 120% do CDI.
+		if (retirement.realizedYieldBasis !== 'estimated' && retirement.realizedYieldBp !== null && retirement.realizedYieldBp < retirement.expectedYieldBp * LOW_REALIZED_YIELD_RATIO) {
 			insights.push({
 				id: 'reserve-yield-low',
 				severity: 'attention',
@@ -526,4 +580,11 @@ export const mergeInsights = (...lists: Insight[][]): Insight[] =>
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de metrics.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { computeWealthMetrics, buildInsights, buildGoalInsights, buildDebtInsights, mergeInsights };
+export default {
+	computeWealthMetrics,
+	buildInsights,
+	buildSavingsRateInsights,
+	buildGoalInsights,
+	buildDebtInsights,
+	mergeInsights,
+};

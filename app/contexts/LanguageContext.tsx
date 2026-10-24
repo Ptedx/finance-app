@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getLocales } from 'expo-localization';
 import i18next from 'i18next';
+import { STORAGE_KEYS } from '../utils/storageUtils';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 
@@ -18,7 +19,7 @@ export const AVAILABLE_LANGUAGES: Language[] = [
 	{ code: 'it', name: 'Italian', nativeName: 'Italiano' },
 ];
 
-const LANGUAGE_STORAGE_KEY = '@spendr_language';
+const LANGUAGE_STORAGE_KEY = STORAGE_KEYS.language;
 const DEFAULT_LANGUAGE = AVAILABLE_LANGUAGES[0];
 
 interface LanguageContextType {

@@ -88,6 +88,9 @@ const AccountsOverview: React.FC = () => {
 	if (isLoading) return null;
 
 	const envelopes = new Map((month?.envelopes ?? []).map((envelope) => [envelope.accountId, envelope]));
+	// Por conta, nunca o total: passar o agregado de todas as reservas fazia duas reservas que
+	// receberam R$ 1.000 e R$ 300 mostrarem "R$ 1.300" nas duas linhas.
+	const savedByAccount = new Map((month?.reserves ?? []).map((reserve) => [reserve.accountId, reserve.savedCents]));
 	const openAccount = (account: Account) => router.push({ pathname: '/accounts/[id]', params: { id: account.id } });
 
 	return (
@@ -145,7 +148,7 @@ const AccountsOverview: React.FC = () => {
 								account={account}
 								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
 								envelope={envelopes.get(account.id)}
-								savedThisMonthCents={account.role === 'reserve' && month ? month.savedCents : undefined}
+								savedThisMonthCents={account.role === 'reserve' ? savedByAccount.get(account.id) : undefined}
 								onPress={openAccount}
 							/>
 						))}

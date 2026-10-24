@@ -11,6 +11,10 @@
  *    rendimento de hoje só aparece amanhã, como no banco). Um aporte começa a render no dia
  *    útil seguinte. O rendimento compõe: entra no saldo e rende junto.
  *  - Saldo negativo não rende.
+ *  - **Ou se lança o rendimento, ou se estima — nunca os dois no mesmo período.** Um
+ *    lançamento de rendimento de investimento cobre o período até a data dele: o dinheiro
+ *    já está no saldo. Por isso `notBefore` reancora a estimativa na data do último
+ *    rendimento lançado naquela conta; antes dela, quem vale é o livro.
  *
  * É estimativa: o CDI de hoje vale para o período inteiro desde a âncora, e o IR (que o banco
  * só desconta no resgate) não entra — o saldo bruto é o que o app do banco mostra. Acertar o
@@ -40,6 +44,9 @@ export const cdiDailyRate = (cdiAnnualBp: number, percentOfCdiBp: number): numbe
 	return (percentOfCdiBp / FULL_BASIS_POINTS) * cdiDaily;
 };
 
+/** De onde vem um número de rendimento: do livro, da estimativa, ou dos dois. */
+export type YieldBasis = 'posted' | 'estimated' | 'mixed';
+
 export interface YieldInput {
 	/** Saldo no fim de `anchorDate`. */
 	anchorCents: Cents;
@@ -49,11 +56,39 @@ export interface YieldInput {
 	today: string;
 	cdiAnnualBp: number;
 	percentOfCdiBp: number;
+	/**
+	 * A estimativa não corre antes desta data: o saldo é reancorado no fim dela.
+	 *
+	 * Serve a dois usos. O primeiro é a data do último **rendimento lançado** na conta: o
+	 * lançamento já cobre o período até ali, e estimar por cima dele somava rendimento
+	 * lançado com rendimento estimado — e passava a compor sobre a duplicata, inflando
+	 * reserva, capital, patrimônio e progresso da meta. O segundo é recortar uma janela
+	 * (o rendimento dos últimos 12 meses, por exemplo). Nula ou anterior à âncora, não
+	 * muda nada.
+	 */
+	notBefore?: string | null;
 }
 
+/**
+ * A âncora de onde a estimativa parte: a do saldo informado, ou `notBefore`, o que for
+ * mais recente. Reancorar é somar à âncora os movimentos até a data nova — o saldo do fim
+ * daquele dia, que é a convenção de `anchorCents`.
+ */
+export const rebasedAnchor = ({ anchorCents, anchorDate, flows, notBefore }: Pick<YieldInput, 'anchorCents' | 'anchorDate' | 'flows' | 'notBefore'>): { anchorCents: Cents; anchorDate: string } => {
+	const from = notBefore ?? '';
+	if (from <= anchorDate) return { anchorCents, anchorDate };
+	let balance = anchorCents;
+	for (const flow of flows) {
+		if (flow.date > anchorDate && flow.date <= from) balance += flow.cents;
+	}
+	return { anchorCents: balance, anchorDate: from };
+};
+
 /** O rendimento estimado desde a âncora até ontem, em centavos. */
-export const accruedYieldCents = ({ anchorCents, anchorDate, flows, today, cdiAnnualBp, percentOfCdiBp }: YieldInput): Cents => {
+export const accruedYieldCents = (input: YieldInput): Cents => {
+	const { flows, today, cdiAnnualBp, percentOfCdiBp } = input;
 	const daily = cdiDailyRate(cdiAnnualBp, percentOfCdiBp);
+	const { anchorCents, anchorDate } = rebasedAnchor(input);
 	if (daily === 0 || anchorDate >= today) return 0;
 
 	const byDate = new Map<string, Cents>();
@@ -95,4 +130,4 @@ export const parseBcbCdi = (json: unknown): { annualBp: number; date: string } |
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { cdiDailyRate, accruedYieldCents, parseBcbCdi };
+export default { cdiDailyRate, accruedYieldCents, rebasedAnchor, parseBcbCdi };

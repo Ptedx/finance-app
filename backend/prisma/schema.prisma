@@ -57,6 +57,8 @@ model User {
   reserveGoals          ReserveGoal[]
   accounts              Account[]
   transfers             Transfer[]
+  captures              Capture[]
+  merchantRules         MerchantRule[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -392,6 +394,109 @@ model Debt {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("debts")
+}
+
+/// Uma notificação capturada esperando revisão (v19 do app).
+///
+/// Era local por desenho — "a caixa de entrada é o rascunho de cada aparelho". Até o dono
+/// do app desinstalá-lo e perder duas semanas de compras capturadas que nunca haviam
+/// subido: estando logado numa conta, isso é perda de dado, não rascunho.
+///
+/// **A identidade aqui é o `fingerprint` da notificação, não o id local.** O mesmo aviso
+/// do banco capturado em dois aparelhos nasce com dois ids aleatórios e um único
+/// fingerprint (e no SQLite do app a coluna é UNIQUE). Se o id local viajasse, o segundo
+/// aparelho receberia uma linha que não cabe na tabela dele. Então o `id` desta linha
+/// **é** o fingerprint, e quem aplica casa por ele e mantém o id que já tinha. Pela mesma
+/// razão o item relacionado viaja como `relatedFingerprint`: o id local dele não
+/// significa nada do outro lado.
+model Capture {
+  /// O fingerprint da notificação. Ver `fingerprintOf` em app/utils/captureMatcher.ts.
+  id                 String
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  packageName        String
+  appLabel           String
+  /// Texto cru da notificação, guardado de propósito: se o parser errar, dá para corrigir
+  /// a regra e reprocessar sem ter perdido nada. Por isso `Text`, e não um VarChar curto.
+  title              String    @db.Text
+  text               String    @db.Text
+  /// Instante em que a notificação foi publicada, **guardado como texto, verbatim**.
+  ///
+  /// Único instante do schema que não é DateTime, e de propósito: o app usa este campo
+  /// como chave de ordenação em SQL (`ORDER BY postedAt`, `postedAt BETWEEN ?`) e fatia os
+  /// 16 primeiros caracteres para reconhecer a reentrega da mesma notificação. Um
+  /// round-trip por DateTime reescreveria "2026-10-13T12:00:00.000" (o que a importação de
+  /// extrato gera, sem fuso) como um UTC com Z, e as duas cópias deixariam de casar.
+  /// Sincronizar é copiar: o que chegou é o que volta.
+  postedAt           String
+  amountCents        BigInt
+  /// 'in' ou 'out'. TEXT e não enum pelo mesmo motivo de `Debt.kind`: um valor novo do
+  /// parser não pode virar migração — e, pior, não pode fazer o servidor recusar a linha.
+  direction          String
+  /// O que o parser entendeu que é (purchase, pix_in, invoice_payment…). Texto livre.
+  kind               String
+  counterparty       String?
+  merchantKey        String?
+  cardLast4          String?
+  /// pending, confirmed, dismissed, duplicate, transfer, ignored.
+  status             String
+  /// A pergunta que um item pendente faz: duplicate ou transfer. Nulo quando não faz.
+  question           String?
+  /// O fingerprint do item relacionado, nulo quando ele não é conhecido deste lado.
+  relatedFingerprint String?
+  /// Palpite de categoria. Não é FK nem é verificado no push: é um palpite, e recusar a
+  /// captura inteira por causa dele seria exatamente a perda que esta tabela evita.
+  suggestedCategory  String?
+  transactionId      String?
+  autoConfirmed      Boolean   @default(false)
+  /// Por que saiu do jogo (own_name, rule, invoice_payment…), para o histórico.
+  reason             String?
+  accountId          String?
+  transferId         String?
+  /// Quantas parcelas, quando a compra é parcelada. Nulo à vista.
+  installments       Int?
+  /// Quando o aparelho criou a linha. Texto pelo mesmo motivo de `postedAt`.
+  createdAt          String
+  updatedAt          DateTime
+  /// Lápide. A linha sobrevive ao delete para que um aparelho que estava offline
+  /// saiba que ela sumiu, em vez de reenviá-la achando que é nova.
+  deletedAt          DateTime?
+  /// Ordem de gravação no servidor. É por ela que o pull pagina — nunca por
+  /// `updatedAt`, que vem do relógio de quem editou e pode apontar para o passado.
+  serverSeq          Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("captures")
+}
+
+/// O que o app aprendeu sobre um estabelecimento ou pessoa (v19): "o iFood é alimentação",
+/// "isto é conta minha", "ignore isto".
+///
+/// A identidade é a própria `merchantKey`, que os dois aparelhos derivam do mesmo texto
+/// (`merchantKeyOf`) — então duas aprendizagens do mesmo lugar convergem pelo `updatedAt`,
+/// sem conflito de id. É a coleção mais simples de todas.
+model MerchantRule {
+  /// A `merchantKey`. Até três palavras do nome normalizado do estabelecimento.
+  id            String
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// A categoria aprendida. Não é FK, pelo mesmo motivo de `Transaction.category` — e aqui
+  /// nem é verificada: uma regra apontando para categoria que ainda não subiu continua
+  /// valendo, e o app ignora o palpite enquanto a categoria não chega.
+  categoryId    String?
+  /// transaction, transfer ou ignore. Texto livre, como em `Capture.direction`.
+  treatAs       String    @default("transaction")
+  /// Quantas vezes o usuário confirmou esta regra. Last-write-wins como todo o resto: a
+  /// contagem que vence é a de quem editou por último, não a maior das duas.
+  confirmations Int       @default(0)
+  updatedAt     DateTime
+  deletedAt     DateTime?
+  serverSeq     Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("merchant_rules")
 }
 
 // ============================================

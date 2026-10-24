@@ -171,6 +171,84 @@ export const retirementGoalSchema = z.object({
 	...syncMeta,
 });
 
+/**
+ * Instante ISO 8601 que o servidor **guarda como texto**, sem converter.
+ *
+ * Diferente de `timestamp`, o fuso é opcional: a importação de extrato gera
+ * `2026-10-13T12:00:00.000` sem fuso (`statementPostedAt`), e recusar essas capturas
+ * deixaria de fora justamente as linhas de quem importou a fatura. O app ordena e fatia
+ * esse texto, então ele viaja e volta igual — ver `postedAt` no schema.prisma.
+ */
+const instantText = z
+	.string()
+	.regex(
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?$/,
+		'Instante deve ser ISO 8601 (YYYY-MM-DDTHH:mm:ss[.sss][Z|±hh:mm])'
+	);
+
+/**
+ * Uma notificação capturada (v19 do app).
+ *
+ * O `id` **é** o fingerprint da notificação: o id local nunca viaja. Ver `WireCapture` em
+ * app/sync/types.ts e o comentário do model `Capture` no schema.prisma.
+ *
+ * Os limites de `title` e `text` são deliberadamente folgados — 500 e 4000 caracteres.
+ * É texto cru de notificação, que o app guarda inteiro para poder reprocessar quando o
+ * parser erra; apertar aqui transformaria "a captura veio comprida" em perda de dado, que
+ * é exatamente o que esta coleção existe para evitar. O teto ainda assim existe porque uma
+ * página cheia (`SYNC_PAGE_SIZE`, 500 linhas) precisa caber no corpo de 5 MB que o express
+ * aceita: 500 × 4,5 KB ≈ 2,2 MB no pior caso.
+ */
+export const captureSchema = z.object({
+	/** O fingerprint. 17 caracteres hoje; o teto segue o das outras coleções. */
+	id: z.string().min(1).max(64),
+	packageName: z.string().min(1).max(200),
+	appLabel: z.string().max(100),
+	title: z.string().max(500),
+	text: z.string().max(4000),
+	postedAt: instantText,
+	/**
+	 * O sinal fica em `direction`, então na prática o valor é positivo — mas nada aqui
+	 * exige isso: um parser que devolva negativo não pode fazer a linha sumir.
+	 */
+	amountCents,
+	direction: z.enum(['in', 'out']),
+	/** O que o parser entendeu (purchase, pix_in, invoice_payment…). Texto livre. */
+	kind: z.string().min(1).max(32),
+	counterparty: z.string().max(200).nullish(),
+	/** Até três palavras do nome normalizado; cabe folgado em 120. */
+	merchantKey: z.string().max(120).nullish(),
+	cardLast4: z.string().max(8).nullish(),
+	status: z.enum(['pending', 'confirmed', 'dismissed', 'duplicate', 'transfer', 'ignored']),
+	question: z.enum(['duplicate', 'transfer']).nullish(),
+	/** O fingerprint do item relacionado, não o id local dele. */
+	relatedFingerprint: z.string().max(64).nullish(),
+	suggestedCategory: z.string().max(64).nullish(),
+	transactionId: z.string().max(64).nullish(),
+	autoConfirmed: z.boolean(),
+	reason: z.string().max(64).nullish(),
+	accountId: z.string().max(64).nullish(),
+	transferId: z.string().max(64).nullish(),
+	installments: z.number().int().min(1).max(999).nullish(),
+	createdAt: instantText,
+	...syncMeta,
+});
+
+/**
+ * Uma regra aprendida sobre um estabelecimento (v19 do app).
+ *
+ * O `id` é a própria `merchantKey` — os dois aparelhos a derivam do mesmo texto, então
+ * duas aprendizagens do mesmo lugar convergem pelo `updatedAt`, sem conflito de id.
+ */
+export const merchantRuleSchema = z.object({
+	/** A `merchantKey`. 120, e não 64: ela é derivada de texto, não é um uuid. */
+	id: z.string().min(1).max(120),
+	categoryId: z.string().max(64).nullish(),
+	treatAs: z.enum(['transaction', 'transfer', 'ignore']),
+	confirmations: z.number().int().min(0).max(1_000_000),
+	...syncMeta,
+});
+
 /** A meta da reserva de emergência (v17 do app): uma linha por usuário, de id fixo. */
 export const reserveGoalSchema = z.object({
 	id: z.string().min(1).max(64),
@@ -207,6 +285,8 @@ export const pushBodySchema = z.object({
 			retirementGoals: rows(),
 			debts: rows(),
 			reserveGoals: rows(),
+			captures: rows(),
+			merchantRules: rows(),
 		})
 		.default({
 			categories: [],
@@ -218,6 +298,8 @@ export const pushBodySchema = z.object({
 			retirementGoals: [],
 			debts: [],
 			reserveGoals: [],
+			captures: [],
+			merchantRules: [],
 		}),
 });
 
@@ -246,6 +328,11 @@ export const cursorSchema = z.object({
 	debts: z.number().int().nonnegative().default(0),
 	// Coleção do v17, idem.
 	reserveGoals: z.number().int().nonnegative().default(0),
+	// Coleções do v19, idem. É a presença destas duas chaves no cursor devolvido pelo pull
+	// que diz ao app que este servidor conhece as capturas — ver `onlyKnownCollections` em
+	// app/sync/types.ts. Sem elas, o app guarda as linhas para quando o servidor souber.
+	captures: z.number().int().nonnegative().default(0),
+	merchantRules: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -258,6 +345,8 @@ const EMPTY_CURSOR = {
 	retirementGoals: 0,
 	debts: 0,
 	reserveGoals: 0,
+	captures: 0,
+	merchantRules: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -287,4 +376,6 @@ export type BudgetPayload = z.infer<typeof budgetSchema>;
 export type RetirementGoalPayload = z.infer<typeof retirementGoalSchema>;
 export type DebtPayload = z.infer<typeof debtSchema>;
 export type ReserveGoalPayload = z.infer<typeof reserveGoalSchema>;
+export type CapturePayload = z.infer<typeof captureSchema>;
+export type MerchantRulePayload = z.infer<typeof merchantRuleSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

@@ -9,13 +9,27 @@ import {
 	markCategoryDirty,
 	markChangesClean,
 	reassignToUncategorized,
+	repairPhantomAppAccounts,
 	setSyncState,
 	stampEverything,
 } from '../database/database';
 import { SCHEMA_VERSION } from '../database/schema';
 import { nowTimestamp } from '../utils/dateUtils';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
-import { countChanges, EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncCursor } from './types';
+import { EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncChanges, type SyncCursor } from './types';
+
+/**
+ * Quantas linhas uma remessa tem, **todas** as coleções contadas.
+ *
+ * Existe porque esta contagem decide se vale enviar: uma coleção que ficar de fora dela
+ * faz a remessa ser lida como "nada mudou", o laço do push para na primeira volta e
+ * aquelas linhas nunca sobem. É o que aconteceria com a caixa de entrada do v19 — o dado
+ * que a coleção existe para salvar. Derivada de `COLLECTIONS`, para que acrescentar uma
+ * coleção lá já a inclua aqui, em vez de depender de alguém somar um termo à mão (é o que
+ * `countChanges`, no contrato, faz).
+ */
+const countAllChanges = (changes: SyncChanges): number =>
+	COLLECTIONS.reduce((total, collection) => total + (changes[collection]?.length ?? 0), 0);
 
 /**
  * Motor de sincronização.
@@ -168,6 +182,7 @@ export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
 export const pullAll = async (): Promise<number> => {
 	let cursor = await readCursor();
 	let received = 0;
+	let complete = false;
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const response = await api.pull(cursor);
@@ -177,9 +192,25 @@ export const pullAll = async (): Promise<number> => {
 		await setSyncState(SERVER_COLLECTIONS_KEY, JSON.stringify(Object.keys(response.cursor)));
 
 		cursor = response.cursor;
-		received += countChanges(response.changes);
+		received += countAllChanges(response.changes);
 
-		if (!response.hasMore) break;
+		if (!response.hasMore) {
+			complete = true;
+			break;
+		}
+	}
+
+	// O pull pode ter trazido de volta as contas que nasceram de um app que não é banco —
+	// "WhatsApp", "Gmail", "99". A limpeza era só a migração v18, que roda **antes** de as
+	// tabelas existirem: numa instalação nova ela não acha nada, e em seguida o login
+	// baixa as contas inventadas. Aconteceu com o dono, na 1.2.7, com seis delas de volta.
+	//
+	// Só quando a foto está completa: o reparo exige conta vazia, e uma conta cujos
+	// lançamentos ainda estão numa página por vir **parece** vazia. Com `hasMore` ainda
+	// pendente (ou o teto de páginas atingido), o reparo espera a próxima rodada.
+	if (complete) {
+		const removed = await repairPhantomAppAccounts();
+		if (removed > 0) console.log(`Sync: ${removed} conta(s) fantasma apagada(s) depois do pull`);
 	}
 
 	return received;
@@ -259,7 +290,7 @@ export const pushAll = async (): Promise<number> => {
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const changes = onlyKnownCollections(await getDirtyChanges(PAGE_SIZE), known);
-		const pending = countChanges(changes);
+		const pending = countAllChanges(changes);
 
 		if (pending === 0) break;
 
@@ -279,6 +310,10 @@ export const pushAll = async (): Promise<number> => {
 			retirementGoals: (changes.retirementGoals ?? []).filter((r) => !rejected.has(`retirementGoals:${r.id}`)),
 			debts: (changes.debts ?? []).filter((r) => !rejected.has(`debts:${r.id}`)),
 			reserveGoals: (changes.reserveGoals ?? []).filter((r) => !rejected.has(`reserveGoals:${r.id}`)),
+			// Nas capturas o `id` é o fingerprint, nos dois sentidos: é por ele que o
+			// servidor recusa e é por ele que `markChangesClean` encontra a linha local.
+			captures: (changes.captures ?? []).filter((r) => !rejected.has(`captures:${r.id}`)),
+			merchantRules: (changes.merchantRules ?? []).filter((r) => !rejected.has(`merchantRules:${r.id}`)),
 		});
 
 		sent += response.applied;

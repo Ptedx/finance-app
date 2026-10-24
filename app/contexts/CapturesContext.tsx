@@ -175,6 +175,9 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	useEffect(() => {
 		void refresh();
 
+		// A poda do histórico é **lápide** desde o v19, não DELETE: a tabela sincroniza, e
+		// apagar de verdade faria a linha voltar inteira no próximo pull. A falha é
+		// ignorada de propósito — a caixa de entrada abre do mesmo jeito.
 		const cutoff = new Date(Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
 		pruneResolvedCaptures(cutoff).catch(() => {});
 

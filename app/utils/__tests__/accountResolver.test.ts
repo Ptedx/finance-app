@@ -147,6 +147,34 @@ describe('a conta de uma notificação', () => {
 		expect(mocked.addAccount).not.toHaveBeenCalled();
 	});
 
+	// Achado 7.6: a compra ia para a conta corrente, e R$ 480 saíam do saldo ficando fora
+	// das duas faturas. "Não dá para responder" é resposta: sem conta, e o usuário atribui.
+	it('compra "no crédito" com dois cartões do banco fica sem conta, nunca na conta corrente', async () => {
+		const NUBANK = 'com.nu.production';
+		const card = (id: string, last4: string): Account =>
+			account({ id, name: `Cartão ${last4}`, kind: 'credit_card', role: 'card', bankName: 'Nubank', packageName: NUBANK, last4 });
+		withAccounts([
+			card('nu-1', '1534'),
+			card('nu-2', '9999'),
+			account({ id: 'nu-cc', name: 'Nubank', bankName: 'Nubank', packageName: NUBANK }),
+		]);
+
+		const resolved = await resolveAccountForNotification(
+			{
+				packageName: NUBANK,
+				appLabel: 'Nubank',
+				title: 'Compra no crédito aprovada',
+				text: 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.',
+				postedAt: '2026-10-06T19:00:00.000Z',
+			},
+			{ amountCents: 48_000, direction: 'out', kind: 'purchase', counterparty: 'LOJA', cardLast4: '7777', neutral: false, installments: null }
+		);
+
+		expect(resolved).toBeNull();
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+		expect(mocked.updateAccount).not.toHaveBeenCalled();
+	});
+
 	it('aviso repassado por SMS cai na conta do banco que o texto cita, sem levar o app do SMS', async () => {
 		const inter = account({ id: 'inter-app', name: 'Inter', bankName: 'Inter', packageName: INTER });
 		withAccounts([inter]);

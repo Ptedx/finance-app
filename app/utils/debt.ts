@@ -234,6 +234,14 @@ export interface DebtState {
 	/** O cronograma a partir de hoje. */
 	upcoming: ScheduleEntry[];
 	amortizes: boolean;
+	/**
+	 * Quitada: saldo zerado e cronograma terminado — quem pagou as 48 parcelas no prazo,
+	 * sem amortizar nada. Antes só a amortização confirmada arquivava a dívida, e a do
+	 * prazo continuava mostrando "Parcela R$ 1.234 · 48 de 48 pagas" com o chip "Amortize"
+	 * e um "Simular" que não devolvia nada. É presentação e cálculo: nada é apagado nem
+	 * arquivado por conta disto.
+	 */
+	settled: boolean;
 }
 
 /** Onde a dívida está hoje: o que venceu até `today` conta como pago. */
@@ -241,8 +249,9 @@ export const debtStateOn = (terms: DebtTerms, today: string): DebtState => {
 	const schedule = buildSchedule(terms);
 	const paid = schedule.entries.filter((entry) => entry.date <= today);
 	const upcoming = schedule.entries.filter((entry) => entry.date > today);
+	const balanceCents = paid.length > 0 ? paid[paid.length - 1].balanceCents : Math.max(0, terms.balanceCents);
 	return {
-		balanceCents: paid.length > 0 ? paid[paid.length - 1].balanceCents : Math.max(0, terms.balanceCents),
+		balanceCents,
 		remaining: upcoming.length,
 		paidSinceAnchor: paid.length,
 		next: upcoming[0] ?? null,
@@ -250,6 +259,9 @@ export const debtStateOn = (terms: DebtTerms, today: string): DebtState => {
 		interestAheadCents: upcoming.reduce((sum, entry) => sum + entry.interestCents, 0),
 		upcoming,
 		amortizes: schedule.amortizes,
+		// A parcela que não cobre os juros também não tem cronograma, mas o saldo continua
+		// de pé: só é quitada quem zerou o saldo.
+		settled: balanceCents <= 0 && upcoming.length === 0,
 	};
 };
 
@@ -509,7 +521,8 @@ export const summarizeDebts = (debts: Array<{ id: string; name: string; terms: D
 
 	for (const debt of debts) {
 		const state = debtStateOn(debt.terms, today);
-		if (state.balanceCents <= 0) continue;
+		// Quitada (no prazo ou amortizada) não deve nada e não compromete mês nenhum.
+		if (state.settled || state.balanceCents <= 0) continue;
 		balanceCents += state.balanceCents;
 		monthlyCents += state.next?.installmentCents ?? 0;
 		weighted += state.balanceCents * Math.max(0, debt.terms.rateBp);
