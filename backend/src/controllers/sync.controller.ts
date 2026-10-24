@@ -10,6 +10,8 @@ import {
 	merchantRuleToWire,
 } from '../domain/captureWire.js';
 import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
+import { preferenceColumns, preferenceToWire } from '../domain/preferenceWire.js';
+import { syncStatusOf } from '../domain/syncStatus.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
@@ -21,6 +23,7 @@ import {
 	categorySchema,
 	debtSchema,
 	merchantRuleSchema,
+	preferenceSchema,
 	pullQuerySchema,
 	pushBodySchema,
 	recurringTransactionSchema,
@@ -46,7 +49,8 @@ import {
  * coleção é opcional nas duas direções, então um app que não as conhece não quebra e um
  * push sem elas é aceito.
  *
- * `bills` (contas a pagar) entrou depois, pela mesma regra.
+ * `bills` (contas a pagar) entrou depois, pela mesma regra, e `preferences` (moeda, idioma,
+ * CDI, lembretes; v21 do app) depois dela.
  */
 
 type Collection =
@@ -61,7 +65,8 @@ type Collection =
 	| 'reserveGoals'
 	| 'captures'
 	| 'merchantRules'
-	| 'bills';
+	| 'bills'
+	| 'preferences';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -118,6 +123,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		captures,
 		merchantRules,
 		bills,
+		preferences,
 	] = await Promise.all([
 		prisma.category.findMany(page(cursor.categories)),
 		prisma.account.findMany(page(cursor.accounts)),
@@ -131,6 +137,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.capture.findMany(page(cursor.captures)),
 		prisma.merchantRule.findMany(page(cursor.merchantRules)),
 		prisma.bill.findMany(page(cursor.bills)),
+		prisma.preference.findMany(page(cursor.preferences)),
 	]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
@@ -267,6 +274,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		merchantRules: merchantRules.map(merchantRuleToWire),
 		/** Contas a pagar. `amountCents` nulo ("o valor varia") volta nulo — ver `domain/billWire.ts`. */
 		bills: bills.map(billToWire),
+		/** Preferências: chave e texto, sem tradução — ver `domain/preferenceWire.ts`. */
+		preferences: preferences.map(preferenceToWire),
 	};
 
 	/**
@@ -298,6 +307,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		merchantRules: advance(merchantRules, cursor.merchantRules),
 		// Pelo mesmo motivo, a chave sai sempre: é ela que diz ao app que `bills` existe aqui.
 		bills: advance(bills, cursor.bills),
+		// Idem: um app que não vê `preferences` aqui segura as preferências em vez de subi-las.
+		preferences: advance(preferences, cursor.preferences),
 	};
 
 	res.json({
@@ -318,6 +329,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			captures,
 			merchantRules,
 			bills,
+			preferences,
 		].some((rows) => rows.length === env.syncPageSize),
 		changes,
 	});
@@ -447,6 +459,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const captures = partitionRows('captures', changes.captures, captureSchema, rejected);
 	const merchantRules = partitionRows('merchantRules', changes.merchantRules, merchantRuleSchema, rejected);
 	const bills = partitionRows('bills', changes.bills, billSchema, rejected);
+	const preferences = partitionRows('preferences', changes.preferences, preferenceSchema, rejected);
 
 	let applied = 0;
 
@@ -957,6 +970,41 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 				applied += 1;
 			}
+
+			// --- Preferências ------------------------------------------------------
+			// O `id` é a chave do AsyncStorage do app, a mesma em todo aparelho: duas
+			// escolhas da mesma preferência convergem pelo `updatedAt`. O valor é texto que
+			// o servidor não interpreta.
+			for (const row of preferences) {
+				const current = await tx.preference.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'preferences', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = preferenceColumns(row);
+
+				// SAVEPOINT pelo mesmo motivo das capturas: o valor é texto que veio do
+				// aparelho, e um byte que o Postgres recuse não pode derrubar a remessa.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.preference.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'preferences', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += 1;
+			}
 		},
 		// Uma remessa cheia são milhares de idas ao banco; o padrão de 5s do Prisma
 		// estoura num primeiro sync grande.
@@ -970,23 +1018,57 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
  * Diz se a conta já tem qualquer dado do usuário.
  *
  * É o que decide o primeiro login: conta vazia recebe os dados locais direto, conta com
- * histórico faz o app perguntar antes de mesclar ou descartar. As categorias padrão não
- * contam — toda conta nasce com elas.
+ * histórico faz o app perguntar antes de mesclar ou descartar. Toda coleção de dado entra
+ * (ver `domain/syncStatus.ts`); as categorias padrão e as preferências, não.
  */
 export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
 	const userId = req.userId;
+	const live = { where: { userId, deletedAt: null } };
 
-	const [transactions, recurringTransactions, budgets, customCategories] = await Promise.all([
-		prisma.transaction.count({ where: { userId, deletedAt: null } }),
-		prisma.recurringTransaction.count({ where: { userId, deletedAt: null } }),
-		prisma.budget.count({ where: { userId, deletedAt: null } }),
+	const [
+		transactions,
+		recurringTransactions,
+		budgets,
+		customCategories,
+		accounts,
+		transfers,
+		debts,
+		retirementGoals,
+		reserveGoals,
+		captures,
+		merchantRules,
+		bills,
+	] = await Promise.all([
+		prisma.transaction.count(live),
+		prisma.recurringTransaction.count(live),
+		prisma.budget.count(live),
 		prisma.category.count({
 			where: { userId, deletedAt: null, id: { notIn: [...DEFAULT_CATEGORY_IDS] } },
 		}),
+		prisma.account.count(live),
+		prisma.transfer.count(live),
+		prisma.debt.count(live),
+		prisma.retirementGoal.count(live),
+		prisma.reserveGoal.count(live),
+		prisma.capture.count(live),
+		prisma.merchantRule.count(live),
+		prisma.bill.count(live),
 	]);
 
-	res.json({
-		hasData: transactions + recurringTransactions + budgets + customCategories > 0,
-		counts: { transactions, recurringTransactions, budgets, customCategories },
-	});
+	res.json(
+		syncStatusOf({
+			transactions,
+			recurringTransactions,
+			budgets,
+			customCategories,
+			accounts,
+			transfers,
+			debts,
+			retirementGoals,
+			reserveGoals,
+			captures,
+			merchantRules,
+			bills,
+		})
+	);
 };

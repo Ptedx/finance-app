@@ -288,6 +288,22 @@ export const reserveGoalSchema = z.object({
 });
 
 /**
+ * Uma preferência do usuário (v21 do app): moeda, idioma, taxa do CDI, lembretes ligados.
+ *
+ * O `id` é a chave do AsyncStorage do app, e `value` o texto guardado nela — o servidor não
+ * interpreta nenhum dos dois, de propósito: quem decide quais chaves valem e o que cada
+ * uma quer dizer é o app (ele só escreve no aparelho as chaves que conhece). Uma lista de
+ * chaves aqui obrigaria a publicar a API antes de cada preferência nova. O teto do valor
+ * é folgado para o maior de hoje (a taxa do CDI, ~80 caracteres) e curto o bastante para
+ * a coleção não virar depósito de outra coisa.
+ */
+export const preferenceSchema = z.object({
+	id: z.string().min(1).max(64),
+	value: z.string().max(2_000),
+	...syncMeta,
+});
+
+/**
  * Corpo do push — só o envelope.
  *
  * As linhas chegam como `unknown` de propósito: cada uma é validada sozinha no
@@ -318,6 +334,7 @@ export const pushBodySchema = z.object({
 			captures: rows(),
 			merchantRules: rows(),
 			bills: rows(),
+			preferences: rows(),
 		})
 		.default({
 			categories: [],
@@ -332,6 +349,7 @@ export const pushBodySchema = z.object({
 			captures: [],
 			merchantRules: [],
 			bills: [],
+			preferences: [],
 		}),
 });
 
@@ -368,6 +386,8 @@ export const cursorSchema = z.object({
 	// Contas a pagar, idem: a chave sai no cursor do pull mesmo vazia, e é por ela que o app
 	// sabe que este servidor conhece `bills`.
 	bills: z.number().int().nonnegative().default(0),
+	// Preferências (v21 do app), idem.
+	preferences: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -383,6 +403,7 @@ const EMPTY_CURSOR = {
 	captures: 0,
 	merchantRules: 0,
 	bills: 0,
+	preferences: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -415,4 +436,5 @@ export type ReserveGoalPayload = z.infer<typeof reserveGoalSchema>;
 export type CapturePayload = z.infer<typeof captureSchema>;
 export type MerchantRulePayload = z.infer<typeof merchantRuleSchema>;
 export type BillPayload = z.infer<typeof billSchema>;
+export type PreferencePayload = z.infer<typeof preferenceSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

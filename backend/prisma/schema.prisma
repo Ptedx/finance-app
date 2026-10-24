@@ -60,6 +60,7 @@ model User {
   captures              Capture[]
   merchantRules         MerchantRule[]
   bills                 Bill[]
+  preferences           Preference[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -533,6 +534,24 @@ model Bill {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("bills")
+}
+
+/// Uma preferência do usuário (v21 do app): moeda, idioma, taxa do CDI, lembretes ligados.
+///
+/// O `id` é a chave do AsyncStorage do app, a mesma em todo aparelho; `value` é o texto
+/// guardado nela, que o servidor não interpreta. A lápide mantém o último valor.
+model Preference {
+  id        String
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  value     String
+  updatedAt DateTime
+  deletedAt DateTime?
+  serverSeq Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("preferences")
 }
 
 // ============================================
