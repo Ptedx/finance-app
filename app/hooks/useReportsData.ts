@@ -16,11 +16,13 @@ import {
 	type MonthCategoryTotalRow,
 	type MonthTransferActivityRow,
 } from '../database/database';
+import { getPendingCaptures } from '../database/captures';
 import type { Transfer } from '../database/schema';
+import { provisionalEntriesByAccount } from '../utils/accountMath';
 import type { CardEntry } from '../utils/cardMath';
 import { monthKeyOf, monthsBetweenKeys, shiftMonthKey, todayISO } from '../utils/dateUtils';
 import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
-import { buildHealthIndicators, type HealthIndicator } from '../utils/healthScore';
+import { buildHealthIndicators, type HealthIndicator, type PaceWindow, spendingPaceWindows } from '../utils/healthScore';
 import {
 	buildDebtInsights,
 	buildFixedCostInsights,
@@ -53,13 +55,16 @@ import {
 	monthIncomeComposition,
 	monthKeysEnding,
 	monthRangeOf,
+	paceSpendToDate,
 	rankCategories,
 	rankSpendSources,
 	savingsRateDropsEnding,
 	type SpendSourceRow,
 	toCardEntry,
+	withProvisionalActivity,
 	yield12m,
 } from '../utils/reportSeries';
+import { type ProvisionalPart, provisionalPart } from '../utils/monthOverview';
 import {
 	buildRetirementReadModel,
 	contributionForHorizon,
@@ -133,6 +138,16 @@ interface ReportsRaw {
 	transferLines: Transfer[];
 	/** A parte de rendimento da receita de cada conta de reserva, mês a mês. */
 	investmentIncome: MonthInvestmentIncomeRow[];
+	/**
+	 * As compras da caixa de entrada que já contam como provisórias, por conta — a mesma
+	 * regra da Home (`provisionalEntriesByAccount`). `activity` e `cardEntries` são só o livro.
+	 */
+	provisional: Map<string, CardEntry[]>;
+	/**
+	 * O ritmo de gastos: o mês selecionado e os anteriores, cada um do dia 1 ao mesmo dia D
+	 * (`spendingPaceWindows`), com as somas do livro só até o corte. Nulo em mês futuro.
+	 */
+	pace: { window: PaceWindow; activity: MonthAccountActivityRow[]; transfers: MonthTransferActivityRow[] }[] | null;
 }
 
 /** Uma dívida na seção dos Relatórios. */
@@ -174,6 +189,8 @@ export interface ReportsData {
 	metrics: WealthMetrics;
 	/** A renda do mês selecionado como a tela conta: entradas, repasses e o líquido. */
 	income: IncomeComposition;
+	/** Quanto da receita e do "Gastou" do mês selecionado vem de compras ainda a revisar. */
+	provisional: ProvisionalPart;
 	duplicates: DuplicateIncome[];
 	debts: { summary: DebtsSummary; items: DebtReportItem[] };
 	/** Nulo sem meta ou sem dívida que quite. */
@@ -220,13 +237,28 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 		const load = async () => {
 			try {
 				await initDatabase();
-				const [activity, transfers, categoryRows, ledgerTransactions, transferLines] = await Promise.all([
+				const [activity, transfers, categoryRows, ledgerTransactions, transferLines, pendingCaptures] = await Promise.all([
 					getMonthlyAccountActivity(startDate, endDate),
 					getMonthlyTransferActivity(startDate, endDate),
 					getMonthlyCategoryTotals(startDate, endDate, 'expense'),
 					getTransactionsForAccounts([...cardIds, ...reserveIds]),
 					getTransfersByDateRange(startDate, endDate),
+					getPendingCaptures(),
 				]);
+				// Oito consultas pequenas de totais: o mês selecionado e os três anteriores, só até o dia D.
+				const windows = spendingPaceWindows(selectedKey, todayISO());
+				const pace =
+					windows === null
+						? null
+						: await Promise.all(
+								[windows.current, ...windows.previous].map(async (window) => {
+									const [windowActivity, windowTransfers] = await Promise.all([
+										getMonthlyAccountActivity(window.startDate, window.cutoffDate),
+										getMonthlyTransferActivity(window.startDate, window.cutoffDate),
+									]);
+									return { window, activity: windowActivity, transfers: windowTransfers };
+								})
+							);
 				if (cancelled) return;
 
 				const isCard = new Set(cardIds);
@@ -245,6 +277,8 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 					cardEntries,
 					transferLines,
 					investmentIncome: investmentIncomeRows(ledgerTransactions),
+					provisional: provisionalEntriesByAccount(pendingCaptures, live),
+					pace,
 				});
 			} catch (error) {
 				console.error('Error loading the reports history:', error);
@@ -259,25 +293,60 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 
 	const liveAccounts = useMemo(() => accounts.filter((account) => !account.deletedAt), [accounts]);
 
-	const fullSeries = useMemo<MonthPoint[]>(
-		() =>
-			raw
-				? buildMonthSeries({
-						months: raw.months,
-						accounts: liveAccounts,
-						activity: raw.activity,
-						transfers: raw.transfers,
-						cardEntries: raw.cardEntries,
-						transferLines: raw.transferLines,
-						investmentIncome: raw.investmentIncome,
-						currentMonth: todayKey,
-					})
-				: [],
-		[raw, liveAccounts, todayKey]
-	);
+	// As compras ainda na caixa de entrada entram como na Home: nas linhas de cada conta e
+	// nas faturas. Sem isto o "Gastou" daqui ficava abaixo do da Home pelo que está a revisar.
+	const merged = useMemo(() => (raw ? withProvisionalActivity(raw.activity, raw.cardEntries, raw.provisional, raw.months) : null), [raw]);
+	const fullSeries = useMemo<MonthPoint[]>(() => {
+		if (!raw || !merged) return [];
+		return buildMonthSeries({
+			months: raw.months,
+			accounts: liveAccounts,
+			activity: merged.activity,
+			transfers: raw.transfers,
+			cardEntries: merged.cardEntries,
+			transferLines: raw.transferLines,
+			investmentIncome: raw.investmentIncome,
+			currentMonth: todayKey,
+		});
+	}, [raw, merged, liveAccounts, todayKey]);
 
 	const series = useMemo(() => fullSeries.slice(-range), [fullSeries, range]);
 	const selected = fullSeries.length > 0 ? fullSeries[fullSeries.length - 1] : null;
+
+	// A parte "a revisar" do mês selecionado: o mesmo mês só com o livro, e a diferença.
+	const provisional = useMemo<ProvisionalPart>(() => {
+		if (!raw || !selected || raw.provisional.size === 0) return { incomeCents: 0, spendCents: 0 };
+		const [ledgerOnly] = buildMonthSeries({
+			months: [selected.month],
+			accounts: liveAccounts,
+			activity: raw.activity,
+			transfers: raw.transfers,
+			cardEntries: raw.cardEntries,
+			transferLines: raw.transferLines,
+			investmentIncome: raw.investmentIncome,
+			currentMonth: todayKey,
+		});
+		return provisionalPart(selected.overview, ledgerOnly.overview);
+	}, [raw, selected, liveAccounts, todayKey]);
+
+	// O ritmo de gastos: o mês até hoje contra os anteriores até o mesmo dia (SPD-034).
+	const paceSpend = useMemo(() => {
+		if (!raw?.pace) return null;
+		return paceSpendToDate({
+			windows: raw.pace.map(({ window, activity, transfers }) => ({
+				month: window.month,
+				cutoffDate: window.cutoffDate,
+				activity,
+				transfers,
+				hasData: raw.activity.some((row) => row.month === window.month) || raw.transfers.some((row) => row.month === window.month),
+			})),
+			accounts: liveAccounts,
+			cardEntries: raw.cardEntries,
+			provisional: raw.provisional,
+			transferLines: raw.transferLines,
+			currentMonth: todayKey,
+		});
+	}, [raw, liveAccounts, todayKey]);
 
 	const averageSpendCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.totalSpendCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
 	const averageIncomeCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.incomeCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
@@ -389,14 +458,15 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 			cardOwedCents: cardsTotals.toPayCents + cardsTotals.openInvoicesCents,
 			averageMonthlyIncomeCents: averageIncomeCents,
 			limitUsagePercent,
-			currentSpendCents: selected?.overview.totalSpendCents ?? 0,
+			currentSpendCents: paceSpend?.currentCents ?? selected?.overview.totalSpendCents ?? 0,
 			elapsedBp: monthElapsedBp(selectedKey, todayISO()),
+			previousSpendToDate: paceSpend?.previous ?? null,
 			reserve:
 				reserve.monthlyCostCents === null
 					? null
 					: { reserveCents: reserve.split.reserveCents, monthlyCostCents: reserve.monthlyCostCents, targetMonths: reserve.targetMonths },
 		});
-	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve]);
+	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve, paceSpend]);
 
 	const rankedCategories = useMemo(() => {
 		if (!raw) return [];
@@ -410,15 +480,16 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 
 	const sources = useMemo(
 		() =>
-			selected && raw
+			selected && merged
 				? rankSpendSources(
 						selected,
 						liveAccounts,
 						debitCards.map((card) => ({ accountId: card.account.id, last4: card.last4, name: card.name, periodSpentCents: card.periodSpentCents })),
-						raw.activity
+						// Com as provisórias, como o quadro: as origens somam o mesmo "Gastou".
+						merged.activity
 					)
 				: [],
-		[selected, raw, liveAccounts, debitCards]
+		[selected, merged, liveAccounts, debitCards]
 	);
 
 	/**
@@ -578,6 +649,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 		insights,
 		metrics,
 		income,
+		provisional,
 		duplicates,
 		debts: { summary: debtsSummary, items: debtItems },
 		debtScenario,

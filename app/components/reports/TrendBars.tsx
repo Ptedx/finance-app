@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { usePeriod } from '../../contexts/PeriodContext';
 import { monthKeyName } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
+import type { ProvisionalPart } from '../../utils/monthOverview';
 import type { MonthPoint } from '../../utils/reportSeries';
 import { ACCENT, EXPENSE_COLOR, INCOME_COLOR, reportStyles } from './reportStyles';
 
@@ -14,9 +15,16 @@ const BAR_MAX_HEIGHT = 110;
  * rótulo inteiro (o leitor de tela lê os três números) e tocar nela seleciona o mês na
  * tela toda. "Gastou" no cartão é a fatura que fecha no mês — a regra da Home.
  */
-const TrendBars: React.FC<{ series: MonthPoint[] }> = ({ series }) => {
+const TrendBars: React.FC<{ series: MonthPoint[]; provisional?: ProvisionalPart }> = ({ series, provisional }) => {
 	const { t } = useTranslation();
 	const { setSelectedPeriod } = usePeriod();
+	// O mês selecionado já conta as compras ainda na caixa de entrada, como a Home: a marca diz quanto.
+	const incomePending = provisional?.incomeCents
+		? t('reports.trend.incomePendingIncluded', { amount: formatCents(Math.abs(provisional.incomeCents)), defaultValue: 'Entrou inclui {{amount}} a revisar' })
+		: null;
+	const spendPending = provisional?.spendCents
+		? t('reports.trend.spentPendingIncluded', { amount: formatCents(Math.abs(provisional.spendCents)), defaultValue: 'Gastou inclui {{amount}} a revisar' })
+		: null;
 
 	const max = Math.max(1, ...series.flatMap((point) => [point.overview.incomeCents, point.overview.totalSpendCents, Math.max(0, point.overview.savedCents)]));
 	const heightOf = (cents: number) => Math.max(cents > 0 ? 2 : 0, Math.round((Math.max(0, cents) / max) * BAR_MAX_HEIGHT));
@@ -73,13 +81,25 @@ const TrendBars: React.FC<{ series: MonthPoint[] }> = ({ series }) => {
 					</View>
 
 					{selected ? (
-						<View style={styles.selectedRow} accessible accessibilityLabel={t('reports.trend.columnLabel', { month: `${monthKeyName(selected.month)} ${selected.month.slice(0, 4)}`, income: formatCents(selected.overview.incomeCents), spent: formatCents(selected.overview.totalSpendCents), saved: formatCents(selected.overview.savedCents) })}>
+						<View
+							style={styles.selectedRow}
+							accessible
+							accessibilityLabel={[
+								t('reports.trend.columnLabel', { month: `${monthKeyName(selected.month)} ${selected.month.slice(0, 4)}`, income: formatCents(selected.overview.incomeCents), spent: formatCents(selected.overview.totalSpendCents), saved: formatCents(selected.overview.savedCents) }),
+								incomePending,
+								spendPending,
+							]
+								.filter(Boolean)
+								.join('. ')}
+						>
 							<Text style={styles.selectedMonth}>{`${monthKeyName(selected.month)} ${selected.month.slice(0, 4)}`}</Text>
 							<View style={styles.selectedValues}>
 								<Text style={[styles.selectedValue, { color: INCOME_COLOR }]}>{formatCents(selected.overview.incomeCents)}</Text>
 								<Text style={[styles.selectedValue, { color: EXPENSE_COLOR }]}>{formatCents(selected.overview.totalSpendCents)}</Text>
 								<Text style={[styles.selectedValue, { color: ACCENT }]}>{formatCents(selected.overview.savedCents)}</Text>
 							</View>
+							{incomePending ? <Text style={[reportStyles.muted, styles.pending]}>{incomePending}</Text> : null}
+							{spendPending ? <Text style={[reportStyles.muted, styles.pending]}>{spendPending}</Text> : null}
 						</View>
 					) : null}
 				</>
@@ -166,6 +186,9 @@ const styles = StyleSheet.create({
 	selectedValue: {
 		fontSize: 14,
 		fontWeight: '600',
+	},
+	pending: {
+		marginTop: 4,
 	},
 });
 

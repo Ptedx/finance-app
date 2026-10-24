@@ -107,7 +107,7 @@ const ReportsScreen = () => {
 						<View style={styles.rangeRow}>
 							<RangeChips value={range} onChange={setRange} />
 						</View>
-						<TrendBars series={data.series} />
+						<TrendBars series={data.series} provisional={data.provisional} />
 
 						{data.retirement && data.retirement.reach.kind !== 'reached' ? (
 							<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} scenario={data.debtScenario?.projection} />

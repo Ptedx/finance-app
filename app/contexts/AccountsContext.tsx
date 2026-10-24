@@ -32,13 +32,22 @@ import {
 	updateTransfer,
 } from '../database/database';
 import { getAllCaptures, getPendingCaptures, updateCapture } from '../database/captures';
-import type { Account, AccountDraft, AccountEdit, Capture, Transfer } from '../database/schema';
+import type { Account, AccountDraft, AccountEdit, Transfer } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import { type AccountsOverview, periodSpentCents, spendingAdjustment, summarizeAccounts } from '../utils/accountMath';
+import {
+	type AccountsOverview,
+	periodSpentCents,
+	provisionalBalanceCents,
+	provisionalEntries,
+	provisionalEntriesByAccount,
+	provisionalFlows,
+	spendingAdjustment,
+	summarizeAccounts,
+	withProvisionalBalances,
+} from '../utils/accountMath';
 import {
 	buildCardSummary,
-	cardInstallmentDates,
 	type CardEntry,
 	type CardMovement,
 	type CardSummary,
@@ -53,11 +62,21 @@ import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
-import { externalTransfersInByMonth, investmentIncomeRows, lastInvestmentIncomeDateByAccount } from '../utils/reportSeries';
+import {
+	externalTransfersInByMonth,
+	externalTransfersOutByMonth,
+	investmentIncomeRows,
+	lastInvestmentIncomeDateByAccount,
+} from '../utils/reportSeries';
 import { parseCardNames, withCardName } from '../utils/cardNames';
-import { addDays, getISODate, monthKeyOf, monthKeyRange, shiftMonthKey, todayISO } from '../utils/dateUtils';
-import { splitInstallments } from '../utils/installments';
-import { type AccountMonthActivity, buildMonthOverview, type MonthOverview } from '../utils/monthOverview';
+import { addDays, monthKeyOf, monthKeyRange, shiftMonthKey, todayISO } from '../utils/dateUtils';
+import {
+	type AccountMonthActivity,
+	buildMonthOverview,
+	type MonthOverview,
+	type ProvisionalPart,
+	provisionalPart,
+} from '../utils/monthOverview';
 import { type CdiRate, loadCachedCdi, refreshCdi } from '../api/cdi';
 import { accruedYieldCents, type YieldFlow } from '../utils/yield';
 import { usePeriod } from './PeriodContext';
@@ -119,8 +138,18 @@ interface AccountsContextType {
 	debitCards: DebitCard[];
 	/** Só as não arquivadas, contas e cartões — para seletores de lançamento. */
 	activeAccounts: Account[];
-	/** Saldo de hoje por conta — nas contas que rendem, já com o rendimento estimado. */
+	/**
+	 * Saldo de hoje por conta — nas contas que rendem, já com o rendimento estimado, e em
+	 * todas com as compras da caixa de entrada que já contam como provisórias
+	 * (`isProvisionalCapture`, a mesma regra do cartão).
+	 */
 	balances: Map<string, number>;
+	/** Quanto do saldo de hoje de cada conta vem de provisórias (com sinal); só as que têm. */
+	provisionalBalances: Map<string, number>;
+	/** Quanto de "Em caixa" e de "Depois das faturas" vem de provisórias (com sinal). */
+	provisionalOverview: { cashCents: number; netCents: number };
+	/** A parte do mês selecionado que vem de provisórias. Nula até a primeira carga. */
+	provisionalMonth: ProvisionalPart | null;
 	/** Rendimento estimado desde a última âncora, por conta que rende (ver utils/yield.ts). */
 	accruedYield: Map<string, number>;
 	/**
@@ -220,30 +249,14 @@ const BALANCE_ADJUSTMENT_NOTE = 'Ajuste com o saldo do banco';
 
 const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
 
-/**
- * Uma compra pendente na caixa de entrada, como lançamentos provisórios do cartão — com
- * as parcelas, se for parcelada. Só as sem pergunta: uma "é a mesma compra?" em aberto
- * poderia contar a compra duas vezes.
- */
-const pendingCardEntries = (capture: Capture, card: Account): CardEntry[] => {
-	if (capture.status !== 'pending' || capture.question !== null || capture.accountId !== card.id) return [];
-	const count = capture.installments && capture.installments > 1 ? capture.installments : 1;
-	const parts = splitInstallments(capture.amountCents, count);
-	const dates = cardInstallmentDates(getISODate(new Date(capture.postedAt)), count, cycleRuleOf(card));
-	const note = capture.counterparty ?? capture.appLabel;
-	return dates.map((date, index) => ({
-		id: `capture:${capture.id}:${index + 1}`,
-		amountCents: parts[index],
-		isIncome: capture.direction === 'in',
-		date,
-		note: count > 1 ? `${note} (${index + 1}/${count})` : note,
-		category: capture.suggestedCategory ?? '',
-		installmentGroup: count > 1 ? capture.id : null,
-		installmentIndex: count > 1 ? index + 1 : null,
-		installmentCount: count > 1 ? count : null,
-		cardLast4: capture.cardLast4,
-		pendingReview: true,
-	}));
+/** Soma por conta um mapa `mês|contaId`: aqui só há transferências do período pedido. */
+const sumByAccount = (byKey: Map<string, number>): Map<string, number> => {
+	const byAccount = new Map<string, number>();
+	for (const [key, cents] of byKey) {
+		const accountId = key.slice(key.indexOf('|') + 1);
+		byAccount.set(accountId, (byAccount.get(accountId) ?? 0) + cents);
+	}
+	return byAccount;
 };
 
 /**
@@ -285,6 +298,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [cdi, setCdi] = useState<CdiRate | null>(null);
 	const [cardSummaries, setCardSummaries] = useState<Map<string, CardSummary>>(new Map());
 	const [month, setMonth] = useState<MonthOverview | null>(null);
+	const [provisionalMonth, setProvisionalMonth] = useState<ProvisionalPart | null>(null);
+	const [provisionalBalances, setProvisionalBalances] = useState<Map<string, number>>(new Map());
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [periodSpentByAccount, setPeriodSpentByAccount] = useState<Map<string, number>>(new Map());
 	const [periodTransfers, setPeriodTransfers] = useState<Transfer[]>([]);
@@ -304,7 +319,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
 			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
 			const periodEnd = endDate < today ? endDate : today;
-			const [list, nextBalances, unassigned, unassignedPeriod, pendingCaptures, startBalances, endBalances, transfersInPeriod] =
+			const [list, ledgerBalances, unassigned, unassignedPeriod, pendingCaptures, ledgerStartBalances, ledgerEndBalances, transfersInPeriod] =
 				await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
@@ -316,26 +331,42 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				getTransfersByDateRange(startDate, endDate),
 			]);
 
-			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período: é
-			// receita do mês, e no livro é transferência. O mapa é por mês e conta, mas aqui só há
-			// transferências do período pedido, então vale somar todos os meses de cada conta.
+			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período, e o
+			// que as suas mandaram para elas: o líquido é receita do mês, e no livro é
+			// transferência. O mapa é por mês e conta, mas aqui só há transferências do período
+			// pedido, então vale somar todos os meses de cada conta.
 			const live = list.filter((account) => !account.deletedAt);
-			const fromExternalByKey = externalTransfersInByMonth(transfersInPeriod, live);
-			const fromExternalByAccount = new Map<string, number>();
-			for (const [key, cents] of fromExternalByKey) {
-				const accountId = key.slice(key.indexOf('|') + 1);
-				fromExternalByAccount.set(accountId, (fromExternalByAccount.get(accountId) ?? 0) + cents);
+			const fromExternalByAccount = sumByAccount(externalTransfersInByMonth(transfersInPeriod, live));
+			const toExternalByAccount = sumByAccount(externalTransfersOutByMonth(transfersInPeriod, live));
+
+			// As compras da caixa de entrada sem pergunta em aberto contam como provisórias em
+			// todo lugar — saldo, cartão e mês —, como o cartão já fazia. Uma regra só
+			// (`provisionalEntries`), para o saldo da conta corrente e o "Gastou" não divergirem
+			// do cartão nem dos Relatórios.
+			const provisional = provisionalEntriesByAccount(pendingCaptures, live);
+			const nextBalances = withProvisionalBalances(ledgerBalances, live, provisional, today);
+			const startBalances = withProvisionalBalances(ledgerStartBalances, live, provisional, addDays(startDate, -1));
+			const endBalances = withProvisionalBalances(ledgerEndBalances, live, provisional, periodEnd);
+			const nextProvisionalBalances = new Map<string, number>();
+			for (const [accountId, cents] of nextBalances) {
+				const delta = cents - (ledgerBalances.get(accountId) ?? cents);
+				if (delta !== 0) nextProvisionalBalances.set(accountId, delta);
 			}
 
 			const nextSummaries = new Map<string, CardSummary>();
 			const nextYieldInputs = new Map<string, YieldAccountInput>();
 			const activity: AccountMonthActivity[] = [];
+			// O mesmo mês só com o livro: a diferença é a parte "a revisar" (`provisionalPart`).
+			const ledgerActivity: AccountMonthActivity[] = [];
 
 			for (const account of list) {
 				if (account.deletedAt) continue;
 
 				const period = await getAccountActivity(account.id, startDate, endDate);
 				const isCard = account.kind === 'credit_card';
+				const pending = provisional.get(account.id) ?? [];
+				const pendingFlows = provisionalFlows(pending, startDate, endDate);
+				const purchasesOriginatedCents = isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined;
 				// Rendimento é só a receita em categoria de rendimento de investimento. Sem isto,
 				// toda receita que encostasse numa conta de reserva — o Pix de um amigo, um
 				// reembolso — era anunciada como rentabilidade que não houve.
@@ -345,7 +376,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 								(await getAccountTransactions(account.id)).filter((tx) => tx.date >= startDate && tx.date <= endDate)
 							).reduce((total, row) => total + row.cents, 0)
 						: 0;
-				activity.push({
+				const ledgerItem: AccountMonthActivity = {
 					accountId: account.id,
 					name: account.name,
 					kind: account.kind,
@@ -360,8 +391,18 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					transfersInCents: period.transfersInCents,
 					transfersInFromExternalCents: fromExternalByAccount.get(account.id) ?? 0,
 					transfersOutCents: period.transfersOutCents,
-					purchasesOriginatedCents: isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined,
+					transfersOutToExternalCents: toExternalByAccount.get(account.id) ?? 0,
+					purchasesOriginatedCents,
 					envelopeMonthlyCents: account.envelopeMonthlyCents,
+					startBalanceCents: ledgerStartBalances.get(account.id) ?? 0,
+					endBalanceCents: ledgerEndBalances.get(account.id) ?? 0,
+				};
+				ledgerActivity.push(ledgerItem);
+				activity.push({
+					...ledgerItem,
+					incomeCents: period.incomeCents + pendingFlows.incomeCents,
+					expenseCents: period.expenseCents + pendingFlows.expenseCents,
+					purchasesOriginatedCents: purchasesOriginatedCents === undefined ? undefined : purchasesOriginatedCents + pendingFlows.purchasesCents,
 					startBalanceCents: startBalances.get(account.id) ?? 0,
 					endBalanceCents: endBalances.get(account.id) ?? 0,
 				});
@@ -399,7 +440,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					getAccountTransactions(account.id),
 					getAccountTransfers(account.id),
 				]);
-				const entries: CardEntry[] = cardTransactions.map((tx) => ({
+				const ledgerEntries: CardEntry[] = cardTransactions.map((tx) => ({
 					id: tx.id,
 					amountCents: tx.amountCents,
 					isIncome: tx.isIncome,
@@ -411,7 +452,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					installmentCount: tx.installmentCount,
 				cardLast4: tx.cardLast4,
 				}));
-				for (const capture of pendingCaptures) entries.push(...pendingCardEntries(capture, account));
+				const entries = [...ledgerEntries, ...pending];
 				const movements: CardMovement[] = cardTransfers.map((transfer) => ({
 					amountCents: transfer.amountCents,
 					date: transfer.date,
@@ -419,11 +460,14 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				}));
 				nextSummaries.set(account.id, buildCardSummary(account, entries, movements, today));
 				cardActivity.invoiceCents = invoicesClosingBetween(account, entries, startDate, endDate);
+				ledgerActivity[ledgerActivity.length - 1].invoiceCents = invoicesClosingBetween(account, ledgerEntries, startDate, endDate);
 			}
 
 			if (mine !== generation.current) return;
+			const nextMonth = buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod });
 			setAccounts(list);
 			setBalances(nextBalances);
+			setProvisionalBalances(nextProvisionalBalances);
 			setYieldInputs(nextYieldInputs);
 			setCardSummaries(nextSummaries);
 			setUnassignedNetCents(unassigned);
@@ -431,7 +475,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			setPeriodSpentByAccount(
 				new Map(activity.map((item) => [item.accountId, periodSpentCents(item, item.role)]))
 			);
-			setMonth(buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod }));
+			setMonth(nextMonth);
+			setProvisionalMonth(provisionalPart(nextMonth, buildMonthOverview({ accounts: ledgerActivity, unassigned: unassignedPeriod })));
 		} catch (error) {
 			console.error('Error loading accounts:', error);
 		} finally {
@@ -578,8 +623,19 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			}
 			// O que ainda não bate é dinheiro de antes do app (a sobra do mês passado, por
 			// exemplo): move o ponto de partida, sem entrar no mês.
-			const balanceNow = (await getAccountBalances(today)).get(id) ?? 0;
-			if (balanceNow !== input.balanceCents) await setAccountBalanceToday(id, input.balanceCents);
+			//
+			// O saldo comparado é o que a tela mostrou, com as provisórias: sem elas, confirmar o
+			// saldo sem mexer movia a âncora e engolia a compra pendente, que então não saía mais
+			// ao ser descartada. A nova âncora fica em ontem (`setAccountBalanceToday`): a
+			// provisória de hoje continua somando por cima dela, então sai do valor gravado.
+			const [ledgerNow, pendingNow, list] = await Promise.all([getAccountBalances(today), getPendingCaptures(), getAccounts()]);
+			const target = list.find((account) => account.id === id);
+			const pending = target ? pendingNow.flatMap((capture) => provisionalEntries(capture, target)) : [];
+			const anchorDate = target?.openingBalanceDate ?? today;
+			const balanceNow = (ledgerNow.get(id) ?? 0) + provisionalBalanceCents(pending, anchorDate, today);
+			if (balanceNow !== input.balanceCents) {
+				await setAccountBalanceToday(id, input.balanceCents - provisionalBalanceCents(pending, addDays(today, -1), today));
+			}
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
@@ -604,7 +660,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				cardLast4: tx.cardLast4,
 			}));
 			// Compras ainda na caixa de entrada já estão na fatura do banco: entram na conta.
-			for (const capture of await getPendingCaptures()) entries.push(...pendingCardEntries(capture, card));
+			for (const capture of await getPendingCaptures()) entries.push(...provisionalEntries(capture, card));
 			const movements: CardMovement[] = cardTransfers.map((transfer) => ({
 				amountCents: transfer.amountCents,
 				date: transfer.date,
@@ -828,6 +884,14 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		() => summarizeAccounts(accounts, balances, unassignedNetCents),
 		[accounts, balances, unassignedNetCents]
 	);
+	// "Em caixa" e "Depois das faturas" sem as provisórias: a diferença é a marca "a revisar".
+	const provisionalOverview = useMemo(() => {
+		if (provisionalBalances.size === 0) return { cashCents: 0, netCents: 0 };
+		const ledgerOnly = new Map(balances);
+		for (const [accountId, cents] of provisionalBalances) ledgerOnly.set(accountId, (ledgerOnly.get(accountId) ?? 0) - cents);
+		const withoutPending = summarizeAccounts(accounts, ledgerOnly, unassignedNetCents);
+		return { cashCents: overview.cashCents - withoutPending.cashCents, netCents: overview.netCents - withoutPending.netCents };
+	}, [accounts, balances, provisionalBalances, unassignedNetCents, overview]);
 
 	const debitCards = useMemo<DebitCard[]>(() => {
 		const byKey = new Map<string, DebitCard>();
@@ -881,6 +945,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			debitCards,
 			activeAccounts,
 			balances,
+			provisionalBalances,
+			provisionalOverview,
+			provisionalMonth,
 			accruedYield,
 			accruedYield12m,
 			cdi,
@@ -916,6 +983,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			debitCards,
 			activeAccounts,
 			balances,
+			provisionalBalances,
+			provisionalOverview,
+			provisionalMonth,
 			accruedYield,
 			accruedYield12m,
 			cdi,

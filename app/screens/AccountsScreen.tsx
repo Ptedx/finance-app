@@ -19,7 +19,13 @@ const ACCENT = '#15E8FE';
 const AccountsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, overview, mergeAccounts } = useAccounts();
+	const { accounts, balances, overview, provisionalOverview, mergeAccounts } = useAccounts();
+
+	// "Em caixa" e "Depois das faturas" já contam as compras a revisar, como na Home.
+	const pendingOf = (cents: number) =>
+		cents !== 0 ? t('cards.pendingIncluded', { amount: formatCents(Math.abs(cents)), defaultValue: 'Inclui {{amount}} a revisar' }) : null;
+	const cashPending = pendingOf(provisionalOverview.cashCents);
+	const netPending = pendingOf(provisionalOverview.netCents);
 
 	// Só contas: cartões vivem em /cards.
 	const bankOnly = accounts.filter((account) => account.kind !== 'credit_card');
@@ -80,14 +86,16 @@ const AccountsScreen = () => {
 				<View
 					style={styles.totals}
 					accessible
-					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
+					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}${cashPending ? `, ${cashPending}` : ''}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}${netPending ? `, ${netPending}` : ''}`}
 				>
 					<Text style={styles.totalsLine}>
 						{t('accounts.cash')}: {formatCents(overview.cashCents)}
 					</Text>
+					{cashPending ? <Text style={styles.totalsPending}>{cashPending}</Text> : null}
 					<Text style={[styles.totalsLine, styles.totalsNet]}>
 						{t('accounts.afterCards')}: {formatCents(overview.netCents)}
 					</Text>
+					{netPending ? <Text style={styles.totalsPending}>{netPending}</Text> : null}
 
 				</View>
 
@@ -195,6 +203,10 @@ const styles = StyleSheet.create({
 	totalsNet: {
 		fontWeight: '700',
 		color: '#FFFFFF',
+	},
+	totalsPending: {
+		fontSize: 13,
+		color: 'rgba(255,255,255,0.6)',
 	},
 	duplicate: {
 		backgroundColor: '#FFB74D',

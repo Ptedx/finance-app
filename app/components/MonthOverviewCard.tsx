@@ -39,7 +39,7 @@ const Row: React.FC<{ label: string; value: string; sub?: string; emphasis?: 'in
 
 const MonthOverviewCard: React.FC = () => {
 	const { t } = useTranslation();
-	const { month } = useAccounts();
+	const { month, provisionalMonth } = useAccounts();
 	const { currentBudgetCents } = useBudget();
 	const [showBudgetEditor, setShowBudgetEditor] = useState(false);
 
@@ -49,6 +49,11 @@ const MonthOverviewCard: React.FC = () => {
 	const budgetPercent = budgetSet ? Math.round((month.totalSpendCents / (currentBudgetCents as number)) * 100) : 0;
 	const overBudget = budgetSet && month.totalSpendCents > (currentBudgetCents as number);
 	const ratePercent = month.savingsRateBp === null ? null : Math.round(month.savingsRateBp / 100);
+	// Compras ainda na caixa de entrada já estão nos números (como no cartão); a marca diz quanto.
+	const pendingLabel = (cents: number | undefined) =>
+		cents ? t('cards.pendingIncluded', { amount: formatCents(Math.abs(cents)), defaultValue: 'Inclui {{amount}} a revisar' }) : undefined;
+	const incomePending = pendingLabel(provisionalMonth?.incomeCents);
+	const spendPending = pendingLabel(provisionalMonth?.spendCents);
 
 	return (
 		<View style={styles.container}>
@@ -61,10 +66,17 @@ const MonthOverviewCard: React.FC = () => {
 				<PeriodSelector />
 			</View>
 
-			<Row label={t('month.income')} value={formatCents(month.incomeCents)} emphasis="income" />
+			<Row label={t('month.income')} value={formatCents(month.incomeCents)} sub={incomePending} emphasis="income" />
 
-			<View style={styles.groupHeader}>
-				<Text style={styles.groupLabel}>{t('month.spending')}</Text>
+			<View
+				style={styles.groupHeader}
+				accessible
+				accessibilityLabel={`${t('month.spending')}, ${formatCents(month.totalSpendCents)}${spendPending ? `, ${spendPending}` : ''}`}
+			>
+				<View style={styles.rowText}>
+					<Text style={styles.groupLabel}>{t('month.spending')}</Text>
+					{spendPending ? <Text style={styles.rowSub}>{spendPending}</Text> : null}
+				</View>
 				<Text style={[styles.groupValue, styles.expense]}>{formatCents(month.totalSpendCents)}</Text>
 			</View>
 			{month.cards.map((card) => (

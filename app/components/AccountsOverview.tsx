@@ -34,7 +34,12 @@ interface AccountRowProps {
 
 export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, envelope, savedThisMonthCents, onPress }) => {
 	const { t } = useTranslation();
+	// Lido aqui, e não por prop, para a lista de Contas ganhar a mesma marca sem mudar nada lá.
+	const { provisionalBalances } = useAccounts();
 	const amount = `${balanceCents < 0 ? '− ' : ''}${formatCents(Math.abs(balanceCents))}`;
+	// O saldo já tem as compras ainda na caixa de entrada, como o cartão: a marca diz quanto.
+	const pendingCents = provisionalBalances.get(account.id) ?? 0;
+	const pending = pendingCents !== 0 ? t('cards.pendingIncluded', { amount: formatCents(Math.abs(pendingCents)), defaultValue: 'Inclui {{amount}} a revisar' }) : null;
 
 	let secondary = t(`accounts.role.${account.role}`);
 	let barPercent: number | null = null;
@@ -50,7 +55,7 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 		<Pressable
 			onPress={() => onPress(account)}
 			accessibilityRole="button"
-			accessibilityLabel={`${t('accounts.accountSummary', { name: account.name, balance: amount })}. ${secondary}`}
+			accessibilityLabel={`${t('accounts.accountSummary', { name: account.name, balance: amount })}. ${secondary}${pending ? `. ${pending}` : ''}`}
 			accessibilityHint={t('accounts.accountHint')}
 			style={({ pressed }) => [styles.row, pressed && styles.pressed]}
 		>
@@ -64,6 +69,11 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 				<Text style={styles.secondary} numberOfLines={2}>
 					{secondary}
 				</Text>
+				{pending ? (
+					<Text style={styles.secondary} numberOfLines={1}>
+						{pending}
+					</Text>
+				) : null}
 				{barPercent !== null && (
 					<View style={styles.track}>
 						<View
@@ -83,9 +93,15 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 const AccountsOverview: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { bankAccounts, balances, overview, month, unassignedNetCents, isLoading } = useAccounts();
+	const { bankAccounts, balances, overview, provisionalOverview, month, unassignedNetCents, isLoading } = useAccounts();
 
 	if (isLoading) return null;
+
+	// "Em caixa" e "Depois das faturas" já contam as compras a revisar (contas e cartões).
+	const pendingOf = (cents: number) =>
+		cents !== 0 ? t('cards.pendingIncluded', { amount: formatCents(Math.abs(cents)), defaultValue: 'Inclui {{amount}} a revisar' }) : null;
+	const cashPending = pendingOf(provisionalOverview.cashCents);
+	const netPending = pendingOf(provisionalOverview.netCents);
 
 	const envelopes = new Map((month?.envelopes ?? []).map((envelope) => [envelope.accountId, envelope]));
 	// Por conta, nunca o total: passar o agregado de todas as reservas fazia duas reservas que
@@ -129,15 +145,17 @@ const AccountsOverview: React.FC = () => {
 						<View
 							style={styles.totals}
 							accessible
-							accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}`}
+							accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}${cashPending ? `, ${cashPending}` : ''}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}${netPending ? `, ${netPending}` : ''}`}
 						>
 							<View style={styles.total}>
 								<Text style={styles.totalLabel}>{t('accounts.cash')}</Text>
 								<Text style={[styles.totalValue, overview.cashCents < 0 && styles.negative]}>{formatCents(overview.cashCents)}</Text>
+								{cashPending ? <Text style={styles.secondary}>{cashPending}</Text> : null}
 							</View>
 							<View style={styles.total}>
 								<Text style={styles.totalLabel}>{t('accounts.afterCards')}</Text>
 								<Text style={[styles.totalValue, overview.netCents < 0 && styles.negative]}>{formatCents(overview.netCents)}</Text>
+								{netPending ? <Text style={styles.secondary}>{netPending}</Text> : null}
 							</View>
 
 						</View>

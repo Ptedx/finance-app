@@ -7,7 +7,8 @@
  * de gastos. O que vai para a reserva não é gasto, é poupança — mas o que é gasto de
  * dentro dela é. Um pagamento de fatura é transferência e não entra em lugar nenhum —
  * senão o cartão contaria duas vezes. A receita também não é só o que foi lançado como
- * receita: o que uma conta `external` manda para uma conta sua é renda do mês.
+ * receita: o que uma conta `external` manda para uma conta sua, menos o que foi para ela
+ * no mesmo mês, é renda do mês.
  *
  * Puro: recebe o movimento de cada conta no período (já somado pelo banco) e compõe.
  */
@@ -43,6 +44,11 @@ export interface AccountMonthActivity {
 	 */
 	transfersInFromExternalCents?: number;
 	transfersOutCents: number;
+	/**
+	 * Parte de `transfersOutCents` que foi para uma conta de papel `external`. Desconta do
+	 * que veio de lá no mesmo mês: o dinheiro que foi para a PJ e voltou não é renda.
+	 */
+	transfersOutToExternalCents?: number;
 	/**
 	 * Só cartões: soma das faturas que **fecham** no período. É a métrica principal —
 	 * o que sai do bolso. Nulo quando o cartão não tem fechamento informado.
@@ -149,6 +155,9 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 	const cards: CardMonth[] = [];
 	const envelopes: EnvelopeMonth[] = [];
 	const reserves: ReserveMonth[] = [];
+	// O que as contas `external` mandaram para as suas e o que as suas mandaram para elas.
+	let fromExternalCents = 0;
+	let toExternalCents = 0;
 
 	for (const account of input.accounts) {
 		// O contrato do papel `external` (ver `AccountRole` em `database/schema.ts`): o que
@@ -162,9 +171,8 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 		// como receita na principal, é lançamento duplicado — é `findDuplicateIncomes` que
 		// aponta, e apagar um dos dois é a correção.
 		if (account.role !== 'external') {
-			const fromExternal = Math.max(0, account.transfersInFromExternalCents ?? 0);
-			grossIncomeCents += fromExternal;
-			incomeCents += fromExternal;
+			fromExternalCents += Math.max(0, account.transfersInFromExternalCents ?? 0);
+			toExternalCents += Math.max(0, account.transfersOutToExternalCents ?? 0);
 		}
 
 		switch (account.role) {
@@ -251,6 +259,15 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 		}
 	}
 
+	// A receita que vem da external é o **líquido** do mês: o que ela mandou para as suas
+	// contas menos o que as suas mandaram para ela. R$ 1.000 que vão para a PJ no dia 3 e
+	// voltam no dia 20 são o seu dinheiro de volta, não renda — antes a volta entrava inteira
+	// como receita. Piso zero: mandar mais do que voltou não é gasto (a saída para a external
+	// nunca contou como gasto) e não come a receita lançada.
+	const externalIncomeCents = Math.max(0, fromExternalCents - toExternalCents);
+	grossIncomeCents += externalIncomeCents;
+	incomeCents += externalIncomeCents;
+
 	const totalSpendCents = cardSpendCents + mainSpendCents + envelopeFundingCents;
 	const leftoverCents = incomeCents - totalSpendCents;
 	const savingsRateBp = incomeCents > 0 ? Math.round((leftoverCents / incomeCents) * 10_000) : null;
@@ -274,4 +291,21 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 	};
 };
 
-export default { buildMonthOverview };
+/** Quanto da receita e do gasto do mês vem de compras ainda na caixa de entrada. */
+export interface ProvisionalPart {
+	incomeCents: number;
+	spendCents: number;
+}
+
+/**
+ * A parte "a revisar" de um quadro do mês: a diferença entre o quadro com as provisórias
+ * (`provisionalEntries`) e o mesmo quadro só com o livro. Pela diferença, e não somando as
+ * capturas, a parte segue as regras do quadro — a compra no envelope não muda o "Gastou", a
+ * fatura de outro mês não entra.
+ */
+export const provisionalPart = (withPending: MonthOverview, ledgerOnly: MonthOverview): ProvisionalPart => ({
+	incomeCents: withPending.incomeCents - ledgerOnly.incomeCents,
+	spendCents: withPending.totalSpendCents - ledgerOnly.totalSpendCents,
+});
+
+export default { buildMonthOverview, provisionalPart };

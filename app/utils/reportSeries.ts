@@ -13,6 +13,7 @@
  */
 
 import type { Account, Category, Transaction, Transfer } from '../database/schema';
+import { provisionalFlows } from './accountMath';
 import { type CardEntry, type CardSummary, invoicesClosingBetween } from './cardMath';
 import type { DebtMonthLine } from './debt';
 import { lastDayOfMonth, monthKeyOf, monthKeyRange, shiftMonthKey } from './dateUtils';
@@ -140,6 +141,63 @@ export const externalTransfersInByMonth = (
 	return byKey;
 };
 
+/**
+ * O outro lado: quanto cada conta sua mandou para contas `external` em cada mês, por
+ * `mês|contaId`. Desconta do que veio de lá no mesmo mês (`buildMonthOverview`): o dinheiro
+ * que vai para a PJ e volta não é renda. Mesmo recorte de `externalIncomeTransfers` — de
+ * fora do app, de external para external e de conta desconhecida não entram.
+ */
+export const externalTransfersOutByMonth = (
+	transfers: Pick<Transfer, 'date' | 'fromAccountId' | 'toAccountId' | 'amountCents'>[],
+	accounts: Pick<Account, 'id' | 'role'>[]
+): Map<string, Cents> => {
+	const roleById = new Map(accounts.map((account) => [account.id, account.role]));
+	const byKey = new Map<string, Cents>();
+	for (const transfer of transfers) {
+		const { fromAccountId, toAccountId } = transfer;
+		if (!fromAccountId || !toAccountId) continue;
+		if (roleById.get(toAccountId) !== 'external') continue;
+		const fromRole = roleById.get(fromAccountId);
+		if (fromRole === undefined || fromRole === 'external') continue;
+		const key = `${monthKeyOf(transfer.date)}|${fromAccountId}`;
+		byKey.set(key, (byKey.get(key) ?? 0) + transfer.amountCents);
+	}
+	return byKey;
+};
+
+/**
+ * Soma as compras ainda na caixa de entrada (`provisionalEntriesByAccount`) ao que o banco
+ * devolveu: nas linhas de cada conta por mês e nas linhas de cada cartão. É o mesmo que o
+ * `AccountsContext` faz para o mês da Home, para que o "Gastou" com pendentes seja o mesmo
+ * nas duas telas. Não mexe no que recebe.
+ */
+export const withProvisionalActivity = (
+	activity: MonthAccountRow[],
+	cardEntries: Map<string, CardEntry[]>,
+	provisional: Map<string, CardEntry[]>,
+	months: MonthKey[]
+): { activity: MonthAccountRow[]; cardEntries: Map<string, CardEntry[]> } => {
+	if (provisional.size === 0) return { activity, cardEntries };
+	const rows = new Map(activity.map((row) => [`${row.month}|${row.accountId ?? ''}`, { ...row }]));
+	for (const [accountId, entries] of provisional) {
+		for (const month of months) {
+			const { startDate, endDate } = monthKeyRange(month);
+			const flows = provisionalFlows(entries, startDate, endDate);
+			if (flows.incomeCents === 0 && flows.expenseCents === 0) continue;
+			const key = `${month}|${accountId}`;
+			const row = rows.get(key) ?? { month, accountId, incomeCents: 0, expenseCents: 0, passThroughCents: 0 };
+			row.incomeCents += flows.incomeCents;
+			row.expenseCents += flows.expenseCents;
+			rows.set(key, row);
+		}
+	}
+	// Toda conta com provisória entra no mapa: `buildMonthSeries` só lê o dos cartões, e o
+	// cartão que só tem compra pendente (nenhuma no livro) não estava nele.
+	const nextCards = new Map(cardEntries);
+	for (const [accountId, entries] of provisional) nextCards.set(accountId, [...(nextCards.get(accountId) ?? []), ...entries]);
+	return { activity: [...rows.values()], cardEntries: nextCards };
+};
+
 export interface MonthPoint {
 	month: MonthKey;
 	overview: MonthOverview;
@@ -214,6 +272,7 @@ export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 	const transfersBy = new Map<string, MonthTransferRow>();
 	for (const row of input.transfers) transfersBy.set(`${row.month}|${row.accountId}`, row);
 	const fromExternalBy = externalTransfersInByMonth(input.transferLines ?? [], input.accounts);
+	const toExternalBy = externalTransfersOutByMonth(input.transferLines ?? [], input.accounts);
 	const investmentBy = new Map((input.investmentIncome ?? []).map((row) => [`${row.month}|${row.accountId}`, row.cents]));
 
 	return input.months.map((month) => {
@@ -236,6 +295,7 @@ export const buildMonthSeries = (input: MonthSeriesInput): MonthPoint[] => {
 				transfersInCents: transfers?.inCents ?? 0,
 				transfersInFromExternalCents: fromExternalBy.get(`${month}|${account.id}`) ?? 0,
 				transfersOutCents: transfers?.outCents ?? 0,
+				transfersOutToExternalCents: toExternalBy.get(`${month}|${account.id}`) ?? 0,
 				invoiceCents: isCard ? invoicesClosingBetween(account, input.cardEntries.get(account.id) ?? [], startDate, endDate) : undefined,
 				envelopeMonthlyCents: account.envelopeMonthlyCents,
 			});
@@ -697,6 +757,65 @@ export const findRecurringDoubleCharges = (
 	return found;
 };
 
+/** Um mês do ritmo de gastos, do dia 1 ao dia do corte: as somas do livro só até ali. */
+export interface PaceWindowActivity {
+	month: MonthKey;
+	cutoffDate: string;
+	activity: MonthAccountRow[];
+	transfers: MonthTransferRow[];
+	/** Se o mês tem algum lançamento ou transferência no mês inteiro. */
+	hasData: boolean;
+}
+
+export interface PaceSpendInput {
+	/** O mês selecionado primeiro, depois os anteriores, do mais recente para o mais antigo. */
+	windows: PaceWindowActivity[];
+	accounts: Account[];
+	/** Todas as linhas de cada cartão, sem corte: o corte é feito aqui, janela a janela. */
+	cardEntries: Map<string, CardEntry[]>;
+	/** As provisórias da caixa de entrada por conta (`provisionalEntriesByAccount`). */
+	provisional: Map<string, CardEntry[]>;
+	transferLines: Pick<Transfer, 'date' | 'fromAccountId' | 'toAccountId' | 'amountCents'>[];
+	currentMonth: MonthKey;
+}
+
+/** As linhas de cada conta até o dia do corte, inclusive. */
+const entriesUntil = (entries: Map<string, CardEntry[]>, cutoffDate: string): Map<string, CardEntry[]> =>
+	new Map([...entries].map(([accountId, list]) => [accountId, list.filter((entry) => entry.date <= cutoffDate)]));
+
+/**
+ * O gasto de cada janela do ritmo de gastos (ver `spendingPaceWindows` em healthScore.ts),
+ * na mesma conta do "Gastou": cartão pela fatura que fecha no mês, principal e envelope,
+ * com as provisórias — só com o que é até o dia do corte. O mês selecionado também é
+ * cortado: a parcela datada mais adiante no mês não entra, como não entra nos anteriores.
+ */
+export const paceSpendToDate = (input: PaceSpendInput): { currentCents: Cents; previous: { toDateCents: Cents; hasData: boolean }[] } | null => {
+	if (input.windows.length === 0) return null;
+	const spendOf = (window: PaceWindowActivity): Cents => {
+		const cut = withProvisionalActivity(
+			window.activity,
+			entriesUntil(input.cardEntries, window.cutoffDate),
+			entriesUntil(input.provisional, window.cutoffDate),
+			[window.month]
+		);
+		const [point] = buildMonthSeries({
+			months: [window.month],
+			accounts: input.accounts,
+			activity: cut.activity,
+			transfers: window.transfers,
+			cardEntries: cut.cardEntries,
+			transferLines: input.transferLines.filter((line) => line.date <= window.cutoffDate),
+			currentMonth: input.currentMonth,
+		});
+		return point.overview.totalSpendCents;
+	};
+	const [current, ...previous] = input.windows;
+	return {
+		currentCents: spendOf(current),
+		previous: previous.map((window) => ({ toDateCents: spendOf(window), hasData: window.hasData })),
+	};
+};
+
 /**
  * Todo arquivo sob app/ é tratado como rota pelo expo-router, e uma rota sem export
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
@@ -704,8 +823,11 @@ export const findRecurringDoubleCharges = (
  */
 export default {
 	buildMonthSeries,
+	paceSpendToDate,
 	externalIncomeTransfers,
 	externalTransfersInByMonth,
+	externalTransfersOutByMonth,
+	withProvisionalActivity,
 	investmentIncomeRows,
 	lastInvestmentIncomeDateByAccount,
 	yield12m,
