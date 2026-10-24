@@ -47,8 +47,12 @@ import {
 	updateTransfer,
 } from '../database/database';
 import type { Capture, Category, Transfer } from '../database/schema';
+import { logCaptureDecision, logCaptureFailure } from '../diagnostics/capture';
+import type { DiagnosticValue } from '../diagnostics/contract';
+import { log } from '../diagnostics/log';
 import * as syncQueue from '../sync/queue';
 import {
+	type AccountResolution,
 	findCardForInvoice,
 	canLearnToIgnore,
 	findCheckingForCard,
@@ -65,6 +69,7 @@ import {
 	decide,
 	fingerprintOf,
 	forgetAppDismissal,
+	isAppIgnored,
 	type KnownCapture,
 	learnFromAppDismissal,
 	learnFromConfirmation,
@@ -672,7 +677,7 @@ const isExternalIncomeRule = (rule: MerchantRule | undefined, categories: Catego
  */
 const neutralizeExternalLeg = async (
 	income: Pick<Capture, 'packageName' | 'amountCents' | 'postedAt'>
-): Promise<void> => {
+): Promise<boolean> => {
 	const posted = new Date(income.postedAt).getTime();
 	const leg = await findUnpairedTransferLeg({
 		packageName: income.packageName,
@@ -680,13 +685,14 @@ const neutralizeExternalLeg = async (
 		since: new Date(posted - LOOKBACK_MS).toISOString(),
 		until: new Date(posted + LOOKBACK_MS).toISOString(),
 	});
-	if (!leg) return;
+	if (!leg) return false;
 
 	if (leg.transferId) {
 		await deleteTransfer(leg.transferId);
 		syncQueue.schedule();
 	}
 	await updateCapture(leg.id, { status: 'ignored', reason: 'external_leg', transferId: null });
+	return true;
 };
 
 // ---------------------------------------------------------------------------
@@ -713,20 +719,36 @@ export const ingestRawCaptures = async (
 	const ordered = [...raws].sort((a, b) => a.postedAt.localeCompare(b.postedAt));
 
 	for (const raw of ordered) {
+		// Até onde o aviso chegou, para o diário dizer onde uma falha aconteceu (SPD-014).
+		let stage = 'fingerprint';
+		let fingerprint: string | null = null;
 		// Uma notificação que falha não leva as outras junto: a fila nativa já foi esvaziada,
 		// e o que não for gravado aqui se perde.
 		try {
-		const fingerprint = fingerprintOf(raw);
-		if (await hasCaptureFingerprint(fingerprint)) continue;
+		fingerprint = fingerprintOf(raw);
+		if (await hasCaptureFingerprint(fingerprint)) {
+			logCaptureDecision({ raw, fingerprint, outcome: { step: 'already_seen' } });
+			continue;
+		}
 
+		stage = 'parse';
 		const parsed = parseCapture(raw);
-		if (!parsed) continue;
+		if (!parsed) {
+			logCaptureDecision({ raw, fingerprint, parsed: null, outcome: { step: 'not_money' } });
+			continue;
+		}
 
 		// App que não é banco e texto que não cita banco: não há de onde ter saído o dinheiro.
 		// Não grava nada — nem item na revisão, nem conta, nem o texto da conversa (SPD-022).
-		if (isNoBankNotice(raw)) continue;
+		if (isNoBankNotice(raw)) {
+			logCaptureDecision({ raw, fingerprint, parsed, outcome: { step: 'no_bank' } });
+			continue;
+		}
 
-		const account = await resolveAccountForNotification(raw, parsed);
+		stage = 'account';
+		const accountTrace: { how?: AccountResolution } = {};
+		const account = await resolveAccountForNotification(raw, parsed, accountTrace);
+		stage = 'decide';
 		const candidate = candidateFrom(raw, parsed, account?.id ?? null);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
 		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
@@ -750,6 +772,8 @@ export const ingestRawCaptures = async (
 			appRule,
 		});
 
+		let overridden: 'confirmed_leg' | 'foreign_currency' | undefined;
+
 		// Uma transferência "certa" cuja outra perna o usuário já confirmou como
 		// lançamento não desfaz a confirmação sozinha: vira pergunta. Apagar uma
 		// transação que a pessoa aprovou é decisão dela, mesmo quando o nome é o dela.
@@ -758,6 +782,7 @@ export const ingestRawCaptures = async (
 			const related = recent.find((known) => known.id === relatedId);
 			if (related?.status === 'confirmed') {
 				decision = { action: 'ask_transfer', relatedId: related.id };
+				overridden = 'confirmed_leg';
 			}
 		}
 
@@ -767,6 +792,7 @@ export const ingestRawCaptures = async (
 		const currencyReview = needsCurrencyReview(parsed);
 		if (currencyReview && decision.action === 'auto_confirm') {
 			decision = { action: 'pending', categoryId: decision.categoryId };
+			overridden = 'foreign_currency';
 		}
 
 		const base: CaptureDraft = {
@@ -797,13 +823,31 @@ export const ingestRawCaptures = async (
 			installments: parsed.installments,
 		};
 
+		stage = 'write';
 		const result = await applyDecision(base, decision, options.categories);
 		if (result.autoConfirmed) summary.autoConfirmed += 1;
 		summary.inserted += 1;
 
-		if (externalIncome && parsed.direction === 'in') await neutralizeExternalLeg(base);
+		stage = 'external_leg';
+		const externalLeg = externalIncome && parsed.direction === 'in' ? await neutralizeExternalLeg(base) : false;
+
+		logCaptureDecision({
+			raw,
+			fingerprint,
+			parsed,
+			outcome: {
+				step: 'decided',
+				decision,
+				overridden,
+				currencyReview,
+				account: account ? (accountTrace.how ?? 'existing') : 'none',
+				captureId: result.id,
+				externalLeg,
+			},
+		});
 		} catch (error) {
 			console.error('Failed to ingest notification:', error);
+			logCaptureFailure(raw, fingerprint, stage, error);
 		}
 	}
 
@@ -831,6 +875,32 @@ const learnTransfer = async (capture: Capture): Promise<void> => {
 };
 
 /**
+ * Uma resposta do usuário na caixa de revisão, no diário (SPD-014): o quê, de que tipo de
+ * aviso e de que estado ele saiu. Nunca o valor, o estabelecimento nem o texto.
+ */
+const logReview = (
+	event: string,
+	capture: Pick<Capture, 'id' | 'packageName' | 'kind' | 'status' | 'reason'>,
+	data: Record<string, DiagnosticValue> = {}
+): void =>
+	log('capture', event, {
+		data: {
+			captureId: capture.id,
+			pkg: capture.packageName,
+			kind: capture.kind,
+			from: capture.status,
+			fromReason: capture.reason,
+			...data,
+		},
+	});
+
+/** A resposta não fez nada: o item sumiu ou já não estava no estado que ela pede. */
+const logReviewSkipped = (action: string, id: string, capture: Capture | null): void =>
+	log('capture', 'capture_review_skipped', {
+		data: { action, captureId: id, from: capture?.status ?? 'missing' },
+	});
+
+/**
  * Apaga o que uma captura pôs no livro: a transação, ou todas as parcelas. A baixa que a
  * transação tinha dado numa conta a pagar é desfeita junto.
  */
@@ -852,7 +922,10 @@ export const confirmCapture = async (
 	categories: Category[]
 ): Promise<Capture | null> => {
 	const capture = await getCapture(id);
-	if (!capture || capture.status !== 'pending') return null;
+	if (!capture || capture.status !== 'pending') {
+		logReviewSkipped('confirm', id, capture);
+		return null;
+	}
 
 	const resolved = resolveCategoryId(categoryId, capture.direction, categories);
 	const transactionId = await postTransaction(capture, resolved, capture.id);
@@ -867,12 +940,23 @@ export const confirmCapture = async (
 
 	// Confirmar um recebimento como receita é o que ensina que a fonte é externa; a
 	// saída que a PJ avisou pelo mesmo app, se já virou transferência, deixa de ser.
+	let externalLeg = false;
 	if (
 		capture.direction === 'in' &&
 		categories.some((c) => c.id === resolved && c.type === 'income' && !c.deletedAt)
 	) {
-		await neutralizeExternalLeg(capture);
+		externalLeg = await neutralizeExternalLeg(capture);
 	}
+
+	logReview('capture_confirmed', capture, {
+		direction: capture.direction,
+		// Se o usuário trocou a categoria sugerida, e se a escolhida não servia (caiu em "outros").
+		categoryChanged: resolved !== capture.suggestedCategory,
+		categoryFallback: resolved !== categoryId,
+		installments: capture.installments,
+		learned: capture.merchantKey !== null,
+		externalLeg,
+	});
 
 	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };
 };
@@ -886,9 +970,26 @@ export const confirmCapture = async (
 export const dismissCapture = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
 	await updateCapture(id, { status: 'dismissed', question: null, reason: 'manual' });
+	let appRule: MerchantRule | null = null;
+	let learned = false;
 	if (capture?.status === 'pending' && canLearnToIgnore(capture)) {
 		const key = appRuleKeyOf(capture.packageName);
-		await saveMerchantRule(learnFromAppDismissal(toMerchantRule(await getMerchantRule(key)), capture.packageName));
+		const current = toMerchantRule(await getMerchantRule(key));
+		appRule = learnFromAppDismissal(current, capture.packageName);
+		await saveMerchantRule(appRule);
+		learned = isAppIgnored(appRule) && !isAppIgnored(current);
+	}
+
+	if (!capture) {
+		logReviewSkipped('dismiss', id, null);
+		return;
+	}
+	logReview('capture_dismissed', capture, { appDismissals: appRule?.confirmations ?? null });
+	// O terceiro descarte: daqui em diante os avisos deste app são ignorados sozinhos.
+	if (learned && appRule) {
+		log('capture', 'capture_app_rule_learned', {
+			data: { pkg: capture.packageName, dismissals: appRule.confirmations },
+		});
 	}
 };
 
@@ -899,6 +1000,7 @@ export const dismissCapture = async (id: string): Promise<void> => {
  */
 export const stopIgnoringApp = async (packageName: string): Promise<void> => {
 	await deleteMerchantRule(appRuleKeyOf(packageName));
+	log('capture', 'capture_app_rule_removed', { data: { pkg: packageName } });
 };
 
 /**
@@ -908,7 +1010,10 @@ export const stopIgnoringApp = async (packageName: string): Promise<void> => {
  */
 export const markCaptureTransfer = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
-	if (!capture) return;
+	if (!capture) {
+		logReviewSkipped('transfer', id, null);
+		return;
+	}
 
 	const related = capture.relatedId ? await getCapture(capture.relatedId) : null;
 	const pairable = related && (related.status === 'pending' || related.status === 'confirmed');
@@ -936,10 +1041,17 @@ export const markCaptureTransfer = async (id: string): Promise<void> => {
 	}
 
 	await learnTransfer(capture);
+
+	logReview('capture_marked_transfer', capture, {
+		paired: Boolean(pairable),
+		removedLeg: Boolean(pairable && related.status === 'confirmed'),
+		learned: capture.merchantKey !== null,
+	});
 };
 
 /** Resposta à pergunta "é o mesmo lançamento?". */
 export const answerCaptureDuplicate = async (id: string, same: boolean): Promise<void> => {
+	log('capture', 'capture_answered', { data: { captureId: id, question: 'duplicate', answer: same } });
 	if (same) {
 		await updateCapture(id, { status: 'duplicate', question: null, reason: 'manual' });
 	} else {
@@ -949,6 +1061,7 @@ export const answerCaptureDuplicate = async (id: string, same: boolean): Promise
 
 /** Resposta à pergunta "é transferência entre suas contas?". */
 export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Promise<void> => {
+	log('capture', 'capture_answered', { data: { captureId: id, question: 'transfer', answer: isTransfer } });
 	if (isTransfer) {
 		await markCaptureTransfer(id);
 	} else {
@@ -971,14 +1084,27 @@ export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Pr
  */
 export const revertCapture = async (id: string): Promise<void> => {
 	const capture = await getCapture(id);
-	if (!capture || capture.status === 'pending') return;
+	if (!capture || capture.status === 'pending') {
+		logReviewSkipped('revert', id, capture);
+		return;
+	}
+	const undone: Record<string, DiagnosticValue> = {
+		ruleRemoved: false,
+		appRule: null,
+		removedLedger: false,
+		removedTransfer: false,
+		releasedLeg: false,
+	};
 
 	// `reason: 'manual'` é a marca do toque do usuário — e é exatamente nele que
 	// `markCaptureTransfer` grava a regra. Decisão automática ("o nome é o seu", "a outra
 	// ponta já foi reconhecida") não aprende nada, e aqui não há nada a apagar.
 	if (capture.status === 'transfer' && capture.reason === 'manual' && capture.merchantKey) {
 		const rule = await getMerchantRule(capture.merchantKey);
-		if (rule?.treatAs === 'transfer') await deleteMerchantRule(capture.merchantKey);
+		if (rule?.treatAs === 'transfer') {
+			await deleteMerchantRule(capture.merchantKey);
+			undone.ruleRemoved = true;
+		}
 	}
 
 	// O descarte à mão de um app que não é banco contou para a regra do app (SPD-022):
@@ -990,16 +1116,19 @@ export const revertCapture = async (id: string): Promise<void> => {
 			const next = forgetAppDismissal(rule);
 			if (next) await saveMerchantRule(next);
 			else await deleteMerchantRule(key);
+			undone.appRule = next ? 'decremented' : 'removed';
 		}
 	}
 
 	if (capture.transactionId && capture.reason !== 'statement_transaction') {
 		await removePostedTransactions(capture);
+		undone.removedLedger = true;
 	}
 
 	if (capture.transferId) {
 		await deleteTransfer(capture.transferId);
 		syncQueue.schedule();
+		undone.removedTransfer = true;
 	}
 
 	if (capture.status === 'transfer' && capture.relatedId) {
@@ -1012,6 +1141,7 @@ export const revertCapture = async (id: string): Promise<void> => {
 				reason: null,
 				transferId: null,
 			});
+			undone.releasedLeg = true;
 		}
 	}
 
@@ -1024,6 +1154,8 @@ export const revertCapture = async (id: string): Promise<void> => {
 		reason: null,
 		transferId: null,
 	});
+
+	logReview('capture_reverted', capture, undone);
 };
 
 export default {

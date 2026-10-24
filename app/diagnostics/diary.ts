@@ -28,6 +28,7 @@ import {
 	type DiagnosticLevel,
 	type DiagnosticValue,
 } from './contract';
+import { attachDiary } from './log';
 
 /** Pasta do diário dentro de `Paths.document` (não é apagada pelo sistema como o cache). */
 export const DIARY_DIRECTORY = 'diagnostics';
@@ -396,6 +397,9 @@ export const logEvent = (area: DiagnosticArea, event: string, options: LogOption
 		// Diário nunca derruba quem registra.
 	}
 };
+
+// Quem decide registra por `log.ts`, que não importa o diário (ver lá): o diário se liga.
+attachDiary(logEvent);
 
 /** Como `logEvent`, mas guardando `id` e `at` de quem já os tem (o serviço nativo). */
 export const recordEvent = (entry: DiaryEntry): void => {

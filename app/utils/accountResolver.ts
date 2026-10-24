@@ -120,6 +120,12 @@ const newAccountDraft = (
 });
 
 /**
+ * Como a conta da notificação foi achada, para o diário (SPD-014): a que já atendia o app
+ * ou o final, a cadastrada à mão (ou vinda do extrato) que ganhou o app agora, ou uma nova.
+ */
+export type AccountResolution = 'existing' | 'adopted' | 'created';
+
+/**
  * A conta de uma notificação: o cartão de crédito certo (`pickNotificationTarget`), a
  * conta que declarou aquele final de débito, ou a conta corrente daquele app. Cria na
  * primeira vez, ancorada na véspera **da compra** — não na véspera de quando o app
@@ -129,11 +135,18 @@ const newAccountDraft = (
  * app que não é banco (SMS, e-mail, mensageiro, app de corrida) e o texto não cita banco
  * nenhum. É melhor do que inventar uma conta chamada "WhatsApp" ao lado das de verdade —
  * e esse aviso nem chega aqui desde o SPD-022 (`isNoBankNotice`): a ingestão o ignora.
+ *
+ * `trace.how` diz, a quem quiser saber, por qual caminho a conta veio. Não muda nada.
  */
 export const resolveAccountForNotification = async (
 	notification: RawCapture,
-	parsed: ParsedCapture
+	parsed: ParsedCapture,
+	trace?: { how?: AccountResolution }
 ): Promise<Account | null> => {
+	const via = (how: AccountResolution, account: Account): Account => {
+		if (trace) trace.how = how;
+		return account;
+	};
 	const raw = asBankApp(notification);
 	const purchaseEve = addDays(getISODate(new Date(raw.postedAt)), -1);
 	const accounts = await getAccounts();
@@ -151,9 +164,9 @@ export const resolveAccountForNotification = async (
 		// Conta ou cartão cadastrado à mão ganha o app na primeira notificação do banco.
 		if (found.packageName === null && !foreign) {
 			await updateAccount({ ...found, packageName: raw.packageName });
-			return { ...found, packageName: raw.packageName };
+			return via('adopted', { ...found, packageName: raw.packageName });
 		}
-		return found;
+		return via('existing', found);
 	}
 
 	const isCard = target.type === 'new_card';
@@ -162,7 +175,7 @@ export const resolveAccountForNotification = async (
 	// O app do banco é a identidade mais forte: a conta já ligada a ele vem primeiro.
 	if (!foreign) {
 		const existing = await findAccountBySource(raw.packageName, last4);
-		if (existing) return existing;
+		if (existing) return via('existing', existing);
 	}
 
 	const bank = bankLabelOf(raw);
@@ -178,8 +191,8 @@ export const resolveAccountForNotification = async (
 	if (foreign) {
 		const live = ofBank.filter((account) => !account.archived);
 		const bound = live.filter((account) => account.packageName !== null);
-		if (bound.length === 1) return bound[0];
-		return live.length === 1 ? live[0] : null;
+		if (bound.length === 1) return via('existing', bound[0]);
+		return live.length === 1 ? via('existing', live[0]) : null;
 	}
 
 	if (!isCard) {
@@ -191,7 +204,7 @@ export const resolveAccountForNotification = async (
 		if (twins.length === 1) {
 			const twin = twins[0];
 			await updateAccount({ ...twin, packageName: raw.packageName });
-			return { ...twin, packageName: raw.packageName };
+			return via('adopted', { ...twin, packageName: raw.packageName });
 		}
 	}
 
@@ -216,7 +229,7 @@ export const resolveAccountForNotification = async (
 	);
 	const created = (await getAccounts()).find((account) => account.id === id);
 	if (!created) throw new Error('Account was not created');
-	return created;
+	return via('created', created);
 };
 
 const last4OfAcctId = (acctId: string): string | null => {

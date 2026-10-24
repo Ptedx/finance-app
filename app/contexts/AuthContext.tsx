@@ -8,6 +8,7 @@ import { ApiError, isApiConfigured, setSessionLostHandler } from '../api/client'
 import { fetchSyncStatus } from '../api/sync';
 import { loadTokens } from '../api/tokens';
 import { clearSyncedData, countLocalData, markEverythingDirty } from '../database/database';
+import { elapsedSince, errorData, log } from '../diagnostics/log';
 import {
 	beginSessionFor,
 	type ClaimCounts,
@@ -134,7 +135,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	useEffect(() => {
 		const restore = async () => {
 			try {
-				if (!isApiConfigured() || !(await loadTokens())) return;
+				if (!isApiConfigured() || !(await loadTokens())) {
+					log('session', 'session_restore', {
+						data: { outcome: 'anonymous', configured: isApiConfigured() },
+					});
+					return;
+				}
 
 				let accountId: string | null = null;
 				try {
@@ -146,6 +152,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 					// Sem rede na abertura não significa sessão inválida: o perfil chega
 					// quando a conexão voltar.
 				}
+				// O id da conta não vai para o diário; basta saber se o perfil chegou.
+				const profileLoaded = accountId !== null;
 
 				// A escolha pendente é relida do banco, com rede ou sem ela: enquanto não
 				// houver resposta a fila não liga. Era este o furo — a pergunta só existia
@@ -153,15 +161,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 				// pelo Android) voltava com os dois conjuntos **juntados**, em silêncio.
 				const pending = await readPendingClaim();
 				if (pending && (accountId === null || pending.accountId === accountId)) {
+					log('session', 'session_restore', { data: { outcome: 'claim_pending', profileLoaded } });
 					resumeClaim(pending);
 					return;
 				}
 				// Claim de outra conta: a sessão dele já acabou, a pergunta não é mais desta.
 				if (pending) await clearPendingClaim();
 
+				log('session', 'session_restore', {
+					data: { outcome: 'restored', profileLoaded, staleClaimCleared: pending !== null },
+				});
 				syncQueue.start();
 			} catch (error) {
 				console.warn('Não foi possível restaurar a sessão:', error);
+				log('session', 'session_restore', {
+					level: 'warn',
+					data: { outcome: 'failed', ...errorData(error) },
+				});
 				endSession();
 			} finally {
 				setIsLoading(false);
@@ -209,16 +225,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 			const [status, device] = await Promise.all([fetchSyncStatus(), countLocalData()]);
 
+			// A escolha de dados no login: automática quando um dos lados está vazio. Só as
+			// contagens de linhas, nunca o que elas são.
+			const logClaim = (outcome: 'account_empty' | 'device_empty' | 'ask') =>
+				log('session', 'session_claim', {
+					data: { outcome, firstSession, accountHasData: status.hasData, deviceRows: device.total },
+				});
+
 			if (!status.hasData) {
+				logClaim('account_empty');
 				await markEverythingDirty();
 				syncQueue.start();
 				return;
 			}
 
 			if (device.total === 0) {
+				logClaim('device_empty');
 				syncQueue.start();
 				return;
 			}
+
+			logClaim('ask');
 
 			// Gravado **antes** de a pergunta ir para a tela: se o app morrer agora, a
 			// próxima abertura refaz a pergunta em vez de juntar por conta própria.
@@ -231,7 +258,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 	const signIn = useCallback(
 		async (params: { email: string; password: string }) => {
-			const profile = await authApi.login(params);
+			let profile: authApi.AccountProfile;
+			try {
+				profile = await authApi.login(params);
+			} catch (error) {
+				// Senha errada é 401, sem rede é 0: o status diz qual. Nunca o e-mail.
+				log('session', 'session_login_failed', { level: 'warn', data: { method: 'login', ...errorData(error) } });
+				throw error;
+			}
+			log('session', 'session_login', { data: { method: 'login' } });
 			setAccount(profile);
 			await afterSignIn(profile.id);
 		},
@@ -240,7 +275,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 	const signUp = useCallback(
 		async (params: { email: string; password: string; name: string }) => {
-			const profile = await authApi.register(params);
+			let profile: authApi.AccountProfile;
+			try {
+				profile = await authApi.register(params);
+			} catch (error) {
+				log('session', 'session_login_failed', {
+					level: 'warn',
+					data: { method: 'register', ...errorData(error) },
+				});
+				throw error;
+			}
+			log('session', 'session_login', { data: { method: 'register' } });
 			setAccount(profile);
 			// Conta recém-criada nunca tem histórico: o claim é sempre automático. O
 			// estado de sync de qualquer conta anterior sai de cena do mesmo jeito.
@@ -252,23 +297,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	);
 
 	const resolveClaim = useCallback(async (choice: ClaimChoice) => {
-		if (choice === 'upload') {
-			// A conta passa a ter exatamente o que está aqui.
-			const result = await replaceAccountWithDevice();
-			if (result.notRemoved > 0) {
-				console.warn(`Substituição: ${result.notRemoved} linha(s) antigas da conta não puderam ser apagadas.`);
+		const startedAt = Date.now();
+		let replaced: { removed: number; notRemoved: number } | null = null;
+		try {
+			if (choice === 'upload') {
+				// A conta passa a ter exatamente o que está aqui.
+				const result = await replaceAccountWithDevice();
+				replaced = result;
+				if (result.notRemoved > 0) {
+					console.warn(`Substituição: ${result.notRemoved} linha(s) antigas da conta não puderam ser apagadas.`);
+				}
+			} else if (choice === 'merge') {
+				// Tudo sobe; o last-write-wins resolve as sobreposições linha a linha.
+				await markEverythingDirty();
+			} else {
+				// Limpa o local e o cursor, para o pull seguinte reconstruir do zero. Só o
+				// cursor: zerar a tabela de estado inteira levaria junto o vínculo com esta
+				// conta, e o próximo login nela refaria o pull completo sem motivo.
+				await clearSyncedData();
+				await resetCursor();
+				await pullAll();
 			}
-		} else if (choice === 'merge') {
-			// Tudo sobe; o last-write-wins resolve as sobreposições linha a linha.
-			await markEverythingDirty();
-		} else {
-			// Limpa o local e o cursor, para o pull seguinte reconstruir do zero. Só o
-			// cursor: zerar a tabela de estado inteira levaria junto o vínculo com esta
-			// conta, e o próximo login nela refaria o pull completo sem motivo.
-			await clearSyncedData();
-			await resetCursor();
-			await pullAll();
+		} catch (error) {
+			// A pergunta fica de pé e volta na próxima abertura; o diário diz onde parou.
+			log('session', 'session_claim_failed', { level: 'error', data: { choice, ...errorData(error) } });
+			throw error;
 		}
+		log('session', 'session_claim_resolved', {
+			data: {
+				choice,
+				removed: replaced?.removed ?? null,
+				notRemoved: replaced?.notRemoved ?? null,
+				durationMs: elapsedSince(startedAt),
+			},
+		});
 
 		// A escolha só é apagada depois de cumprida: interromper no meio faz a pergunta
 		// voltar, que é o que se quer — a alternativa é o aparelho decidir sozinho.
@@ -290,7 +352,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 	 * seguinte faria o app achar que já tem o que nunca baixou.
 	 */
 	const signOut = useCallback(async () => {
-		await authApi.logout();
+		try {
+			await authApi.logout();
+		} catch (error) {
+			log('session', 'session_logout', { level: 'warn', data: { ok: false, ...errorData(error) } });
+			throw error;
+		}
+		log('session', 'session_logout', { data: { ok: true } });
 		endSession();
 	}, [endSession]);
 

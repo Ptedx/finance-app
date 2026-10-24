@@ -1,3 +1,4 @@
+import { log } from '../diagnostics/log';
 import { clearTokens, loadTokens, saveTokens, type StoredTokens } from './tokens';
 
 /**
@@ -143,12 +144,27 @@ const refreshSession = async (): Promise<StoredTokens | null> => {
 	const stored = await loadTokens();
 	if (!stored) return null;
 
-	const response = await rawFetch('/api/auth/refresh', {
-		method: 'POST',
-		body: { refreshToken: stored.refreshToken },
-	});
+	let response: Response;
+	try {
+		response = await rawFetch('/api/auth/refresh', {
+			method: 'POST',
+			body: { refreshToken: stored.refreshToken },
+		});
+	} catch (error) {
+		// Sem rede a sessão continua: o próximo pedido tenta renovar de novo.
+		log('session', 'session_refresh_failed', {
+			level: 'warn',
+			data: { status: error instanceof ApiError ? error.status : null, offline: true, loggedOut: false },
+		});
+		throw error;
+	}
 
 	if (!response.ok) {
+		// Só o status: o corpo da recusa não é lido aqui, e o token nunca vai para o diário.
+		log('session', 'session_refresh_failed', {
+			level: 'warn',
+			data: { status: response.status, offline: false, loggedOut: true },
+		});
 		await clearTokens();
 		onSessionLost?.();
 		return null;
@@ -156,6 +172,7 @@ const refreshSession = async (): Promise<StoredTokens | null> => {
 
 	const body = (await response.json()) as StoredTokens;
 	await saveTokens({ accessToken: body.accessToken, refreshToken: body.refreshToken });
+	log('session', 'session_refresh_ok');
 	return body;
 };
 
@@ -193,7 +210,11 @@ export const apiRequest = async <T>(path: string, options: RequestOptions = {}):
 
 	if (!response.ok) {
 		const error = await parseError(response);
-		if (error.isAuthExpired) onSessionLost?.();
+		if (error.isAuthExpired) {
+			// O 401 que desloga: o status e o código, nunca o pedido nem o token.
+			log('session', 'session_lost', { level: 'warn', data: { status: error.status, code: error.code } });
+			onSessionLost?.();
+		}
 		throw error;
 	}
 

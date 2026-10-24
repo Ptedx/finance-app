@@ -15,6 +15,8 @@ import {
 	stampEverything,
 } from '../database/database';
 import { SCHEMA_VERSION } from '../database/schema';
+import { elapsedSince, log } from '../diagnostics/log';
+import { logSyncFailure, rejectionSummary } from '../diagnostics/sync';
 import { nowTimestamp } from '../utils/dateUtils';
 import { emitPreferencesChanged } from './preferenceEvents';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
@@ -33,6 +35,30 @@ import { EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, ty
  */
 const countAllChanges = (changes: SyncChanges): number =>
 	Object.values(changes).reduce<number>((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
+
+/**
+ * O que uma metade do ciclo fez, somado em todas as páginas, para o diário (SPD-014): um
+ * evento por ciclo, nunca um por linha nem por página.
+ */
+interface CycleStats {
+	pages: number;
+	/** Linhas por coleção, somadas nas páginas. */
+	rows: Map<string, number>;
+}
+
+const newStats = (): CycleStats => ({ pages: 0, rows: new Map() });
+
+const countRows = (stats: CycleStats, changes: SyncChanges): void => {
+	for (const [collection, rows] of Object.entries(changes)) {
+		if (Array.isArray(rows) && rows.length > 0) {
+			stats.rows.set(collection, (stats.rows.get(collection) ?? 0) + rows.length);
+		}
+	}
+};
+
+/** `transactions:12,captures:3`: só nomes de coleção e contagens. */
+const rowsText = (rows: Map<string, number>): string =>
+	[...rows].map(([collection, count]) => `${collection}:${count}`).join(',');
 
 /**
  * Motor de sincronização.
@@ -203,12 +229,52 @@ export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
  * pularia aquelas linhas para sempre.
  */
 export const pullAll = async (): Promise<number> => {
+	const startedAt = Date.now();
+	const stats: PullStats = { ...newStats(), unknown: new Map(), cursorMoved: false, complete: false, phantoms: 0 };
+	try {
+		const received = await pullPages(stats);
+		log('sync', 'sync_pull_done', {
+			data: {
+				pages: stats.pages,
+				received,
+				rows: rowsText(stats.rows),
+				cursorMoved: stats.cursorMoved,
+				complete: stats.complete,
+				// Coleções que o servidor mandou e esta versão não conhece: as linhas ficam de fora.
+				unknownCollections: rowsText(stats.unknown) || null,
+				phantomAccountsRemoved: stats.phantoms,
+				durationMs: elapsedSince(startedAt),
+			},
+		});
+		return received;
+	} catch (error) {
+		logSyncFailure('pull', error, { pages: stats.pages, cursorMoved: stats.cursorMoved });
+		throw error;
+	}
+};
+
+interface PullStats extends CycleStats {
+	unknown: Map<string, number>;
+	cursorMoved: boolean;
+	complete: boolean;
+	phantoms: number;
+}
+
+const pullPages = async (stats: PullStats): Promise<number> => {
 	let cursor = await readCursor();
+	const startCursor = JSON.stringify(cursor);
 	let received = 0;
 	let complete = false;
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const response = await api.pull(cursor);
+		stats.pages += 1;
+		countRows(stats, response.changes);
+		for (const [collection, rows] of Object.entries(response.changes)) {
+			if (!(collection in EMPTY_CURSOR) && Array.isArray(rows)) {
+				stats.unknown.set(collection, (stats.unknown.get(collection) ?? 0) + rows.length);
+			}
+		}
 
 		await applyPulledChanges(response.changes);
 		await setSyncState(CURSOR_KEY, JSON.stringify(response.cursor));
@@ -220,6 +286,7 @@ export const pullAll = async (): Promise<number> => {
 
 		cursor = response.cursor;
 		received += countAllChanges(response.changes);
+		stats.cursorMoved = JSON.stringify(cursor) !== startCursor;
 
 		if (!response.hasMore) {
 			complete = true;
@@ -235,8 +302,10 @@ export const pullAll = async (): Promise<number> => {
 	// Só quando a foto está completa: o reparo exige conta vazia, e uma conta cujos
 	// lançamentos ainda estão numa página por vir **parece** vazia. Com `hasMore` ainda
 	// pendente (ou o teto de páginas atingido), o reparo espera a próxima rodada.
+	stats.complete = complete;
 	if (complete) {
 		const removed = await repairPhantomAppAccounts();
+		stats.phantoms = removed;
 		if (removed > 0) console.log(`Sync: ${removed} conta(s) fantasma apagada(s) depois do pull`);
 	}
 
@@ -309,6 +378,44 @@ const repairUnknownCategories = async (
  * estão, e escondê-las seria pior do que mostrá-las.
  */
 export const pushAll = async (): Promise<number> => {
+	const startedAt = Date.now();
+	const stats: PushStats = { ...newStats(), rejected: [], repaired: 0, heldBack: new Map() };
+	try {
+		const sent = await pushPages(stats);
+		// Ciclo sem nada a subir não vira evento: o `sync_pull_done` já diz que o ciclo rodou.
+		if (stats.pages > 0 || stats.heldBack.size > 0) {
+			const { refused, ...rejection } = rejectionSummary(stats.rejected);
+			log('sync', 'sync_push_done', {
+				data: {
+					pages: stats.pages,
+					rows: rowsText(stats.rows),
+					applied: sent,
+					...rejection,
+					repaired: stats.repaired,
+					// Coleções que o servidor ainda não conhece: ficam aqui, sujas, até ele conhecer.
+					heldBack: rowsText(stats.heldBack) || null,
+					durationMs: elapsedSince(startedAt),
+				},
+			});
+			// O que o banco do servidor recusou (`writeRowIsolated`) ou a validação barrou.
+			if (refused) {
+				log('sync', 'sync_rows_refused', { level: 'warn', data: { count: rejection.invalid, refused } });
+			}
+		}
+		return sent;
+	} catch (error) {
+		logSyncFailure('push', error, { pages: stats.pages });
+		throw error;
+	}
+};
+
+interface PushStats extends CycleStats {
+	rejected: RejectedRow[];
+	repaired: number;
+	heldBack: Map<string, number>;
+}
+
+const pushPages = async (stats: PushStats): Promise<number> => {
 	let sent = 0;
 	// Categorias já reenviadas nesta rodada. Uma segunda rejeição da mesma categoria
 	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
@@ -319,12 +426,21 @@ export const pushAll = async (): Promise<number> => {
 	await reconcilePreferencesSafely();
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
-		const changes = onlyKnownCollections(await getDirtyChanges(PAGE_SIZE), known);
+		const dirty = await getDirtyChanges(PAGE_SIZE);
+		const changes = onlyKnownCollections(dirty, known);
 		const pending = countAllChanges(changes);
+		for (const [collection, rows] of Object.entries(dirty)) {
+			const kept = (changes as unknown as Record<string, unknown[] | undefined>)[collection];
+			const held = (Array.isArray(rows) ? rows.length : 0) - (Array.isArray(kept) ? kept.length : 0);
+			if (held > 0) stats.heldBack.set(collection, Math.max(stats.heldBack.get(collection) ?? 0, held));
+		}
 
 		if (pending === 0) break;
 
 		const response = await api.push(changes);
+		stats.pages += 1;
+		countRows(stats, changes);
+		stats.rejected.push(...response.rejected);
 
 		const rejected = new Set(response.rejected.map((row) => `${row.collection}:${row.id}`));
 
@@ -360,6 +476,7 @@ export const pushAll = async (): Promise<number> => {
 		}
 
 		const repaired = await repairUnknownCategories(response.rejected, resentCategories);
+		stats.repaired += repaired;
 
 		// Algo foi consertado: a próxima página leva a categoria (ou o lançamento já
 		// reancorado), então vale tentar de novo mesmo que esta página fosse a última.
@@ -391,9 +508,15 @@ export const syncNow = async (): Promise<SyncResult> => {
 	const pushed = await pushAll();
 	const pulled = await pullAll();
 
-	await setSyncState(LAST_SYNCED_KEY, new Date().toISOString());
+	try {
+		await setSyncState(LAST_SYNCED_KEY, new Date().toISOString());
 
-	return { pulled, pushed, pendingAfter: await countDirtyRows() };
+		return { pulled, pushed, pendingAfter: await countDirtyRows() };
+	} catch (error) {
+		// O push e o pull registram as suas; aqui só o que falhou depois deles.
+		logSyncFailure('finish', error);
+		throw error;
+	}
 };
 
 /**

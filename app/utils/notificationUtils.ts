@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import i18next from 'i18next';
 import { Platform } from 'react-native';
 import type { Bill, RecurringTransaction } from '../database/schema';
+import { errorData, log } from '../diagnostics/log';
 import { type BillReminder, billReminders } from './billReminders';
 import { getISODate, parseISODate } from './dateUtils';
 import { formatCents } from './money';
@@ -339,6 +340,34 @@ const ensureBillsChannel = async (
 	});
 };
 
+/**
+ * A permissão do sistema, só para o diário: o app agenda com ela negada também (o aviso
+ * simplesmente não aparece), e é isso que o diário precisa mostrar. Nunca lança.
+ */
+const permissionStatus = async (
+	Notifications: NonNullable<ReturnType<typeof getNotifications>>
+): Promise<string> => {
+	try {
+		return (await Notifications.getPermissionsAsync()).status;
+	} catch {
+		return 'unknown';
+	}
+};
+
+/** Uma remarcação no diário (SPD-014): quantas contas, quantos avisos, e se podiam aparecer. */
+const logBillReminders = async (
+	Notifications: NonNullable<ReturnType<typeof getNotifications>>,
+	bills: Bill[],
+	scheduled: number,
+	enabled: boolean
+): Promise<void> => {
+	const permission = await permissionStatus(Notifications);
+	log('reminders', 'bill_reminders_rescheduled', {
+		level: enabled && permission === 'denied' && scheduled > 0 ? 'warn' : 'info',
+		data: { bills: bills.length, scheduled, enabled, permission },
+	});
+};
+
 const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number> => {
 	const Notifications = getNotifications();
 	if (!Notifications) return 0;
@@ -351,7 +380,10 @@ const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number
 			}
 		}
 
-		if (!(await areNotificationsEnabled())) return 0;
+		if (!(await areNotificationsEnabled())) {
+			await logBillReminders(Notifications, bills, 0, false);
+			return 0;
+		}
 
 		await ensureBillsChannel(Notifications);
 
@@ -378,9 +410,11 @@ const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number
 			count += 1;
 		}
 
+		await logBillReminders(Notifications, bills, count, true);
 		return count;
 	} catch (error) {
 		console.error('Error scheduling bill reminders:', error);
+		log('reminders', 'bill_reminders_failed', { level: 'error', data: { bills: bills.length, ...errorData(error) } });
 		return 0;
 	}
 };
