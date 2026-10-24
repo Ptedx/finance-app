@@ -16,6 +16,7 @@ import {
 	invoicesClosingBetween,
 	isSameCardPayment,
 	owedOn,
+	pickOpenCardPayment,
 	planCardAdjustment,
 	shiftCycle,
 	invoiceMonthOf,
@@ -452,6 +453,67 @@ describe('isSameCardPayment — a fatura paga em duas parcelas iguais entra duas
 		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: null, amountCents: 50_000, date: '2026-10-02' })).toBe(true);
 		// Mas a janela de datas continua valendo.
 		expect(isSameCardPayment(nubank('2026-10-01'), { fromAccountId: null, amountCents: 50_000, date: '2026-10-03' })).toBe(false);
+	});
+});
+
+describe('pickOpenCardPayment — o aviso sem destino e o "Pagar fatura" são um pagamento só', () => {
+	// O aviso do banco com dois cartões gravou Nubank → (em branco), R$ 500, em 10/10.
+	const open = (date: string, overrides: Partial<{ id: string; fromAccountId: string | null; toAccountId: string | null; amountCents: number }> = {}) => ({
+		id: `t-${date}`,
+		fromAccountId: 'nubank',
+		toAccountId: null,
+		amountCents: 50_000,
+		date,
+		...overrides,
+	});
+	const pay = (date: string, overrides: Partial<{ fromAccountId: string | null; amountCents: number }> = {}) => ({
+		fromAccountId: 'nubank',
+		amountCents: 50_000,
+		date,
+		...overrides,
+	});
+
+	it('mesma origem, mesmo valor, até um dia de diferença: completa a existente', () => {
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-10'))?.id).toBe('t-2026-10-10');
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-09'))?.id).toBe('t-2026-10-10');
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-11'))?.id).toBe('t-2026-10-10');
+	});
+
+	it('outra conta de origem: não é este pagamento', () => {
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-10', { fromAccountId: 'inter' }))).toBeNull();
+		// Pagamento de uma conta que o app não acompanha não completa a transferência da Nubank.
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-10', { fromAccountId: null }))).toBeNull();
+		expect(pickOpenCardPayment([open('2026-10-10', { fromAccountId: null })], pay('2026-10-10'))).toBeNull();
+	});
+
+	it('valor diferente: não é este pagamento', () => {
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-10', { amountCents: 49_999 }))).toBeNull();
+	});
+
+	it('mais de um dia de diferença: não é este pagamento', () => {
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-12'))).toBeNull();
+		expect(pickOpenCardPayment([open('2026-10-10')], pay('2026-10-08'))).toBeNull();
+	});
+
+	it('só transferência com destino em branco: a que já tem destino não é "em aberto"', () => {
+		expect(pickOpenCardPayment([open('2026-10-10', { toAccountId: 'cartao' })], pay('2026-10-10'))).toBeNull();
+		expect(pickOpenCardPayment([open('2026-10-10', { toAccountId: 'reserva' })], pay('2026-10-10'))).toBeNull();
+	});
+
+	it('duas candidatas: a de data mais próxima', () => {
+		const candidates = [open('2026-10-09'), open('2026-10-10')];
+		expect(pickOpenCardPayment(candidates, pay('2026-10-10'))?.id).toBe('t-2026-10-10');
+		expect(pickOpenCardPayment([...candidates].reverse(), pay('2026-10-10'))?.id).toBe('t-2026-10-10');
+	});
+
+	it('duas candidatas à mesma distância: a mais antiga', () => {
+		const candidates = [open('2026-10-11'), open('2026-10-09')];
+		expect(pickOpenCardPayment(candidates, pay('2026-10-10'))?.id).toBe('t-2026-10-09');
+		expect(pickOpenCardPayment([...candidates].reverse(), pay('2026-10-10'))?.id).toBe('t-2026-10-09');
+	});
+
+	it('sem candidatas, nula', () => {
+		expect(pickOpenCardPayment([], pay('2026-10-10'))).toBeNull();
 	});
 });
 

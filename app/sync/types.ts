@@ -203,6 +203,28 @@ export interface WireMerchantRule extends WireMeta {
 	confirmations: number;
 }
 
+/**
+ * Uma conta a pagar (v20). Mesmos nomes de `Bill` (`database/schema.ts`), e a identidade
+ * é o `id`, como em debts. `amountCents` nulo é "o valor varia"; `paidThrough` é o
+ * último mês pago, `YYYY-MM`.
+ */
+export interface WireBill extends WireMeta {
+	id: string;
+	name: string;
+	/** 1–31; em mês curto vale o último dia. */
+	dueDay: number;
+	amountCents: number | null;
+	accountId: string | null;
+	category: string | null;
+	/** Palavras separadas por vírgula; nulo = usa o nome. */
+	matchHint: string | null;
+	debtId: string | null;
+	paidThrough: string | null;
+	paidByRef: string | null;
+	active: boolean;
+	sortOrder: number;
+}
+
 export interface SyncChanges {
 	categories: WireCategory[];
 	transactions: WireTransaction[];
@@ -223,6 +245,8 @@ export interface SyncChanges {
 	 */
 	captures?: WireCapture[];
 	merchantRules?: WireMerchantRule[];
+	/** Coleção do v20 (contas a pagar), idem. */
+	bills?: WireBill[];
 }
 
 /**
@@ -245,6 +269,7 @@ export interface SyncCursor {
 	reserveGoals: number;
 	captures: number;
 	merchantRules: number;
+	bills: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -259,6 +284,7 @@ export const EMPTY_CURSOR: SyncCursor = {
 	reserveGoals: 0,
 	captures: 0,
 	merchantRules: 0,
+	bills: 0,
 };
 
 /**
@@ -278,6 +304,7 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	reserveGoals: 17,
 	captures: 19,
 	merchantRules: 19,
+	bills: 20,
 };
 
 /**
@@ -371,6 +398,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	reserveGoals: [],
 	captures: [],
 	merchantRules: [],
+	bills: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -387,7 +415,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	// mudanças — e quem decide se vale enviar nunca envia. A coleção existe justamente
 	// porque perder a caixa de entrada é perder dado.
 	(changes.captures?.length ?? 0) +
-	(changes.merchantRules?.length ?? 0);
+	(changes.merchantRules?.length ?? 0) +
+	(changes.bills?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

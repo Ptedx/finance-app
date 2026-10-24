@@ -9,7 +9,21 @@
  * pagar. `owedCents` lê ao contrário.
  */
 
-import type { Account } from '../database/schema';
+import type { Account, AccountRole } from '../database/schema';
+
+/**
+ * O "Gastou" que a folha "Acertar conta" pré-preenche: o que saiu da conta no período.
+ *
+ * Fora do envelope é a **despesa**, sem descontar a receita. O salário que cai na principal
+ * não é gasto negativo: descontá-lo fazia R$ 5.000 de salário e R$ 3.000 de gastos virarem
+ * "Gastou R$ 0", e quem digitava o número do banco (R$ 3.000) via o app lançar mais R$ 3.000
+ * — o mês dobrava.
+ *
+ * No envelope continua o líquido, como em `buildMonthOverview`: o que entra lá dentro é
+ * devolução de compra do próprio envelope, e a barra mede o que sobrou do teto.
+ */
+export const periodSpentCents = (item: { incomeCents: number; expenseCents: number }, role: AccountRole): number =>
+	role === 'envelope' ? Math.max(0, item.expenseCents - item.incomeCents) : Math.max(0, item.expenseCents);
 
 /**
  * O lançamento que falta para o gasto do mês numa conta bater com o que o usuário informou.
@@ -113,4 +127,4 @@ export const netWorth = (input: NetWorthInput): NetWorth => {
 	return { assetsCents, liabilitiesCents, netCents: assetsCents - liabilitiesCents };
 };
 
-export default { counterpartCents, owedCents, spendingAdjustment, summarizeAccounts, netWorth };
+export default { counterpartCents, owedCents, periodSpentCents, spendingAdjustment, summarizeAccounts, netWorth };

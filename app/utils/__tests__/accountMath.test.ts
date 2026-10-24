@@ -1,5 +1,5 @@
 import type { Account } from '../../database/schema';
-import { counterpartCents, netWorth, owedCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
+import { counterpartCents, netWorth, owedCents, periodSpentCents, spendingAdjustment, summarizeAccounts } from '../accountMath';
 import { centsToDisplayInput, configureMoney, finaliseAmountInput, formatAmountInput, parseAmountToCents } from '../money';
 
 const account = (overrides: Partial<Account>): Account => ({
@@ -25,6 +25,28 @@ const account = (overrides: Partial<Account>): Account => ({
 	archived: false,
 	updatedAt: '2026-09-01T00:00:00.000Z',
 	...overrides,
+});
+
+describe('periodSpentCents — o "Gastou" pré-preenchido do acerto', () => {
+	it('principal com salário de R$ 5.000 e gastos de R$ 3.000: gastou R$ 3.000', () => {
+		expect(periodSpentCents({ incomeCents: 500_000, expenseCents: 300_000 }, 'main')).toBe(300_000);
+	});
+
+	it('confirmar o número do banco na principal não lança nada a mais', () => {
+		const prefilled = periodSpentCents({ incomeCents: 500_000, expenseCents: 300_000 }, 'main');
+		expect(spendingAdjustment(prefilled, 300_000)).toBeNull();
+	});
+
+	it('fora do envelope a receita nunca desconta do gasto', () => {
+		expect(periodSpentCents({ incomeCents: 100_000, expenseCents: 30_000 }, 'reserve')).toBe(30_000);
+		expect(periodSpentCents({ incomeCents: 100_000, expenseCents: 30_000 }, 'external')).toBe(30_000);
+		expect(periodSpentCents({ incomeCents: 0, expenseCents: 0 }, 'main')).toBe(0);
+	});
+
+	it('no envelope continua o líquido: a devolução de uma compra desconta', () => {
+		expect(periodSpentCents({ incomeCents: 5_000, expenseCents: 30_000 }, 'envelope')).toBe(25_000);
+		expect(periodSpentCents({ incomeCents: 40_000, expenseCents: 30_000 }, 'envelope')).toBe(0);
+	});
 });
 
 describe('owedCents', () => {

@@ -5,11 +5,13 @@ import {
 	buildClampedDate,
 	configureDateLocale,
 	formatFullDate,
+	formatMonthLong,
 	getISODate,
 	getMonthRange,
 	lastDayOfMonth,
 	monthKeyOf,
 	monthKeyRange,
+	monthStartISO,
 	parseISODate,
 	shiftMonthKey,
 	todayISO,
@@ -160,5 +162,23 @@ describe('chaves de mês', () => {
 	it('dá o primeiro e o último dia do mês', () => {
 		expect(monthKeyRange('2026-02')).toEqual({ startDate: '2026-02-01', endDate: '2026-02-28' });
 		expect(monthKeyRange('2024-02')).toEqual({ startDate: '2024-02-01', endDate: '2024-02-29' });
+	});
+});
+
+describe('monthStartISO — o primeiro dia do mês escolhido (mês 1-12, como o PeriodContext)', () => {
+	afterEach(() => configureDateLocale('en-US'));
+
+	it('monta YYYY-MM-01 sem deslocar o mês', () => {
+		expect(monthStartISO(2026, 10)).toBe('2026-10-01');
+		expect(monthStartISO(2026, 1)).toBe('2026-01-01');
+		expect(monthStartISO(2026, 12)).toBe('2026-12-01');
+	});
+
+	// Regressão (SPD-005): o acerto de conta somava 1 a um mês que já é 1-12, e outubro
+	// aparecia como "novembro"; dezembro, como "janeiro".
+	it('o rótulo do acerto é o do mês selecionado: outubro → outubro, dezembro → dezembro', () => {
+		configureDateLocale('pt-BR');
+		expect(formatMonthLong(monthStartISO(2026, 10))).toBe('outubro');
+		expect(formatMonthLong(monthStartISO(2026, 12))).toBe('dezembro');
 	});
 });

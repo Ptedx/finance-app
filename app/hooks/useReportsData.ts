@@ -23,8 +23,10 @@ import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, effec
 import { buildHealthIndicators, type HealthIndicator } from '../utils/healthScore';
 import {
 	buildDebtInsights,
+	buildFixedCostInsights,
 	buildGoalInsights,
 	buildSavingsRateInsights,
+	FIXED_COST_INSIGHT_IDS,
 	type Insight,
 	mergeInsights,
 	SAVINGS_RATE_INSIGHT_IDS,
@@ -43,12 +45,12 @@ import {
 	findDuplicateIncomes,
 	findRecurringDoubleCharges,
 	type IncomeComposition,
-	incomeComposition,
 	investmentIncomeRows,
 	type MonthInvestmentIncomeRow,
 	type MonthKey,
 	type MonthPoint,
 	monthElapsedBp,
+	monthIncomeComposition,
 	monthKeysEnding,
 	monthRangeOf,
 	rankCategories,
@@ -354,6 +356,12 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 		});
 	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve, estimatedYield12mCents]);
 
+	// A fatia de custo fixo também sai do quadro do mês: a receita crua do período não vê o
+	// que a PJ transferiu para a principal, e o indicador acusava "custo fixo acima de 50% da
+	// renda" num mês de R$ 12.000 de pró-labore. Um número só, lido pela grade de saúde e pelo
+	// insight "fixed-cost-heavy" — antes o insight dizia 300% onde a grade dizia 23%.
+	const fixedCostBp = selected ? fixedCostShare({ monthlyFixedCents: metrics.monthlyFixedCents, incomeCents: selected.overview.incomeCents }) : metrics.fixedCostBasisPoints;
+
 	const health = useMemo<HealthIndicator[]>(() => {
 		let neededSavingsRateBp: number | null = null;
 		if (retirement && goal && averageIncomeCents !== null && averageIncomeCents > 0) {
@@ -377,10 +385,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 			neededSavingsRateBp,
 			liquidCents: overview.cashCents + overview.savedCents,
 			averageMonthlySpendCents: averageSpendCents,
-			// A fatia de custo fixo também sai do quadro do mês: a receita crua do período não
-			// vê o que a PJ transferiu para a principal, e o indicador acusava "custo fixo acima
-			// de 50% da renda" num mês de R$ 12.000 de pró-labore.
-			fixedCostBp: selected ? fixedCostShare({ monthlyFixedCents: metrics.monthlyFixedCents, incomeCents: selected.overview.incomeCents }) : metrics.fixedCostBasisPoints,
+			fixedCostBp,
 			cardOwedCents: cardsTotals.toPayCents + cardsTotals.openInvoicesCents,
 			averageMonthlyIncomeCents: averageIncomeCents,
 			limitUsagePercent,
@@ -391,7 +396,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 					? null
 					: { reserveCents: reserve.split.reserveCents, monthlyCostCents: reserve.monthlyCostCents, targetMonths: reserve.targetMonths },
 		});
-	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, metrics.fixedCostBasisPoints, metrics.monthlyFixedCents, cardsTotals, selectedKey, reserve]);
+	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve]);
 
 	const rankedCategories = useMemo(() => {
 		if (!raw) return [];
@@ -483,14 +488,19 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	}, [retirement, goal, debtsSummary.releases, todayKey]);
 
 	const passThroughIds = useMemo(() => new Set(categories.filter((category) => category.nature === 'passthrough').map((category) => category.id)), [categories]);
+	// A "renda considerada" do herói é a receita do quadro do mês: somar todo `isIncome` do
+	// período punha na renda o estorno do cartão, o rendimento da reserva e a devolução no
+	// envelope (R$ 5.280 contra R$ 5.000 do quadro).
 	const income = useMemo(
 		() =>
-			incomeComposition(
+			monthIncomeComposition(
+				selected?.overview ?? null,
 				currentPeriodTransactions,
+				liveAccounts,
 				passThroughIds,
 				externalIncomeTransfers(raw?.transferLines ?? [], liveAccounts).filter((transfer) => transfer.month === selectedKey)
 			),
-		[currentPeriodTransactions, passThroughIds, raw, liveAccounts, selectedKey]
+		[selected, currentPeriodTransactions, passThroughIds, raw, liveAccounts, selectedKey]
 	);
 	const duplicates = useMemo(() => findDuplicateIncomes(currentPeriodTransactions), [currentPeriodTransactions]);
 	// A assinatura cadastrada como recorrente e cobrada no cartão entra duas vezes: a
@@ -512,8 +522,9 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// de saúde usa. Os insights de `useWealthMetrics` saem da soma crua do período (fatura
 	// paga em vez de fatura que fecha, envelope pelo que foi gasto lá dentro, reserva
 	// contada), e a tela se contradizia num mesmo scroll — "taxa de poupança 4%" na grade e
-	// "54% da sua renda virou poupança" no insight logo abaixo. Os outros insights de riqueza
-	// (custo fixo, fôlego, 50/30/20, categoria que saltou) continuam vindo de lá.
+	// "54% da sua renda virou poupança" no insight logo abaixo. O de custo fixo também é
+	// trocado (abaixo, `fixedCostInsights`); os outros insights de riqueza (fôlego, 50/30/20,
+	// categoria que saltou) continuam vindo de lá.
 	const savingsRateInsights = useMemo(() => {
 		if (!selected) return [];
 		const { incomeCents, leftoverCents, savingsRateBp } = selected.overview;
@@ -523,15 +534,22 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 		);
 	}, [selected, fullSeries]);
 
+	// O custo fixo na mesma base da grade de saúde (`fixedCostBp`, receita do quadro do mês).
+	const fixedCostInsights = useMemo(
+		() => buildFixedCostInsights({ monthlyFixedCents: metrics.monthlyFixedCents, basisPoints: fixedCostBp }),
+		[metrics.monthlyFixedCents, fixedCostBp]
+	);
+
 	const insights = useMemo(
 		() =>
 			mergeInsights(
 				buildGoalInsights(retirement, health, duplicates, doubleCharges),
 				debtInsights,
 				savingsRateInsights,
-				wealthInsights.filter((insight) => !SAVINGS_RATE_INSIGHT_IDS.includes(insight.id))
+				fixedCostInsights,
+				wealthInsights.filter((insight) => !SAVINGS_RATE_INSIGHT_IDS.includes(insight.id) && !FIXED_COST_INSIGHT_IDS.includes(insight.id))
 			),
-		[retirement, health, duplicates, debtInsights, savingsRateInsights, wealthInsights]
+		[retirement, health, duplicates, debtInsights, savingsRateInsights, fixedCostInsights, wealthInsights]
 	);
 
 	const priorities = useMemo(

@@ -624,7 +624,9 @@ describe('quantas linhas ainda não subiram', () => {
 describe('migração v19', () => {
 	it('a escada chega ao v19 e a última versão é a do schema', () => {
 		const ladder = migrationLadder();
-		expect(SCHEMA_VERSION).toBe(19);
+		// O v20 (contas a pagar) veio depois; o passo 19 continua no lugar dele.
+		expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(19);
+		expect(ladder[18][0]).toBe(19);
 		expect(ladder.map(([version]) => version)).toEqual(
 			Array.from({ length: SCHEMA_VERSION }, (_, index) => index + 1)
 		);

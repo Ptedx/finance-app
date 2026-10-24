@@ -33,7 +33,7 @@ import { feedOwnerOf } from '../utils/accountBinding';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
-import { formatDate, formatMonthLong, todayISO } from '../utils/dateUtils';
+import { formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
 
@@ -578,7 +578,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					visible={adjusting}
 					account={existing}
 					spentCents={periodSpentByAccount.get(existing.id) ?? 0}
-					monthLabel={formatMonthLong(`${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-01`)}
+					monthLabel={formatMonthLong(monthStartISO(selectedYear, selectedMonth))}
 					balanceCents={balanceCents}
 					targetCents={month?.envelopes.find((envelope) => envelope.accountId === existing.id)?.targetCents ?? 0}
 					isEnvelope={existing.role === 'envelope'}

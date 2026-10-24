@@ -24,12 +24,13 @@ import { EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, ty
  * Existe porque esta contagem decide se vale enviar: uma coleção que ficar de fora dela
  * faz a remessa ser lida como "nada mudou", o laço do push para na primeira volta e
  * aquelas linhas nunca sobem. É o que aconteceria com a caixa de entrada do v19 — o dado
- * que a coleção existe para salvar. Derivada de `COLLECTIONS`, para que acrescentar uma
- * coleção lá já a inclua aqui, em vez de depender de alguém somar um termo à mão (é o que
- * `countChanges`, no contrato, faz).
+ * que a coleção existe para salvar. Conta toda lista que a remessa traz, em vez de uma
+ * lista de coleções escrita à mão: era derivada de `COLLECTIONS` (`sync/replace.ts`), e
+ * as contas a pagar do v20 ficavam de fora enquanto lá ninguém as acrescentasse — a
+ * mesma armadilha do `countChanges` do contrato, um lugar adiante.
  */
 const countAllChanges = (changes: SyncChanges): number =>
-	COLLECTIONS.reduce((total, collection) => total + (changes[collection]?.length ?? 0), 0);
+	Object.values(changes).reduce<number>((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
 
 /**
  * Motor de sincronização.
@@ -314,6 +315,7 @@ export const pushAll = async (): Promise<number> => {
 			// servidor recusa e é por ele que `markChangesClean` encontra a linha local.
 			captures: (changes.captures ?? []).filter((r) => !rejected.has(`captures:${r.id}`)),
 			merchantRules: (changes.merchantRules ?? []).filter((r) => !rejected.has(`merchantRules:${r.id}`)),
+			bills: (changes.bills ?? []).filter((r) => !rejected.has(`bills:${r.id}`)),
 		});
 
 		sent += response.applied;

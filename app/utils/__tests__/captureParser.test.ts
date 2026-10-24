@@ -213,6 +213,69 @@ describe('parseCapture — o que não deve virar lançamento', () => {
 		expect(parsed?.kind).toBe('refund');
 	});
 
+	// "Não aprovada" contém "aprovada": enquanto a palavra de confirmação ganhava, a compra
+	// que não aconteceu virava gasto. Recusada é o mesmo que um aviso de limite: descarta.
+	it.each([
+		['Compra não aprovada', 'Compra de R$ 349,90 não aprovada em LOJA ONLINE. Saldo insuficiente.'],
+		['Compra nao aprovada', 'Compra de R$ 349,90 nao aprovada em LOJA ONLINE.'],
+		['Compra recusada', 'Sua compra de R$ 120,00 em POSTO SHELL foi recusada.'],
+		['Compra negada', 'Compra de R$ 349,90 negada em LOJA ONLINE.'],
+		['Compra não autorizada', 'Compra de R$ 349,90 não autorizada em LOJA ONLINE.'],
+		['Compra nao autorizada', 'Compra de R$ 349,90 nao autorizada em LOJA ONLINE.'],
+		['Compra RECUSADA', 'Compra de R$ 349,90 RECUSADA em LOJA ONLINE.'],
+		['Pix não autorizado', 'Seu Pix de R$ 80,00 para MARIA não foi autorizado.'],
+	])('compra ou Pix recusado é descartado: %s', (title, text) => {
+		expect(parseCapture(raw({ title, text }))).toBeNull();
+	});
+
+	it('compra aprovada que só menciona "não autorizada" no rodapé continua sendo compra', () => {
+		const parsed = parseCapture(
+			raw({
+				title: 'Compra aprovada',
+				text: 'Compra de R$ 50,00 APROVADA em PADARIA. Compra não autorizada? Bloqueie o cartão no app.',
+			})
+		);
+		expect(parsed).toMatchObject({ amountCents: 5000, direction: 'out', kind: 'purchase' });
+	});
+
+	// Agendado ainda não saiu: lançar agora é gasto que talvez nunca aconteça.
+	it.each([
+		['Pix agendado', 'Seu Pix agendado de R$ 300,00 para JOAO DA SILVA será enviado em 30/10.'],
+		['Pagamento agendado', 'Pagamento de R$ 450,00 agendado para 30/10.'],
+		['Pix agendado com sucesso', 'Pix de R$ 300,00 para JOAO DA SILVA agendado com sucesso para 30/10.'],
+	])('Pix ou pagamento agendado é descartado: %s', (title, text) => {
+		expect(parseCapture(raw({ packageName: 'br.com.intermedium', title, text }))).toBeNull();
+	});
+
+	it('agendado que já saiu, ou Pix agendado que chegou, continua valendo', () => {
+		expect(
+			parseCapture(
+				raw({ title: 'Pix enviado', text: 'Seu Pix agendado de R$ 300,00 para JOAO DA SILVA foi enviado.' })
+			)
+		).toMatchObject({ direction: 'out', kind: 'pix_out', amountCents: 30000 });
+		expect(
+			parseCapture(
+				raw({ title: 'Pix recebido', text: 'Você recebeu um Pix agendado de R$ 100,00 de Maria Souza.' })
+			)
+		).toMatchObject({ direction: 'in', kind: 'pix_in', amountCents: 10000 });
+	});
+
+	// Compra cancelada é dinheiro voltando, como o estorno — não um segundo gasto.
+	it('compra cancelada é estorno (entrada), do mesmo tipo dos estornos', () => {
+		const cancelled = parseCapture(
+			raw({ title: 'Compra cancelada', text: 'A compra de R$ 59,90 em LOJA X foi cancelada.' })
+		);
+		const refunded = parseCapture(
+			raw({ title: 'Estorno', text: 'Estorno de compra de R$ 35,90 em IFOOD creditado.' })
+		);
+		expect(cancelled).toMatchObject({ amountCents: 5990, direction: 'in', kind: 'refund', neutral: false });
+		expect(cancelled?.kind).toBe(refunded?.kind);
+		expect(cancelled?.direction).toBe(refunded?.direction);
+		expect(
+			parseCapture(raw({ title: 'Estorno', text: 'Estorno de compra cancelada de R$ 35,90 em IFOOD.' }))
+		).toMatchObject({ direction: 'in', kind: 'refund' });
+	});
+
 	it('valor sem movimentação (limite, marketing, saldo) é descartado', () => {
 		expect(
 			parseCapture(raw({ title: 'Boa notícia', text: 'Seu limite subiu para R$ 5.000,00!' }))

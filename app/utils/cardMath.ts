@@ -485,6 +485,44 @@ export const isSameCardPayment = (a: CardPayment, b: CardPayment): boolean => {
 	return a.fromAccountId === b.fromAccountId;
 };
 
+/** Uma transferência gravada, do jeito que basta para saber se é um pagamento em aberto. */
+export interface OpenTransferCandidate {
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	date: string;
+}
+
+/**
+ * A transferência em aberto que este "Pagar fatura" completa, ou nula quando não há.
+ *
+ * Com zero ou dois cartões no banco, o aviso do pagamento é gravado como transferência da
+ * conta para um destino **em branco**: o app não sabe qual fatura foi paga. Quando o
+ * usuário depois toca "Pagar fatura" naquele cartão, aquela transferência é este mesmo
+ * pagamento — criar outra debitaria a conta duas vezes. Completa-se o destino dela.
+ *
+ * Aqui a origem não é curinga, ao contrário de `isSameCardPayment`: só casa a transferência
+ * que saiu **desta** conta, com o mesmo valor e no máximo um dia de diferença. Duas
+ * candidatas: a de data mais próxima; empate, a mais antiga.
+ */
+export const pickOpenCardPayment = <T extends OpenTransferCandidate>(candidates: T[], payment: CardPayment): T | null => {
+	if (payment.fromAccountId === null) return null;
+	let best: T | null = null;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	for (const candidate of candidates) {
+		if (candidate.toAccountId !== null) continue;
+		if (candidate.fromAccountId !== payment.fromAccountId) continue;
+		if (candidate.amountCents !== payment.amountCents) continue;
+		const distance = Math.abs(daysBetween(candidate.date, payment.date));
+		if (distance > SAME_PAYMENT_DAYS) continue;
+		if (best === null || distance < bestDistance || (distance === bestDistance && candidate.date < best.date)) {
+			best = candidate;
+			bestDistance = distance;
+		}
+	}
+	return best;
+};
+
 export interface CardAdjustmentPlan {
 	/**
 	 * Nova âncora: o que o cartão devia no fim de `date` (negativo = deve). **Nula** quando
@@ -665,6 +703,7 @@ export const invoicesClosingBetween = (
 export default {
 	cardInstallmentDates,
 	isSameCardPayment,
+	pickOpenCardPayment,
 	planCardAdjustment,
 	cycleRuleOf,
 	cycleFor,

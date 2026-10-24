@@ -204,6 +204,38 @@ export const isPromotional = (normalized: string): boolean =>
 	has(normalized, ...PROMOTIONAL_PHRASES) && !has(normalized, ...CONFIRMATION_PHRASES);
 
 /**
+ * Compra ou Pix que não aconteceu: "não aprovada", "recusada", "negada", "não
+ * autorizada". "Não aprovada" contém "aprovada", e enquanto a palavra de confirmação
+ * decidia sozinha, a compra recusada por saldo virava gasto.
+ *
+ * Só descarta quando, tirando a recusa, não sobra nenhum "aprovad": "Compra de R$ 50,00
+ * APROVADA. Compra não autorizada? Bloqueie o cartão" é uma compra com aviso no rodapé.
+ */
+const DECLINED_PATTERN = /\b(?:nao (?:foi )?(?:aprovad|autorizad)[ao]s?|recusad[ao]s?|negad[ao]s?)\b/g;
+
+const isDeclined = (text: string): boolean => {
+	const withoutDeclined = text.replace(DECLINED_PATTERN, ' ');
+	return withoutDeclined !== text && !has(withoutDeclined, 'aprovad');
+};
+
+/**
+ * Pix ou pagamento agendado ainda não saiu da conta ("será enviado em 30/10", "agendado
+ * para 05/11"). Quando o banco avisa que o agendado **foi** enviado ou pago, aí sim é
+ * movimento — e um Pix agendado que alguém mandou para você é dinheiro entrando.
+ */
+const SCHEDULED_PATTERN = /\b(?:agendad[ao]s?|agendamento)\b/;
+
+const SCHEDULED_DONE_PHRASES = [
+	' foi enviad',
+	' foi realizad',
+	' foi efetuad',
+	' foi concluid',
+	' foi pag',
+	' foi debitad',
+	' foi transferid',
+];
+
+/**
  * Decide o que a notificação descreve. A ordem importa: "pagamento da fatura" tem a
  * palavra "pagamento", mas não é uma compra; "estorno de compra" tem "compra", mas é
  * dinheiro voltando.
@@ -211,6 +243,7 @@ export const isPromotional = (normalized: string): boolean =>
 const classify = (
 	text: string
 ): { direction: CaptureDirection; kind: CaptureKind; neutral: boolean } | null => {
+	if (isDeclined(text)) return null;
 	if (has(text, 'fatura')) {
 		// Aviso sobre a fatura (fechou, vence, está disponível) não é dinheiro saindo.
 		// "Sua fatura fechou em R$ 3.832,80, o pagamento vence 02/10" tem "pagamento", mas
@@ -257,7 +290,11 @@ const classify = (
 	) {
 		return { direction: 'out', kind: 'investment', neutral: true };
 	}
-	if (has(text, 'estorno', 'reembolso', 'devolucao', 'cashback', 'estornad')) {
+	// Compra cancelada é o dinheiro da compra voltando: estorno, não um segundo gasto.
+	if (
+		has(text, 'estorno', 'reembolso', 'devolucao', 'cashback', 'estornad') ||
+		(has(text, 'compra') && /\bcancelad[ao]s?\b/.test(text))
+	) {
 		return { direction: 'in', kind: 'refund', neutral: false };
 	}
 
@@ -297,6 +334,10 @@ const classify = (
 		'cobranca',
 		'assinatura'
 	);
+
+	if (SCHEDULED_PATTERN.test(text) && !(incoming && !outgoing) && !has(text, ...SCHEDULED_DONE_PHRASES)) {
+		return null;
+	}
 
 	if (has(text, 'pix')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'pix_in', neutral: false };

@@ -32,6 +32,23 @@ jest.mock('../../database/database', () => ({
 		{ id: 'food', name: 'Food', updatedAt: 'x' },
 		{ id: 'uncategorized', name: 'Uncategorized', updatedAt: 'x' },
 	]),
+	getBills: jest.fn(async () => [
+		{
+			id: 'bill-celular',
+			name: 'Celular',
+			dueDay: 10,
+			amountCents: null,
+			accountId: 'conta-inter',
+			category: 'phone',
+			matchHint: 'tim,claro',
+			debtId: null,
+			paidThrough: '2026-09',
+			paidByRef: 'tx-1',
+			active: true,
+			sortOrder: 0,
+			updatedAt: '2026-10-01T00:00:00.000Z',
+		},
+	]),
 	getDebts: jest.fn(async () => []),
 	getRecurringTransactions: jest.fn(async () => []),
 	getReserveGoal: jest.fn(async () => null),
@@ -39,13 +56,27 @@ jest.mock('../../database/database', () => ({
 	getTransactions: jest.fn(async () => [{ id: 'tx-1', amountCents: 100, date: '2026-10-06' }]),
 	getTransfers: jest.fn(async () => [{ id: 'tr-1', amountCents: 200, date: '2026-10-09' }]),
 	resetDatabase: jest.fn(),
+	restoreAccount: jest.fn(async () => undefined),
+	restoreBill: jest.fn(async () => undefined),
+	restoreBudget: jest.fn(async () => undefined),
+	restoreCategory: jest.fn(async () => undefined),
+	restoreDebt: jest.fn(async () => undefined),
+	restoreRecurringTransaction: jest.fn(async () => undefined),
+	restoreTransaction: jest.fn(async () => undefined),
+	restoreTransfer: jest.fn(async () => undefined),
 	setBudget: jest.fn(),
+	setReserveGoal: jest.fn(async () => undefined),
+	setRetirementGoal: jest.fn(async () => undefined),
 }));
 
 jest.mock('../../database/captures', () => ({
 	getAllCaptures: jest.fn(async () => [{ id: 'cap-1', status: 'pending', amountCents: 5_000 }]),
 	getMerchantRules: jest.fn(async () => [{ merchantKey: 'padaria', confirmations: 4 }]),
+	restoreCapture: jest.fn(async () => undefined),
+	restoreMerchantRule: jest.fn(async () => undefined),
 }));
+
+jest.mock('../../sync/queue', () => ({ notifyDataChanged: jest.fn(), schedule: jest.fn() }));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
 	getItem: jest.fn(async () => null),
@@ -58,7 +89,9 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	setItem: jest.fn(async () => undefined),
 }));
 
-jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
+jest.mock('expo-document-picker', () => ({
+	getDocumentAsync: jest.fn(async () => ({ canceled: false, assets: [{ uri: 'file:///tmp/backup.json' }] })),
+}));
 
 // Sem `class` aqui de propósito: o babel compila classe com funções auxiliares que a
 // fábrica do `jest.mock` não tem permissão para alcançar.
@@ -80,12 +113,13 @@ jest.mock('expo-sharing', () => ({ shareAsync: jest.fn() }));
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 import { getAllCaptures } from '../../database/captures';
-import { getTransactions } from '../../database/database';
+import { getBills, getDebts, getTransactions, restoreBill } from '../../database/database';
 import type { Category, Transaction } from '../../database/schema';
 import {
 	type DatabaseExportData,
 	exportDatabaseData,
 	generateFinancialReport,
+	importDatabaseData,
 	transactionsToCSV,
 } from '../exportUtils';
 
@@ -326,7 +360,7 @@ describe('exportDatabaseData', () => {
 		await exportDatabaseData();
 		const backup = written();
 
-		expect(backup.formatVersion).toBe(4);
+		expect(backup.formatVersion).toBe(5);
 		expect(backup.captures).toHaveLength(1);
 		expect(backup.captures?.[0]).toMatchObject({ id: 'cap-1', status: 'pending' });
 		expect(backup.merchantRules).toEqual([{ merchantKey: 'padaria', confirmations: 4 }]);
@@ -397,5 +431,156 @@ describe('exportDatabaseData', () => {
 		expect(Array.isArray(backup.categories)).toBe(true);
 		expect(Array.isArray(backup.recurringTransactions)).toBe(true);
 		expect(typeof backup.exportDate).toBe('string');
+	});
+});
+
+/**
+ * Contas a pagar (v20) no backup: o arquivo leva `bills`, a importação as devolve com o
+ * id do arquivo, e um arquivo anterior a elas continua entrando.
+ */
+describe('contas a pagar no backup', () => {
+	let alert: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		mockFile.written = '';
+		mockFile.truncateTo = null;
+		alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+	});
+
+	afterEach(() => alert.mockRestore());
+
+	const written = (): DatabaseExportData => JSON.parse(mockFile.written) as DatabaseExportData;
+
+	it('o arquivo leva `bills`, no formato 5', async () => {
+		await exportDatabaseData();
+		const backup = written();
+
+		expect(backup.formatVersion).toBe(5);
+		expect(backup.bills).toHaveLength(1);
+		expect(backup.bills?.[0]).toMatchObject({
+			id: 'bill-celular',
+			amountCents: null,
+			paidThrough: '2026-09',
+		});
+		expect(backup.incomplete).toBeUndefined();
+	});
+
+	it('ida e volta: a importação regrava cada conta a pagar com o id do arquivo', async () => {
+		(getTransactions as jest.Mock).mockResolvedValueOnce([]);
+		(getDebts as jest.Mock).mockResolvedValueOnce([
+			{ id: 'debt-carro', name: 'Carro', feeCents: 0, accountId: null },
+		]);
+		(getBills as jest.Mock).mockResolvedValueOnce([
+			{
+				id: 'bill-celular',
+				name: 'Celular',
+				dueDay: 10,
+				amountCents: null,
+				accountId: 'conta-inter',
+				category: 'phone',
+				matchHint: 'tim,claro',
+				debtId: null,
+				paidThrough: '2026-09',
+				paidByRef: 'tx-1',
+				active: true,
+				sortOrder: 0,
+				updatedAt: '2026-10-01T00:00:00.000Z',
+			},
+			{
+				id: 'debt-carro',
+				name: 'Carro',
+				dueDay: 15,
+				amountCents: 150_000,
+				accountId: 'conta-que-nao-veio',
+				category: null,
+				matchHint: null,
+				debtId: 'debt-carro',
+				paidThrough: null,
+				paidByRef: null,
+				active: false,
+				sortOrder: 1,
+				updatedAt: '2026-10-01T00:00:00.000Z',
+				deletedAt: '2026-10-02T00:00:00.000Z',
+			},
+		]);
+		await exportDatabaseData();
+
+		const result = await importDatabaseData();
+
+		expect(result.success).toBe(true);
+		expect(result.warnings).toEqual([]);
+		expect(restoreBill).toHaveBeenCalledTimes(2);
+		// Sem os carimbos do sync: a linha volta suja e com o relógio de agora.
+		expect(restoreBill).toHaveBeenNthCalledWith(
+			1,
+			{
+				name: 'Celular',
+				dueDay: 10,
+				amountCents: null,
+				accountId: 'conta-inter',
+				category: 'phone',
+				matchHint: 'tim,claro',
+				debtId: null,
+				paidThrough: '2026-09',
+				paidByRef: 'tx-1',
+				active: true,
+				sortOrder: 0,
+			},
+			'bill-celular'
+		);
+		// A conta de onde sai e a dívida de origem só valem se vieram no mesmo arquivo.
+		expect(restoreBill).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				accountId: null,
+				debtId: 'debt-carro',
+				amountCents: 150_000,
+				active: false,
+			}),
+			'debt-carro'
+		);
+	});
+
+	it('a dívida de origem que não veio no arquivo vira conta avulsa', async () => {
+		(getTransactions as jest.Mock).mockResolvedValueOnce([]);
+		(getBills as jest.Mock).mockResolvedValueOnce([
+			{
+				id: 'bill-orfa',
+				name: 'Consórcio',
+				dueDay: 5,
+				amountCents: 80_000,
+				accountId: null,
+				category: null,
+				matchHint: null,
+				debtId: 'debt-que-nao-veio',
+				paidThrough: null,
+				paidByRef: null,
+				active: true,
+				sortOrder: 0,
+				updatedAt: '2026-10-01T00:00:00.000Z',
+			},
+		]);
+		await exportDatabaseData();
+
+		await importDatabaseData();
+
+		expect(restoreBill).toHaveBeenCalledWith(expect.objectContaining({ debtId: null }), 'bill-orfa');
+	});
+
+	it('arquivo antigo, sem `bills`, continua importando', async () => {
+		mockFile.written = JSON.stringify({
+			formatVersion: 4,
+			exportDate: '2026-10-11T12:00:00.000Z',
+			transactions: [],
+			categories: [],
+			recurringTransactions: [],
+		});
+
+		const result = await importDatabaseData();
+
+		expect(result.success).toBe(true);
+		expect(result.warnings).toEqual([]);
+		expect(restoreBill).not.toHaveBeenCalled();
 	});
 });

@@ -1312,6 +1312,27 @@ account: {
 		settingsReview: 'Rivedi le voci catturate',
 		tabBadge: '{{count}} voci da rivedere',
 	},
+
+	reminders: {
+		channelName: 'Conti da pagare',
+		channelDescription: 'Promemoria delle scadenze dei conti da pagare',
+		bill: {
+			soonTitle: 'Scade tra 3 giorni',
+			soonBody: '{{name}} — {{amount}} il giorno {{day}}',
+			soonBodyNoAmount: '{{name}} scade il giorno {{day}}',
+			todayTitle: 'Scade oggi',
+			todayBody: '{{name}} — {{amount}}',
+			todayBodyNoAmount: '{{name}} scade oggi',
+			lateTitle: 'Pagamento in ritardo',
+			lateBody: "{{name}} scadeva il giorno {{day}}. Già pagato? Segnalalo nell'app.",
+		},
+		recurring: {
+			expenseTitle: 'Scade domani',
+			incomeTitle: 'Entrata domani',
+			body: '{{name}} — {{amount}}',
+			fallbackName: 'Movimento ricorrente',
+		},
+	},
 } as const;
 
 export default it;

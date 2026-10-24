@@ -19,6 +19,7 @@ import {
 } from '../database/database';
 import {
 	getAccounts,
+	getBills,
 	getDebts,
 	getRecurringTransactions,
 	getReserveGoal,
@@ -26,6 +27,7 @@ import {
 	getTransactions,
 	getTransfers,
 	restoreAccount,
+	restoreBill,
 	restoreDebt,
 	restoreRecurringTransaction,
 	restoreTransaction,
@@ -37,6 +39,7 @@ import {
 } from '../database/database';
 import type {
 	Account,
+	Bill,
 	Capture,
 	Category,
 	Debt,
@@ -56,7 +59,8 @@ import { exportPreferences, importPreferences } from './storageUtils';
  * para que importar o mesmo backup em dois aparelhos não duplique o livro; 4 = o backup
  * passa a levar **tudo que é dado do usuário**: a caixa de entrada (`captures`), as
  * regras aprendidas (`merchant_rules`), as preferências do AsyncStorage e as categorias
- * que a tela esconde (a `uncategorized` e as apagadas).
+ * que a tela esconde (a `uncategorized` e as apagadas); 5 = as contas a pagar (`bills`,
+ * banco v20).
  *
  * Ninguém decide nada pelo número: a leitura aceita todas as formas campo a campo. Ele
  * fica no arquivo para quem precisar olhar um backup antigo e entender o que falta nele.
@@ -66,7 +70,7 @@ import { exportPreferences, importPreferences } from './storageUtils';
  * que é tudo que a validação de um app antigo exige. Um arquivo v4 entra numa 1.2.7
  * sem explodir — ela simplesmente ignora as chaves que não conhece.
  */
-const EXPORT_FORMAT_VERSION = 4;
+const EXPORT_FORMAT_VERSION = 5;
 
 /** A budget as it travels in a backup file, in either the current or the legacy shape. */
 interface ExportedBudget {
@@ -93,6 +97,8 @@ export interface DatabaseExportData {
 	transfers?: Transfer[];
 	/** Dívidas e as metas (1.1+). Ausentes em backups anteriores. */
 	debts?: Debt[];
+	/** Contas a pagar (v5). Ausentes em backups anteriores. */
+	bills?: Bill[];
 	retirementGoal?: RetirementGoalDraft | null;
 	reserveGoal?: ReserveGoalDraft | null;
 	/**
@@ -392,12 +398,13 @@ export const exportDatabaseData = async (): Promise<void> => {
 			await safely('budgets', getBudgets, [] as Awaited<ReturnType<typeof getBudgets>>)
 		).map(({ id, year, month, amountCents }) => ({ id, year, month, amountCents }));
 
-		const [recurringTransactions, accounts, transfers, debts, retirement, reserve] =
+		const [recurringTransactions, accounts, transfers, debts, bills, retirement, reserve] =
 			await Promise.all([
 				safely('recurringTransactions', getRecurringTransactions, [] as RecurringTransaction[]),
 				safely('accounts', getAccounts, [] as Account[]),
 				safely('transfers', getTransfers, [] as Transfer[]),
 				safely('debts', getDebts, [] as Debt[]),
+				safely('bills', getBills, [] as Bill[]),
 				safely('retirementGoal', getRetirementGoal, null),
 				safely('reserveGoal', getReserveGoal, null),
 			]);
@@ -419,6 +426,7 @@ export const exportDatabaseData = async (): Promise<void> => {
 			accounts,
 			transfers,
 			debts,
+			bills,
 			// As metas vão sem o id fixo e sem a contabilidade do sync: só o que o usuário escolheu.
 			retirementGoal: retirement
 				? {
@@ -652,13 +660,31 @@ export const importDatabaseData = async (): Promise<{
 
 		// Dívidas e metas: backups anteriores à 1.1 não as trazem. O id também é o do
 		// arquivo. A conta de onde a parcela sai só vale se veio no mesmo backup.
-		await restoreEach('debts', asArray(importData.debts), (debt) => {
+		const debtIds = new Set<string>();
+		await restoreEach('debts', asArray(importData.debts), async (debt) => {
 			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
-			return restoreDebt(
+			await restoreDebt(
 				{
 					...draft,
 					feeCents: draft.feeCents ?? 0,
 					accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
+				},
+				id
+			);
+			debtIds.add(id);
+		});
+
+		// Contas a pagar depois das dívidas, com o id do arquivo e o mês pago intacto.
+		// Backups anteriores ao v5 não as trazem. A conta de onde sai e a dívida de origem,
+		// como nas dívidas, só valem se vieram no mesmo arquivo.
+		await restoreEach('bills', asArray(importData.bills), (bill) => {
+			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = bill;
+			return restoreBill(
+				{
+					...draft,
+					amountCents: typeof draft.amountCents === 'number' ? draft.amountCents : null,
+					accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
+					debtId: draft.debtId && debtIds.has(draft.debtId) ? draft.debtId : null,
 				},
 				id
 			);

@@ -1305,6 +1305,27 @@ const pt = {
 		settingsReview: 'Revisar lançamentos capturados',
 		tabBadge: '{{count}} lançamentos para revisar',
 	},
+
+	reminders: {
+		channelName: 'Contas a pagar',
+		channelDescription: 'Lembretes de vencimento das contas a pagar',
+		bill: {
+			soonTitle: 'Vence em 3 dias',
+			soonBody: '{{name}} — {{amount}} no dia {{day}}',
+			soonBodyNoAmount: '{{name}} vence no dia {{day}}',
+			todayTitle: 'Vence hoje',
+			todayBody: '{{name}} — {{amount}}',
+			todayBodyNoAmount: '{{name}} vence hoje',
+			lateTitle: 'Conta atrasada',
+			lateBody: '{{name}} venceu dia {{day}}. Já pagou? Marque no app.',
+		},
+		recurring: {
+			expenseTitle: 'Vence amanhã',
+			incomeTitle: 'Receita amanhã',
+			body: '{{name}} — {{amount}}',
+			fallbackName: 'Lançamento recorrente',
+		},
+	},
 } as const;
 
 export default pt;

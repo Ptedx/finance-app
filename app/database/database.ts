@@ -28,6 +28,7 @@ import {
 	CREATE_MERCHANT_RULES_TABLE,
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_DEBTS_TABLE,
+	CREATE_BILLS_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	ACCOUNT_V17_COLUMNS,
@@ -46,6 +47,8 @@ import {
 	type RecurringTransactionEdit,
 	type Debt,
 	type DebtDraft,
+	type Bill,
+	type BillDraft,
 	RETIREMENT_GOAL_ID,
 	type RetirementGoalRow,
 	SCHEMA_VERSION,
@@ -178,6 +181,21 @@ interface DebtDB extends SyncColumnsDB {
 	accountId: string | null;
 	category: string | null;
 	archived: number;
+	sortOrder: number;
+}
+
+interface BillDB extends SyncColumnsDB {
+	id: string;
+	name: string;
+	dueDay: number;
+	amountCents: number | null;
+	accountId: string | null;
+	category: string | null;
+	matchHint: string | null;
+	debtId: string | null;
+	paidThrough: string | null;
+	paidByRef: string | null;
+	active: number;
 	sortOrder: number;
 }
 
@@ -602,6 +620,7 @@ export const migrationLadder = (): MigrationStep[] => [
 	[17, migrateReserve],
 	[18, migratePhantomAppAccounts],
 	[19, migrateSyncedInbox],
+	[20, migrateBills],
 ];
 
 /**
@@ -887,6 +906,16 @@ const migrateReserve = async (): Promise<void> => {
 	}
 };
 
+/**
+ * v19 -> v20: contas a pagar, numa tabela sincronizada nova. Só tabela nova, nada de
+ * ALTER: o passo existe para a versão contar a história, e o `CREATE TABLE IF NOT
+ * EXISTS` da abertura faria o mesmo. As contas a pagar das dívidas não nascem aqui —
+ * `ensureDebtBills` as cria, porque a migração roda antes de as dívidas do pull chegarem.
+ */
+const migrateBills = async (): Promise<void> => {
+	await db.execAsync(CREATE_BILLS_TABLE);
+};
+
 /** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
 const migrateDebts = async (): Promise<void> => {
 	await db.execAsync(CREATE_DEBTS_TABLE);
@@ -1103,6 +1132,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_RETIREMENT_GOALS_TABLE}
       ${CREATE_DEBTS_TABLE}
       ${CREATE_RESERVE_GOALS_TABLE}
+      ${CREATE_BILLS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -1990,6 +2020,18 @@ export const restoreDebt = async (draft: DebtDraft, id?: string): Promise<void> 
 	);
 };
 
+/** Grava uma conta a pagar do backup com o id original, pelo mesmo motivo das dívidas. */
+export const restoreBill = async (draft: BillDraft, id?: string): Promise<void> => {
+	const rowId = id ?? generateUniqueId();
+	await db.runAsync('DELETE FROM bills WHERE id = ? AND deletedAt IS NOT NULL', [rowId]);
+	await db.runAsync(
+		`INSERT INTO bills (id, ${BILL_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+     VALUES (?, ${BILL_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
+     ON CONFLICT (id) DO NOTHING`,
+		[rowId, ...billValues(draft), nowTimestamp()]
+	);
+};
+
 export const updateTransfer = async (transfer: TransferEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE transfers SET fromAccountId = ?, toAccountId = ?, amountCents = ?, date = ?, note = ?,
@@ -2607,6 +2649,13 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
        WHERE deletedAt IS NULL`,
 			[rate, rate, timestamp]
 		);
+		// A conta a pagar que varia (`amountCents` nulo) não tem o que converter.
+		await db.runAsync(
+			`UPDATE bills
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL AND amountCents IS NOT NULL`,
+			[rate, timestamp]
+		);
 	});
 };
 
@@ -2688,6 +2737,181 @@ export const updateDebt = async (id: string, draft: DebtDraft): Promise<void> =>
 export const deleteDebt = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync('UPDATE debts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [timestamp, timestamp, id]);
+};
+
+// ---------------------------------------------------------------------------
+// Bills (contas a pagar)
+// ---------------------------------------------------------------------------
+
+const convertBill = (row: BillDB): Bill => ({
+	id: row.id,
+	name: row.name,
+	dueDay: row.dueDay,
+	amountCents: row.amountCents ?? null,
+	accountId: row.accountId ?? null,
+	category: row.category ?? null,
+	matchHint: row.matchHint ?? null,
+	debtId: row.debtId ?? null,
+	paidThrough: row.paidThrough ?? null,
+	paidByRef: row.paidByRef ?? null,
+	active: Boolean(row.active),
+	sortOrder: row.sortOrder,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** As contas a pagar vivas, desativadas inclusive (a tela separa). */
+export const getBills = async (): Promise<Bill[]> => {
+	const rows = await db.getAllAsync<BillDB>('SELECT * FROM bills WHERE deletedAt IS NULL ORDER BY sortOrder ASC, name ASC');
+	return rows.map(convertBill);
+};
+
+const BILL_COLUMNS = [
+	'name',
+	'dueDay',
+	'amountCents',
+	'accountId',
+	'category',
+	'matchHint',
+	'debtId',
+	'paidThrough',
+	'paidByRef',
+	'active',
+	'sortOrder',
+] as const;
+
+const billValues = (draft: BillDraft) =>
+	BILL_COLUMNS.map((column) => {
+		const value = draft[column];
+		return typeof value === 'boolean' ? (value ? 1 : 0) : (value ?? null);
+	});
+
+export const addBill = async (draft: BillDraft): Promise<string> => {
+	const id = generateUniqueId();
+	await db.runAsync(
+		`INSERT INTO bills (id, ${BILL_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+     VALUES (?, ${BILL_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)`,
+		[id, ...billValues(draft), nowTimestamp()]
+	);
+	return id;
+};
+
+export const updateBill = async (id: string, draft: BillDraft): Promise<void> => {
+	await db.runAsync(
+		`UPDATE bills SET ${BILL_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ?, dirty = 1 WHERE id = ?`,
+		[...billValues(draft), nowTimestamp(), id]
+	);
+};
+
+/** Lápide: some aqui e, no próximo sync, dos outros aparelhos. */
+export const deleteBill = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await db.runAsync('UPDATE bills SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [timestamp, timestamp, id]);
+};
+
+/**
+ * Uma conta a pagar por dívida ativa (financiamento, consórcio, empréstimo), ligada pela
+ * `debtId`. Devolve quantas linhas gravou.
+ *
+ * - Dívida ativa sem conta a pagar viva ligada: cria uma com o nome, o dia, a parcela
+ *   (`installmentCents`), a conta e a categoria da dívida. O **id é o da dívida**: dois
+ *   aparelhos que rodam isto offline para a mesma dívida criam a mesma linha, e o sync a
+ *   junta por last-write-wins em vez de deixar duas. Se esse id tiver uma lápide (a conta
+ *   a pagar foi apagada), ela volta à vida.
+ * - Ligada a dívida ativa: segue o nome, o dia, o valor e a conta da dívida quando eles
+ *   mudaram, e volta a ficar ativa (dívida desarquivada).
+ * - Ligada a dívida arquivada, apagada ou que não está em `debts`: fica `active = false`.
+ *
+ * O que a conta a pagar acrescenta — `paidThrough`, `paidByRef`, `matchHint`, a categoria
+ * depois de criada, a ordem — nunca é tocado aqui. Idempotente: nada mudou, nada é
+ * gravado, e nenhuma linha fica suja à toa.
+ *
+ * `debts` é a lista inteira de dívidas (a de `getDebts`): uma dívida fora dela conta
+ * como apagada.
+ */
+export const ensureDebtBills = async (debts: Debt[]): Promise<number> => {
+	const linked = await db.getAllAsync<BillDB>('SELECT * FROM bills WHERE debtId IS NOT NULL AND deletedAt IS NULL');
+	const billsOf = new Map<string, BillDB[]>();
+	for (const bill of linked) {
+		if (!bill.debtId) continue;
+		billsOf.set(bill.debtId, [...(billsOf.get(bill.debtId) ?? []), bill]);
+	}
+
+	const timestamp = nowTimestamp();
+	let written = 0;
+
+	const follow = async (bill: BillDB, target: { name: string; dueDay: number; amountCents: number | null; accountId: string | null; active: boolean }) => {
+		const unchanged =
+			bill.name === target.name &&
+			bill.dueDay === target.dueDay &&
+			(bill.amountCents ?? null) === target.amountCents &&
+			(bill.accountId ?? null) === target.accountId &&
+			Boolean(bill.active) === target.active;
+		if (unchanged) return;
+		await db.runAsync(
+			'UPDATE bills SET name = ?, dueDay = ?, amountCents = ?, accountId = ?, active = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			[target.name, target.dueDay, target.amountCents, target.accountId, target.active ? 1 : 0, timestamp, bill.id]
+		);
+		written += 1;
+	};
+
+	await db.withTransactionAsync(async () => {
+		const known = new Set<string>();
+		for (const debt of debts) {
+			known.add(debt.id);
+			const alive = !debt.archived && !debt.deletedAt;
+			const bills = billsOf.get(debt.id) ?? [];
+
+			if (bills.length === 0) {
+				if (!alive) continue;
+				const draft: BillDraft = {
+					name: debt.name,
+					dueDay: debt.dueDay,
+					amountCents: debt.installmentCents,
+					accountId: debt.accountId ?? null,
+					category: debt.category ?? null,
+					matchHint: null,
+					debtId: debt.id,
+					paidThrough: null,
+					paidByRef: null,
+					active: true,
+					sortOrder: 0,
+				};
+				// A ressurreição da lápide não mexe no mês pago nem na pista de casamento:
+				// só no que vem da dívida.
+				await db.runAsync(
+					`INSERT INTO bills (id, ${BILL_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+           VALUES (?, ${BILL_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
+           ON CONFLICT (id) DO UPDATE SET
+             name = excluded.name, dueDay = excluded.dueDay, amountCents = excluded.amountCents,
+             accountId = excluded.accountId, category = excluded.category, debtId = excluded.debtId,
+             active = 1, updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+					[debt.id, ...billValues(draft), timestamp]
+				);
+				written += 1;
+				continue;
+			}
+
+			for (const bill of bills) {
+				await follow(
+					bill,
+					alive
+						? { name: debt.name, dueDay: debt.dueDay, amountCents: debt.installmentCents, accountId: debt.accountId ?? null, active: true }
+						: { name: bill.name, dueDay: bill.dueDay, amountCents: bill.amountCents ?? null, accountId: bill.accountId ?? null, active: false }
+				);
+			}
+		}
+
+		// Ligadas a uma dívida que não existe mais (fora da lista): a dívida foi apagada.
+		for (const [debtId, bills] of billsOf) {
+			if (known.has(debtId)) continue;
+			for (const bill of bills) {
+				await follow(bill, { name: bill.name, dueDay: bill.dueDay, amountCents: bill.amountCents ?? null, accountId: bill.accountId ?? null, active: false });
+			}
+		}
+	});
+
+	return written;
 };
 
 // ---------------------------------------------------------------------------
@@ -2879,7 +3103,7 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules] = await Promise.all([
+	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules, bills] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -2909,6 +3133,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 		db.getAllAsync<ReserveGoalDB>('SELECT * FROM reserve_goals WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<CaptureDB>('SELECT * FROM captures WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<MerchantRuleDB>('SELECT * FROM merchant_rules WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<BillDB>('SELECT * FROM bills WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
 
 	// O `relatedId` ("é duplicata daquela?") é um id local, que não significa nada do
@@ -3086,6 +3311,22 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt,
 		})),
+		bills: bills.map((row) => ({
+			id: row.id,
+			name: row.name,
+			dueDay: row.dueDay,
+			amountCents: row.amountCents ?? null,
+			accountId: row.accountId ?? null,
+			category: row.category ?? null,
+			matchHint: row.matchHint ?? null,
+			debtId: row.debtId ?? null,
+			paidThrough: row.paidThrough ?? null,
+			paidByRef: row.paidByRef ?? null,
+			active: Boolean(row.active),
+			sortOrder: row.sortOrder,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 	};
 };
 
@@ -3216,6 +3457,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['reserve_goals', changes.reserveGoals ?? []],
 		['captures', changes.captures ?? []],
 		['merchant_rules', changes.merchantRules ?? []],
+		['bills', changes.bills ?? []],
 	];
 
 	await db.withTransactionAsync(async () => {
@@ -3576,6 +3818,33 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
+		// Contas a pagar (v20), depois das dívidas a que elas se ligam pela `debtId`.
+		for (const row of changes.bills ?? []) {
+			if (await isStale('bills', row.id, row.updatedAt)) continue;
+
+			const values = [
+				row.name,
+				row.dueDay,
+				row.amountCents ?? null,
+				row.accountId ?? null,
+				row.category ?? null,
+				row.matchHint ?? null,
+				row.debtId ?? null,
+				row.paidThrough ?? null,
+				row.paidByRef ?? null,
+				row.active ? 1 : 0,
+				row.sortOrder ?? 0,
+			];
+			await db.runAsync(
+				`INSERT INTO bills (id, ${BILL_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+         VALUES (?, ${BILL_COLUMNS.map(() => '?').join(', ')}, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           ${BILL_COLUMNS.map((column) => `${column} = excluded.${column}`).join(', ')},
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[row.id, ...values, row.updatedAt, row.deletedAt ?? null]
+			);
+		}
+
 		// As regras aprendidas: a identidade é a própria `merchantKey`, então o upsert é o
 		// merge inteiro — duas aprendizagens do mesmo estabelecimento convergem por
 		// `updatedAt`, sem conflito de id.
@@ -3772,7 +4041,7 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await db.withTransactionAsync(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals']) {
+			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals', 'bills']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -3826,6 +4095,12 @@ export default {
 	addDebt,
 	updateDebt,
 	deleteDebt,
+	getBills,
+	addBill,
+	updateBill,
+	deleteBill,
+	restoreBill,
+	ensureDebtBills,
 	countLocalData,
 	getSyncedIds,
 	stampEverything,

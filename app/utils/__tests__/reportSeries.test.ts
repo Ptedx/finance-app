@@ -5,6 +5,7 @@ import {
 	averageReserveCapitalCents,
 	buildMonthSeries,
 	committedMonths,
+	externalIncomeTransfers,
 	externalTransfersInByMonth,
 	findDuplicateIncomes,
 	findRecurringDoubleCharges,
@@ -13,6 +14,7 @@ import {
 	type MonthAccountRow,
 	type MonthPoint,
 	monthElapsedBp,
+	monthIncomeComposition,
 	monthKeysEnding,
 	monthRangeOf,
 	rankCategories,
@@ -474,6 +476,49 @@ describe('onde foi o dinheiro', () => {
 	it('zeros somem', () => {
 		expect(rankSpendSources(point('2026-09', {}), [nu], [], [row('2026-09', 'nu', R(100), 0)])).toEqual([]);
 	});
+
+	// SPD-031: o quadro do mês conta como gasto o débito da reserva e o da conta arquivada (o
+	// papel de verdade vale também na arquivada). O ranking só olhava a principal viva: somava
+	// R$ 1.000 contra R$ 2.000 de "Gastou", e a principal aparecia com 100%.
+	it('origens somam o "Gastou" do quadro: principal, reserva e conta arquivada', () => {
+		const old = account({ id: 'old', name: 'Conta antiga', role: 'main', archived: true });
+		const accounts = [nu, mp, old];
+		const activity = [row('2026-10', 'nu', R(5_000), R(1_000)), row('2026-10', 'mp', 0, R(800)), row('2026-10', 'old', 0, R(200))];
+		const [p] = buildMonthSeries({ months: ['2026-10'], accounts, activity, transfers: [], cardEntries: new Map(), currentMonth: '2026-10' });
+		expect(p.overview.totalSpendCents).toBe(R(2_000));
+
+		const rows = rankSpendSources(p, accounts, [], activity);
+		expect(rows.reduce((sum, r) => sum + r.cents, 0)).toBe(p.overview.totalSpendCents);
+		expect(rows.map((r) => [r.key, r.cents, r.shareBp])).toEqual([
+			['pix:nu', R(1_000), 5_000],
+			['pix:mp', R(800), 4_000],
+			['pix:old', R(200), 1_000],
+		]);
+	});
+
+	it('na reserva, o débito por final e o repasse seguem a regra da principal', () => {
+		const accounts = [nu, mp];
+		const activity = [row('2026-10', 'nu', R(5_000), R(1_000)), row('2026-10', 'mp', 0, R(900), R(100))];
+		const [p] = buildMonthSeries({ months: ['2026-10'], accounts, activity, transfers: [], cardEntries: new Map(), currentMonth: '2026-10' });
+		const rows = rankSpendSources(p, accounts, [{ accountId: 'mp', last4: '9876', name: null, periodSpentCents: R(300) }], activity);
+		expect(rows.reduce((sum, r) => sum + r.cents, 0)).toBe(p.overview.totalSpendCents);
+		expect(rows.map((r) => [r.key, r.cents])).toEqual([
+			['pix:nu', R(1_000)],
+			['pix:mp', R(500)],
+			['debit:mp:9876', R(300)],
+		]);
+		expect(rows[2]).toMatchObject({ kind: 'debit', name: 'Investimentos MP' });
+	});
+
+	it('conta externa não é origem: o que ela gasta não é seu', () => {
+		const pj = account({ id: 'pj', name: 'PJ', role: 'external' });
+		const accounts = [nu, pj];
+		const activity = [row('2026-10', 'nu', 0, R(400)), row('2026-10', 'pj', 0, R(7_000))];
+		const [p] = buildMonthSeries({ months: ['2026-10'], accounts, activity, transfers: [], cardEntries: new Map(), currentMonth: '2026-10' });
+		const rows = rankSpendSources(p, accounts, [], activity);
+		expect(p.overview.totalSpendCents).toBe(R(400));
+		expect(rows.map((r) => [r.key, r.cents])).toEqual([['pix:nu', R(400)]]);
+	});
 });
 
 describe('já comprometido', () => {
@@ -540,6 +585,86 @@ describe('renda: o que conta, e o que pode estar contado duas vezes', () => {
 			netCents: R(12_000),
 			incomeCount: 1,
 			passThroughCount: 0,
+		});
+	});
+
+	// SPD-032: a "Renda considerada" do herói somava todo `isIncome` do período — estorno no
+	// cartão, rendimento na reserva, devolução no envelope —, R$ 5.280 contra R$ 5.000 do quadro.
+	describe('a renda do herói é a do quadro do mês', () => {
+		const refundCard = account({ id: 'cc', name: 'Card', kind: 'credit_card', role: 'card', closingDay: 25, closingDaysBefore: 7 });
+		const envelope = account({ id: 'env', name: 'Envelope', role: 'envelope', envelopeMonthlyCents: 0 });
+		const pj = account({ id: 'pj', name: 'PJ', role: 'external' });
+		const accounts = [nu, refundCard, mp, envelope, pj];
+		const passthrough = new Set(['passthrough']);
+
+		it('estorno no cartão, rendimento na reserva e devolução no envelope não são renda', () => {
+			const txs = [
+				{ accountId: 'nu', amountCents: R(5_000), isIncome: true, category: 'salary', date: '2026-10-05' },
+				{ accountId: 'cc', amountCents: R(200), isIncome: true, category: 'refund', date: '2026-10-06' },
+				{ accountId: 'mp', amountCents: R(50), isIncome: true, category: 'investment', date: '2026-10-31' },
+				{ accountId: 'env', amountCents: R(30), isIncome: true, category: 'refund', date: '2026-10-07' },
+			];
+			const [p] = buildMonthSeries({
+				months: ['2026-10'],
+				accounts,
+				activity: txs.map((t) => row('2026-10', t.accountId, t.amountCents)),
+				transfers: [],
+				cardEntries: new Map([['cc', [{ ...purchase('2026-10-06', R(200)), isIncome: true }]]]),
+				investmentIncome: [{ month: '2026-10', accountId: 'mp', cents: R(50) }],
+				currentMonth: '2026-10',
+			});
+			expect(p.overview.incomeCents).toBe(R(5_000));
+			const hero = monthIncomeComposition(p.overview, txs, accounts, passthrough, externalIncomeTransfers([], accounts));
+			expect(hero).toEqual({ grossCents: R(5_000), passThroughCents: 0, netCents: R(5_000), incomeCount: 1, passThroughCount: 0 });
+			// A soma crua, que o herói mostrava.
+			expect(incomeComposition(txs, passthrough).netCents).toBe(R(5_280));
+		});
+
+		it('pró-labore da PJ, Pix comum na reserva e repasse: bruto, repasse e líquido do quadro', () => {
+			const txs = [
+				{ accountId: 'nu', amountCents: R(1_000), isIncome: true, category: 'salary', date: '2026-10-05' },
+				{ accountId: 'mp', amountCents: R(400), isIncome: true, category: 'gift', date: '2026-10-08' },
+				{ accountId: 'nu', amountCents: R(300), isIncome: false, category: 'passthrough', date: '2026-10-09' },
+				{ accountId: 'env', amountCents: R(80), isIncome: false, category: 'passthrough', date: '2026-10-09' },
+				{ accountId: 'pj', amountCents: R(9_000), isIncome: true, category: 'salary', date: '2026-10-01' },
+				{ accountId: null, amountCents: R(100), isIncome: true, category: 'salary', date: '2026-10-10' },
+			];
+			const transferLines = [{ date: '2026-10-02', fromAccountId: 'pj', toAccountId: 'nu', amountCents: R(12_000) }];
+			const [p] = buildMonthSeries({
+				months: ['2026-10'],
+				accounts,
+				activity: [
+					row('2026-10', 'nu', R(1_000), R(300), R(300)),
+					row('2026-10', 'mp', R(400)),
+					row('2026-10', 'env', 0, R(80), R(80)),
+					row('2026-10', 'pj', R(9_000)),
+					row('2026-10', null, R(100)),
+				],
+				transfers: [
+					{ month: '2026-10', accountId: 'nu', inCents: R(12_000), outCents: 0 },
+					{ month: '2026-10', accountId: 'pj', inCents: 0, outCents: R(12_000) },
+				],
+				transferLines,
+				cardEntries: new Map(),
+				currentMonth: '2026-10',
+			});
+			const hero = monthIncomeComposition(p.overview, txs, accounts, passthrough, externalIncomeTransfers(transferLines, accounts));
+			expect(hero).toEqual({
+				grossCents: p.overview.grossIncomeCents,
+				passThroughCents: p.overview.passThroughCents,
+				netCents: p.overview.incomeCents,
+				incomeCount: 4,
+				passThroughCount: 1,
+			});
+			expect(hero).toMatchObject({ grossCents: R(13_500), passThroughCents: R(300), netCents: R(13_200) });
+		});
+
+		it('sem quadro do mês (carregando), conta só o que o quadro contaria', () => {
+			const txs = [
+				{ accountId: 'nu', amountCents: R(5_000), isIncome: true, category: 'salary', date: '2026-10-05' },
+				{ accountId: 'cc', amountCents: R(200), isIncome: true, category: 'refund', date: '2026-10-06' },
+			];
+			expect(monthIncomeComposition(null, txs, accounts, passthrough)).toEqual({ grossCents: R(5_000), passThroughCents: 0, netCents: R(5_000), incomeCount: 1, passThroughCount: 0 });
 		});
 	});
 
