@@ -1,5 +1,8 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
 	extractCounterparty,
+	FOREIGN_CURRENCY_CODES,
 	guessCategory,
 	merchantKeyOf,
 	parseCapture,
@@ -459,5 +462,191 @@ describe('chamariz no fim do aviso não descarta o aviso', () => {
 		expect(parseCapture(raw('Invista a partir de R$ 1 no CDB e resgate quando quiser! Toque para saber mais.'))).toBeNull();
 		expect(parseCapture(raw('Ganhe até R$ 100 de cashback no seu próximo mês. Saiba mais.'))).toBeNull();
 		expect(parseCapture(raw('Simule seu empréstimo de até R$ 20.000. Clique aqui.'))).toBeNull();
+	});
+});
+
+// Convite, cupom, "ganhe", "aproveite": o banco fala com o usuário, mas não mexeu no dinheiro
+// dele. "Você recebeu um cupom" tem "você recebeu", e enquanto a palavra de confirmação
+// salvava qualquer propaganda, o cupom virava receita para revisar (NOTIF-09).
+describe('promoção forte não é salva por palavra de confirmação', () => {
+	it.each([
+		['Inter Loop', 'Aproveite: compras aprovadas no crédito ganham cashback de até R$ 50,00!'],
+		['Indique amigos', 'Você recebeu um convite! Ganhe R$ 20,00 para cada amigo indicado.'],
+		['Inter Shop', 'Você recebeu um cupom de R$ 15,00 de desconto para usar hoje.'],
+		['Parabéns', 'Você ganhou um cupom de R$ 30,00, aprovado para a sua próxima compra.'],
+		['Cashback', 'Ganhe R$ 10,00 de cashback creditado na sua conta na primeira compra.'],
+		['Cashback', 'Receba até R$ 50,00 de cashback: compras aprovadas entram na sua conta. Aproveite!'],
+		['Indique e ganhe', 'Seu amigo foi aprovado! Indique mais amigos e receba R$ 20,00 por indicação.'],
+	])('descarta: %s — %s', (title, text) => {
+		expect(parseCapture(raw({ title, text }))).toBeNull();
+	});
+
+	it('cashback que caiu na conta continua sendo entrada, mesmo com propaganda junto', () => {
+		expect(
+			parseCapture(
+				raw({ title: 'Cashback', text: 'Você recebeu R$ 2,35 de cashback na sua conta. Aproveite e ganhe mais no Inter Shop!' })
+			)
+		).toMatchObject({ amountCents: 235, direction: 'in', kind: 'refund' });
+		expect(
+			parseCapture(raw({ title: 'Cashback', text: 'Cashback de R$ 5,00 creditado na sua conta. Aproveite!' }))
+		).toMatchObject({ amountCents: 500, direction: 'in', kind: 'refund' });
+		expect(
+			parseCapture(raw({ title: 'Cashback', text: 'Seu cashback de R$ 12,40 caiu na sua conta. Aproveite!' }))
+		).toMatchObject({ amountCents: 1240, direction: 'in', kind: 'refund' });
+		// Sem propaganda nenhuma, o aviso curto de cashback segue sendo entrada, como antes.
+		expect(parseCapture(raw({ title: 'Cashback', text: 'Cashback de R$ 5,00 do Inter Shop.' }))).toMatchObject({
+			amountCents: 500,
+			direction: 'in',
+			kind: 'refund',
+		});
+	});
+
+	it('cashback prometido ou futuro não é cashback creditado', () => {
+		expect(
+			parseCapture(raw({ title: 'Cashback', text: 'Seu cashback de R$ 12,40 será creditado em até 30 dias. Aproveite!' }))
+		).toBeNull();
+	});
+
+	it('movimento real com propaganda forte no rodapé não é descartado', () => {
+		expect(
+			parseCapture(
+				raw({ title: 'Pix enviado', text: 'Pix enviado: R$ 80,00 para MARIA OLIVEIRA. Aproveite e indique o Inter para seus amigos!' })
+			)
+		).toMatchObject({ amountCents: 8000, direction: 'out', kind: 'pix_out' });
+		expect(
+			parseCapture(
+				raw({
+					title: 'Compra aprovada',
+					text: 'Compra de R$ 120,00 APROVADA em LOJA X com cupom de desconto para o cartão com final 1534.',
+				})
+			)
+		).toMatchObject({ amountCents: 12000, direction: 'out', kind: 'purchase', cardLast4: '1534' });
+		expect(
+			parseCapture(
+				raw({ title: 'Pix recebido', text: 'Você recebeu um Pix de R$ 50,00 de JOSE SANTOS. Indique o Nubank e ganhe!' })
+			)
+		).toMatchObject({ amountCents: 5000, direction: 'in', kind: 'pix_in' });
+	});
+
+	// A palavra "cashback" solta decidia que era estorno: o gasto com propaganda de cashback
+	// no fim virava dinheiro entrando.
+	it('gasto com propaganda de cashback no rodapé continua gasto', () => {
+		expect(
+			parseCapture(raw({ title: 'Pagamento aprovado', text: 'Você pagou R$ 32,50 para LOJA DO ZE. Ganhe cashback na próxima!' }))
+		).toMatchObject({ amountCents: 3250, direction: 'out', kind: 'purchase' });
+		expect(
+			parseCapture(raw({ title: 'Compra aprovada', text: 'Compra de R$ 35,90 APROVADA em IFOOD. Aproveite seu cashback!' }))
+		).toMatchObject({ amountCents: 3590, direction: 'out', kind: 'purchase' });
+	});
+});
+
+// "US$ 15,99" virava R$ 15,99, e "USD 15,99" nem chegava ao app (NOTIF-04). O número de
+// outra moeda não é real: quando o aviso traz o valor em reais, é ele que vale; quando não
+// traz, a captura sai marcada com a moeda original.
+describe('moeda estrangeira não vira real', () => {
+	const NATIVE_SERVICE = path.join(
+		__dirname,
+		'../../../modules/spendr-captures/android/src/main/java/expo/modules/spendrcaptures/CaptureListenerService.kt'
+	);
+
+	/** O filtro do serviço nativo, lido do próprio Kotlin para os dois não divergirem. */
+	const nativeFilter = (): RegExp => {
+		const match = /val AMOUNT\s*=\s*Regex\("""(.+?)"""\)/.exec(fs.readFileSync(NATIVE_SERVICE, 'utf8'));
+		if (!match) throw new Error('filtro do serviço nativo não encontrado');
+		return new RegExp(match[1]);
+	};
+
+	const purchase = (text: string) => parseCapture(raw({ title: 'Compra no crédito aprovada', text }));
+
+	it('só o valor em dólar: fica o número, marcado como dólar', () => {
+		const parsed = purchase('Compra de US$ 15,99 APROVADA em NETFLIX.COM para o cartão com final 1534.');
+		expect(parsed).toMatchObject({
+			amountCents: 1599,
+			kind: 'purchase',
+			direction: 'out',
+			cardLast4: '1534',
+			foreign: { currency: 'USD', amountCents: 1599, inBrl: false },
+		});
+	});
+
+	it.each([
+		['USD 15,99', 'USD', 1599],
+		['USD15,99', 'USD', 1599],
+		['U$ 15,99', 'USD', 1599],
+		['€ 20,00', 'EUR', 2000],
+		['EUR 20,00', 'EUR', 2000],
+		['£ 8,50', 'GBP', 850],
+		['$ 15.99', '$', 1599],
+	])('"%s" é %s', (amount, currency, cents) => {
+		expect(purchase(`Compra de ${amount} APROVADA em NETFLIX.COM para o cartão com final 1534.`)?.foreign).toEqual({
+			currency,
+			amountCents: cents,
+			inBrl: false,
+		});
+	});
+
+	it.each([
+		['Compra de US$ 15,99 (R$ 87,10) APROVADA em NETFLIX.COM para o cartão com final 1534.', 'USD', 1599],
+		['Compra de US$ 15,99 (aprox. R$ 87,10) APROVADA em NETFLIX.COM.', 'USD', 1599],
+		['Compra internacional de € 16,00, equivalente a R$ 87,10, aprovada em SPOTIFY.', 'EUR', 1600],
+		['Compra de USD 15,99 = R$ 87,10 aprovada em NETFLIX.COM.', 'USD', 1599],
+		['Compra de R$ 87,10 (US$ 15,99) APROVADA em NETFLIX.COM.', 'USD', 1599],
+	])('com o valor em reais junto, vale o valor em reais: %s', (text, currency, foreignCents) => {
+		const parsed = purchase(text);
+		expect(parsed?.amountCents).toBe(8710);
+		expect(parsed?.foreign).toEqual({ currency, amountCents: foreignCents, inBrl: true });
+	});
+
+	it('valor em reais que não é a conversão (limite, cotação, IOF) não substitui o valor', () => {
+		for (const text of [
+			'Compra de US$ 15,99 APROVADA em NETFLIX.COM. Limite disponível R$ 1.200,00.',
+			'Compra de US$ 15,99 (cotação R$ 5,45) APROVADA em NETFLIX.COM.',
+			'Compra de US$ 15,99 + IOF R$ 0,56 APROVADA em NETFLIX.COM.',
+		]) {
+			expect(purchase(text)).toMatchObject({ amountCents: 1599, foreign: { currency: 'USD', inBrl: false } });
+		}
+	});
+
+	it('parcelada em dólar: o total e a moeda batem', () => {
+		expect(purchase('Compra parcelada em 10x de US$ 12,00 APROVADA em LOJA.')).toMatchObject({
+			amountCents: 12000,
+			installments: 10,
+			foreign: { currency: 'USD', amountCents: 12000, inBrl: false },
+		});
+	});
+
+	it('o código da moeda não vira estabelecimento nem pessoa', () => {
+		expect(purchase('Compra aprovada: USD 9,99 - SPOTIFY, cartão final 9012.')?.counterparty).toBe('SPOTIFY');
+		expect(
+			parseCapture(raw({ title: 'Transferência recebida', text: 'Você recebeu uma transferência de USD 100,00 de JOHN SMITH.' }))
+				?.counterparty
+		).toBe('JOHN SMITH');
+	});
+
+	it('compra em reais não tem moeda estrangeira', () => {
+		expect(purchase('Compra de R$ 35,90 APROVADA em IFOOD para o cartão com final 1534.')?.foreign).toBeUndefined();
+		expect(
+			purchase('Compra de R$ 35,90 APROVADA em IFOOD. Limite disponível US$ 1.200,00.')?.foreign
+		).toBeUndefined();
+	});
+
+	it('todo aviso de valor que o parser lê passa no filtro do serviço nativo', () => {
+		const filter = nativeFilter();
+		const texts = [
+			'Compra de R$ 35,90 APROVADA em IFOOD.',
+			'Compra de US$ 15,99 APROVADA em NETFLIX.COM.',
+			'Compra de U$ 15,99 APROVADA em NETFLIX.COM.',
+			'Compra de € 20,00 APROVADA em SPOTIFY.',
+			'Compra de £ 8,50 APROVADA em BBC.',
+			...FOREIGN_CURRENCY_CODES.map((code) => `Compra de ${code} 12,00 APROVADA em LOJA.`),
+			...FOREIGN_CURRENCY_CODES.map((code) => `Compra de ${code}12,00 APROVADA em LOJA.`),
+		];
+		for (const text of texts) {
+			expect({ text, parsed: purchase(text) !== null }).toEqual({ text, parsed: true });
+			expect({ text, native: filter.test(text) }).toEqual({ text, native: true });
+		}
+		for (const code of FOREIGN_CURRENCY_CODES) {
+			expect(purchase(`Compra de ${code} 12,00 APROVADA em LOJA.`)?.foreign?.currency).toBe(code);
+		}
 	});
 });

@@ -69,6 +69,10 @@ class CaptureListenerService : NotificationListenerService() {
 
   companion object {
     const val ACTION_CAPTURED = "expo.modules.spendrcaptures.CAPTURED"
-    private val AMOUNT = Regex("""(?:R\$|US\$|\$|€|£)\s?\d""")
+
+    // Moeda pelo código ("USD 15,99") também passa: é a lista `FOREIGN_CURRENCY_CODES` de
+    // `app/utils/captureParser.ts`, e o teste do parser lê este regex daqui para conferir.
+    private val AMOUNT =
+      Regex("""(?:R\$|US\$|\$|€|£|\b(?:USD|EUR|GBP|ARS|CLP|UYU|PYG|MXN|CAD|AUD|CHF|JPY))\s?\d""")
   }
 }

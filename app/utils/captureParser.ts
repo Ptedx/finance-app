@@ -53,6 +53,21 @@ export interface ParsedCapture {
 	neutral: boolean;
 	/** Quantas parcelas, quando a compra é parcelada ("em 3x"). `amountCents` é o total. */
 	installments: number | null;
+	/**
+	 * Presente só quando o aviso fala em outra moeda ("US$ 15,99"). `amountCents` é então
+	 * o valor em reais, se o aviso também o trazia (`inBrl`), ou o número da outra moeda —
+	 * que não é real e não pode virar lançamento sem alguém olhar.
+	 */
+	foreign?: ForeignAmount;
+}
+
+export interface ForeignAmount {
+	/** Código da moeda ("USD", "EUR"), ou "$" quando o aviso só tem o cifrão. */
+	currency: string;
+	/** O valor na moeda original, em centavos dela. */
+	amountCents: number;
+	/** O aviso trazia também o valor em reais, e é ele que está em `amountCents`. */
+	inBrl: boolean;
 }
 
 /**
@@ -84,11 +99,50 @@ export const normalizeText = (value: string): string =>
 // ---------------------------------------------------------------------------
 
 /**
- * Símbolo de moeda seguido de número. Aceita `R$ 1.234,56`, `R$1234,56`, `$1,234.56`
- * e `€ 12`. Só o **primeiro** valor do texto conta: nos avisos de compra ele é o da
+ * Moedas que os avisos escrevem pelo código ("Compra de USD 15,99"). O filtro do serviço
+ * nativo (`CaptureListenerService.kt`) tem a mesma lista: o que ele não deixa passar
+ * nunca chega aqui, e um teste confere os dois.
+ */
+export const FOREIGN_CURRENCY_CODES = [
+	'USD',
+	'EUR',
+	'GBP',
+	'ARS',
+	'CLP',
+	'UYU',
+	'PYG',
+	'MXN',
+	'CAD',
+	'AUD',
+	'CHF',
+	'JPY',
+] as const;
+
+const CURRENCY_SYMBOLS: Record<string, string> = { 'R$': 'BRL', 'US$': 'USD', 'U$': 'USD', '€': 'EUR', '£': 'GBP', $: '$' };
+
+const currencyOf = (token: string): string => CURRENCY_SYMBOLS[token.toUpperCase()] ?? token.toUpperCase();
+
+const CURRENCY_TOKEN = `R\\$|US\\$|U\\$|\\$|€|£|\\b(?:${FOREIGN_CURRENCY_CODES.join('|')})`;
+const CURRENCY = `(${CURRENCY_TOKEN})`;
+const NUMBER = '(\\d[\\d.,]*\\d|\\d)';
+
+/**
+ * Moeda seguida de número. Aceita `R$ 1.234,56`, `R$1234,56`, `$1,234.56`, `€ 12` e
+ * `USD 15,99`. Só o **primeiro** valor do texto conta: nos avisos de compra ele é o da
  * compra, e o que vem depois ("limite disponível R$ 1.200,00") não interessa.
  */
-const AMOUNT_PATTERN = /(?:R\$|US\$|\$|€|£)\s?(\d[\d.,]*\d|\d)/;
+const AMOUNT_PATTERN = new RegExp(`${CURRENCY}\\s?${NUMBER}`);
+
+/**
+ * O mesmo valor na outra moeda, logo depois do primeiro: "US$ 15,99 (R$ 87,10)",
+ * "€ 16,00, equivalente a R$ 87,10", "R$ 87,10 (US$ 15,99)". Precisa vir colado, com
+ * parêntese, "=" ou uma palavra de conversão no meio: "limite disponível R$ 1.200,00",
+ * "(cotação R$ 5,45)" e "+ IOF R$ 0,56" também são reais, mas não são esta compra.
+ */
+const CONVERSION_PATTERN = new RegExp(
+	`^\\s*[([]?\\s*(?:[=≈~]\\s*)?(?:,?\\s*(?:que equivale a|equivalente a|equivale a|aproximadamente|aprox\\.?|cerca de|convertid[oa]s? (?:para|em)|valor em reais|total em reais|em reais)\\s*:?\\s*)?[([]?\\s*${CURRENCY}\\s?${NUMBER}`,
+	'i'
+);
 
 /**
  * Converte "1.234,56", "1,234.56", "1234,5" ou "35" em centavos.
@@ -130,9 +184,41 @@ export const parseNotificationAmount = (digits: string): number | null => {
 	return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
 };
 
-const extractAmountCents = (text: string): number | null => {
-	const match = AMOUNT_PATTERN.exec(text);
-	return match ? parseNotificationAmount(match[1]) : null;
+interface AmountReading {
+	amountCents: number;
+	foreign?: ForeignAmount;
+}
+
+/**
+ * O valor do aviso, em reais sempre que o texto permite.
+ *
+ * "US$ 15,99" lido como número virava R$ 15,99: um quinto do que a compra custou. Quando
+ * o aviso traz também o valor em reais, vale ele; quando não traz, fica o número da outra
+ * moeda, marcado em `foreign` para ninguém tomá-lo por real.
+ */
+const extractAmount = (text: string): AmountReading | null => {
+	const first = AMOUNT_PATTERN.exec(text);
+	if (!first) return null;
+	const firstCents = parseNotificationAmount(first[2]);
+	if (firstCents === null) return null;
+	const firstCurrency = currencyOf(first[1]);
+
+	const pair = CONVERSION_PATTERN.exec(text.slice(first.index + first[0].length));
+	const pairCurrency = pair ? currencyOf(pair[1]) : null;
+	const pairCents = pair ? parseNotificationAmount(pair[2]) : null;
+
+	if (firstCurrency === 'BRL') {
+		if (pairCurrency && pairCurrency !== 'BRL' && pairCents !== null) {
+			return { amountCents: firstCents, foreign: { currency: pairCurrency, amountCents: pairCents, inBrl: true } };
+		}
+		return { amountCents: firstCents };
+	}
+
+	const brlCents = pairCurrency === 'BRL' ? pairCents : null;
+	return {
+		amountCents: brlCents ?? firstCents,
+		foreign: { currency: firstCurrency, amountCents: firstCents, inBrl: brlCents !== null },
+	};
 };
 
 // ---------------------------------------------------------------------------
@@ -200,8 +286,61 @@ const CONFIRMATION_PHRASES = [
 	'pago',
 ];
 
-export const isPromotional = (normalized: string): boolean =>
-	has(normalized, ...PROMOTIONAL_PHRASES) && !has(normalized, ...CONFIRMATION_PHRASES);
+/**
+ * Propaganda que palavra de confirmação nenhuma salva: cupom, convite, indicação, "ganhe",
+ * "aproveite". "Você recebeu um cupom de R$ 15,00" e "Você recebeu um convite! Ganhe
+ * R$ 20,00" têm "você recebeu", e "compras aprovadas ganham cashback de até R$ 50" tem
+ * "aprovada" — e os três viravam receita para revisar (NOTIF-09).
+ */
+const STRONG_PROMOTIONAL_PATTERN =
+	/\b(?:cupo(?:m|ns)|convites?|indique|indicar|indicacao|indicad[oa]s?|ganhe|ganham|aproveite)\b|\bcashback de ate\b/;
+
+/**
+ * O que faz um aviso ser movimento de verdade mesmo com propaganda forte junto: o
+ * movimento com o valor ou com o verbo feito ("Pix enviado: R$ 80,00. Aproveite e indique
+ * o Inter"). "Compras aprovadas", no plural, é a regra da promoção, não uma compra. Daqui
+ * em diante vale a regra comum da propaganda, que pede a palavra de confirmação.
+ */
+const MOVEMENT_PATTERNS = [
+	/\b(?:compra|pix|transferencia|ted|doc|pagamento|saque|deposito|estorno|debito|aplicacao|resgate) (?:no (?:credito|debito) |no valor )?de (?:r|us?)?\$/,
+	/\b(?:compra|pix|transferencia|ted|doc|pagamento|saque|deposito|estorno) (?:no (?:credito|debito) )?(?:aprovad|realizad|efetuad|enviad|recebid|concluid|confirmad)[ao]\b/,
+	/\bacaba de (?:comprar|pagar|receber|enviar|transferir)\b/,
+	/\bvoce (?:enviou|pagou|transferiu|sacou)\b/,
+	/\bvoce recebeu (?:um pix|uma transferencia|um ted|um doc|um deposito)\b/,
+];
+
+/** "Você recebeu R$ 25,00 de Ana" é movimento; "você recebeu R$ 15,00 em cupom", não. */
+const isMovement = (normalized: string): boolean =>
+	MOVEMENT_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+	(/\bvoce recebeu r\$/.test(normalized) && !/\b(?:cupo(?:m|ns)|convites?|desconto|bonus)\b/.test(normalized));
+
+/**
+ * Cashback que já caiu na conta é dinheiro entrando, mesmo que o aviso termine com
+ * "aproveite". Conta a frase que tem o cashback, um valor e o verbo feito ("você recebeu
+ * R$ 2,35 de cashback", "cashback de R$ 5,00 creditado") — sem promessa na mesma frase:
+ * "ganhe", "receba", "até", "será creditado" ainda não é dinheiro nenhum.
+ */
+const CASHBACK_CREDITED_PATTERN =
+	/\b(?:creditad[oa]s?|caiu|entrou|depositad[oa]s?|recebeu|ganhou|na sua conta|em sua conta)\b/;
+const CASHBACK_OFFER_PATTERN =
+	/\b(?:ate|ganhe|ganham|ganha|receba|recebam|pode|podem|vai|vao|sera|serao|cupo(?:m|ns)|convites?|indique|indicar)\b/;
+
+const isCreditedCashback = (normalized: string): boolean =>
+	normalized
+		.split(/[!?;]|\.(?=\s|$)/)
+		.some(
+			(sentence) =>
+				sentence.includes('cashback') &&
+				/r\$ ?\d/.test(sentence) &&
+				CASHBACK_CREDITED_PATTERN.test(sentence) &&
+				!CASHBACK_OFFER_PATTERN.test(sentence)
+		);
+
+export const isPromotional = (normalized: string): boolean => {
+	if (isCreditedCashback(normalized)) return false;
+	if (STRONG_PROMOTIONAL_PATTERN.test(normalized) && !isMovement(normalized)) return true;
+	return has(normalized, ...PROMOTIONAL_PHRASES) && !has(normalized, ...CONFIRMATION_PHRASES);
+};
 
 /**
  * Compra ou Pix que não aconteceu: "não aprovada", "recusada", "negada", "não
@@ -291,8 +430,13 @@ const classify = (
 		return { direction: 'out', kind: 'investment', neutral: true };
 	}
 	// Compra cancelada é o dinheiro da compra voltando: estorno, não um segundo gasto.
+	// Cashback que é propaganda ou promessa não é estorno: "Você pagou R$ 32,50. Ganhe
+	// cashback na próxima!" é um gasto, e enquanto a palavra solta decidia, virava dinheiro
+	// entrando.
 	if (
-		has(text, 'estorno', 'reembolso', 'devolucao', 'cashback', 'estornad') ||
+		has(text, 'estorno', 'reembolso', 'devolucao', 'estornad') ||
+		isCreditedCashback(text) ||
+		(has(text, 'cashback') && !STRONG_PROMOTIONAL_PATTERN.test(text) && !CASHBACK_OFFER_PATTERN.test(text)) ||
 		(has(text, 'compra') && /\bcancelad[ao]s?\b/.test(text))
 	) {
 		return { direction: 'in', kind: 'refund', neutral: false };
@@ -386,9 +530,9 @@ const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }>
 	// "para Fulano de Tal" (pix e transferências enviadas)
 	{ pattern: new RegExp(`\\bpara\\s+(?!o cart|a cart|voce|você)${NAME_BODY}${NAME_END}`, 'i'), when: 'out' },
 	// "de Fulano de Tal" (recebidos) — pulando o "de R$ 100,00" que vem antes
-	{ pattern: new RegExp(`\\bde\\s+(?!r\\$|us\\$|\\$|€|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
+	{ pattern: new RegExp(`\\bde\\s+(?!(?:${CURRENCY_TOKEN})\\s?\\d|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
 	// "Compra aprovada: R$ 35,90 - MERCADO XYZ" (alguns bancos separam com traço)
-	{ pattern: /(?:R\$|US\$|\$|€|£)\s?[\d.,]+\s*[-–:]\s*([^,.\n]+?)(?=\s*(?:,|\.\s|\.$|$))/i },
+	{ pattern: new RegExp(`(?:${CURRENCY_TOKEN})\\s?[\\d.,]+\\s*[-–:]\\s*([^,.\\n]+?)(?=\\s*(?:,|\\.\\s|\\.$|$))`, 'i') },
 ];
 
 const cleanCounterparty = (value: string): string | null => {
@@ -433,8 +577,8 @@ const extractCardLast4 = (text: string): string | null => {
  */
 export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 	const original = `${raw.title} ${raw.text}`.replace(/\s+/g, ' ').trim();
-	const amountCents = extractAmountCents(original);
-	if (amountCents === null) return null;
+	const amount = extractAmount(original);
+	if (amount === null) return null;
 
 	const normalized = ` ${normalizeText(original)} `;
 	if (isPromotional(normalized)) return null;
@@ -444,9 +588,13 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 
 	// "3x de R$ 100,00": o primeiro valor do texto é a parcela, e o total é o produto.
 	// "R$ 300,00 em 3x": o primeiro valor já é o total. Nos dois casos o item registra
-	// a compra inteira, e a confirmação a divide em parcelas.
+	// a compra inteira, e a confirmação a divide em parcelas. Com o valor em reais ao lado
+	// do estrangeiro, a parcela lida é a da outra moeda: fica o valor em reais como veio.
 	const installments = classified.kind === 'purchase' ? detectNotificationInstallments(original) : null;
-	const totalCents = installments?.parcelCents ? installments.parcelCents * installments.count : amountCents;
+	const totalCents =
+		installments?.parcelCents && !amount.foreign?.inBrl
+			? installments.parcelCents * installments.count
+			: amount.amountCents;
 
 	return {
 		amountCents: totalCents,
@@ -456,6 +604,10 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 		cardLast4: extractCardLast4(original),
 		neutral: classified.neutral,
 		installments: installments?.count ?? null,
+		// Só quando há outra moeda: os avisos em reais seguem com o mesmo formato de antes.
+		...(amount.foreign
+			? { foreign: amount.foreign.inBrl ? amount.foreign : { ...amount.foreign, amountCents: totalCents } }
+			: {}),
 	};
 };
 
