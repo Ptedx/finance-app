@@ -1273,6 +1273,7 @@ account: {
 			own_name: 'The name on the notification is yours',
 			counterpart: 'Other half of a transfer already recognized',
 			external_leg: 'Sent by an account the app does not track; the receipt was recorded as income',
+			foreign_currency: 'Amount in a foreign currency: check the amount in reais before confirming',
 			invoice_payment: 'Card bill payment: the purchases were already counted',
 			investment: 'Investment: not income or expense',
 			statement_capture: 'Already captured from a bank notification',

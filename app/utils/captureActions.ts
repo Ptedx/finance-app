@@ -15,8 +15,9 @@
  *  - nada, no caso de aplicação, resgate e do que o usuário descarta.
  *
  * E a baixa da conta a pagar (REM-04): o lançamento que é o pagamento dela marca o mês
- * como pago (`settleBillPayment`), e apagá-lo desfaz a baixa (`undoBillPayment`). O
- * `TransactionsContext` usa as mesmas duas para o lançamento digitado.
+ * como pago (`settleBillPayment`), apagá-lo desfaz a baixa (`undoBillPayment`) e editá-lo
+ * refaz a baixa (`resettleBillPayment`). O `TransactionsContext` usa as três para o
+ * lançamento digitado.
  */
 
 import {
@@ -64,7 +65,14 @@ import {
 	learnFromConfirmation,
 	type MerchantRule,
 } from './captureMatcher';
-import { type CaptureKind, guessCategory, isWalletPackage, parseCapture, type RawCapture } from './captureParser';
+import {
+	type CaptureKind,
+	guessCategory,
+	isWalletPackage,
+	type ParsedCapture,
+	parseCapture,
+	type RawCapture,
+} from './captureParser';
 import { generateUniqueId } from './categoryEditUtils';
 import { addDays, getISODate } from './dateUtils';
 import { cardInstallmentDates, cycleRuleOf, daysBetween, isSameCardPayment } from './cardMath';
@@ -211,6 +219,55 @@ export const undoBillPayment = (ref: string, date: string | null): Promise<void>
 			if (changed) await afterBillsWrite();
 		} catch (error) {
 			console.error('Failed to undo bill payment:', error);
+		}
+	});
+
+/** Os campos que decidem a baixa: com todos iguais, casar de novo daria no mesmo. */
+const sameBillMovement = (a: BillMovement, b: BillMovement): boolean =>
+	a.amountCents === b.amountCents &&
+	a.date === b.date &&
+	a.accountId === b.accountId &&
+	a.text === b.text &&
+	a.isExpense === b.isExpense;
+
+/**
+ * O lançamento foi editado: a baixa que ele tinha dado sai, com a data **de antes** (é ela
+ * que diz qual mês ele quitou), e o casamento roda de novo com os dados novos. Devolve a
+ * baixa dada agora, ou `null`.
+ *
+ * Edição que não muda nada do que decide a baixa (só a categoria, por exemplo) não mexe
+ * em conta nenhuma. Sem o "antes" (`previous` nulo) não se desfaz nada: desfazer sem a
+ * data antiga voltaria um mês do que está gravado, e isso pode ser um mês pago à mão
+ * depois. As garantias de `billPaymentUndo` e `billPaymentPatch` valem aqui: `paidThrough`
+ * pago à mão depois da baixa não diminui. Nunca falha, como as outras duas.
+ */
+export const resettleBillPayment = (previous: BillMovement | null, next: BillMovement): Promise<BillMatch | null> =>
+	serialized(async () => {
+		try {
+			if (previous && sameBillMovement(previous, next)) return null;
+
+			let changed = false;
+			if (previous) {
+				for (const bill of await getBills()) {
+					const undo = billPaymentUndo(bill, next.id, previous.date);
+					if (!undo) continue;
+					await updateBill(bill.id, undo);
+					changed = true;
+				}
+			}
+
+			// Relidas: a conta que acabou de perder a baixa pode ser a que o dado novo quita.
+			const match = matchBillPayment(await getBills(), next);
+			if (match) {
+				await updateBill(match.bill.id, billPaymentPatch(match.bill, match.month, next.id));
+				changed = true;
+			}
+
+			if (changed) await afterBillsWrite();
+			return match;
+		} catch (error) {
+			console.error('Failed to resettle bill payment:', error);
+			return null;
 		}
 	});
 
@@ -631,6 +688,14 @@ const neutralizeExternalLeg = async (
 // Entrada de notificações
 // ---------------------------------------------------------------------------
 
+/**
+ * O valor do aviso é de outra moeda e o aviso não trouxe o valor em reais: o número na
+ * caixa de entrada é o da outra moeda (US$ 15,99 viraria R$ 15,99), e só o usuário sabe
+ * quanto saiu em reais. Com o valor em reais junto (`inBrl`), o número já é o certo.
+ */
+const needsCurrencyReview = (parsed: Pick<ParsedCapture, 'foreign'>): boolean =>
+	parsed.foreign !== undefined && !parsed.foreign.inBrl;
+
 export const ingestRawCaptures = async (
 	raws: RawCapture[],
 	options: IngestOptions
@@ -681,6 +746,14 @@ export const ingestRawCaptures = async (
 			}
 		}
 
+		// Moeda estrangeira sem o valor em reais nunca entra sozinha no livro: a regra
+		// aprendida acerta a categoria, não o valor. Fica pendente com a categoria que a
+		// decisão sugeriu, e o porquê vai no item para a tela avisar.
+		const currencyReview = needsCurrencyReview(parsed);
+		if (currencyReview && decision.action === 'auto_confirm') {
+			decision = { action: 'pending', categoryId: decision.categoryId };
+		}
+
 		const base: CaptureDraft = {
 			fingerprint,
 			packageName: raw.packageName,
@@ -700,7 +773,9 @@ export const ingestRawCaptures = async (
 			suggestedCategory: rule?.categoryId ?? fallbackCategoryId,
 			transactionId: null,
 			autoConfirmed: false,
-			reason: null,
+			// Só os itens que ficam pendentes o guardam: duplicata, transferência e ignorado
+			// gravam o próprio porquê por cima.
+			reason: currencyReview ? 'foreign_currency' : null,
 			// Sem conta quando o aviso não é de banco: o usuário atribui em "Sem conta".
 			accountId: account?.id ?? null,
 			transferId: null,
@@ -916,4 +991,5 @@ export default {
 	revertCapture,
 	settleBillPayment,
 	undoBillPayment,
+	resettleBillPayment,
 };

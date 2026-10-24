@@ -1268,6 +1268,7 @@ const pt = {
 			own_name: 'O nome na notificação é o seu',
 			counterpart: 'Outra ponta de uma transferência já reconhecida',
 			external_leg: 'Enviado por uma conta que o app não acompanha; o recebimento entrou como receita',
+			foreign_currency: 'Valor em moeda estrangeira: confira o valor em reais antes de confirmar',
 			invoice_payment: 'Pagamento da fatura: as compras já foram contadas',
 			investment: 'Investimento: não é receita nem despesa',
 			statement_capture: 'Já capturado por uma notificação do banco',

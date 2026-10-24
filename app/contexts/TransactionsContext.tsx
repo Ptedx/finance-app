@@ -29,7 +29,8 @@ import type {
 } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import { settleBillPayment, undoBillPayment } from '../utils/captureActions';
+import type { BillMovement } from '../utils/billMatcher';
+import { resettleBillPayment, settleBillPayment, undoBillPayment } from '../utils/captureActions';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
 import { usePeriod } from './PeriodContext';
 
@@ -218,7 +219,33 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
 	const updateExistingTransaction = async (transaction: TransactionEdit) => {
 		try {
+			const before = transactions.find((tx) => tx.id === transaction.id) ?? null;
 			await updateTransaction(transaction);
+			// O lançamento editado pode ter sido a baixa de uma conta a pagar, ou passar a ser
+			// (REM-04): a baixa antiga sai e o casamento roda de novo. Parcela não paga conta,
+			// nem antes nem depois — a edição não muda as colunas de parcela. A baixa não
+			// falha: um erro nela fica no log e a edição continua gravada.
+			const installmentCount = before?.installmentCount ?? transaction.installmentCount ?? null;
+			if (!(installmentCount && installmentCount > 1)) {
+				// `accountId` indefinido na edição preserva o gravado (`updateTransaction`).
+				const accountId =
+					transaction.accountId === undefined ? (before?.accountId ?? null) : transaction.accountId;
+				const movementOf = (
+					tx: Pick<Transaction, 'amountCents' | 'date' | 'note' | 'isIncome'>,
+					account: string | null
+				): BillMovement => ({
+					id: transaction.id,
+					amountCents: tx.amountCents,
+					date: tx.date,
+					accountId: account,
+					text: tx.note,
+					isExpense: !tx.isIncome,
+				});
+				await resettleBillPayment(
+					before ? movementOf(before, before.accountId) : null,
+					movementOf(transaction, accountId)
+				);
+			}
 			await refreshData();
 			syncQueue.schedule();
 		} catch (error) {

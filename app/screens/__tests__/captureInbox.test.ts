@@ -31,7 +31,7 @@ jest.mock('expo-sqlite', () => ({
 import type { Account, Capture } from '../../database/schema';
 import pt from '../../i18n/locales/pt';
 import { formatCents } from '../../utils/money';
-import { destinationLabel, installmentsLabel } from '../CaptureInboxScreen';
+import { currencyWarning, destinationLabel, installmentsLabel } from '../CaptureInboxScreen';
 
 /** `t` mínimo: busca a chave no português e interpola `{{assim}}`, como o i18next. */
 const t = (key: string, options: Record<string, unknown> = {}): string => {
@@ -102,5 +102,28 @@ describe('a divisão em parcelas aparece no item', () => {
 		expect(installmentsLabel({ amountCents: 10_001, installments: 3 } as Capture, t)).toBe(
 			`3x de ${formatCents(3335)}`
 		);
+	});
+});
+
+describe('a compra em moeda estrangeira avisa no item (SPD-037)', () => {
+	/**
+	 * Como o i18next: chave ausente cai no `defaultValue`. A chave nova entra no i18n na
+	 * integração (o i18n é de outro card nesta onda); até lá vale o texto em português.
+	 */
+	const tWithDefault = (key: string, options: Record<string, unknown> = {}): string => {
+		try {
+			return t(key, options);
+		} catch {
+			return String(options.defaultValue ?? key);
+		}
+	};
+
+	it('o item pendente por moeda estrangeira pede para conferir o valor em reais', () => {
+		expect(currencyWarning({ reason: 'foreign_currency' } as Capture, tWithDefault)).toMatch(/confira o valor em reais/i);
+	});
+
+	it('os outros itens não dizem nada', () => {
+		expect(currencyWarning({ reason: null } as Capture, tWithDefault)).toBeNull();
+		expect(currencyWarning({ reason: 'rule' } as Capture, tWithDefault)).toBeNull();
 	});
 });

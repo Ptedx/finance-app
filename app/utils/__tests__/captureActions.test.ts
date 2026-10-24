@@ -142,7 +142,17 @@ jest.mock('../../database/captures', () => ({
 
 import { getBills, updateBill } from '../../database/database';
 import { onBillsChanged } from '../billEvents';
-import { applyDecision, confirmCapture, markCaptureTransfer, revertCapture, settleBillPayment } from '../captureActions';
+import {
+	applyDecision,
+	confirmCapture,
+	ingestRawCaptures,
+	markCaptureTransfer,
+	resettleBillPayment,
+	revertCapture,
+	settleBillPayment,
+} from '../captureActions';
+import { candidateFrom } from '../captureMatcher';
+import { parseCapture, type RawCapture } from '../captureParser';
 import { getISODate } from '../dateUtils';
 import { scheduleBillReminders } from '../notificationUtils';
 
@@ -631,5 +641,227 @@ describe('baixa automática da conta a pagar (REM-04)', () => {
 		await markCaptureTransfer(other.id);
 
 		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+	});
+});
+
+describe('compra em moeda estrangeira vai para revisão (SPD-037)', () => {
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+		{ id: 'subscriptions', name: 'Assinaturas', type: 'expense', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	const notification = (text: string): RawCapture => ({
+		packageName: 'com.nu.production',
+		appLabel: 'Nubank',
+		title: 'Compra no crédito aprovada',
+		text,
+		postedAt: '2026-10-14T12:00:00.000Z',
+	});
+
+	const ONLY_DOLLAR = notification('Compra de US$ 15,99 APROVADA em NETFLIX.COM para o cartão com final 1534.');
+	const WITH_REAIS = notification('Compra de US$ 15,99 (R$ 87,10) APROVADA em NETFLIX.COM para o cartão com final 1534.');
+
+	/** A regra que confirmaria sozinha: o estabelecimento já foi confirmado cinco vezes. */
+	const learnNetflix = (raw: RawCapture): void => {
+		const parsed = parseCapture(raw);
+		const key = parsed ? candidateFrom(raw, parsed, null).merchantKey : null;
+		if (!key) throw new Error('o aviso de teste não tem estabelecimento');
+		mockRules.set(key, {
+			merchantKey: key,
+			categoryId: 'subscriptions',
+			treatAs: 'transaction',
+			confirmations: 5,
+			updatedAt: '',
+		});
+	};
+
+	const ingest = (raw: RawCapture) => ingestRawCaptures([raw], { ownNames: [], categories });
+
+	const only = (): Capture => {
+		const all = [...mockCaptures.values()];
+		expect(all).toHaveLength(1);
+		return all[0];
+	};
+
+	it('com regra aprendida, só o valor em dólar não confirma sozinha: fica pendente com o porquê', async () => {
+		learnNetflix(ONLY_DOLLAR);
+
+		const summary = await ingest(ONLY_DOLLAR);
+
+		expect(summary).toEqual({ inserted: 1, autoConfirmed: 0 });
+		expect(only()).toMatchObject({
+			status: 'pending',
+			reason: 'foreign_currency',
+			// A categoria que a regra sugeriu continua sugerida: só a confirmação é do usuário.
+			suggestedCategory: 'subscriptions',
+			transactionId: null,
+			autoConfirmed: false,
+		});
+		expect(mockTransactions.size).toBe(0);
+	});
+
+	it('sem regra, fica pendente também com o porquê', async () => {
+		await ingest(ONLY_DOLLAR);
+
+		expect(only()).toMatchObject({ status: 'pending', reason: 'foreign_currency', transactionId: null });
+		expect(mockTransactions.size).toBe(0);
+	});
+
+	it('com o valor em reais no aviso, segue o fluxo normal: a regra confirma sozinha, em reais', async () => {
+		learnNetflix(WITH_REAIS);
+
+		const summary = await ingest(WITH_REAIS);
+
+		expect(summary).toEqual({ inserted: 1, autoConfirmed: 1 });
+		expect(only()).toMatchObject({ status: 'confirmed', reason: 'rule', autoConfirmed: true });
+		expect([...mockTransactions.values()][0]).toMatchObject({ amountCents: 8710, category: 'subscriptions' });
+	});
+
+	it('com o valor em reais e sem regra, é a pendência de sempre, sem aviso', async () => {
+		await ingest(WITH_REAIS);
+
+		expect(only()).toMatchObject({ status: 'pending', reason: null, amountCents: 8710 });
+	});
+});
+
+describe('editar o lançamento que deu a baixa refaz a baixa (SPD-067)', () => {
+	const seedBill = (overrides: Partial<Bill> = {}): Bill => {
+		const bill: Bill = {
+			id: 'tim',
+			name: 'Celular',
+			dueDay: 15,
+			amountCents: 13_517,
+			accountId: CHECKING.id,
+			category: null,
+			matchHint: 'tim',
+			debtId: null,
+			paidThrough: '2026-09',
+			paidByRef: null,
+			active: true,
+			sortOrder: 0,
+			updatedAt: '',
+			...overrides,
+		};
+		mockBills.set(bill.id, bill);
+		return bill;
+	};
+
+	/** O lançamento da TIM como estava gravado antes da edição. */
+	const TIM = {
+		id: 'tx-tim',
+		amountCents: 13_517,
+		date: '2026-10-14',
+		accountId: CHECKING.id,
+		text: 'TIM celular',
+		isExpense: true,
+	};
+
+	const changed = jest.fn();
+	let stopListening: () => void = () => undefined;
+	beforeEach(() => {
+		stopListening = onBillsChanged(changed);
+	});
+	afterEach(() => stopListening());
+
+	it('o valor editado para longe do da conta desfaz a baixa que ele tinha dado', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, amountCents: 50_000, text: 'Mercado' });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('a data editada para fora da janela do vencimento desfaz a baixa', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30' });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+	});
+
+	it('a data editada para o mês seguinte tira a baixa de outubro e dá a de novembro', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		const match = await resettleBillPayment(TIM, { ...TIM, date: '2026-11-13' });
+
+		expect(match).toMatchObject({ month: '2026-11' });
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+		// Uma remarcação de lembretes e um aviso pela edição inteira, não um por gravação.
+		expect(scheduleBillReminders).toHaveBeenCalledTimes(1);
+		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('o lançamento que não pagava nada e passou a casar dá a baixa', async () => {
+		seedBill();
+
+		const match = await resettleBillPayment(
+			{ ...TIM, amountCents: 4_000, text: 'Padaria' },
+			{ ...TIM, amountCents: 13_517, text: 'TIM celular' }
+		);
+
+		expect(match).toMatchObject({ month: '2026-10' });
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+	});
+
+	it('a edição que não muda nada do que decide a baixa não mexe na conta', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		const match = await resettleBillPayment(TIM, { ...TIM });
+
+		expect(match).toBeNull();
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(scheduleBillReminders).not.toHaveBeenCalled();
+		expect(changed).not.toHaveBeenCalled();
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+	});
+
+	it('nem dá baixa nova num lançamento antigo que casaria (trocar a categoria não é pagar a conta)', async () => {
+		// A conta foi cadastrada depois do lançamento: ele casa, mas a edição não mudou nada
+		// do que decide a baixa, e não é ela que deve marcar outubro pago.
+		seedBill();
+
+		const match = await resettleBillPayment(TIM, { ...TIM });
+
+		expect(match).toBeNull();
+		expect(updateBill).not.toHaveBeenCalled();
+	});
+
+	it('um mês pago à mão depois da baixa não volta para trás', async () => {
+		// A baixa de outubro foi deste lançamento; novembro foi marcado pago à mão depois,
+		// e a marcação à mão mantém a referência.
+		seedBill({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, amountCents: 50_000, text: 'Mercado' });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-11', paidByRef: null });
+	});
+
+	it('a edição que vira receita desfaz a baixa e não dá outra', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, isExpense: false });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+	});
+
+	it('lançamento que a tela não conhecia: não desfaz sem a data antiga, só procura a baixa nova', async () => {
+		seedBill({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(null, { ...TIM, amountCents: 50_000 });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+	});
+
+	it('falha da baixa não quebra a edição', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+		(getBills as jest.Mock).mockRejectedValueOnce(new Error('banco ocupado'));
+		const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+		await expect(resettleBillPayment(TIM, { ...TIM, amountCents: 50_000 })).resolves.toBeNull();
+
+		expect(errors).toHaveBeenCalled();
+		errors.mockRestore();
 	});
 });

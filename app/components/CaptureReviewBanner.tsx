@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useCaptures } from '../contexts/CapturesContext';
 import { STORAGE_KEYS } from '../utils/storageUtils';
 
@@ -25,11 +25,23 @@ const CaptureReviewBanner: React.FC = () => {
 	const { pendingCount, supported, enabled, openSettings } = useCaptures();
 	const [dismissed, setDismissed] = useState(true);
 
-	useEffect(() => {
+	// A dispensa é relida ao ganhar foco e ao voltar ao primeiro plano, não só ao montar:
+	// o primeiro login num aparelho a apaga (`AuthContext`) com a Home montada por baixo, e
+	// o aviso só voltava quando o app era reaberto.
+	const readDismissed = useCallback(() => {
 		AsyncStorage.getItem(STORAGE_KEYS.captureAccessDismissed)
 			.then((value) => setDismissed(value === '1'))
 			.catch(() => setDismissed(false));
 	}, []);
+
+	useFocusEffect(readDismissed);
+
+	useEffect(() => {
+		const subscription = AppState.addEventListener('change', (state) => {
+			if (state === 'active') readDismissed();
+		});
+		return () => subscription.remove();
+	}, [readDismissed]);
 
 	if (supported && !enabled && !dismissed) {
 		return (

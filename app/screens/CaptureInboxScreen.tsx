@@ -86,6 +86,23 @@ export const installmentsLabel = (
 	return t('captures.installmentsSplit', { times: count, amount: formatCents(parts[0]) });
 };
 
+/**
+ * O aviso da compra em moeda estrangeira (SPD-037), ou `null`.
+ *
+ * A notificação trazia só o valor da outra moeda: o número no cartão é ele (US$ 15,99
+ * aparece como R$ 15,99), e por isso a captura não foi confirmada sozinha nem com a regra
+ * aprendida. O valor em reais só aparece na fatura; o aviso pede para conferir antes.
+ */
+export const currencyWarning = (
+	capture: Pick<Capture, 'reason'>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string | null =>
+	capture.reason === 'foreign_currency'
+		? t('captures.reason.foreign_currency', {
+				defaultValue: 'Valor em moeda estrangeira: confira o valor em reais antes de confirmar',
+			})
+		: null;
+
 const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {
 	id: 'uncategorized',
 	name: 'Uncategorized',
@@ -155,12 +172,13 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
 	const destination = destinationLabel(capture, accounts, t);
 	const installments = installmentsLabel(capture, t);
+	const warning = currencyWarning(capture, t);
 	const summary = `${isIncome ? t('captures.income') : t('captures.expense')}, ${amount}, ${
 		capture.counterparty ?? kindLabel
 	}, ${t('captures.inAccount', { account: destination })}${installments ? `, ${installments}` : ''}, ${t(
 		'captures.from',
 		{ app: capture.appLabel, time: whenLabelFor(capture) }
-	)}`;
+	)}${warning ? `. ${warning}` : ''}`;
 
 	return (
 		<View style={styles.card}>
@@ -191,6 +209,14 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					</Text>
 					{installments && <Text style={styles.installments}>{installments}</Text>}
 				</View>
+				{/* Junto do valor, dentro do resumo que o leitor de tela lê: é o valor que está
+				    em dúvida. Ícone e texto, não só cor. */}
+				{warning && (
+					<View style={styles.currencyWarning}>
+						<Ionicons name="alert-circle-outline" size={18} color="#FFD166" />
+						<Text style={styles.currencyWarningText}>{warning}</Text>
+					</View>
+				)}
 			</View>
 
 			{capture.question === 'duplicate' && (
@@ -793,6 +819,23 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 6,
 		paddingVertical: 2,
 		overflow: 'hidden',
+	},
+	currencyWarning: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: 8,
+		backgroundColor: 'rgba(255, 209, 102, 0.1)',
+		borderColor: 'rgba(255, 209, 102, 0.5)',
+		borderWidth: 1,
+		borderRadius: 10,
+		padding: 10,
+		marginBottom: 12,
+	},
+	currencyWarningText: {
+		flex: 1,
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#FFD166',
 	},
 	question: {
 		backgroundColor: 'rgba(21, 232, 254, 0.08)',

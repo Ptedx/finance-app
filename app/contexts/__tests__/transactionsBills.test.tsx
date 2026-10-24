@@ -32,6 +32,7 @@ jest.mock('../../database/database', () => ({
 jest.mock('../../utils/captureActions', () => ({
 	settleBillPayment: jest.fn(async () => null),
 	undoBillPayment: jest.fn(async () => undefined),
+	resettleBillPayment: jest.fn(async () => null),
 }));
 
 jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
@@ -43,8 +44,8 @@ jest.mock('../PeriodContext', () => ({
 }));
 
 import { act, create } from 'react-test-renderer';
-import { deleteTransaction } from '../../database/database';
-import { settleBillPayment, undoBillPayment } from '../../utils/captureActions';
+import { deleteTransaction, updateTransaction } from '../../database/database';
+import { resettleBillPayment, settleBillPayment, undoBillPayment } from '../../utils/captureActions';
 import { TransactionsProvider, useTransactions } from '../TransactionsContext';
 
 type Api = ReturnType<typeof useTransactions>;
@@ -170,5 +171,87 @@ describe('apagar um lançamento', () => {
 		});
 
 		expect(undoBillPayment).toHaveBeenCalledWith('tx-sumido', null);
+	});
+});
+
+describe('editar um lançamento (SPD-067)', () => {
+	const STORED: Transaction = {
+		...TIM_PAYMENT,
+		id: 'tx-tim',
+		accountId: 'nubank',
+		installmentGroup: null,
+		installmentIndex: null,
+		installmentCount: null,
+		cardLast4: null,
+		updatedAt: '',
+	};
+
+	it('refaz a baixa com o lançamento de antes e o de depois', async () => {
+		mockStored.push(STORED);
+		const api = await mount();
+
+		await act(async () => {
+			await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim', amountCents: 20_000, date: '2026-11-14' });
+		});
+
+		expect(updateTransaction).toHaveBeenCalledTimes(1);
+		expect(resettleBillPayment).toHaveBeenCalledTimes(1);
+		expect(resettleBillPayment).toHaveBeenCalledWith(
+			{ id: 'tx-tim', amountCents: 13_517, date: '2026-10-14', accountId: 'nubank', text: 'TIM celular', isExpense: true },
+			{ id: 'tx-tim', amountCents: 20_000, date: '2026-11-14', accountId: 'nubank', text: 'TIM celular', isExpense: true }
+		);
+	});
+
+	it('conta de origem não informada na edição é a que já estava gravada', async () => {
+		mockStored.push(STORED);
+		const api = await mount();
+
+		await act(async () => {
+			await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim', accountId: undefined });
+		});
+
+		expect(resettleBillPayment).toHaveBeenCalledWith(
+			expect.objectContaining({ accountId: 'nubank' }),
+			expect.objectContaining({ accountId: 'nubank' })
+		);
+	});
+
+	it('virar receita também passa pela baixa, que se desfaz lá', async () => {
+		mockStored.push(STORED);
+		const api = await mount();
+
+		await act(async () => {
+			await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim', isIncome: true });
+		});
+
+		expect(resettleBillPayment).toHaveBeenCalledWith(
+			expect.objectContaining({ isExpense: true }),
+			expect.objectContaining({ isExpense: false })
+		);
+	});
+
+	it('parcela de compra parcelada não mexe em conta a pagar', async () => {
+		mockStored.push({ ...STORED, installmentGroup: 'compra', installmentIndex: 1, installmentCount: 3 });
+		const api = await mount();
+
+		await act(async () => {
+			await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim', amountCents: 20_000 });
+		});
+
+		expect(updateTransaction).toHaveBeenCalledTimes(1);
+		expect(resettleBillPayment).not.toHaveBeenCalled();
+	});
+
+	it('lançamento que a tela não conhece vai sem o "antes"', async () => {
+		const api = await mount();
+
+		await act(async () => {
+			await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-sumido' });
+		});
+
+		expect(resettleBillPayment).toHaveBeenCalledWith(
+			null,
+			expect.objectContaining({ id: 'tx-sumido', accountId: 'nubank' })
+		);
 	});
 });

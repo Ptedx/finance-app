@@ -1275,6 +1275,7 @@ account: {
 			own_name: 'Il nome nella notifica è il tuo',
 			counterpart: "L'altra metà di un trasferimento già riconosciuto",
 			external_leg: "Inviato da un conto che l'app non segue; la ricezione è stata registrata come entrata",
+			foreign_currency: "Importo in valuta estera: controlla l'importo in reais prima di confermare",
 			invoice_payment: 'Pagamento della carta: gli acquisti erano già contati',
 			investment: 'Investimento: né entrata né uscita',
 			statement_capture: 'Già catturato da una notifica della banca',
