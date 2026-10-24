@@ -8,6 +8,7 @@ import {
 	assignUnassignedToAccount,
 	countUnassignedOnOrBeforeAnchor,
 	type UnassignedAssignment,
+	db,
 	deleteAccount,
 	deleteTransfersOf,
 	getAccountActivity,
@@ -16,10 +17,13 @@ import {
 	getAccountTransactions,
 	getAccountTransfers,
 	getCardPurchasesOriginated,
+	getTransactions,
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
 	getTransfersByDateRange,
 	moveAccountLedger,
+	normalizeAccountDraft,
+	reassignCaptureLedger,
 	repointTransfers,
 	setAccountCardNames,
 	setAccountAnchor,
@@ -27,7 +31,7 @@ import {
 	updateAccount,
 	updateTransfer,
 } from '../database/database';
-import { getPendingCaptures } from '../database/captures';
+import { getAllCaptures, getPendingCaptures, updateCapture } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Capture, Transfer } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
@@ -46,6 +50,7 @@ import {
 	planCardAdjustment,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
+import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
 import { externalTransfersInByMonth, investmentIncomeRows, lastInvestmentIncomeDateByAccount } from '../utils/reportSeries';
@@ -83,6 +88,15 @@ export interface DebitCard {
 	periodSpentCents: number;
 	/** Data da compra mais recente, para ordenar. */
 	lastUsed: string | null;
+}
+
+/** O que o último cartão criado ou editado trouxe da conta corrente, para a tela avisar. */
+export interface CardLedgerRepairNotice {
+	cardId: string;
+	/** Compras que foram para o cartão, com os lançamentos. */
+	movedCount: number;
+	/** Compras que iriam, mas ficaram porque o usuário editou o lançamento à mão. */
+	keptCount: number;
 }
 
 export interface ExistingInstallmentsInput {
@@ -127,8 +141,17 @@ interface AccountsContextType {
 	unassignedNetCents: number;
 	isLoading: boolean;
 	refresh: () => Promise<void>;
+	/**
+	 * Criar um cartão de crédito — ou, em `saveAccount`, mudar o banco, o final ou o tipo
+	 * dele — leva para o cartão as compras dele que tinham caído na conta corrente
+	 * (`utils/cardLedgerRepair.ts`). O conserto nunca impede salvar.
+	 */
 	createAccount: (draft: AccountDraft) => Promise<string>;
 	saveAccount: (account: AccountEdit) => Promise<void>;
+	/** O que o último conserto moveu ou deixou; nulo quando não havia nada. */
+	cardLedgerRepair: CardLedgerRepairNotice | null;
+	/** A tela já avisou: some o aviso. */
+	dismissCardLedgerRepair: () => void;
 	removeAccount: (id: string) => Promise<void>;
 	/**
 	 * Acerta uma conta com o que o banco mostra: quanto já saiu neste mês e quanto ainda há
@@ -221,6 +244,34 @@ const pendingCardEntries = (capture: Capture, card: Account): CardEntry[] => {
 		cardLast4: capture.cardLast4,
 		pendingReview: true,
 	}));
+};
+
+/**
+ * Aplica o conserto de um cartão do jeito da migração v12 (`migrateCardPurchasesToRealCard`):
+ * a captura e os lançamentos dela mudam de conta juntos — uma transação por compra, tudo
+ * sujo para subir no próximo sync. O plano já tirou o que o usuário editou à mão.
+ *
+ * Nunca lança: o cartão já está gravado, e um erro aqui só deixa compras onde estavam (as
+ * já movidas ficam movidas, cada uma inteira). Nulo quando não havia nada a mover.
+ */
+const repairCardLedger = async (cardId: string): Promise<CardLedgerRepairNotice | null> => {
+	let movedCount = 0;
+	let keptCount = 0;
+	try {
+		const [list, captures, ledger] = await Promise.all([getAccounts(), getAllCaptures(), getTransactions()]);
+		const plan = planCardLedgerRepair(cardId, list, captures, ledger);
+		keptCount = plan.keptEdited.length;
+		for (const move of plan.moves) {
+			await db.withTransactionAsync(async () => {
+				await updateCapture(move.captureId, { accountId: move.toId });
+				if (move.transactionIds.length > 0) await reassignCaptureLedger(move.transactionId, move.captureId, move.toId);
+			});
+			movedCount += 1;
+		}
+	} catch (error) {
+		console.error('Error repairing card ledger:', error);
+	}
+	return movedCount > 0 || keptCount > 0 ? { cardId, movedCount, keptCount } : null;
 };
 
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -448,23 +499,52 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		return next;
 	}, [rawBalances, accruedYield]);
 
+	const [cardLedgerRepair, setCardLedgerRepair] = useState<CardLedgerRepairNotice | null>(null);
+	const dismissCardLedgerRepair = useCallback(() => setCardLedgerRepair(null), []);
+
+	/**
+	 * Depois de gravar a conta: se ela é um cartão cujo destino de compras mudou, o conserto
+	 * roda e as telas releem. Compra movida muda a conta de lançamentos, então a lista de
+	 * lançamentos também relê.
+	 */
+	const afterAccountSaved = useCallback(
+		async (before: Account | null, after: Account) => {
+			const notice = changesCardRouting(before, after) ? await repairCardLedger(after.id) : null;
+			setCardLedgerRepair(notice);
+			syncQueue.schedule();
+			await Promise.all([refresh(), notice && notice.movedCount > 0 ? refreshData() : undefined]);
+		},
+		[refresh, refreshData]
+	);
+
 	const createAccount = useCallback(
 		async (draft: AccountDraft) => {
 			const id = await addAccount(draft);
-			syncQueue.schedule();
-			await refresh();
+			await afterAccountSaved(null, { ...normalizeAccountDraft(draft), id, updatedAt: '' });
 			return id;
 		},
-		[refresh]
+		[afterAccountSaved]
 	);
 
 	const saveAccount = useCallback(
 		async (account: AccountEdit) => {
+			// Como estava, para saber se a edição mexeu no destino das compras. Sem conseguir
+			// ler, o conserto não roda — a edição grava do mesmo jeito.
+			let before: Account | undefined;
+			try {
+				before = (await getAccounts()).find((candidate) => candidate.id === account.id);
+			} catch (error) {
+				console.error('Error reading account before save:', error);
+			}
 			await updateAccount(account);
-			syncQueue.schedule();
-			await refresh();
+			if (before) {
+				await afterAccountSaved(before, { ...before, ...normalizeAccountDraft(account), id: account.id });
+			} else {
+				syncQueue.schedule();
+				await refresh();
+			}
 		},
-		[refresh]
+		[afterAccountSaved, refresh]
 	);
 
 	const removeAccount = useCallback(
@@ -815,6 +895,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			refresh,
 			createAccount,
 			saveAccount,
+			cardLedgerRepair,
+			dismissCardLedgerRepair,
 			removeAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
@@ -848,6 +930,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			refresh,
 			createAccount,
 			saveAccount,
+			cardLedgerRepair,
+			dismissCardLedgerRepair,
 			removeAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
