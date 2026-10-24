@@ -4,13 +4,16 @@ import { StatusBar } from 'expo-status-bar';
 import { useTranslation } from 'react-i18next';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { isCaptureSupported } from '../../modules/spendr-captures';
 
 export default function InfoScreen() {
 	const router = useRouter();
 	const { t } = useTranslation();
 
+	// No Android com o serviço nativo, a etapa da captura vem antes das preferências
+	// (SPD-021); no iOS e no Expo Go ela não existe.
 	const handleContinue = () => {
-		router.push('/onboarding/security');
+		router.push(isCaptureSupported() ? '/onboarding/captures' : '/onboarding/security');
 	};
 
 	return (

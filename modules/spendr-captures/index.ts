@@ -41,6 +41,8 @@ interface SpendrCapturesNative {
 	pendingCount(): number;
 	/** Uma linha JSON por evento. Ausente em binário anterior ao SPD-015. */
 	drainDiagnostics?(): string[];
+	/** Pede ao Android para religar o serviço. Ausente em binário anterior ao SPD-021. */
+	requestRebind?(): void;
 	addListener(
 		eventName: 'onCaptured',
 		listener: (event: { pending: number }) => void
@@ -67,6 +69,25 @@ export const isCaptureEnabled = (): boolean => {
 /** Abre a tela do sistema onde o acesso é ligado. O app não consegue ligar sozinho. */
 export const openCaptureSettings = (): void => {
 	native?.openSettings();
+};
+
+/**
+ * Pede ao Android para religar o serviço, para quando o acesso está ligado mas o sistema o
+ * desvinculou (economia de bateria, processo morto). O pedido é silencioso e o Android pode
+ * ignorá-lo: a garantia é desligar e ligar o acesso na tela do sistema.
+ *
+ * Devolve se o pedido foi feito. Sem módulo, ou num binário que ainda não tem a função (JS
+ * novo por OTA sobre build velha), não há a quem pedir.
+ */
+export const requestCaptureRebind = (): boolean => {
+	try {
+		if (!native?.requestRebind) return false;
+		native.requestRebind();
+		return true;
+	} catch (error) {
+		console.warn('Could not request notification listener rebind:', error);
+		return false;
+	}
 };
 
 /** Tudo que o serviço anotou desde a última leitura. Esvazia a fila nativa. */
@@ -127,6 +148,7 @@ export default {
 	isCaptureSupported,
 	isCaptureEnabled,
 	openCaptureSettings,
+	requestCaptureRebind,
 	drainCaptures,
 	drainDiagnostics,
 	addCaptureListener,

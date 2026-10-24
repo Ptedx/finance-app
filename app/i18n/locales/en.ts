@@ -260,6 +260,8 @@ const en = {
 			empty: 'No months in the history yet.',
 			columnLabel: '{{month}}: in {{income}}, spent {{spent}}, saved {{saved}}',
 			hint: 'Selects this month across the app',
+			spentPendingIncluded: 'Spent includes {{amount}} to review',
+			incomePendingIncluded: 'In includes {{amount}} to review',
 		},
 		projection: {
 			scenario: 'If installments become savings once paid off',
@@ -676,6 +678,17 @@ const en = {
 		insightfulReports: 'Insightful Reports',
 		insightfulReportsDesc:
 			'Visualize your spending patterns through customized reports. Understand where your money goes with beautiful charts.',
+		continue: 'Continue',
+	},
+
+	onboardingCaptures: {
+		screenTitle: 'Automatic Capture',
+		title: 'Your Spending Logs Itself',
+		body:
+			'Spendr reads the notifications your bank apps already send — purchases, Pix, transfers — and turns them into entries for you to confirm with one tap.',
+		keepsOnly: 'Only notifications that carry a money amount are kept.',
+		enabled: 'Access is on. Bank notifications start coming in from now on.',
+		skip: 'Not now',
 		continue: 'Continue',
 	},
 
@@ -1274,6 +1287,7 @@ account: {
 			counterpart: 'Other half of a transfer already recognized',
 			external_leg: 'Sent by an account the app does not track; the receipt was recorded as income',
 			foreign_currency: 'Amount in a foreign currency: check the amount in reais before confirming',
+			app_rule: 'Notifications from {{app}} are being ignored',
 			invoice_payment: 'Card bill payment: the purchases were already counted',
 			investment: 'Investment: not income or expense',
 			statement_capture: 'Already captured from a bank notification',
@@ -1310,6 +1324,10 @@ account: {
 		announceDuplicate: 'Marked as duplicate',
 		announceKeptBoth: 'Kept as a separate entry',
 		announceReverted: 'Reverted',
+		ignoredAppsTitle: 'Ignored notifications',
+		ignoredApp: 'Notifications from {{app}} are being ignored',
+		unignoreHint: 'Notifications from this app go back to review',
+		announceUnignored: 'Notifications from {{app}} go back to review',
 		homeBanner_one: '{{count}} entry to review',
 		homeBanner_other: '{{count}} entries to review',
 		homeReview: 'Review',
@@ -1317,6 +1335,12 @@ account: {
 		accessOffAction: 'Turn on',
 		accessOffHint: 'Opens the Android screen where notification access is turned on for Spendr',
 		accessOffDismiss: 'Do not warn again',
+		stalled_one: 'No notifications from your bank in {{count}} day',
+		stalled_other: 'No notifications from your bank in {{count}} days',
+		stalledAction: 'Reconnect',
+		stalledHint:
+			"Asks Android to resume reading and opens the notification access screen. If it stays stopped, turn Spendr's access off and on again.",
+		stalledDismiss: 'Dismiss for 7 days',
 		homeReviewHint: 'Opens the list of captured entries',
 		settingsSection: 'Automatic capture',
 		settingsCapture: 'Read bank notifications',

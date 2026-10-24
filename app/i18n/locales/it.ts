@@ -260,6 +260,8 @@ const it = {
 			empty: 'Ancora nessun mese nello storico.',
 			columnLabel: '{{month}}: entrato {{income}}, speso {{spent}}, risparmiato {{saved}}',
 			hint: "Seleziona questo mese in tutta l'app",
+			spentPendingIncluded: 'Speso include {{amount}} da rivedere',
+			incomePendingIncluded: 'Entrato include {{amount}} da rivedere',
 		},
 		projection: {
 			scenario: 'Se le rate diventano risparmio una volta estinte',
@@ -678,6 +680,17 @@ const it = {
 		insightfulReports: 'Report Dettagliati',
 		insightfulReportsDesc:
 			'Visualizza le tue abitudini di spesa attraverso report personalizzati. Scopri dove vanno i tuoi soldi con grafici dettagliati.',
+		continue: 'Continua',
+	},
+
+	onboardingCaptures: {
+		screenTitle: 'Cattura Automatica',
+		title: 'Le Tue Spese si Registrano da Sole',
+		body:
+			'Spendr legge le notifiche che le app della tua banca già inviano — acquisti, Pix, bonifici — e le trasforma in voci da confermare con un tocco.',
+		keepsOnly: 'Vengono conservate solo le notifiche che contengono un importo.',
+		enabled: 'Accesso attivo. Le notifiche della banca arrivano da adesso.',
+		skip: 'Non ora',
 		continue: 'Continua',
 	},
 
@@ -1276,6 +1289,7 @@ account: {
 			counterpart: "L'altra metà di un trasferimento già riconosciuto",
 			external_leg: "Inviato da un conto che l'app non segue; la ricezione è stata registrata come entrata",
 			foreign_currency: "Importo in valuta estera: controlla l'importo in reais prima di confermare",
+			app_rule: 'Le notifiche di {{app}} vengono ignorate',
 			invoice_payment: 'Pagamento della carta: gli acquisti erano già contati',
 			investment: 'Investimento: né entrata né uscita',
 			statement_capture: 'Già catturato da una notifica della banca',
@@ -1312,6 +1326,10 @@ account: {
 		announceDuplicate: 'Segnata come duplicato',
 		announceKeptBoth: 'Mantenuta come voce separata',
 		announceReverted: 'Ripristinata',
+		ignoredAppsTitle: 'Notifiche ignorate',
+		ignoredApp: 'Le notifiche di {{app}} vengono ignorate',
+		unignoreHint: 'Le notifiche di questa app tornano in revisione',
+		announceUnignored: 'Le notifiche di {{app}} tornano in revisione',
 		homeBanner_one: '{{count}} voce da rivedere',
 		homeBanner_other: '{{count}} voci da rivedere',
 		homeReview: 'Rivedi',
@@ -1319,6 +1337,12 @@ account: {
 		accessOffAction: 'Attiva',
 		accessOffHint: "Apre la schermata di Android in cui si attiva l'accesso alle notifiche per Spendr",
 		accessOffDismiss: 'Non avvisare più',
+		stalled_one: 'Nessun avviso dalla tua banca da {{count}} giorno',
+		stalled_other: 'Nessun avviso dalla tua banca da {{count}} giorni',
+		stalledAction: 'Riconnetti',
+		stalledHint:
+			"Chiede ad Android di riprendere la lettura e apre la schermata dell'accesso alle notifiche. Se resta fermo, disattiva e riattiva l'accesso di Spendr.",
+		stalledDismiss: 'Ignora per 7 giorni',
 		homeReviewHint: "Apre l'elenco delle voci catturate",
 		settingsSection: 'Cattura automatica',
 		settingsCapture: 'Leggi le notifiche della banca',

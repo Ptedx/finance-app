@@ -13,9 +13,10 @@ import expo.modules.kotlin.modules.ModuleDefinition
 /**
  * A ponte JavaScript ↔ serviço de notificações.
  *
- * Cinco funções e um evento: saber se o acesso está ligado, abrir a tela do sistema
- * para ligá-lo, esvaziar a fila e contar o que há nela, e esvaziar o diário do serviço
- * (`drainDiagnostics`, SPD-015); o evento `onCaptured` avisa que chegou notificação nova
+ * Seis funções e um evento: saber se o acesso está ligado, abrir a tela do sistema
+ * para ligá-lo, esvaziar a fila e contar o que há nela, esvaziar o diário do serviço
+ * (`drainDiagnostics`, SPD-015) e pedir ao Android para religar o serviço
+ * (`requestRebind`, SPD-021); o evento `onCaptured` avisa que chegou notificação nova
  * enquanto o app está aberto.
  */
 class SpendrCapturesModule : Module() {
@@ -42,6 +43,8 @@ class SpendrCapturesModule : Module() {
     Function("pendingCount") { CaptureStore.pendingCount(context) }
 
     Function("drainDiagnostics") { DiagnosticsStore.drain(context) }
+
+    Function("requestRebind") { CaptureListenerService.requestRebindLogged(context, "app") }
 
     OnStartObserving { registerReceiver() }
     OnStopObserving { unregisterReceiver() }

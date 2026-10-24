@@ -254,6 +254,8 @@ const pt = {
 			empty: 'Sem meses no histórico ainda.',
 			columnLabel: '{{month}}: entrou {{income}}, gastou {{spent}}, guardou {{saved}}',
 			hint: 'Seleciona este mês na tela toda',
+			spentPendingIncluded: 'Gastou inclui {{amount}} a revisar',
+			incomePendingIncluded: 'Entrou inclui {{amount}} a revisar',
 		},
 		projection: {
 			scenario: 'Se as parcelas virarem aporte ao quitar',
@@ -670,6 +672,17 @@ const pt = {
 		insightfulReports: 'Relatórios úteis',
 		insightfulReportsDesc:
 			'Visualize seus padrões de gastos em relatórios personalizados. Entenda para onde vai o seu dinheiro.',
+		continue: 'Continuar',
+	},
+
+	onboardingCaptures: {
+		screenTitle: 'Captura automática',
+		title: 'Seus gastos entram sozinhos',
+		body:
+			'O Spendr lê as notificações que os apps do seu banco já mandam — compras, Pix, transferências — e as transforma em lançamentos para você confirmar com um toque.',
+		keepsOnly: 'Só ficam guardadas as notificações que trazem um valor em dinheiro.',
+		enabled: 'Acesso ligado. Os avisos do banco começam a chegar a partir de agora.',
+		skip: 'Agora não',
 		continue: 'Continuar',
 	},
 
@@ -1269,6 +1282,7 @@ const pt = {
 			counterpart: 'Outra ponta de uma transferência já reconhecida',
 			external_leg: 'Enviado por uma conta que o app não acompanha; o recebimento entrou como receita',
 			foreign_currency: 'Valor em moeda estrangeira: confira o valor em reais antes de confirmar',
+			app_rule: 'Avisos do {{app}} estão sendo ignorados',
 			invoice_payment: 'Pagamento da fatura: as compras já foram contadas',
 			investment: 'Investimento: não é receita nem despesa',
 			statement_capture: 'Já capturado por uma notificação do banco',
@@ -1305,6 +1319,10 @@ const pt = {
 		announceDuplicate: 'Marcado como duplicado',
 		announceKeptBoth: 'Mantido como lançamento separado',
 		announceReverted: 'Revertido',
+		ignoredAppsTitle: 'Avisos ignorados',
+		ignoredApp: 'Avisos do {{app}} estão sendo ignorados',
+		unignoreHint: 'Os avisos deste app voltam para a revisão',
+		announceUnignored: 'Os avisos do {{app}} voltam para a revisão',
 		homeBanner_one: '{{count}} lançamento para revisar',
 		homeBanner_other: '{{count}} lançamentos para revisar',
 		homeReview: 'Revisar',
@@ -1312,6 +1330,12 @@ const pt = {
 		accessOffAction: 'Ligar',
 		accessOffHint: 'Abre a tela do Android onde o acesso a notificações é ligado para o Spendr',
 		accessOffDismiss: 'Não avisar mais',
+		stalled_one: 'Não recebemos avisos do seu banco há {{count}} dia',
+		stalled_other: 'Não recebemos avisos do seu banco há {{count}} dias',
+		stalledAction: 'Reconectar',
+		stalledHint:
+			'Pede ao Android para religar a leitura e abre a tela do acesso a notificações. Se continuar parado, desligue e ligue o acesso do Spendr.',
+		stalledDismiss: 'Dispensar por 7 dias',
 		homeReviewHint: 'Abre a lista de lançamentos capturados',
 		settingsSection: 'Captura automática',
 		settingsCapture: 'Ler notificações do banco',

@@ -51,17 +51,7 @@ class CaptureListenerService : NotificationListenerService() {
       level = "warn",
       data = mapOf("reason" to if (stillEnabled) "system_unbound" else "access_revoked"),
     )
-    if (stillEnabled) requestRebindLogged()
-  }
-
-  private fun requestRebindLogged() {
-    val result = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) "unsupported" else try {
-      NotificationListenerService.requestRebind(ComponentName(applicationContext, CaptureListenerService::class.java))
-      "ok"
-    } catch (e: Exception) {
-      e.javaClass.simpleName
-    }
-    DiagnosticsStore.append(applicationContext, "rebind_requested", data = mapOf("result" to result))
+    if (stillEnabled) requestRebindLogged(applicationContext, "service")
   }
 
   override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -137,6 +127,21 @@ class CaptureListenerService : NotificationListenerService() {
       Regex("""(?:R\$|US\$|\$|€|£|\b(?:USD|EUR|GBP|ARS|CLP|UYU|PYG|MXN|CAD|AUD|CHF|JPY))\s?\d""")
 
     private val DIGIT = Regex("""\d""")
+
+    /**
+     * Pede ao Android para vincular o serviço de novo e anota o pedido. Chamado pelo próprio
+     * serviço ao ser desvinculado (`source` "service") e pelo "Reconectar" do aviso de
+     * captura parada (`source` "app", SPD-021).
+     */
+    fun requestRebindLogged(context: Context, source: String) {
+      val result = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) "unsupported" else try {
+        NotificationListenerService.requestRebind(ComponentName(context, CaptureListenerService::class.java))
+        "ok"
+      } catch (e: Exception) {
+        e.javaClass.simpleName
+      }
+      DiagnosticsStore.append(context, "rebind_requested", data = mapOf("result" to result, "source" to source))
+    }
 
     /**
      * O Android guarda os listeners autorizados numa lista "pacote/serviço:pacote/serviço".
