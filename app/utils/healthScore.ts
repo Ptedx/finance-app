@@ -7,12 +7,13 @@
  *    custo essencial conhecido, quantos meses de gasto o caixa e o guardado sustentam).
  *  - Custo fixo: quanto da renda já está comprometida antes do mês começar.
  *  - Peso do cartão: as faturas (fechada e aberta) contra a renda média.
- *  - Ritmo de gastos: o mês contra a média, proporcional ao dia em que ele está.
+ *  - Ritmo de gastos: o mês até hoje contra os meses anteriores até o mesmo dia.
  *
  * Os limiares são os mesmos de `insights.ts` onde eles já existiam, para o painel e as
  * frases nunca discordarem. Puro: nada de React Native, nada de banco.
  */
 
+import { lastDayOfMonth, monthKeyOf, shiftMonthKey } from './dateUtils';
 import {
 	HEALTHY_SAVINGS_RATE_BASIS_POINTS,
 	HEAVY_FIXED_COST_BASIS_POINTS,
@@ -63,7 +64,7 @@ export interface HealthInput {
 	averageMonthlyIncomeCents: Cents | null;
 	/** Uso do limite no cartão mais carregado, 0-100+; nulo sem limite informado. */
 	limitUsagePercent: number | null;
-	/** Gasto do mês selecionado até agora. */
+	/** Gasto do mês selecionado até agora (até o corte de `spendingPaceWindows`). */
 	currentSpendCents: Cents;
 	/** Quanto do mês selecionado já passou, em pontos-base (10.000 = mês fechado). */
 	elapsedBp: number;
@@ -72,6 +73,27 @@ export interface HealthInput {
 	 * reserva ÷ custo essencial contra a meta de meses; sem ela, caixa + guardado ÷ gasto.
 	 */
 	reserve?: { reserveCents: Cents; monthlyCostCents: Cents; targetMonths: number } | null;
+	/**
+	 * O gasto de cada mês anterior até o mesmo dia do mês selecionado (ver
+	 * `spendingPaceWindows`), do mais recente para o mais antigo. É a base do ritmo de gastos:
+	 * sem ela, ou sem nenhum mês com lançamentos, o indicador fica sem dados.
+	 */
+	previousSpendToDate?: PaceMonth[] | null;
+}
+
+/** Um mês anterior, cortado no mesmo dia do mês selecionado. */
+export interface PaceMonth {
+	/** O gasto do mês até o dia do corte, na mesma conta de `currentSpendCents`. */
+	toDateCents: Cents;
+	/** Se o mês tem algum lançamento. Mês de antes de começar a usar o app não é mês de gasto zero. */
+	hasData: boolean;
+}
+
+/** De que dia a que dia um mês entra na conta do ritmo. Datas `YYYY-MM-DD`. */
+export interface PaceWindow {
+	month: string;
+	startDate: string;
+	cutoffDate: string;
 }
 
 export const HEALTH_THRESHOLDS = {
@@ -79,8 +101,11 @@ export const HEALTH_THRESHOLDS = {
 	reserveMonths: { good: SOLID_RUNWAY_MONTHS, warn: THIN_RUNWAY_MONTHS },
 	fixedCost: { good: 4_000, warn: HEAVY_FIXED_COST_BASIS_POINTS },
 	cardLoad: { good: 3_000, warn: 5_000, limitWarnPercent: 80 },
-	/** Até +5% da média é ritmo normal; até +15% pede atenção. Antes de 15% do mês, é cedo. */
-	spendingTrend: { good: 500, warn: 1_500, minElapsedBp: 1_500 },
+	/**
+	 * Até +5% do mesmo ponto dos meses anteriores é ritmo normal; até +15% pede atenção.
+	 * Antes de 15% do mês, é cedo. A base é a média de até 3 meses com lançamentos.
+	 */
+	spendingTrend: { good: 500, warn: 1_500, minElapsedBp: 1_500, historyMonths: 3 },
 } as const;
 
 const percentText = (basisPoints: number): string => `${Math.round(basisPoints / 100)}%`;
@@ -180,11 +205,44 @@ const cardLoadIndicator = (input: HealthInput): HealthIndicator => {
 	};
 };
 
+const pad2 = (value: number): string => String(value).padStart(2, '0');
+
+/**
+ * Os cortes do ritmo de gastos: o mês selecionado do dia 1 ao dia D, e cada um dos meses
+ * anteriores do dia 1 ao mesmo dia D. No mês em andamento, D é hoje; no mês mais curto, D
+ * vira o último dia dele (dia 31 contra fevereiro vai até o dia 28 ou 29). Mês selecionado
+ * já fechado compara meses inteiros; mês que ainda não começou não tem ritmo.
+ *
+ * A projeção linear (média do mês × fração do mês que passou) acusava +68% no dia 10 de
+ * quem estava no ritmo de sempre: fatura, envelope e contas pesam no começo do mês, e o
+ * mesmo ponto dos meses anteriores já tem o mesmo peso.
+ */
+export const spendingPaceWindows = (
+	selectedMonth: string,
+	today: string,
+	count: number = HEALTH_THRESHOLDS.spendingTrend.historyMonths
+): { current: PaceWindow; previous: PaceWindow[] } | null => {
+	const todayMonth = monthKeyOf(today);
+	if (selectedMonth > todayMonth) return null;
+	// Nulo é "o mês inteiro".
+	const day = selectedMonth === todayMonth ? Number(today.slice(8, 10)) : null;
+	const windowOf = (month: string): PaceWindow => {
+		const [year, monthNumber] = month.split('-').map(Number);
+		const last = lastDayOfMonth(year, monthNumber);
+		return { month, startDate: `${month}-01`, cutoffDate: `${month}-${pad2(day === null ? last : Math.min(day, last))}` };
+	};
+	return {
+		current: windowOf(selectedMonth),
+		previous: Array.from({ length: Math.max(0, count) }, (_, index) => windowOf(shiftMonthKey(selectedMonth, -(index + 1)))),
+	};
+};
+
 const spendingTrendIndicator = (input: HealthInput): HealthIndicator => {
-	const { good, warn, minElapsedBp } = HEALTH_THRESHOLDS.spendingTrend;
-	const average = input.averageMonthlySpendCents;
+	const { good, warn, minElapsedBp, historyMonths } = HEALTH_THRESHOLDS.spendingTrend;
 	const tooEarly = input.elapsedBp < minElapsedBp;
-	const expected = average === null || average <= 0 || tooEarly ? null : Math.round((average * Math.min(FULL_BASIS_POINTS, input.elapsedBp)) / FULL_BASIS_POINTS);
+	// Os meses mais recentes que têm lançamentos, até três: um mês só já serve de base.
+	const base = (input.previousSpendToDate ?? []).filter((month) => month.hasData).slice(0, historyMonths);
+	const expected = tooEarly || base.length === 0 ? null : Math.round(base.reduce((sum, month) => sum + month.toDateCents, 0) / base.length);
 	const value = expected === null || expected <= 0 ? null : Math.round(((input.currentSpendCents - expected) * FULL_BASIS_POINTS) / expected);
 	const signed = value === null ? '—' : `${value > 0 ? '+' : ''}${percentText(value)}`;
 	return {
@@ -218,4 +276,4 @@ export const healthSummary = (items: HealthIndicator[]): Record<HealthStatus, nu
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { buildHealthIndicators, healthSummary };
+export default { buildHealthIndicators, healthSummary, spendingPaceWindows };

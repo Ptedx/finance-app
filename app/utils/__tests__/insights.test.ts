@@ -379,6 +379,7 @@ describe('buildGoalInsights', () => {
 			limitUsagePercent: 20,
 			currentSpendCents: R(2_500),
 			elapsedBp: 5_000,
+			previousSpendToDate: [{ toDateCents: R(2_500), hasData: true }],
 			...overrides,
 		});
 
