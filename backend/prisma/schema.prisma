@@ -59,6 +59,7 @@ model User {
   transfers             Transfer[]
   captures              Capture[]
   merchantRules         MerchantRule[]
+  bills                 Bill[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -497,6 +498,41 @@ model MerchantRule {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("merchant_rules")
+}
+
+/// Uma conta a pagar (aluguel, luz, escola…): vence todo mês no `dueDay`.
+///
+/// O `id` é o uuid gerado no aparelho, como nas dívidas. `accountId`, `category` e `debtId`
+/// não são FK nem são verificados no push: uma conta que chega antes da dívida ou da
+/// categoria a que aponta continua valendo, e o app resolve quando a outra ponta chega.
+model Bill {
+  id          String
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  dueDay      Int
+  /// Nulo **quer dizer** "o valor varia" (luz, água): não é um campo esquecido, e não pode
+  /// virar 0 — o app trataria a conta como gratuita.
+  amountCents BigInt?
+  accountId   String?
+  category    String?
+  /// Pista com que o app reconhece o pagamento desta conta. Texto livre, até 200.
+  matchHint   String?
+  /// A dívida que esta conta paga, quando é a parcela de uma.
+  debtId      String?
+  /// Último mês já pago, `YYYY-MM`. Texto, como `openingBalanceDate`: é mês de calendário,
+  /// não instante.
+  paidThrough String?   @db.VarChar(7)
+  paidByRef   String?
+  active      Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  updatedAt   DateTime
+  deletedAt   DateTime?
+  serverSeq   Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("bills")
 }
 
 // ============================================

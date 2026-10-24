@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 import type { z } from 'zod';
+import { billColumns, billToWire } from '../domain/billWire.js';
 import { resolveBudgetPeriod } from '../domain/budgetConflict.js';
 import {
 	captureColumns,
@@ -14,6 +15,7 @@ import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import {
 	accountSchema,
+	billSchema,
 	budgetSchema,
 	captureSchema,
 	categorySchema,
@@ -43,6 +45,8 @@ import {
  * O v19 acrescentou outras duas, `captures` e `merchantRules`, pela mesma regra: toda
  * coleção é opcional nas duas direções, então um app que não as conhece não quebra e um
  * push sem elas é aceito.
+ *
+ * `bills` (contas a pagar) entrou depois, pela mesma regra.
  */
 
 type Collection =
@@ -56,7 +60,8 @@ type Collection =
 	| 'debts'
 	| 'reserveGoals'
 	| 'captures'
-	| 'merchantRules';
+	| 'merchantRules'
+	| 'bills';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
 
@@ -112,6 +117,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		reserveGoals,
 		captures,
 		merchantRules,
+		bills,
 	] = await Promise.all([
 		prisma.category.findMany(page(cursor.categories)),
 		prisma.account.findMany(page(cursor.accounts)),
@@ -124,6 +130,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.reserveGoal.findMany(page(cursor.reserveGoals)),
 		prisma.capture.findMany(page(cursor.captures)),
 		prisma.merchantRule.findMany(page(cursor.merchantRules)),
+		prisma.bill.findMany(page(cursor.bills)),
 	]);
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
@@ -258,6 +265,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		 */
 		captures: captures.map(captureToWire),
 		merchantRules: merchantRules.map(merchantRuleToWire),
+		/** Contas a pagar. `amountCents` nulo ("o valor varia") volta nulo — ver `domain/billWire.ts`. */
+		bills: bills.map(billToWire),
 	};
 
 	/**
@@ -287,6 +296,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		 */
 		captures: advance(captures, cursor.captures),
 		merchantRules: advance(merchantRules, cursor.merchantRules),
+		// Pelo mesmo motivo, a chave sai sempre: é ela que diz ao app que `bills` existe aqui.
+		bills: advance(bills, cursor.bills),
 	};
 
 	res.json({
@@ -306,6 +317,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			reserveGoals,
 			captures,
 			merchantRules,
+			bills,
 		].some((rows) => rows.length === env.syncPageSize),
 		changes,
 	});
@@ -434,6 +446,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const reserveGoals = partitionRows('reserveGoals', changes.reserveGoals, reserveGoalSchema, rejected);
 	const captures = partitionRows('captures', changes.captures, captureSchema, rejected);
 	const merchantRules = partitionRows('merchantRules', changes.merchantRules, merchantRuleSchema, rejected);
+	const bills = partitionRows('bills', changes.bills, billSchema, rejected);
 
 	let applied = 0;
 
@@ -904,6 +917,41 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 				if (refusal !== null) {
 					rejected.push({ collection: 'merchantRules', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += 1;
+			}
+
+			// --- Contas a pagar ----------------------------------------------------
+			// `accountId`, `category` e `debtId` não são verificados — ver o comentário das
+			// capturas: uma conta que chega antes da dívida a que aponta continua valendo.
+			for (const row of bills) {
+				const current = await tx.bill.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'bills', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = billColumns(row);
+
+				// SAVEPOINT pelo mesmo motivo das capturas: `name` e `matchHint` são texto do
+				// usuário, e um valor que o banco recuse (um byte NUL, um `sortOrder` fora do
+				// INTEGER) não pode derrubar a remessa.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.bill.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'bills', id: row.id, reason: 'invalid', message: refusal });
 					continue;
 				}
 
