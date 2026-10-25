@@ -47,6 +47,10 @@ describe('paridade das traduções', () => {
 		'onboardingCaptures.enabled',
 		'onboardingCaptures.skip',
 		'onboardingCaptures.continue',
+		// O porquê no histórico quando o destino foi completado sozinho (SPD-023).
+		'captures.reason.investment_reserve',
+		'captures.reason.invoice_card_last4',
+		'captures.reason.invoice_amount',
 	])('%s existe nos três idiomas', (path) => {
 		for (const locale of [pt, en, itLocale]) {
 			const value = path

@@ -14,15 +14,21 @@
  * banco a adota, em vez de nascer uma segunda conta do mesmo banco ao lado dela.
  */
 
+import { getPendingCaptures } from '../database/captures';
 import {
 	addAccount,
 	findAccountByKey,
 	findAccountBySource,
+	getAccountTransactions,
+	getAccountTransfers,
 	getAccounts,
 	updateAccount,
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
+import { provisionalEntries } from './accountMath';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
+import { buildCardSummary, type CardEntry, type CardMovement } from './cardMath';
+import { parseCardNames } from './cardNames';
 import { isKnownBankPackage } from '../diagnostics/knownBanks';
 import { isSmsPackage, isStatementPackage } from './captureMatcher';
 import { isWalletPackage, type ParsedCapture, type RawCapture } from './captureParser';
@@ -355,6 +361,107 @@ export const findCheckingForCard = async (card: Account): Promise<Account | null
 	return main.length === 1 ? main[0] : null;
 };
 
+/**
+ * Como o outro lado de uma aplicação, resgate ou pagamento de fatura foi achado, para o
+ * diário (SPD-014, SPD-023):
+ *  - `single_reserve`: a única reserva do banco (aplicação e resgate);
+ *  - `notifier`: o aviso veio do próprio cartão, e o destino é ele;
+ *  - `card_last4`: o cartão do final citado no aviso;
+ *  - `single_card`: o único cartão do banco da conta;
+ *  - `paired`: o aviso do cartão já tinha gravado este pagamento;
+ *  - `invoice_amount`: a única fatura fechada em aberto com o mesmo valor;
+ *  - `none`: não há escolha só, e o lado fica em branco.
+ */
+export type DestinationResolution =
+	| 'single_reserve'
+	| 'notifier'
+	| 'card_last4'
+	| 'single_card'
+	| 'paired'
+	| 'invoice_amount'
+	| 'none';
+
+/** Reserva é o papel `reserve` ou a conta poupança, seja qual for o papel que ganhou. */
+const isReserveLike = (account: Account): boolean =>
+	account.kind !== 'credit_card' && (account.role === 'reserve' || account.kind === 'savings');
+
+/**
+ * A caixinha de uma aplicação ou resgate (AUTO-08): a **única** reserva do mesmo banco da
+ * conta que avisou, ativa. Com zero ou duas não há como saber, e o lado fica em branco como
+ * antes. O aviso que já veio de uma reserva (ou de um cartão) não procura outra: "aplicação"
+ * vista pela própria caixinha não diz para onde foi.
+ */
+export const findReserveForInvestment = async (account: Account): Promise<Account | null> => {
+	if (account.kind === 'credit_card' || isReserveLike(account)) return null;
+	const reserves = (await getAccounts()).filter(
+		(candidate) =>
+			candidate.id !== account.id &&
+			!candidate.archived &&
+			!candidate.deletedAt &&
+			isReserveLike(candidate) &&
+			sameSource(candidate, account)
+	);
+	return reserves.length === 1 ? reserves[0] : null;
+};
+
+/** Os cartões ativos do usuário, de qualquer banco. */
+const liveCards = async (): Promise<Account[]> =>
+	(await getAccounts()).filter((account) => account.kind === 'credit_card' && !account.archived && !account.deletedAt);
+
+/**
+ * O cartão cujo final o aviso do pagamento cita (AUTO-03): o final do plástico ou de um
+ * virtual já nomeado, em qualquer banco — a fatura do Itaú se paga pelo app do Nubank. Só
+ * quando um cartão só tem aquele final.
+ */
+export const findCardByLast4 = async (last4: string | null): Promise<Account | null> => {
+	if (!last4) return null;
+	const cards = (await liveCards()).filter(
+		(card) => card.last4 === last4 || parseCardNames(card.cardNames)[last4] !== undefined
+	);
+	return cards.length === 1 ? cards[0] : null;
+};
+
+/**
+ * O cartão cuja fatura fechada ainda em aberto vale exatamente o que foi pago (AUTO-03), entre
+ * todos os cartões do usuário. Só quando um cartão só bate: dois cartões com o mesmo valor a
+ * pagar ficam sem resposta.
+ *
+ * "Em aberto" é o que falta pagar das fechadas no dia do pagamento (`toPayCents` do resumo
+ * do cartão, o mesmo número da tela): fatura já quitada não bate, e o pagamento parcial
+ * anterior já foi descontado. As compras ainda na caixa de entrada entram, como na tela —
+ * o banco já as cobra.
+ */
+export const findCardByClosedInvoice = async (amountCents: number, date: string): Promise<Account | null> => {
+	const cards = await liveCards();
+	if (cards.length === 0) return null;
+	const pending = await getPendingCaptures();
+	const matches: Account[] = [];
+	for (const card of cards) {
+		const [transactions, transfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
+		const entries: CardEntry[] = transactions.map((tx) => ({
+			id: tx.id,
+			amountCents: tx.amountCents,
+			isIncome: tx.isIncome,
+			date: tx.date,
+			note: tx.note,
+			category: tx.category,
+			installmentGroup: tx.installmentGroup,
+			installmentIndex: tx.installmentIndex,
+			installmentCount: tx.installmentCount,
+			cardLast4: tx.cardLast4,
+		}));
+		for (const capture of pending) entries.push(...provisionalEntries(capture, card));
+		const movements: CardMovement[] = transfers.map((transfer) => ({
+			amountCents: transfer.amountCents,
+			date: transfer.date,
+			inbound: transfer.toAccountId === card.id,
+		}));
+		const toPay = buildCardSummary(card, entries, movements, date).toPayCents;
+		if (toPay > 0 && toPay === amountCents) matches.push(card);
+	}
+	return matches.length === 1 ? matches[0] : null;
+};
+
 export default {
 	resolveAccountForNotification,
 	resolveAccountForStatement,
@@ -364,6 +471,9 @@ export default {
 	BANK_PACKAGES,
 	findCardForInvoice,
 	findCheckingForCard,
+	findReserveForInvestment,
+	findCardByLast4,
+	findCardByClosedInvoice,
 	isCreditCardNotification,
 	sameBank,
 	ACCOUNT_COLORS,

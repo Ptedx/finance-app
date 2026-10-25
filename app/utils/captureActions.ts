@@ -53,9 +53,13 @@ import { log } from '../diagnostics/log';
 import * as syncQueue from '../sync/queue';
 import {
 	type AccountResolution,
+	type DestinationResolution,
+	findCardByClosedInvoice,
+	findCardByLast4,
 	findCardForInvoice,
 	canLearnToIgnore,
 	findCheckingForCard,
+	findReserveForInvestment,
 	isNoBankNotice,
 	resolveAccountForNotification,
 } from './accountResolver';
@@ -441,18 +445,36 @@ const transferSidesOf = (
 ): { from: string | null; to: string | null } =>
 	capture.direction === 'out' ? { from: capture.accountId, to: other } : { from: other, to: capture.accountId };
 
+/** A transferência de um movimento neutro, e como o outro lado dela foi achado (o diário). */
+interface NeutralMove {
+	transferId: string | null;
+	destination: DestinationResolution;
+}
+
 /**
- * Pagar a fatura é transferir da conta para o cartão. Visto pela conta ("pagamento da
- * fatura"), o destino é o único cartão do mesmo banco; visto pelo cartão ("pagamento
- * recebido"), a origem é a única conta do mesmo banco. Com mais de um candidato o lado
- * fica nulo, e as duas vistas ainda se reconhecem pelo valor e pela data.
+ * Pagar a fatura é transferir da conta para o cartão. Visto pelo cartão ("pagamento
+ * recebido"), a origem é a única conta do mesmo banco. Visto pela conta ("pagamento da
+ * fatura"), o destino é o cartão quando há uma escolha só (AUTO-03), nesta ordem:
+ *
+ *  1. o cartão do final citado no aviso, de qualquer banco;
+ *  2. o único cartão do mesmo banco (era o único caminho até o SPD-023);
+ *  3. o cartão cujo aviso já gravou este mesmo pagamento — antes do valor, senão o valor
+ *     escolheria outro cartão para um pagamento que já está no livro;
+ *  4. sem final no aviso, a única fatura fechada em aberto com o mesmo valor.
+ *
+ * Senão o lado fica nulo, e as duas vistas ainda se reconhecem pelo valor e pela data. Final
+ * citado que não é de cartão nenhum não cai no valor: o aviso disse qual era, e não é este.
  */
 const recordInvoicePayment = async (
-	capture: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel' | 'accountId' | 'direction'>
-): Promise<string | null> => {
-	if (!capture.accountId) return null;
+	capture: Pick<
+		Capture,
+		'amountCents' | 'postedAt' | 'counterparty' | 'appLabel' | 'accountId' | 'direction' | 'cardLast4'
+	>
+): Promise<NeutralMove> => {
+	const nothing: NeutralMove = { transferId: null, destination: 'none' };
+	if (!capture.accountId) return nothing;
 	const account = await getAccount(capture.accountId);
-	if (!account) return null;
+	if (!account) return nothing;
 	const date = localDateOf(capture.postedAt);
 
 	// O mesmo pagamento chega por caminhos diferentes — o aviso da conta, o aviso do
@@ -489,17 +511,19 @@ const recordInvoicePayment = async (
 	if (account.kind === 'credit_card') {
 		// Visto pelo cartão, o aviso de pagamento às vezes vem como "saída" do parser.
 		const checking = await findCheckingForCard(account);
-		return payInto(account.id, checking?.id ?? null);
+		return { transferId: await payInto(account.id, checking?.id ?? null), destination: 'notifier' };
 	}
 
-	if (capture.direction !== 'out') return null;
+	if (capture.direction !== 'out') return nothing;
+	const byLast4 = await findCardByLast4(capture.cardLast4);
+	if (byLast4) return { transferId: await payInto(byLast4.id, account.id), destination: 'card_last4' };
 	const card = await findCardForInvoice(account);
-	if (card) return payInto(card.id, account.id);
+	if (card) return { transferId: await payInto(card.id, account.id), destination: 'single_card' };
 
-	// Dois cartões no banco: não se sabe qual fatura foi paga e o destino fica em branco.
-	// Mas se o aviso do cartão já registrou este pagamento, é este mesmo movimento, e
-	// gravar outro debitaria a conta duas vezes. `findLiveTransfer` não sabe pedir "para
-	// qualquer cartão deste usuário": ela devolve o que sai desta conta e o filtro é aqui.
+	// Não se sabe ainda qual fatura foi paga. Mas se o aviso do cartão já registrou este
+	// pagamento, é este mesmo movimento, e gravar outro debitaria a conta duas vezes.
+	// `findLiveTransfer` não sabe pedir "para qualquer cartão deste usuário": ela devolve o
+	// que sai desta conta e o filtro é aqui.
 	const live = await findLiveTransfer({
 		amountCents: capture.amountCents,
 		fromAccountId: account.id,
@@ -509,9 +533,12 @@ const recordInvoicePayment = async (
 	});
 	if (live && live.fromAccountId === account.id && live.toAccountId !== null) {
 		const destination = await getAccount(live.toAccountId);
-		if (destination?.kind === 'credit_card') return live.id;
+		if (destination?.kind === 'credit_card') return { transferId: live.id, destination: 'paired' };
 	}
-	return recordTransfer(capture, account.id, null, null);
+
+	const byInvoice = capture.cardLast4 ? null : await findCardByClosedInvoice(capture.amountCents, date);
+	if (byInvoice) return { transferId: await payInto(byInvoice.id, account.id), destination: 'invoice_amount' };
+	return { transferId: await recordTransfer(capture, account.id, null, null), destination: 'none' };
 };
 
 /**
@@ -520,17 +547,33 @@ const recordInvoicePayment = async (
  * corrente ficava R$ 5.000 acima do real indefinidamente (achado 7.2) — nenhum lançamento
  * datado depois da âncora a corrigia, e o saldo errado nunca se consertava sozinho.
  *
- * O app não sabe qual é a caixinha de destino e não deve chutar: vira transferência com o
- * outro lado em branco, pelo mesmo mecanismo que o pagamento da fatura usa quando o banco
- * tem dois cartões. Sem conta de origem conhecida não há o que gravar — a captura fica
- * ignorada e o usuário atribui.
+ * A caixinha é a **única** reserva do banco da conta que avisou, quando há uma só (AUTO-08):
+ * a aplicação vai da conta para ela, o resgate volta dela. Com zero ou duas o app não chuta:
+ * vira transferência com o outro lado em branco, pelo mesmo mecanismo que o pagamento da
+ * fatura usa quando não sabe o cartão. Sem conta de origem conhecida não há o que gravar —
+ * a captura fica ignorada e o usuário atribui.
  */
 const recordInvestmentMove = async (
 	capture: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel' | 'accountId' | 'direction'>
-): Promise<string | null> => {
-	if (!capture.accountId) return null;
-	const sides = transferSidesOf(capture, null);
-	return recordTransfer(capture, sides.from, sides.to, null);
+): Promise<NeutralMove> => {
+	if (!capture.accountId) return { transferId: null, destination: 'none' };
+	const account = await getAccount(capture.accountId);
+	const reserve = account ? await findReserveForInvestment(account) : null;
+	const sides = transferSidesOf(capture, reserve?.id ?? null);
+	return {
+		transferId: await recordTransfer(capture, sides.from, sides.to, null),
+		destination: reserve ? 'single_reserve' : 'none',
+	};
+};
+
+/**
+ * O porquê que o histórico mostra para o movimento neutro: o destino achado pelo SPD-023 diz
+ * como, e o resto continua com o motivo da decisão ("Pagamento da fatura", "Investimento").
+ */
+const NEUTRAL_REASON: Partial<Record<DestinationResolution, string>> = {
+	single_reserve: 'investment_reserve',
+	card_last4: 'invoice_card_last4',
+	invoice_amount: 'invoice_amount',
 };
 
 // ---------------------------------------------------------------------------
@@ -543,14 +586,15 @@ const recordInvestmentMove = async (
  * `base` é o rascunho com os campos da fonte (texto bruto, valor, contraparte, conta…)
  * e status pendente; a decisão diz o status final, a pergunta, o par e a categoria.
  * `auto_confirm` toca no livro (transações); `transfer` e o pagamento de fatura tocam
- * nas transferências. O resto só grava o item.
+ * nas transferências. O resto só grava o item. `destination` só vem no movimento neutro:
+ * como o outro lado da transferência foi achado, para o diário.
  */
 export const applyDecision = async (
 	base: CaptureDraft,
 	decision: Decision,
 	categories: Category[],
 	explicitId?: string
-): Promise<{ id: string; autoConfirmed: boolean }> => {
+): Promise<{ id: string; autoConfirmed: boolean; destination?: DestinationResolution }> => {
 	const id = explicitId ?? generateUniqueId();
 
 	switch (decision.action) {
@@ -623,14 +667,15 @@ export const applyDecision = async (
 		case 'neutral': {
 			// Neutro não é "nada aconteceu": o pagamento da fatura e o investimento movem
 			// dinheiro entre contas, e sem a transferência o saldo da conta fica errado.
-			const transferId =
+			const move: NeutralMove =
 				decision.reason === 'invoice_payment'
 					? await recordInvoicePayment(base)
 					: decision.reason === 'investment'
 						? await recordInvestmentMove(base)
-						: null;
-			await insertCapture({ ...base, status: 'ignored', reason: decision.reason, transferId }, id);
-			return { id, autoConfirmed: false };
+						: { transferId: null, destination: 'none' };
+			const reason = NEUTRAL_REASON[move.destination] ?? decision.reason;
+			await insertCapture({ ...base, status: 'ignored', reason, transferId: move.transferId }, id);
+			return { id, autoConfirmed: false, destination: move.destination };
 		}
 
 		case 'ignore':
@@ -849,6 +894,7 @@ export const ingestRawCaptures = async (
 				account: account ? (accountTrace.how ?? 'existing') : 'none',
 				captureId: result.id,
 				externalLeg,
+				destination: result.destination,
 			},
 		});
 		} catch (error) {

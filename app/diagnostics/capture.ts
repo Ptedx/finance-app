@@ -8,7 +8,7 @@
  * de app de banco conhecido e o parser o descartou ou não entendeu (`keepsRawText`).
  */
 
-import type { AccountResolution } from '../utils/accountResolver';
+import type { AccountResolution, DestinationResolution } from '../utils/accountResolver';
 import type { Decision } from '../utils/captureMatcher';
 import type { ParsedCapture, RawCapture } from '../utils/captureParser';
 import type { DiagnosticValue } from './contract';
@@ -41,6 +41,11 @@ export type CaptureStep =
 			captureId: string;
 			/** A saída da PJ que este recebimento neutralizou. */
 			externalLeg?: boolean;
+			/**
+			 * Só no movimento neutro (aplicação, resgate, pagamento da fatura): como o outro
+			 * lado da transferência foi achado (SPD-023). Nunca qual conta.
+			 */
+			destination?: DestinationResolution;
 	  };
 
 export interface CaptureDecisionInput {
@@ -139,6 +144,7 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			data.account = outcome.account;
 			if (outcome.overridden) data.overridden = outcome.overridden;
 			if (outcome.externalLeg) data.externalLeg = true;
+			if (outcome.destination) data.destination = outcome.destination;
 			break;
 		}
 	}

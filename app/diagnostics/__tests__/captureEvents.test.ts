@@ -304,6 +304,23 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		expect(JSON.stringify(failure)).not.toContain('PADARIA');
 		expect(decisions()).toHaveLength(0);
 	});
+
+	it('aplicação, resgate e fatura dizem como o destino foi achado, sem qual conta (SPD-023)', async () => {
+		manualAccount({ name: 'Nubank', bankName: 'Nubank', packageName: NUBANK });
+		const reserve = manualAccount({ name: 'Caixinha da viagem', kind: 'savings', role: 'reserve', bankName: 'Nubank' });
+		await ingest(
+			raw(NUBANK, 'Nubank', 'Aplicação', 'Aplicação de R$ 500,00 realizada com sucesso.'),
+			raw(NUBANK, 'Nubank', 'Fatura', 'Pagamento da fatura de R$ 1.500,00 realizado.'),
+			purchase()
+		);
+
+		const [investment, invoice, bought] = decisions();
+		expect(investment.data).toMatchObject({ kind: 'investment', reason: 'investment', destination: 'single_reserve' });
+		// Nenhum cartão para escolher: o destino fica em branco, e o diário diz.
+		expect(invoice.data).toMatchObject({ kind: 'invoice_payment', reason: 'invoice_payment', destination: 'none' });
+		expect(bought.data.destination).toBeUndefined();
+		expect(JSON.stringify(decisions())).not.toMatch(new RegExp(`${reserve.id}|Caixinha|50000|150000`));
+	});
 });
 
 describe('DEC-11 (b): texto cru só de banco conhecido que o parser não entendeu', () => {

@@ -102,6 +102,17 @@ jest.mock('../../database/database', () => ({
 	),
 	getAccount: jest.fn(async (id: string) => mockAccounts.get(id) ?? null),
 	getAccounts: jest.fn(async () => [...mockAccounts.values()]),
+	// A fatura de cada cartão sai do livro dele (SPD-023): lançamentos vivos e transferências.
+	getAccountTransactions: jest.fn(async (accountId: string) =>
+		[...mockTransactions.values()]
+			.filter((row) => row.accountId === accountId && !row.deleted)
+			.map((row) => ({ installmentGroup: null, installmentIndex: null, installmentCount: null, cardLast4: null, ...row }))
+	),
+	getAccountTransfers: jest.fn(async (accountId: string) =>
+		[...mockTransfers.values()].filter(
+			(transfer) => !transfer.deletedAt && (transfer.fromAccountId === accountId || transfer.toAccountId === accountId)
+		)
+	),
 	addAccount: jest.fn(async () => mockMakeId('acc')),
 	updateAccount: jest.fn(async (updated: Account) => {
 		mockAccounts.set(updated.id, { ...updated });
@@ -129,6 +140,7 @@ jest.mock('../../database/captures', () => ({
 	}),
 	getCapture: jest.fn(async (id: string) => mockCaptures.get(id) ?? null),
 	getRecentCaptures: jest.fn(async () => [...mockCaptures.values()]),
+	getPendingCaptures: jest.fn(async () => [...mockCaptures.values()].filter((capture) => capture.status === 'pending')),
 	hasCaptureFingerprint: jest.fn(async () => false),
 	getMerchantRule: jest.fn(async (key: string) => mockRules.get(key) ?? null),
 	saveMerchantRule: jest.fn(async (rule: Omit<MerchantRule, 'updatedAt'>) => {
@@ -403,6 +415,231 @@ describe('aplicação e resgate viram transferência (achado 7.2)', () => {
 
 		expect(liveTransfers()).toHaveLength(0);
 		expect(mockCaptures.get(id)).toMatchObject({ status: 'pending', transferId: null });
+	});
+});
+
+describe('aplicação e resgate com a única reserva do banco (SPD-023, AUTO-08)', () => {
+	const RESERVE = account({ id: 'reserva', name: 'Caixinha', kind: 'savings', role: 'reserve', bankName: 'Nubank' });
+	const investment = (direction: 'in' | 'out') =>
+		applyDecision(
+			draft({ amountCents: 500_000, kind: 'investment', direction, counterparty: null, merchantKey: null }),
+			{ action: 'neutral', reason: 'investment' },
+			[]
+		);
+
+	it('com uma reserva no banco, a aplicação vai da conta que avisou para ela', async () => {
+		mockAccounts.set(RESERVE.id, RESERVE);
+
+		const result = await investment('out');
+
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: RESERVE.id, amountCents: 500_000 }),
+		]);
+		expect(result.destination).toBe('single_reserve');
+		expect(mockCaptures.get(result.id)).toMatchObject({
+			status: 'ignored',
+			reason: 'investment_reserve',
+			transferId: liveTransfers()[0].id,
+		});
+		expect(mockTransactions.size).toBe(0);
+	});
+
+	it('e o resgate é o caminho inverso', async () => {
+		mockAccounts.set(RESERVE.id, RESERVE);
+
+		await investment('in');
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: RESERVE.id, toAccountId: CHECKING.id })]);
+	});
+
+	it('o papel "reserva" basta, e a conta poupança também conta como reserva', async () => {
+		mockAccounts.set('cofrinho', account({ id: 'cofrinho', kind: 'checking', role: 'reserve', bankName: 'Nubank' }));
+		await investment('out');
+		expect(liveTransfers()[0].toAccountId).toBe('cofrinho');
+
+		mockTransfers.clear();
+		mockAccounts.delete('cofrinho');
+		mockAccounts.set('poupanca', account({ id: 'poupanca', kind: 'savings', role: 'main', bankName: 'Nubank' }));
+		await investment('out');
+		expect(liveTransfers()[0].toAccountId).toBe('poupanca');
+	});
+
+	it('sem reserva no banco, o destino continua em branco', async () => {
+		// A reserva de outro banco e a arquivada não são a caixinha deste.
+		mockAccounts.set('inter', account({ id: 'inter', kind: 'savings', role: 'reserve', bankName: 'Inter' }));
+		mockAccounts.set('velha', { ...RESERVE, id: 'velha', archived: true });
+
+		const result = await investment('out');
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: null })]);
+		expect(result.destination).toBe('none');
+		expect(mockCaptures.get(result.id)?.reason).toBe('investment');
+	});
+
+	it('com duas reservas no banco não se sabe qual: o destino continua em branco', async () => {
+		mockAccounts.set(RESERVE.id, RESERVE);
+		mockAccounts.set('reserva2', { ...RESERVE, id: 'reserva2', name: 'Viagem' });
+
+		const out = await investment('out');
+		await investment('in');
+
+		expect(out.destination).toBe('none');
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: null }),
+			expect.objectContaining({ fromAccountId: null, toAccountId: CHECKING.id }),
+		]);
+	});
+
+	it('o aviso que veio da própria reserva não vira transferência dela para ela', async () => {
+		mockAccounts.set(RESERVE.id, RESERVE);
+
+		await applyDecision(
+			draft({ amountCents: 500_000, kind: 'investment', accountId: RESERVE.id, counterparty: null, merchantKey: null }),
+			{ action: 'neutral', reason: 'investment' },
+			[]
+		);
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: RESERVE.id, toAccountId: null })]);
+	});
+});
+
+describe('pagamento da fatura com destino único (SPD-023, AUTO-03)', () => {
+	const ITAU_CARD = account({
+		id: 'itau',
+		name: 'Itaú Visa',
+		kind: 'credit_card',
+		role: 'card',
+		bankName: 'Itaú',
+		packageName: 'com.itau',
+		last4: '1234',
+		closingDay: 20,
+	});
+	/** Uma compra no cartão. As de setembro caem na fatura que já fechou quando o pagamento chega. */
+	const purchaseOn = (cardId: string, date: string, amountCents: number) => {
+		const id = mockMakeId('tx');
+		mockTransactions.set(id, { id, amountCents, category: 'food', date, note: 'compra', isIncome: false, accountId: cardId });
+	};
+	const payInvoice = (amountCents: number, cardLast4: string | null = null) =>
+		applyDecision(
+			draft({ amountCents, kind: 'invoice_payment', counterparty: null, merchantKey: null, cardLast4 }),
+			{ action: 'neutral', reason: 'invoice_payment' },
+			[]
+		);
+
+	it('dois cartões no banco: o final citado no aviso diz qual fatura foi paga', async () => {
+		mockAccounts.set(OTHER_CARD.id, { ...OTHER_CARD, last4: '5678' });
+		// A fatura fechada do outro cartão tem o mesmo valor: o final vale mais que o valor.
+		purchaseOn(CARD.id, '2026-09-10', 150_000);
+
+		const result = await payInvoice(150_000, '5678');
+
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: OTHER_CARD.id, amountCents: 150_000 }),
+		]);
+		expect(result.destination).toBe('card_last4');
+		expect(mockCaptures.get(result.id)).toMatchObject({ status: 'ignored', reason: 'invoice_card_last4' });
+	});
+
+	it('o final de um virtual já nomeado leva ao cartão dele', async () => {
+		mockAccounts.set(OTHER_CARD.id, { ...OTHER_CARD, cardNames: JSON.stringify({ '2513': 'Netflix' }) });
+
+		await payInvoice(42_000, '2513');
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: OTHER_CARD.id })]);
+	});
+
+	it('o final de um cartão de outro banco também vale', async () => {
+		mockAccounts.set(ITAU_CARD.id, ITAU_CARD);
+
+		await payInvoice(42_000, '1234');
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: ITAU_CARD.id })]);
+	});
+
+	it('sem final no aviso: a única fatura fechada em aberto com o mesmo valor', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 150_000);
+		purchaseOn(OTHER_CARD.id, '2026-09-05', 80_000);
+
+		const result = await payInvoice(80_000);
+
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: OTHER_CARD.id, amountCents: 80_000 }),
+		]);
+		expect(result.destination).toBe('invoice_amount');
+		expect(mockCaptures.get(result.id)?.reason).toBe('invoice_amount');
+	});
+
+	it('a fatura já paga não conta: o mesmo valor só bate com a que falta pagar', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 80_000);
+		purchaseOn(OTHER_CARD.id, '2026-09-05', 80_000);
+		// A do cartão PJ foi paga por uma conta que o app não acompanha, logo depois de fechar.
+		seedTransfer({ fromAccountId: null, toAccountId: OTHER_CARD.id, amountCents: 80_000, date: '2026-09-12' });
+
+		await payInvoice(80_000);
+
+		expect(liveTransfers().find((transfer) => transfer.fromAccountId === CHECKING.id)?.toAccountId).toBe(CARD.id);
+	});
+
+	it('dois cartões com a fatura do mesmo valor: não completa', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 80_000);
+		purchaseOn(OTHER_CARD.id, '2026-09-05', 80_000);
+
+		const result = await payInvoice(80_000);
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: null })]);
+		expect(result.destination).toBe('none');
+		expect(mockCaptures.get(result.id)?.reason).toBe('invoice_payment');
+	});
+
+	it('nenhum valor bate: o destino continua em branco', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 150_000);
+
+		await payInvoice(99_900);
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: null })]);
+	});
+
+	it('o final que não é de cartão nenhum não cai no valor: continua em branco', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 150_000);
+
+		await payInvoice(150_000, '0000');
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: null })]);
+	});
+
+	it('o cartão é de outro banco: a fatura do mesmo valor diz que é ele', async () => {
+		mockAccounts.delete(CARD.id);
+		mockAccounts.delete(OTHER_CARD.id);
+		mockAccounts.set(ITAU_CARD.id, ITAU_CARD);
+		purchaseOn(ITAU_CARD.id, '2026-09-15', 61_250);
+
+		const result = await payInvoice(61_250);
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: ITAU_CARD.id })]);
+		expect(result.destination).toBe('invoice_amount');
+	});
+
+	it('um cartão só no banco segue como hoje, e o cartão de outro banco não o atrapalha', async () => {
+		mockAccounts.delete(OTHER_CARD.id);
+		mockAccounts.set(ITAU_CARD.id, ITAU_CARD);
+		purchaseOn(ITAU_CARD.id, '2026-09-15', 61_250);
+
+		const result = await payInvoice(61_250);
+
+		expect(liveTransfers()).toEqual([expect.objectContaining({ fromAccountId: CHECKING.id, toAccountId: CARD.id })]);
+		expect(result.destination).toBe('single_card');
+		expect(mockCaptures.get(result.id)?.reason).toBe('invoice_payment');
+	});
+
+	it('o aviso do cartão já registrou o pagamento: o valor não escolhe outro cartão', async () => {
+		purchaseOn(CARD.id, '2026-09-10', 80_000);
+		purchaseOn(OTHER_CARD.id, '2026-09-05', 80_000);
+		seedTransfer({ toAccountId: CARD.id, amountCents: 80_000, date: localDay('2026-10-06T12:00:00.000Z') });
+
+		const result = await payInvoice(80_000);
+
+		expect(liveTransfers()).toHaveLength(1);
+		expect(result.destination).toBe('paired');
 	});
 });
 
