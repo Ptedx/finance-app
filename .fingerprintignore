@@ -7,3 +7,20 @@ node_modules/**/android/.cxx/
 node_modules/**/android/.gradle/
 node_modules/**/ios/build/
 node_modules/**/ios/Pods/
+
+# Metadados que a extensão Java do VS Code (Buildship/Eclipse) grava em cada projeto
+# Gradle de node_modules ao abrir a pasta. Também nunca existem no EAS.
+node_modules/**/android/.classpath
+node_modules/**/android/.project
+node_modules/**/android/.settings/
+node_modules/**/android/bin/
+node_modules/**/.classpath
+node_modules/**/.project
+node_modules/**/.settings/
+
+# O mesmo nos plugins Gradle que alguns pacotes trazem fora de android/ (expo-modules-core,
+# expo-updates, expo-dev-launcher): o build local deixa saída ao lado do código.
+node_modules/**/*-gradle-plugin/build/
+node_modules/**/*-gradle-plugin/.gradle/
+node_modules/**/*-gradle-plugin/.kotlin/
+node_modules/**/*-gradle-plugin/bin/
