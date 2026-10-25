@@ -1335,3 +1335,102 @@ describe('app bloqueado e banco conhecido (SPD-069)', () => {
 		expect([...mockCaptures.values()]).toEqual([expect.objectContaining({ packageName: 'com.picpay', status: 'pending' })]);
 	});
 });
+
+describe('estorno usa a chave da compra, nunca a categoria dela (SPD-043, NOTIF-14)', () => {
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+		{ id: 'health', name: 'Saúde', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'refund', name: 'Estorno', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	const notification = (title: string, text: string, postedAt: string): RawCapture => ({
+		packageName: 'com.nu.production',
+		appLabel: 'Nubank',
+		title,
+		text,
+		postedAt,
+	});
+
+	const PURCHASE = notification(
+		'Compra no débito aprovada',
+		'Compra de R$ 89,90 APROVADA em DROGARIA SAO PAULO.',
+		'2026-10-20T12:00:00.000Z'
+	);
+	const REFUND = notification(
+		'Estorno',
+		'Estorno de R$ 89,90 da compra em DROGARIA SAO PAULO.',
+		'2026-10-22T12:00:00.000Z'
+	);
+
+	const keyOf = (raw: RawCapture): string => {
+		const parsed = parseCapture(raw);
+		const key = parsed ? candidateFrom(raw, parsed, null).merchantKey : null;
+		if (!key) throw new Error('o aviso de teste não tem estabelecimento');
+		return key;
+	};
+
+	const learnDrugstore = (confirmations: number): void => {
+		const key = keyOf(PURCHASE);
+		mockRules.set(key, { merchantKey: key, categoryId: 'health', treatAs: 'transaction', confirmations, updatedAt: '' });
+	};
+
+	// A conta já ligada ao app vem direto, como no SQL de verdade.
+	beforeEach(() => {
+		(findAccountBySource as jest.Mock).mockImplementation(
+			async (packageName: string) => [...mockAccounts.values()].find((item) => item.packageName === packageName) ?? null
+		);
+	});
+	afterEach(() => {
+		(findAccountBySource as jest.Mock).mockImplementation(async () => null);
+	});
+
+	const ingest = (raw: RawCapture) => ingestRawCaptures([raw], { ownNames: [], categories });
+
+	const refundCapture = (): Capture => {
+		const found = [...mockCaptures.values()].find((capture) => capture.kind === 'refund');
+		if (!found) throw new Error('o estorno não foi gravado');
+		return found;
+	};
+
+	it('o estorno cai na mesma chave da compra', () => {
+		expect(keyOf(REFUND)).toBe(keyOf(PURCHASE));
+	});
+
+	it('com a regra confiável da compra, o estorno entra sozinho como estorno, não como receita', async () => {
+		learnDrugstore(3);
+
+		await ingest(REFUND);
+
+		expect(refundCapture()).toMatchObject({ status: 'confirmed', suggestedCategory: 'refund' });
+		expect([...mockTransactions.values()]).toEqual([expect.objectContaining({ isIncome: true, category: 'refund' })]);
+	});
+
+	it('com a regra ainda fraca, fica pendente sugerindo estorno', async () => {
+		learnDrugstore(1);
+
+		await ingest(REFUND);
+
+		expect(refundCapture()).toMatchObject({ status: 'pending', suggestedCategory: 'refund' });
+	});
+
+	it('confirmar o estorno não ensina nada à regra da compra', async () => {
+		learnDrugstore(2);
+		await ingest(REFUND);
+
+		await confirmCapture(refundCapture().id, 'refund', categories);
+
+		expect(mockRules.get(keyOf(PURCHASE))).toMatchObject({ categoryId: 'health', treatAs: 'transaction', confirmations: 2 });
+	});
+
+	it('a compra seguinte continua com a categoria aprendida', async () => {
+		learnDrugstore(3);
+		await ingest(REFUND);
+		await confirmCapture(refundCapture().id, 'refund', categories).catch(() => null);
+
+		await ingest(PURCHASE);
+
+		const purchase = [...mockCaptures.values()].find((capture) => capture.kind !== 'refund');
+		expect(purchase).toMatchObject({ status: 'confirmed', suggestedCategory: 'health' });
+	});
+});

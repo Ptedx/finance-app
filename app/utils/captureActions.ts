@@ -810,6 +810,11 @@ export const ingestRawCaptures = async (
 			? toMerchantRule(await getMerchantRule(appRuleKeyOf(raw.packageName)))
 			: undefined;
 		const fallbackCategoryId = resolveCategoryId(guessCategory(parsed), parsed.direction, options.categories);
+		// Estorno e devolução têm a chave da compra que desfazem (SPD-043), mas a categoria
+		// da regra é a da compra, de despesa: na volta do dinheiro ela virava "outras
+		// receitas". O estorno é sempre estorno; a regra só decide se entra sozinho.
+		const refundCategoryId =
+			parsed.kind === 'refund' ? resolveCategoryId('refund', parsed.direction, options.categories) : null;
 
 		const externalIncome = isExternalIncomeRule(rule, options.categories);
 
@@ -822,6 +827,10 @@ export const ingestRawCaptures = async (
 			externalIncome,
 			appRule,
 		});
+
+		if (refundCategoryId && (decision.action === 'auto_confirm' || decision.action === 'pending')) {
+			decision = { ...decision, categoryId: refundCategoryId };
+		}
 
 		let overridden: 'confirmed_leg' | 'foreign_currency' | undefined;
 
@@ -862,7 +871,7 @@ export const ingestRawCaptures = async (
 			status: 'pending',
 			question: null,
 			relatedId: null,
-			suggestedCategory: rule?.categoryId ?? fallbackCategoryId,
+			suggestedCategory: refundCategoryId ?? rule?.categoryId ?? fallbackCategoryId,
 			transactionId: null,
 			autoConfirmed: false,
 			// Só os itens que ficam pendentes o guardam: duplicata, transferência e ignorado
@@ -911,7 +920,9 @@ export const ingestRawCaptures = async (
 // ---------------------------------------------------------------------------
 
 const learnCategory = async (capture: Capture, categoryId: string): Promise<void> => {
-	if (!capture.merchantKey) return;
+	// O estorno divide a chave com a compra (SPD-043): confirmar "Estorno" trocaria a regra
+	// da loja, e a compra seguinte perderia a categoria e o automático.
+	if (!capture.merchantKey || capture.kind === 'refund') return;
 	const current = toMerchantRule(await getMerchantRule(capture.merchantKey));
 	await saveMerchantRule(learnFromConfirmation(current, capture.merchantKey, categoryId));
 };

@@ -520,12 +520,50 @@ const classify = (
 // Contraparte
 // ---------------------------------------------------------------------------
 
+/**
+ * O que vem depois de um nome e não é mais nome: a preposição seguinte, o cartão, a hora, e
+ * o resto da frase ("foi aprovada", "compra no crédito", "na sua conta"). Enquanto o verbo
+ * ficava grudado, "POSTO SHELL foi" e "IFOOD Compra no" viravam chaves de estabelecimento
+ * que nenhuma outra notificação repetia, e a regra aprendida com elas nunca casava (NOTIF-13).
+ */
+const NAME_STOP_WORDS = [
+	'para o',
+	'no cartao',
+	'no cartão',
+	'com o cartao',
+	'com o cartão',
+	'com',
+	'cartao',
+	'cartão',
+	'final',
+	'o valor',
+	'no valor',
+	'via',
+	'pelo',
+	'pela',
+	'foi',
+	'foram',
+	'referente',
+	'na sua',
+	'no seu',
+	'em sua',
+	'em seu',
+	'na conta',
+	'compra (?:no|na|de|aprovad[ao]|realizad[ao]|efetuad[ao])',
+	'no (?:credito|crédito|debito|débito)',
+	'(?:aprovad|realizad|efetuad|conclu[ií]d|cancelad|recusad|estornad|creditad|debitad)[ao]s?',
+].join('|');
+
 /** Onde um nome termina: vírgula, ponto final de frase, ou a preposição seguinte. */
 // Um nome pode ter ponto no meio ("APPLE.COM/BILL"), então o ponto só encerra quando
-// vem seguido de espaço ou do fim do texto — o ponto final de uma frase.
-const NAME_END =
-	'(?=\\s*(?:,|\\.\\s|\\.$|$|\\s(?:para o|no cartao|no cartão|com o cartao|com o cartão|com|cartao|cartão|final|o valor|no valor|via|pelo|pela|em \\d|as \\d|às \\d|dia \\d)\\b))';
+// vem seguido de espaço ou do fim do texto — o ponto final de uma frase. A palavra de
+// parada precisa terminar ali (espaço, pontuação ou fim): `\b` não serve depois de letra
+// acentuada ("cartão"), e "às 12:30" tem dígito depois do primeiro dígito.
+const NAME_END = `(?=\\s*(?:,|\\.\\s|\\.$|$|\\s(?:${NAME_STOP_WORDS})(?=\\s|$|[,.;:!?])|\\s(?:em|as|às|dia) \\d))`;
 const NAME_BODY = '((?:[^,\\n](?!\\sR\\$))+?)';
+
+/** O que pode vir logo depois da hora sem ser o nome: "às 12:30 para Fulano", "às 12:30 no cartão". */
+const AFTER_TIME_NOT_NAME = '(?:no|na|em|de|do|da|com|para|via|pelo|pela|cartao|cartão|final|r\\$)\\s';
 
 const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }> = [
 	// "em IFOOD *IFOOD para o cartão" / "em MERCADO XYZ" (compras)
@@ -534,37 +572,82 @@ const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }>
 	// "no débito", "no cartão" nem "no valor" é o estabelecimento.
 	{
 		pattern: new RegExp(
-			`\\bn[oa]\\s+(?!debito|débito|credito|crédito|cartao|cartão|valor|dia|seu|sua|app|aplicativo|pix)${NAME_BODY}${NAME_END}`,
+			`\\bn[oa]\\s+(?!debito|débito|credito|crédito|cartao|cartão|valor|dia|seu|sua|app|aplicativo|pix|conta(?:\\s|$|[,.]))${NAME_BODY}${NAME_END}`,
+			'i'
+		),
+		when: 'out',
+	},
+	// "EM 23/10 AS 12:30 DROGASIL" (SMS do Bradesco): a data e a hora vêm antes do nome,
+	// e o "em" de antes delas não é o estabelecimento (NOTIF-21).
+	{
+		pattern: new RegExp(
+			`(?:\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\s+(?:[aà]s\\s+)?|\\b[aà]s\\s+)\\d{1,2}[:h]\\d{2}(?::\\d{2})?h?\\s+(?!${AFTER_TIME_NOT_NAME})${NAME_BODY}${NAME_END}`,
 			'i'
 		),
 		when: 'out',
 	},
 	// "para Fulano de Tal" (pix e transferências enviadas)
 	{ pattern: new RegExp(`\\bpara\\s+(?!o cart|a cart|voce|você)${NAME_BODY}${NAME_END}`, 'i'), when: 'out' },
+	// "Débito automático de R$ 120,00 da conta de luz" / "... para SABESP"
+	{
+		pattern: new RegExp(
+			`\\bd[eé]bito autom[aá]tico\\s+(?:de\\s+(?:${CURRENCY_TOKEN})\\s?[\\d.,]+\\s+)?(?:d[aeo]s?|para|em|n[ao])\\s+(?!(?:${CURRENCY_TOKEN})\\s?\\d|\\d|sua\\s|seu\\s|cart)${NAME_BODY}${NAME_END}`,
+			'i'
+		),
+		when: 'out',
+	},
+	// "O estorno de R$ 35,90 referente a IFOOD foi creditado". "Referente a compra
+	// internacional" não tem nome: a compra, a fatura e a parcela não são estabelecimento.
+	{
+		pattern: new RegExp(
+			`\\breferente\\s+(?:[aà]o?s?\\s+)?(?!compra|fatura|parcela|pagamento|cart|iof\\b|\\d|(?:${CURRENCY_TOKEN})\\s?\\d)${NAME_BODY}${NAME_END}`,
+			'i'
+		),
+		when: 'out',
+	},
 	// "de Fulano de Tal" (recebidos) — pulando o "de R$ 100,00" que vem antes
 	{ pattern: new RegExp(`\\bde\\s+(?!(?:${CURRENCY_TOKEN})\\s?\\d|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
 	// "Compra aprovada: R$ 35,90 - MERCADO XYZ" (alguns bancos separam com traço)
 	{ pattern: new RegExp(`(?:${CURRENCY_TOKEN})\\s?[\\d.,]+\\s*[-–:]\\s*([^,.\\n]+?)(?=\\s*(?:,|\\.\\s|\\.$|$))`, 'i') },
 ];
 
+/** "Cobrança de IOF de R$ 0,56": o valor do aviso é o do próprio IOF. */
+const IOF_CHARGE_PATTERN = /\biof\s+(?:de\s+|no valor de\s+)?$/i;
+
 const cleanCounterparty = (value: string): string | null => {
 	const cleaned = value
 		.replace(/\s+/g, ' ')
 		.replace(/^(?:o |a |um |uma )/i, '')
 		.replace(/\s*(?:aprovad[ao]|realizad[ao]|conclu[ií]d[ao])\s*$/i, '')
+		.replace(/[\s.:;!?–-]+$/, '')
 		.trim();
 	// Nomes reais têm pelo menos duas letras; "R$", "12" e afins não são contraparte.
 	if (cleaned.length < 2 || !/[a-zA-ZÀ-ú]{2}/.test(cleaned)) return null;
 	return cleaned.slice(0, 80);
 };
 
+/**
+ * Com quem foi o movimento. O estorno e a devolução (`kind: 'refund'`) são dinheiro
+ * entrando, mas o nome deles se escreve como o da compra que desfazem ("estorno da compra
+ * em DROGARIA", "devolução do Pix enviado para Fulano"): procuram primeiro como uma saída,
+ * e depois como uma entrada. Sem isso saíam sem nome e nunca viravam automáticos (NOTIF-14).
+ */
 export const extractCounterparty = (
 	text: string,
-	direction: CaptureDirection
+	direction: CaptureDirection,
+	kind?: CaptureKind
 ): string | null => {
 	const withoutAmounts = text.replace(/\n+/g, ' ');
+	// A cobrança do IOF não tem estabelecimento, e o da compra que a gerou seria pior: a
+	// regra da Netflix passaria a lançar o IOF como assinatura. A contraparte é o IOF. Só
+	// quando o valor do aviso é o do IOF — "Compra de US$ 15,99 + IOF R$ 0,56" é a compra.
+	const firstAmount = AMOUNT_PATTERN.exec(withoutAmounts);
+	if (direction === 'out' && firstAmount && IOF_CHARGE_PATTERN.test(withoutAmounts.slice(0, firstAmount.index))) {
+		return 'IOF';
+	}
+	const asPurchase = kind === 'refund';
 	for (const { pattern, when } of COUNTERPARTY_PATTERNS) {
-		if (when && when !== direction) continue;
+		if (when && when !== direction && !(asPurchase && when === 'out')) continue;
 		const match = pattern.exec(withoutAmounts);
 		if (match?.[1]) {
 			const cleaned = cleanCounterparty(match[1]);
@@ -572,6 +655,17 @@ export const extractCounterparty = (
 		}
 	}
 	return null;
+};
+
+/**
+ * Título e texto, com o fim do título marcado. "R$ 35,90 em IFOOD" no título e "Compra no
+ * crédito aprovada" no texto emendavam num nome só ("IFOOD Compra no crédito").
+ */
+const textForNames = (raw: RawCapture): string => {
+	const title = raw.title.replace(/\s+/g, ' ').trim();
+	const text = raw.text.replace(/\s+/g, ' ').trim();
+	if (!title) return text;
+	return `${title}${/[.!?]$/.test(title) ? '' : '.'} ${text}`.trim();
 };
 
 const extractCardLast4 = (text: string): string | null => {
@@ -612,7 +706,7 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 		amountCents: totalCents,
 		direction: classified.direction,
 		kind: classified.kind,
-		counterparty: extractCounterparty(original, classified.direction),
+		counterparty: extractCounterparty(textForNames(raw), classified.direction, classified.kind),
 		cardLast4: extractCardLast4(original),
 		neutral: classified.neutral,
 		installments: installments?.count ?? null,
@@ -644,15 +738,21 @@ export const merchantKeyOf = (counterparty: string | null): string | null => {
  * Palpite de categoria pelo nome do estabelecimento, usado só quando não há regra
  * aprendida. Erra pouco no comum (mercado, posto, farmácia) e prefere não opinar a
  * chutar no resto — "Other" é honesto, uma categoria errada é trabalho de correção.
+ *
+ * Cada dica casa no **começo de uma palavra** do nome ("pizza" em "PIZZARIA", "posto" em
+ * "PAG*POSTOSHELL"), nunca no meio: "imposto" contém "posto" e "recursos" contém "curso"
+ * (NOTIF-17). Dica escrita com espaço dos dois lados (" bar ") é a palavra inteira. Quando
+ * mais de uma casa, vence a mais longa, que é a mais específica: "mercado livre" ganha de
+ * "mercado" e "uber eats" ganha de "uber", em qualquer ordem da lista.
  */
 const CATEGORY_HINTS: Array<{ categoryId: string; words: string[] }> = [
 	{
 		categoryId: 'food',
-		words: ['ifood', 'rappi', 'restaurante', 'lanche', 'burger', 'pizza', 'padaria', 'mercado', 'supermercado', 'acougue', 'hortifruti', ' cafe ', ' bar ', 'sushi', 'mcdonald', 'subway', 'ze delivery', 'atacadao', 'carrefour', 'pao de acucar', 'assai'],
+		words: ['ifood', 'rappi', 'uber eats', 'ubereats', 'restaurante', 'lanche', 'burger', 'hamburg', 'pizza', 'padaria', 'mercado', 'supermercado', 'minimercado', 'hipermercado', 'acougue', 'hortifruti', ' cafe ', ' bar ', 'sushi', 'mcdonald', 'subway', 'ze delivery', 'atacadao', 'carrefour', 'pao de acucar', 'assai'],
 	},
 	{
 		categoryId: 'transport',
-		words: ['uber', '99app', ' 99 ', 'posto', 'combustivel', 'gasolina', 'shell', 'ipiranga', 'estacionamento', 'pedagio', ' metro ', 'onibus', 'bilhete unico', 'sem parar', 'conectcar', 'localiza'],
+		words: [' uber ', '99app', ' 99 ', 'posto', 'autoposto', 'combustivel', 'gasolina', 'shell', 'ipiranga', 'estacionamento', 'pedagio', ' metro ', 'onibus', 'bilhete unico', 'sem parar', 'conectcar', 'localiza'],
 	},
 	{
 		categoryId: 'health',
@@ -676,17 +776,28 @@ const CATEGORY_HINTS: Array<{ categoryId: string; words: string[] }> = [
 	},
 ];
 
+/** Só letras e números, separados por um espaço: "UBER *EATS" e "Uber Eats" ficam iguais. */
+const hintWords = (value: string): string =>
+	normalizeText(value)
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+
+/** As dicas numa lista só, da mais longa para a mais curta (empate: a ordem de cima). */
+const SORTED_HINTS = CATEGORY_HINTS.flatMap(({ categoryId, words }) =>
+	words.map((word) => ({ categoryId, word: hintWords(word), whole: word.startsWith(' ') && word.endsWith(' ') }))
+)
+	.map((hint, order) => ({ ...hint, order }))
+	.sort((a, b) => b.word.length - a.word.length || a.order - b.order);
+
 export const guessCategory = (
 	parsed: Pick<ParsedCapture, 'direction' | 'kind' | 'counterparty'>
 ): string => {
 	if (parsed.direction === 'in') {
 		return parsed.kind === 'refund' ? 'refund' : 'other_income';
 	}
-	const name = ` ${normalizeText(parsed.counterparty ?? '')} `;
-	for (const hint of CATEGORY_HINTS) {
-		if (hint.words.some((word) => name.includes(normalizeText(word)))) return hint.categoryId;
-	}
-	return 'other_expense';
+	const name = ` ${hintWords(parsed.counterparty ?? '')} `;
+	const hint = SORTED_HINTS.find(({ word, whole }) => name.includes(whole ? ` ${word} ` : ` ${word}`));
+	return hint?.categoryId ?? 'other_expense';
 };
 
 export default {

@@ -396,6 +396,110 @@ describe('extractCounterparty', () => {
 	});
 });
 
+// NOTIF-13: o nome saía com o resto da frase ("POSTO SHELL foi", "IFOOD Compra no crédito"), e a
+// regra aprendida com ele nunca casava com o mesmo estabelecimento escrito de outro jeito.
+describe('extractCounterparty — o nome sai sem sobra de frase', () => {
+	it('o título e o texto não se emendam num nome só', () => {
+		const parsed = parseCapture(raw({ title: 'R$ 35,90 em IFOOD', text: 'Compra no crédito aprovada no cartão final 1534' }));
+		expect(parsed).toMatchObject({ amountCents: 3590, direction: 'out', kind: 'purchase', counterparty: 'IFOOD' });
+		expect(merchantKeyOf(parsed?.counterparty ?? null)).toBe('ifood');
+	});
+
+	it('mesmo sem a fronteira do título, "compra no crédito" não é nome', () => {
+		expect(
+			extractCounterparty('R$ 35,90 em IFOOD Compra no crédito aprovada no cartão final 1534', 'out')
+		).toBe('IFOOD');
+	});
+
+	it.each([
+		['Sua compra de R$ 120,00 em POSTO SHELL foi aprovada.', 'POSTO SHELL'],
+		['Compra de R$ 89,90 em DROGASIL aprovada no cartão final 1234.', 'DROGASIL'],
+		['Pagamento de R$ 230,00 para CONDOMINIO RESIDENCIAL foi efetuado.', 'CONDOMINIO RESIDENCIAL'],
+		['Compra de R$ 15,00 em PADARIA CENTRAL realizada com sucesso.', 'PADARIA CENTRAL'],
+	])('o verbo depois do nome fica de fora: %s', (text, expected) => {
+		expect(parseCapture(raw({ title: 'Compra', text }))?.counterparty).toBe(expected);
+	});
+
+	it('"na sua conta" depois do nome também fica de fora', () => {
+		expect(parseCapture(raw({ title: 'PicPay', text: 'Você recebeu R$ 25,00 de Ana Lima na sua conta.' }))?.counterparty).toBe(
+			'Ana Lima'
+		);
+	});
+});
+
+// NOTIF-14: estorno, devolução, débito automático e IOF saíam sem estabelecimento, e sem ele
+// não há regra que aprenda: ficavam para revisar todas as vezes.
+describe('extractCounterparty — estorno, devolução, débito automático e IOF', () => {
+	it.each([
+		['Estorno', 'Estorno de R$ 89,90 da compra em DROGARIA SAO PAULO no cartão final 5678.', 'DROGARIA SAO PAULO'],
+		['Estorno realizado', 'O estorno de R$ 35,90 referente a IFOOD foi creditado no cartão com final 1534.', 'IFOOD'],
+		['Estorno', 'Estorno de compra de R$ 35,90 em IFOOD creditado.', 'IFOOD'],
+		['Compra cancelada', 'A compra de R$ 59,90 em LOJA X foi cancelada.', 'LOJA X'],
+		['Pix devolvido', 'Você recebeu uma devolução de R$ 50,00 do Pix enviado para JOAO DA SILVA.', 'JOAO DA SILVA'],
+	])('estorno e devolução trazem com quem foi a compra: %s', (title, text, expected) => {
+		const parsed = parseCapture(raw({ title, text }));
+		expect(parsed).toMatchObject({ direction: 'in', kind: 'refund', counterparty: expected });
+	});
+
+	it('o estorno cai na mesma chave da compra que ele desfaz', () => {
+		const purchase = parseCapture(
+			raw({ title: 'Compra aprovada', text: 'Compra de R$ 89,90 APROVADA em DROGARIA SAO PAULO para o cartão com final 5678.' })
+		);
+		const refund = parseCapture(
+			raw({ title: 'Estorno', text: 'Estorno de R$ 89,90 da compra em DROGARIA SAO PAULO no cartão final 5678.' })
+		);
+		expect(merchantKeyOf(refund?.counterparty ?? null)).toBe(merchantKeyOf(purchase?.counterparty ?? null));
+	});
+
+	it('débito automático traz o que foi debitado', () => {
+		expect(
+			parseCapture(raw({ title: 'Débito automático', text: 'Débito automático de R$ 120,00 da conta de luz realizado.' }))
+		).toMatchObject({ direction: 'out', kind: 'purchase', counterparty: 'conta de luz' });
+	});
+
+	it('a cobrança do IOF tem o IOF como contraparte', () => {
+		expect(
+			parseCapture(
+				raw({ title: 'IOF', text: 'Cobrança de IOF de R$ 0,56 referente a compra internacional no cartão final 1534.' })
+			)
+		).toMatchObject({ direction: 'out', amountCents: 56, counterparty: 'IOF' });
+	});
+
+	it('a compra que só menciona o IOF continua com o estabelecimento', () => {
+		expect(
+			parseCapture(raw({ title: 'Compra', text: 'Compra de US$ 15,99 + IOF R$ 0,56 APROVADA em NETFLIX.COM.' }))?.counterparty
+		).toBe('NETFLIX.COM');
+	});
+});
+
+// NOTIF-21: no SMS do Bradesco a data e a hora vêm antes do nome, e o "EM 23/10" não é estabelecimento.
+describe('extractCounterparty — data e hora antes do nome', () => {
+	it('"EM 23/10 AS 12:30 DROGASIL" é a Drogasil', () => {
+		const parsed = parseCapture(
+			raw({
+				packageName: 'com.google.android.apps.messaging',
+				title: 'Bradesco',
+				text: 'BRADESCO CARTOES: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00 EM 23/10 AS 12:30 DROGASIL.',
+			})
+		);
+		expect(parsed).toMatchObject({ amountCents: 4500, kind: 'purchase', counterparty: 'DROGASIL', cardLast4: '3456' });
+		expect(parsed && guessCategory(parsed)).toBe('health');
+	});
+
+	it('sem o "AS", e com o nome seguido de mais texto', () => {
+		expect(
+			extractCounterparty('COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00 EM 23/10 12:30 POSTO SHELL, LIMITE R$ 900,00', 'out')
+		).toBe('POSTO SHELL');
+	});
+
+	it('a hora depois do nome continua encerrando o nome', () => {
+		expect(extractCounterparty('Compra de R$ 45,00 aprovada em LOJA X às 12:30 no cartão final 1234', 'out')).toBe('LOJA X');
+		expect(extractCounterparty('Pix de R$ 80,00 enviado em 23/10 às 12:30 para MARIA OLIVEIRA.', 'out')).toBe(
+			'MARIA OLIVEIRA'
+		);
+	});
+});
+
 describe('merchantKeyOf', () => {
 	it('junta variações do mesmo estabelecimento na mesma chave', () => {
 		expect(merchantKeyOf('IFOOD *IFOOD BR')).toBe('ifood');
@@ -427,6 +531,50 @@ describe('guessCategory', () => {
 
 	it('palavras curtas exigem fronteira: "oi" não casa com "goiânia"', () => {
 		expect(guessCategory({ direction: 'out', kind: 'purchase', counterparty: 'RESTAURANTE GOIANIA' })).toBe('food');
+	});
+
+	const out = (counterparty: string) => guessCategory({ direction: 'out', kind: 'purchase', counterparty });
+
+	// NOTIF-17: "imposto" contém "posto", "recursos" contém "curso", e a dica curta ganhava da
+	// longa ("mercado" antes de "mercado livre", "uber" antes de "uber eats").
+	it.each([
+		['IMPOSTO MUNICIPAL', 'other_expense'],
+		['IOF', 'other_expense'],
+		['RECURSOS HUMANOS LTDA', 'other_expense'],
+		['MERCADO LIVRE', 'shopping'],
+		['MERCADOLIVRE*LOJAX', 'shopping'],
+		['UBER *EATS', 'food'],
+		['UBER EATS', 'food'],
+		['FARMACIA DO POSTO', 'health'],
+	])('a dica mais específica, no começo de uma palavra: %s → %s', (name, category) => {
+		expect(out(name)).toBe(category);
+	});
+
+	it.each([
+		['IFOOD *IFOOD', 'food'],
+		['IFD*IFOOD', 'food'],
+		['MERCADO DO ZE', 'food'],
+		['SUPERMERCADO BOM PRECO', 'food'],
+		['MINIMERCADO SAO JORGE', 'food'],
+		['PIZZARIA BELLA', 'food'],
+		['HAMBURGER HOUSE', 'food'],
+		['BAR DO ZE', 'food'],
+		['UBER *TRIP', 'transport'],
+		['POSTO SHELL', 'transport'],
+		['PAG*POSTOSHELL', 'transport'],
+		['AUTO POSTO IPIRANGA', 'transport'],
+		['AUTOPOSTO CENTRAL', 'transport'],
+		['DROGARIAS PACHECO', 'health'],
+		['NETFLIX.COM', 'entertainment'],
+		['Google YouTubePremium', 'entertainment'],
+		['AMAZON PRIME VIDEO', 'entertainment'],
+		['ENEL DISTRIBUICAO', 'utilities'],
+		['CONDOMINIO RESIDENCIAL', 'utilities'],
+		['MAGAZINE LUIZA', 'shopping'],
+		['CASAS BAHIA', 'shopping'],
+		['CURSO DE INGLES', 'education'],
+	])('o que já acertava continua acertando: %s → %s', (name, category) => {
+		expect(out(name)).toBe(category);
 	});
 });
 
