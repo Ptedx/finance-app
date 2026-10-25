@@ -39,12 +39,78 @@ export const isCreditCardNotification = (raw: RawCapture, parsed: ParsedCapture)
 
 const DEBIT_NAME = /\bdebito\b/;
 
-/** O banco aparece no texto? "… com Nubank final 1234", no aviso do Samsung Pay. */
-const textMentionsBank = (text: string, bankName: string | null): boolean => {
+/** Os jeitos de escrever um banco: o nome (sem "Banco") e os apelidos da marca. */
+const bankAliases = (bankName: string): string[] => [
+	...new Set([normalizeText(bankName).replace(/^banco\s+/, ''), ...(brandFor(bankName)?.aliases ?? [])].filter(Boolean)),
+];
+
+/**
+ * Quem mandou o aviso: o título do SMS, do e-mail, da conversa. Na carteira o título é a
+ * loja ("IFOOD") ou "Pagamento aprovado", nunca o banco — lá não há remetente.
+ */
+const senderOf = (raw: { packageName?: string; title: string }): string | null =>
+	raw.packageName !== undefined && isWalletPackage(raw.packageName) ? null : raw.title;
+
+/**
+ * O remetente é o banco: "Bradesco", "NUBANK", "Banco Inter", "Bradesco Cartões". Começar
+ * pelo nome basta; ter o nome no meio, não — "Joao Inter" é um contato, não o Inter.
+ */
+const senderIsBank = (sender: string, bankName: string | null): boolean => {
 	if (!bankName) return false;
-	const name = normalizeText(bankName).replace(/^banco\s+/, '');
-	const aliases = [name, ...(brandFor(bankName)?.aliases ?? [])].filter((alias) => alias.length >= 3);
-	return aliases.some((alias) => new RegExp(`(^|[^a-z0-9])${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(text));
+	const who = normalizeText(sender)
+		.replace(/[^a-z0-9 ]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.replace(/^banco /, '');
+	return bankAliases(bankName).some((alias) => who === alias || (alias.length >= 3 && who.startsWith(`${alias} `)));
+};
+
+/**
+ * O estabelecimento: o que vem depois de "em", "no", "na" até a vírgula, o ponto, o
+ * "com", o "cartão", o "final" ou o valor. "no cartão", "na conta", "no banco" não são
+ * loja. Sai do texto antes de procurar o banco: "LOJA INTER SHOPPING" não é o Inter.
+ */
+const MERCHANT =
+	/\b(em|no|na|nos|nas) (?!(cartao|cartoes|credito|debito|valor|dia|seu|sua|app|aplicativo|pix|banco|conta|final)\b)[^,;:]*?(?=\s*[,;:]|\.(\s|$)|\s(com|cartao|final|valor|dia|as)\b|\s(de )?r\$|\s*$)/g;
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * O texto cita o banco num padrão de banco: no começo da mensagem ("BRADESCO CARTOES:",
+ * "Itaú:"), "cartão <banco>", "conta <banco>", "banco <banco>", "<banco> informa", ou o
+ * "com <banco> final" da carteira. Apelido de 2 letras ("nu", "bb") não vale no texto.
+ */
+const textCitesBank = (raw: { title: string; text: string }, bankName: string | null): boolean => {
+	if (!bankName) return false;
+	const messages = [raw.title, raw.text].map((part) => normalizeText(part).replace(MERCHANT, '$1 #'));
+	return bankAliases(bankName)
+		.filter((alias) => alias.length >= 3)
+		.some((alias) => {
+			const a = escapeRegExp(alias);
+			const patterns = [
+				new RegExp(`^(banco )?${a}(\\s*[:\\-]| cartao\\b| cartoes\\b| informa\\b)`),
+				new RegExp(`\\b(cartao|cartoes|conta)( de credito| de debito)?( do| da)?( banco)? ${a}\\b`),
+				new RegExp(`\\bbanco ${a}\\b`),
+				new RegExp(`\\b${a} informa\\b`),
+				new RegExp(`\\bcom( o| a)?( cartao)? ${a}(?=\\s*$|\\s*[•*,.;:]|\\s(final|cartao|credito|debito|mastercard|visa|elo|amex|hipercard)\\b)`),
+			];
+			return messages.some((message) => patterns.some((pattern) => pattern.test(message)));
+		});
+};
+
+/**
+ * O aviso de terceiro cita este banco? Pelo remetente ou por um padrão de banco no texto.
+ * Remetente que é banco decide sozinho: o SMS do Santander é do Santander, cite o texto
+ * o banco que citar.
+ */
+const foreignCitesBank = (
+	raw: { packageName?: string; title: string; text: string },
+	bankName: string | null,
+	senderNamesBank: boolean
+): boolean => {
+	const sender = senderOf(raw);
+	if (senderNamesBank && sender !== null) return senderIsBank(sender, bankName);
+	return textCitesBank(raw, bankName);
 };
 
 /** Finais nomeados de uma conta (`cardNames`, JSON). Lido aqui sem depender de `cardNames.ts`. */
@@ -65,13 +131,20 @@ const namedFinals = (account: Account): string[] => {
  * mandou, o e-mail mostra a fatura. Nada disso é uma conta — foi assim que nasceram
  * contas chamadas "WhatsApp" e "Messages" ao lado das de verdade.
  *
- * Banco reconhecido pelo nome do app ("Inter", "Nu") é banco. Senão, vale o banco que o
- * texto citar, como no aviso da carteira. Sem nenhum dos dois, o aviso não vira conta.
+ * Banco reconhecido pelo nome do app ("Inter", "Nu") é banco. Senão, vale o banco do
+ * remetente ("Santander" no SMS) e, sem ele, o de um padrão de banco no texto, como o
+ * "com Nubank final 1234" da carteira. Banco no nome da loja não conta: "LOJA INTER
+ * SHOPPING" num SMS do Santander punha a compra no cartão Inter (C71). Sem nada disso, o
+ * aviso não vira conta — e o de app que não é banco é ignorado direto (`isNoBankNotice`).
  */
-export const bankLabelOf = (raw: Pick<RawCapture, 'appLabel' | 'title' | 'text'>): string | null => {
+export const bankLabelOf = (
+	raw: Pick<RawCapture, 'appLabel' | 'title' | 'text'> & { packageName?: string }
+): string | null => {
 	if (brandFor(raw.appLabel)) return raw.appLabel;
-	const text = normalizeText(`${raw.title} ${raw.text}`);
-	return BANK_BRANDS.find((brand) => textMentionsBank(text, brand.name))?.name ?? null;
+	const sender = senderOf(raw);
+	const bySender = sender === null ? undefined : BANK_BRANDS.find((brand) => senderIsBank(sender, brand.name));
+	if (bySender) return bySender.name;
+	return BANK_BRANDS.find((brand) => textCitesBank(raw, brand.name))?.name ?? null;
 };
 
 /** Quem avisou não é o app do banco: carteira, SMS, e-mail, mensageiro, loja. */
@@ -102,7 +175,8 @@ export type NotificationTarget =
  * 3. Sem cartão do banco: se a notificação diz "crédito", nasce um cartão; se diz
  *    "débito" ou não diz nada, é a conta corrente (o débito do Inter não diz a palavra).
  *
- * Aviso de carteira (Samsung Pay, Google Wallet) não é do banco: o banco sai do texto.
+ * Aviso de carteira (Samsung Pay, Google Wallet), SMS ou e-mail não é do banco: o banco
+ * sai do remetente ou de um padrão de banco no texto, nunca do nome da loja (C71).
  */
 export const pickNotificationTarget = (
 	accounts: Account[],
@@ -110,11 +184,16 @@ export const pickNotificationTarget = (
 ): NotificationTarget => {
 	const hint = cardHintOf(notification);
 	const foreign = isForeignApp(notification);
-	const text = normalizeText(`${notification.title} ${notification.text}`);
-	/** Do mesmo banco do aviso: pelo app que avisou, ou pelo banco citado no texto. */
+	// O remetente é um banco (da lista ou de uma conta do usuário): só ele vale.
+	const sender = foreign ? senderOf(notification) : null;
+	const senderNamesBank =
+		sender !== null &&
+		(BANK_BRANDS.some((brand) => senderIsBank(sender, brand.name)) ||
+			accounts.some((account) => senderIsBank(sender, account.bankName)));
+	/** Do mesmo banco do aviso: pelo app que avisou, ou pelo banco que o aviso cita. */
 	const ofNotificationBank = (account: Account): boolean =>
 		foreign
-			? textMentionsBank(text, account.bankName)
+			? foreignCitesBank(notification, account.bankName, senderNamesBank)
 			: (account.packageName !== null && account.packageName === notification.packageName) ||
 				sameBank(account.bankName, notification.appLabel);
 

@@ -1,9 +1,26 @@
+// O caminho completo (SPD-040) passa pelo `accountResolver`, que lê as contas do banco.
+jest.mock('../../database/database', () => ({
+	addAccount: jest.fn(async () => 'nova'),
+	updateAccount: jest.fn(async () => {}),
+	findAccountBySource: jest.fn(async () => null),
+	findAccountByKey: jest.fn(async () => null),
+	getAccounts: jest.fn(async () => []),
+}));
+
+import { addAccount, getAccounts, updateAccount } from '../../database/database';
 import type { Account, Capture } from '../../database/schema';
-import { cardHintOf, pickNotificationTarget, planLedgerRepair } from '../notificationTarget';
+import { isNoBankNotice, resolveAccountForNotification } from '../accountResolver';
+import type { ParsedCapture, RawCapture } from '../captureParser';
+import { bankLabelOf, cardHintOf, pickNotificationTarget, planLedgerRepair } from '../notificationTarget';
 
 const NUBANK = 'com.nu.production';
 const INTER = 'br.com.intermedium';
 const SAMSUNG = 'com.samsung.android.spay';
+const GWALLET = 'com.google.android.apps.walletnfcrel';
+const SMS = 'com.google.android.apps.messaging';
+const GMAIL = 'com.google.android.gm';
+/** C71: SMS do Santander, com o nome de outro banco no estabelecimento. */
+const C71_TEXT = 'Santander: compra aprovada de R$ 50,00 em LOJA INTER SHOPPING, cartao final 7890.';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'x',
@@ -183,5 +200,112 @@ describe('planLedgerRepair — conserta compras registradas pelas regras antigas
 	it('é idempotente: depois de aplicado, não acha mais nada', () => {
 		const repaired = planLedgerRepair([nubankCard, nubankPF, { ...virtual, deletedAt: '2026-09-17' }], [capture({ accountId: 'nu-card' })]);
 		expect(repaired).toEqual({ mergeCards: [], moveCaptures: [] });
+	});
+});
+
+/**
+ * SPD-040 (NOTIF-07, C71): num aviso de quem não é o app do banco, o banco só conta como
+ * citado pelo remetente ou por um padrão de banco no texto. O nome da loja não conta:
+ * "LOJA INTER SHOPPING" num SMS do Santander punha a compra no cartão Inter.
+ */
+describe('bankLabelOf — o banco citado num aviso de terceiro (SPD-040)', () => {
+	const sms = (title: string, text: string) => ({ packageName: SMS, appLabel: 'Mensagens', title, text });
+
+	it('o nome da loja não é o banco: o SMS do Santander com "LOJA INTER SHOPPING" é do Santander (C71)', () => {
+		expect(bankLabelOf(sms('Santander', C71_TEXT))).toBe('Santander');
+	});
+
+	it('banco só dentro do estabelecimento ("em", "no", "na"): nenhum banco citado', () => {
+		for (const text of [
+			'Compra aprovada de R$ 50,00 em LOJA INTER SHOPPING, cartao final 7890.',
+			'Compra de R$ 12,00 no NUBANK BURGUER aprovada.',
+			'Compra de R$ 80,00 na ITAU MODAS, cartao final 1234.',
+			'Você comprou R$ 30,00 em BRADESCO SEGUROS.',
+		]) {
+			expect(bankLabelOf(sms('29290', text))).toBeNull();
+		}
+	});
+
+	it('o remetente cita o banco: SMS e e-mail', () => {
+		expect(bankLabelOf(sms('Bradesco', 'COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00'))).toBe('Bradesco');
+		expect(bankLabelOf(sms('NUBANK', 'Compra de R$ 10,00 aprovada em LOJA X'))).toBe('Nubank');
+		expect(bankLabelOf(sms('Banco Inter', 'Pix recebido de R$ 10,00'))).toBe('Inter');
+		expect(bankLabelOf({ packageName: GMAIL, appLabel: 'Gmail', title: 'Santander', text: 'Compra no cartão final 7890 aprovada: R$ 199,90 em LOJA ABC.' })).toBe('Santander');
+	});
+
+	it('remetente que só tem o nome de um banco no meio não é o banco', () => {
+		expect(bankLabelOf(sms('Joao Inter', 'me passa os R$ 20,00 do almoço'))).toBeNull();
+	});
+
+	it('padrões de banco no texto: começo da mensagem, "cartão <banco>", "banco <banco>", "<banco> informa"', () => {
+		expect(bankLabelOf(sms('27888', 'BRADESCO CARTOES: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00'))).toBe('Bradesco');
+		expect(bankLabelOf(sms('27888', 'Itaú: compra aprovada de R$ 89,90 em POSTO SHELL, cartão final 9012.'))).toBe('Itaú');
+		expect(bankLabelOf(sms('27888', 'Compra aprovada no cartão Nubank final 1534: R$ 10,00 em LOJA'))).toBe('Nubank');
+		expect(bankLabelOf(sms('27888', 'Compra aprovada no Banco Inter: R$ 10,00 em LOJA'))).toBe('Inter');
+		expect(bankLabelOf(sms('27888', 'Santander informa: compra de R$ 10,00 em LOJA'))).toBe('Santander');
+	});
+
+	it('dois bancos citados: vale o remetente', () => {
+		expect(bankLabelOf(sms('Santander', 'Compra de R$ 10,00 aprovada no cartão Inter final 1234'))).toBe('Santander');
+	});
+
+	it('carteira: o banco do "com <banco> final", nunca o da loja nem o do título', () => {
+		expect(bankLabelOf({ packageName: SAMSUNG, appLabel: 'Samsung Wallet', title: 'Pagamento aprovado', text: 'R$ 35,90 em INTER SHOPPING com Nubank final 1534' })).toBe('Nubank');
+		expect(bankLabelOf({ packageName: GWALLET, appLabel: 'Google Wallet', title: 'INTER SHOPPING', text: 'R$ 35,90 com Mastercard •••• 1534' })).toBeNull();
+	});
+
+	it('o app do banco continua sendo o banco, cite o texto a loja que citar', () => {
+		expect(bankLabelOf({ packageName: INTER, appLabel: 'Inter', title: 'Compra aprovada', text: 'Compra aprovada no cartão final 5678: R$ 50,00 em LOJA NUBANK' })).toBe('Inter');
+	});
+});
+
+describe('pickNotificationTarget — o banco da loja não puxa a compra (SPD-040)', () => {
+	const interCard = account({ id: 'inter-cc', name: 'Cartão Inter', kind: 'credit_card', role: 'card', bankName: 'Inter', packageName: INTER, last4: '5678', closingDay: 25 });
+	const santanderCard = account({ id: 'santander-cc', name: 'Cartão Santander', kind: 'credit_card', role: 'card', bankName: 'Santander', last4: '1111' });
+	const accounts = [interCard, nubankCard, interPF, nubankPF];
+	const c71 = { packageName: SMS, appLabel: 'Mensagens', title: 'Santander', text: C71_TEXT, cardLast4: '7890' };
+
+	it('C71: a compra do SMS do Santander não cai no cartão Inter', () => {
+		expect(pickNotificationTarget(accounts, c71)).toEqual({ type: 'checking' });
+	});
+
+	it('com um cartão Santander cadastrado, é dele', () => {
+		expect(pickNotificationTarget([...accounts, santanderCard], c71)).toEqual({ type: 'card', account: santanderCard });
+	});
+
+	it('carteira com banco no nome da loja: vale o banco do "com <banco> final"', () => {
+		const wallet = { packageName: SAMSUNG, appLabel: 'Samsung Wallet', title: 'Pagamento aprovado', text: 'R$ 35,90 em INTER SHOPPING com Nubank final 2513', cardLast4: '2513' };
+		expect(pickNotificationTarget(accounts, wallet)).toEqual({ type: 'card', account: nubankCard });
+	});
+});
+
+/**
+ * O caminho completo: o mesmo "banco citado" decide se o aviso é ignorado direto
+ * (`isNoBankNotice`, SPD-022) e para qual conta ele vai (`resolveAccountForNotification`).
+ */
+describe('banco citado no caminho completo (SPD-040 com SPD-022)', () => {
+	const interCard = account({ id: 'inter-cc', name: 'Cartão Inter', kind: 'credit_card', role: 'card', bankName: 'Inter', packageName: INTER, last4: '5678', closingDay: 25 });
+	const raw = (title: string, text: string): RawCapture => ({ packageName: SMS, appLabel: 'Mensagens', title, text, postedAt: '2026-10-23T15:00:00.000Z' });
+	const parsed: ParsedCapture = { amountCents: 5000, direction: 'out', kind: 'purchase', counterparty: 'LOJA INTER SHOPPING', cardLast4: '7890', neutral: false, installments: null };
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		(getAccounts as jest.Mock).mockResolvedValue([interCard, nubankCard, interPF, nubankPF]);
+	});
+
+	it('SMS do Santander (C71): não é ignorado, e fica sem conta em vez de ir para o cartão Inter', async () => {
+		const notice = raw('Santander', C71_TEXT);
+		expect(isNoBankNotice(notice)).toBe(false);
+		expect(await resolveAccountForNotification(notice, parsed)).toBeNull();
+		expect(addAccount).not.toHaveBeenCalled();
+		expect(updateAccount).not.toHaveBeenCalled();
+	});
+
+	it('SMS sem banco no remetente nem em padrão, só na loja: sem banco citado, ignorado direto', () => {
+		expect(isNoBankNotice(raw('29290', 'Compra aprovada de R$ 50,00 em LOJA INTER SHOPPING, cartao final 7890.'))).toBe(true);
+	});
+
+	it('SMS com padrão de banco no texto segue citando o banco', () => {
+		expect(isNoBankNotice(raw('27888', 'BRADESCO CARTOES: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00 EM DROGASIL.'))).toBe(false);
 	});
 });

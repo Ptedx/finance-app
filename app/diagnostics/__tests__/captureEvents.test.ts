@@ -145,7 +145,7 @@ const foreign = () =>
 	raw(NUBANK, 'Nubank', 'Compra aprovada', 'Compra de US$ 15,99 APROVADA em NETFLIX.COM para o cartão com final 9876.');
 const whatsappChat = () => raw(WHATSAPP, 'WhatsApp', 'Maria Silva', 'Você recebeu R$ 52,00 meu bem');
 const whatsappNoMoney = () => raw(WHATSAPP, 'WhatsApp', 'Maria Silva', 'te mando amanhã, beijos');
-const whatsappCitingBank = () => raw(WHATSAPP, 'WhatsApp', 'Maria Silva', 'Você recebeu R$ 64,00 no Nubank');
+const whatsappCitingBank = () => raw(WHATSAPP, 'WhatsApp', 'Maria Silva', 'Você recebeu R$ 64,00 na sua conta Nubank');
 const gmailUnknown = () => raw(GMAIL, 'Gmail', 'Nubank', 'Você recebeu R$ 83,21 do Nubank');
 const gmailNoMoney = () => raw(GMAIL, 'Gmail', 'Fatura', 'Sua fatura do Nubank fechou');
 const smsUnknown = () => raw(SMS, 'Mensagens', '29000', 'Nubank: valor de R$ 72,55 creditado');
