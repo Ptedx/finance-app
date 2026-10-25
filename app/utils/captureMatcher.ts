@@ -250,13 +250,86 @@ const isWalletPair = (known: KnownCapture, candidate: Candidate): boolean =>
 	!isStatementPackage(known.packageName) &&
 	isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName);
 
+// ---------------------------------------------------------------------------
+// Nome de loja aproximado (SPD-044)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sufixos societários. A carteira costuma trazer a razão social ("BOM PRECO LTDA") e o
+ * banco, o nome de fantasia. "S/A" chega à chave como "s a": letra solta também cai.
+ */
+const CORPORATE_SUFFIXES: ReadonlySet<string> = new Set(['ltda', 'ltd', 'me', 'epp', 'eireli', 'sa', 'ss', 'slu', 'cia', 'mei']);
+
+/** O menor pedaço que vale como abreviação: "SUPERM" é "SUPERMERCADO", "S" não é "SAO". */
+const MIN_ABBREVIATION_LENGTH = 3;
+
+/** As palavras que identificam a loja. Se só sobrar sufixo, fica o nome como veio. */
+const merchantWords = (key: string): string[] => {
+	const words = normalizeText(key).split(' ').filter(Boolean);
+	const meaningful = words.filter((word) => word.length > 1 && !CORPORATE_SUFFIXES.has(word));
+	return meaningful.length > 0 ? meaningful : words;
+};
+
+/**
+ * Se o nome curto sai do longo só encurtando: pulando palavras inteiras, cortando o fim de
+ * uma palavra (ao menos três letras) ou colando palavras vizinhas ("POSTOSHELL"). A ordem
+ * se mantém. "POSTOSHELL" sai de "POSTO SHELL", mas não de "POSTO IPIRANGA": a palavra
+ * colada tem que ser coberta inteira.
+ */
+const shortensTo = (short: string[], long: string[]): boolean => {
+	// `offset`: quanto da palavra `short[index]` já foi coberto, colando palavras de `long`.
+	const walk = (index: number, offset: number, cursor: number): boolean => {
+		if (index === short.length) return true;
+		if (cursor === long.length) return false;
+		// Entre uma palavra e outra, a palavra do nome longo pode faltar no curto.
+		if (offset === 0 && walk(index, 0, cursor + 1)) return true;
+		const rest = short[index].slice(offset);
+		const word = long[cursor];
+		// A palavra inteira, e o resto da palavra curta continua na próxima (colagem)...
+		if (rest.startsWith(word)) {
+			return rest.length === word.length ? walk(index + 1, 0, cursor + 1) : walk(index, offset + word.length, cursor + 1);
+		}
+		// ...ou o resto da palavra curta é o começo desta (abreviação).
+		return rest.length >= MIN_ABBREVIATION_LENGTH && word.startsWith(rest) && walk(index + 1, 0, cursor + 1);
+	};
+	return walk(0, 0, 0);
+};
+
+/**
+ * Se duas chaves de estabelecimento podem ser a mesma loja escrita de outro jeito: a
+ * carteira escreve "SUPERMERCADO BOM PRECO LTDA" e o banco, "SUPERM BOM PRECO". Vale
+ * abreviação, sufixo societário, palavra a mais de um lado e palavras coladas; o prefixo
+ * de adquirente ("PAG*", "MP*") a chave já não tem. "PADARIA CENTRAL" e "POSTO SHELL" não
+ * são compatíveis, nem "POSTO SHELL" e "POSTO IPIRANGA".
+ */
+export const merchantKeysCompatible = (a: string, b: string): boolean => {
+	if (a === b) return true;
+	const left = merchantWords(a);
+	const right = merchantWords(b);
+	return shortensTo(left, right) || shortensTo(right, left);
+};
+
+/**
+ * O estabelecimento desmente quando os dois lados têm nome e eles não são compatíveis.
+ * Compatível só deixa de desmentir; não confirma (ver `identityAgrees`).
+ */
+const merchantsConflict = (a: string | null | undefined, b: string | null | undefined): boolean =>
+	Boolean(a && b && !merchantKeysCompatible(a, b));
+
 /** Estabelecimento, final do cartão ou conta: o que os dois lados têm, e não bate. */
 const identityConflicts = (known: KnownCapture, candidate: Candidate): boolean =>
-	conflicts(known.merchantKey, candidate.merchantKey) ||
+	merchantsConflict(known.merchantKey, candidate.merchantKey) ||
 	conflicts(known.cardLast4, candidate.cardLast4) ||
 	conflicts(known.accountId, candidate.accountId);
 
-/** Pelo menos um sinal comparável que confirma: o mesmo lugar, o mesmo plástico, a mesma conta. */
+/**
+ * Pelo menos um sinal comparável que confirma: o mesmo lugar, o mesmo plástico, a mesma conta.
+ *
+ * O lugar confirma só com o mesmo nome. Nome apenas compatível ("SUPERM" × "SUPERMERCADO")
+ * não decide sozinho (SPD-044): é um palpite sobre texto, e o achado 7.4 é justamente
+ * duas compras do mesmo valor no mesmo dia. Com o mesmo final de cartão ou a mesma conta
+ * junto, é a mesma compra; sem nenhum outro sinal, vira pergunta.
+ */
 const identityAgrees = (known: KnownCapture, candidate: Candidate): boolean =>
 	agrees(known.merchantKey, candidate.merchantKey) ||
 	agrees(known.cardLast4, candidate.cardLast4) ||
@@ -615,6 +688,7 @@ export default {
 	fingerprintOf,
 	findWalletDuplicate,
 	findWalletSuspect,
+	merchantKeysCompatible,
 	findStatementTwin,
 	findSuspectedDuplicate,
 	findTransferCounterpart,

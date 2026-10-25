@@ -180,6 +180,99 @@ describe('duplicata de carteira: a identidade decide, e a dúvida pergunta', () 
 	});
 });
 
+/**
+ * SPD-044 (achado NOTIF-12): a carteira e o banco nem sempre escrevem o estabelecimento
+ * igual — "SUPERMERCADO BOM PRECO LTDA" na carteira, "SUPERM BOM PRECO" no banco. Nome
+ * diferente desmentia a identidade, e a mesma compra entrava duas vezes (com regra
+ * aprendida para os dois nomes, lançada duas vezes sozinha).
+ */
+describe('duplicata de carteira: nome de loja aproximado (SPD-044)', () => {
+	const keyOf = (name: string): string | null => merchantKeyOf(name);
+	const wallet = (name: string, overrides: Partial<KnownCapture> = {}): KnownCapture =>
+		known({ id: 'sp', packageName: SAMSUNG_PAY, merchantKey: keyOf(name), cardLast4: '1534', ...overrides });
+	const bank = (name: string, overrides: Partial<Candidate> = {}): Candidate =>
+		candidate({ counterparty: name, merchantKey: keyOf(name), cardLast4: '1534', postedAt: plus(20_000), ...overrides });
+
+	it('D3: abreviação e sufixo societário com o mesmo final de cartão é duplicata certa', () => {
+		const decision = decide(bank('SUPERM BOM PRECO'), context({ recent: [wallet('SUPERMERCADO BOM PRECO LTDA')] }));
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
+	});
+
+	it('D3b: com regra que lança sozinho, o aviso do banco continua duplicata', () => {
+		const rule: MerchantRule = {
+			merchantKey: 'superm bom preco',
+			categoryId: 'food',
+			treatAs: 'transaction',
+			confirmations: 5,
+		};
+		const decision = decide(
+			bank('SUPERM BOM PRECO'),
+			context({ recent: [wallet('SUPERMERCADO BOM PRECO LTDA')], rule })
+		);
+		expect(decision).toEqual({ action: 'duplicate', relatedId: 'sp', reason: 'wallet' });
+	});
+
+	it.each([
+		['sufixo societário', 'PADARIA CENTRAL LTDA', 'PADARIA CENTRAL'],
+		['S/A', 'DROGASIL S/A', 'DROGASIL'],
+		['EIRELI', 'BOM PRECO EIRELI', 'BOM PRECO'],
+		['prefixo de adquirente', 'PAG*POSTOSHELL', 'POSTO SHELL'],
+		['palavra a mais de um lado', 'PADARIA CENTRAL', 'PADARIA CENTRAL VILA MARIANA'],
+		['palavra a mais no meio', 'SUPERMERCADO PRECO', 'SUPERMERCADO BOM PRECO'],
+		['abreviação de várias palavras', 'DROGARIA SAO PAULO', 'DROG S PAULO'],
+	])('%s ("%s" × "%s") com o mesmo final é a mesma compra', (_label, walletName, bankName) => {
+		expect(findWalletDuplicate(bank(bankName), [wallet(walletName)])?.id).toBe('sp');
+		// Nos dois sentidos: o banco pode avisar primeiro.
+		const bankFirst = known({ id: 'nb', merchantKey: keyOf(bankName), cardLast4: '1534' });
+		const walletLater = candidate({
+			packageName: SAMSUNG_PAY,
+			counterparty: walletName,
+			merchantKey: keyOf(walletName),
+			cardLast4: '1534',
+			postedAt: plus(20_000),
+		});
+		expect(findWalletDuplicate(walletLater, [bankFirst])?.id).toBe('nb');
+	});
+
+	it('nome compatível sem outro sinal não decide sozinho: pergunta (achado 7.4)', () => {
+		const blindWallet = wallet('SUPERMERCADO BOM PRECO LTDA', { cardLast4: null, accountId: null });
+		const blindBank = bank('SUPERM BOM PRECO', { cardLast4: null, accountId: null });
+		expect(findWalletDuplicate(blindBank, [blindWallet])).toBeUndefined();
+		expect(decide(blindBank, context({ recent: [blindWallet] }))).toEqual({ action: 'ask_duplicate', relatedId: 'sp' });
+	});
+
+	it('nome compatível com 9 horas de diferença pergunta, não funde', () => {
+		const later = bank('SUPERM BOM PRECO', { postedAt: plus(9 * HOUR) });
+		expect(decide(later, context({ recent: [wallet('SUPERMERCADO BOM PRECO LTDA')] }))).toEqual({
+			action: 'ask_duplicate',
+			relatedId: 'sp',
+		});
+	});
+
+	it.each([
+		['PADARIA CENTRAL', 'POSTO SHELL'],
+		['POSTO SHELL', 'POSTO IPIRANGA'],
+		['SUPERMERCADO BOM PRECO', 'SUPERMERCADO EXTRA'],
+		['PADARIA CENTRAL LTDA', 'FARMACIA CENTRAL LTDA'],
+	])('nomes claramente diferentes ("%s" × "%s") continuam desmentindo, mesmo com o mesmo final', (walletName, bankName) => {
+		const other = bank(bankName);
+		expect(findWalletDuplicate(other, [wallet(walletName)])).toBeUndefined();
+		expect(findWalletSuspect(other, [wallet(walletName)])).toBeUndefined();
+		expect(decide(other, context({ recent: [wallet(walletName)] })).action).toBe('pending');
+	});
+
+	it('nome compatível com outro final de cartão continua sendo outra compra', () => {
+		const other = bank('SUPERM BOM PRECO', { cardLast4: '9999' });
+		expect(findWalletSuspect(other, [wallet('SUPERMERCADO BOM PRECO LTDA')])).toBeUndefined();
+	});
+
+	it('nome compatível com outra conta continua sendo outra compra', () => {
+		const inCard = wallet('SUPERMERCADO BOM PRECO LTDA', { cardLast4: null, accountId: 'nu-card' });
+		const other = bank('SUPERM BOM PRECO', { cardLast4: null, accountId: 'inter-card' });
+		expect(findWalletSuspect(other, [inCard])).toBeUndefined();
+	});
+});
+
 describe('duplicata provável entre bancos: pergunta, não decide', () => {
 	it('mesmo valor em dois bancos com um minuto de diferença vira pergunta', () => {
 		const inter = known({ id: 'in', packageName: INTER, postedAt: T0 });
