@@ -36,21 +36,27 @@ fechamento (`cardCycleOn` em `accountMath.ts`).
 
 ### Contas nascem sozinhas
 
-`accountResolver.ts`: a primeira notificação de cada app cria a conta corrente; a
+`accountResolver.ts`: a primeira notificação de cada app de banco cria a conta corrente; a
 primeira compra no crédito com "final 1234" cria o cartão; o primeiro import de OFX
 cria ou **adota** a conta daquele banco (uma conta do Nubank vinda das notificações
 ganha a chave do extrato em vez de nascer uma segunda). O usuário só dá nome, informa o
-saldo e, nos cartões, o dia de fechamento.
+saldo e, nos cartões, o dia de fechamento. Aviso de terceiro (SMS, carteira, e-mail) nunca
+cria conta: cai na conta do banco que cita, quando há uma só, ou fica sem conta.
 
 ### Transferências e pagamento de fatura
 
 - Duas notificações pareadas como transferência viram **uma** transferência entre as
   duas contas. Uma perna só (nome próprio, sem par) vira transferência com o outro lado
   nulo; quando a outra perna chega, completa a mesma em vez de criar outra.
-- "Pagamento da fatura" na conta vira transferência conta → cartão, quando há um único
-  cartão do mesmo banco. "Pagamento recebido" no extrato do cartão procura essa mesma
-  transferência (valor igual, até 5 dias) e a reaproveita. Com mais de um cartão o lado
-  fica nulo e as duas vistas ainda se reconhecem pelo valor e pela data.
+- "Pagamento da fatura" na conta vira transferência conta → cartão quando há uma escolha
+  só, nesta ordem: o cartão do final citado no aviso (de qualquer banco), o único cartão
+  do mesmo banco, o cartão cujo aviso já gravou este pagamento ou, sem final no aviso, a
+  única fatura fechada em aberto com o mesmo valor. "Pagamento recebido" no aviso ou no
+  extrato do cartão procura essa mesma transferência (valor igual, até 1 dia) e a
+  reaproveita. Sem escolha só o lado fica nulo, as duas vistas ainda se reconhecem pelo
+  valor e pela data, e "Pagar fatura" no cartão completa o destino depois.
+- Aplicação e resgate vão da conta para a **única** reserva do mesmo banco (poupança ou
+  papel Reserva), e o resgate volta dela. Com zero ou duas, o outro lado fica nulo.
 
 ### Parcelas
 
@@ -215,10 +221,14 @@ outro. O app faz as duas coisas sozinho:
   cartão de crédito ativo do banco — é o caso dos cartões virtuais do Nubank, com um
   final por loja. "Débito" no texto vai sempre para a conta. Sem a palavra (o Inter manda
   "Compra aprovada no cartão final 5678" no débito), vai para o cartão só se o banco tiver
-  um. Um "cartão" com "débito" no nome não atrai compras. Samsung Pay: o banco sai do texto.
+  um. Um "cartão" com "débito" no nome não atrai compras. Samsung Pay, SMS, e-mail: o banco
+  é o do remetente (a carteira não tem) ou um padrão de banco no texto ("com Nubank final 1234"), nunca o nome da
+  loja ("LOJA INTER SHOPPING" não é o Inter).
 - **Compra ainda na caixa de entrada já está na fatura**, no devido e no limite, marcada
-  "aguardando revisão" (o banco aprovou; só a categoria espera). Perguntas "é a mesma
-  compra?" ficam de fora até a resposta, para não contar duas vezes.
+  "aguardando revisão" (o banco aprovou; só a categoria espera). Conta também como
+  **provisória** no saldo da conta e no quadro do mês, com "Inclui R$ X a revisar".
+  Perguntas ("é a mesma compra?", "é transferência?") e captura sem conta ficam de fora até
+  a resposta, para não contar duas vezes.
 - Samsung Pay antes do banco: quando o aviso do banco chega, a compra (e o que ela já
   lançou) passa para a conta ou cartão do banco.
 - Parcelas: uma por fatura, pela regra do cartão (`cardInstallmentDates`).
@@ -243,8 +253,10 @@ contas próprias, já tratado como transferência) e paga a fatura dali.
 - O pagamento tem data (hoje, ontem, anteontem): ela decide qual fatura ele quita.
 - Pagar é **transferência** da conta para o cartão, nunca gasto — as compras já
   contaram. Pode vir da notificação do banco ("Recebemos o pagamento de R$ X"), do
-  extrato OFX ou do botão **Pagar fatura**; pagamento de mesmo valor para o mesmo cartão
-  em até 5 dias é o mesmo, venha de qual conta vier.
+  extrato OFX ou do botão **Pagar fatura**; pagamento de mesmo valor para o mesmo cartão,
+  com até 1 dia de diferença e da mesma conta de origem, é o mesmo (origem desconhecida
+  casa com qualquer uma). Fatura paga em duas metades iguais por contas diferentes são dois
+  pagamentos.
 - A conta que paga é a do mesmo banco do cartão. Contas externas (a PJ) não contam, e
   com mais de uma sobrando vale a principal.
 - O pagamento quita primeiro a fatura fechada; o que passar aparece como pagamento

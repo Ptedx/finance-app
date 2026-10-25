@@ -5,9 +5,11 @@ em IFOOD…", "Você recebeu um Pix de…") e as transforma em lançamentos para
 com um toque. O objetivo é tirar o trabalho manual de registrar gastos, que é o que
 faz um app de finanças sair da rotina.
 
-**Só Android.** iOS não permite ler notificações de outros apps. O texto nunca sai do
-aparelho: o serviço nativo grava num arquivo interno, o app lê e interpreta localmente,
-e só a transação confirmada segue para o sync como qualquer outra.
+**Só Android.** iOS não permite ler notificações de outros apps. O texto é interpretado
+no aparelho: o serviço nativo grava num arquivo interno e o app lê e interpreta
+localmente. Desde o v19, com conta Spendr, a caixa de entrada (com o texto bruto) e as
+regras aprendidas sincronizam como o resto: desinstalar o app não leva mais o que
+esperava revisão.
 
 ## Como funciona
 
@@ -17,7 +19,9 @@ Notificação do banco
        └─ spendr_captures.jsonl           fila em disco, uma linha por notificação
             └─ ingestRawCaptures (JS)      ao abrir o app, voltar ao 1º plano ou evento
                  ├─ fingerprint            a mesma notificação nunca entra duas vezes
+                 ├─ app bloqueado          nunca é capturado
                  ├─ parseCapture           valor, direção, tipo, contraparte, cartão
+                 ├─ não é banco            sem banco citado, ignorado direto
                  ├─ decide                 duplicata? transferência? regra? categoria?
                  └─ captures (SQLite)      caixa de entrada, com o texto bruto guardado
 ```
@@ -28,7 +32,7 @@ Arquivos:
 - `app/utils/captureParser.ts` — interpretação do texto (puro, testado).
 - `app/utils/captureMatcher.ts` — decisões: duplicata, transferência, regras (puro, testado).
 - `app/utils/captureActions.ts` — funil de entrada e respostas do usuário.
-- `app/database/captures.ts` — tabelas `captures` e `merchant_rules` (locais, não sincronizam).
+- `app/database/captures.ts` — tabelas `captures` e `merchant_rules` (sincronizam desde o v19).
 - `app/contexts/CapturesContext.tsx` — estado para as telas, desfazer.
 - `app/screens/CaptureInboxScreen.tsx` — a tela de revisão (`/inbox`).
 
@@ -44,9 +48,10 @@ Ao pagar no cartão pela carteira, chegam dois avisos da mesma compra: o do Sams
 
 | Situação | Decisão |
 |---|---|
-| Carteira e banco, mesmo valor, ambos saída, até 12 h de diferença | **Duplicata certa.** Fica a do banco (tem estabelecimento e cartão). Se o usuário já tinha confirmado a da carteira, a do banco é que vira duplicata — nunca uma segunda transação. |
+| Carteira e banco, mesmo valor, ambos saída, até 4 h de diferença, com estabelecimento, final do cartão ou conta batendo e nada desmentindo | **Duplicata certa.** Fica a do banco (tem estabelecimento e cartão). Se o usuário já tinha confirmado a da carteira, a do banco é que vira duplicata — nunca uma segunda transação. |
+| Carteira e banco, mesmo valor, ambos saída, até 12 h, sem sinal que confirme (ou mais de 4 h) | **Pergunta**, como a linha abaixo. Valor redondo se repete no mesmo dia: eram duas compras de R$ 20,00 fundidas numa. Se o estabelecimento ou o final desmentem, são duas, sem pergunta. Nome escrito de outro jeito não desmente: abreviado ("SUPERM" × "SUPERMERCADO"), com sufixo societário ("LTDA", "S/A"), com palavra a mais ou colada ("POSTOSHELL"). Mas nome assim só confirma junto com o mesmo final ou a mesma conta. |
 | Dois bancos (ou o mesmo), mesmo valor e direção, até 3 min de diferença | **Pergunta:** "Parece o mesmo lançamento. Mesmo, ficar com um / Diferentes, ficar com os dois." Pode ser cobrança em dobro, pode ser dois cafés. |
-| A mesma notificação reentregue pelo Android | Ignorada pela impressão digital (app + título + texto + minuto). |
+| A mesma notificação reentregue ou repostada pelo Android | Ignorada pela impressão digital: com a chave da notificação, app + chave + `when` + título + texto, em qualquer horário (chaves diferentes são avisos diferentes, mesmo iguais no mesmo minuto); sem a chave, app + título + texto + minuto. |
 
 ### Transferência entre contas próprias
 
@@ -62,7 +67,22 @@ os dois inventa uma despesa e uma receita; lançar um só distorce o saldo. Regr
 
 Compras e estornos nunca formam par de transferência. Pagamento de fatura, aplicação e
 resgate são **neutros**: não são receita nem despesa (as compras do cartão já entraram
-uma a uma) e vão direto para o histórico como "ignorado", com o motivo.
+uma a uma) e vão direto para o histórico como "ignorado", com o motivo. O dinheiro, porém,
+troca de bolso: viram transferência para o cartão ou a reserva quando há uma escolha só
+(ver `docs/contas-e-cartoes.md`).
+
+### Apps que não são banco
+
+O app ouve a notificação de todo mundo, e SMS, e-mail, mensageiro, loja e app de corrida
+também falam de dinheiro. O app de banco reconhecido pelo nome ou pelo pacote nunca cai
+aqui.
+
+| Situação | Decisão |
+|---|---|
+| App bloqueado (hoje só o OnlineBanking do BASA, `com.mobileapp.basasuperapp`) | Nunca é capturado, nem citando banco. |
+| App que não é banco, texto que não cita banco | Ignorado direto: sem item, sem conta, sem texto guardado. |
+| App que não é banco, cita um banco | Vale o remetente ("Santander" no título do SMS) ou um padrão de banco no texto ("cartão Nubank", "com Nubank final 1234"); nunca o nome da loja ("LOJA INTER SHOPPING" não é o Inter). Cai na conta daquele banco quando há uma só; nunca cria conta. |
+| Três avisos pendentes do mesmo app descartados | O app aprende a ignorá-lo; reverter um descarte desconta. O SMS nunca aprende: o pacote junta todos os remetentes, inclusive o banco. |
 
 ## O que a tela faz
 
@@ -74,6 +94,12 @@ uma a uma) e vão direto para o histórico como "ignorado", com o motivo.
 - **Aprender por estabelecimento:** confirmar "IFOOD" como Alimentação três vezes
   seguidas faz as próximas entrarem sozinhas, listadas em "Adicionadas automaticamente"
   com desfazer. Mudar a categoria no meio zera a contagem.
+- **Estorno e devolução** levam o nome da compra que desfazem ("estorno da compra em
+  DROGARIA"), entram sempre como "Estorno" e não ensinam a regra da loja — senão a compra
+  seguinte perderia a categoria. A regra da loja só decide se o estorno entra sozinho.
+- O parser também acha o nome na cobrança de IOF (o estabelecimento é "IOF", não o da
+  compra que a gerou), no débito automático ("... para SABESP") e com a data e a hora
+  antes do nome ("EM 23/10 AS 12:30 DROGASIL").
 - **Sem pressão:** nada de notificação insistente. O selo na aba inicial e a faixa "N
   lançamentos para revisar" somem quando a fila esvazia. Itens pendentes nunca expiram;
   o histórico é apagado depois de 90 dias.
@@ -139,4 +165,5 @@ tabela `transfers`. Ver `docs/contas-e-cartoes.md`.
   estabelecimento. Duas compras do mesmo valor em dias próximos, uma avisada e outra
   não, podem trocar de par entre si — os totais não mudam, e o que sobra vai para
   revisão.
-- Regras aprendidas e a caixa de entrada são deste aparelho; não sincronizam.
+- Sem conta Spendr, regras aprendidas e a caixa de entrada ficam só neste aparelho; com
+  conta, sincronizam desde o v19.

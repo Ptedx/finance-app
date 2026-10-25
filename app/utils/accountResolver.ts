@@ -331,7 +331,8 @@ const sameSource = (a: Account, b: Account): boolean =>
 /**
  * O cartão que uma conta corrente paga. Só quando não há dúvida: um único cartão ativo
  * do mesmo banco. Com dois cartões, o pagamento da fatura fica como transferência para
- * "fora", e o usuário indica o cartão ao revisar.
+ * "fora", e o usuário indica o cartão tocando "Pagar fatura" nele (`pickOpenCardPayment`
+ * completa o destino).
  */
 export const findCardForInvoice = async (checking: Account): Promise<Account | null> => {
 	const cards = (await getAccounts()).filter(
