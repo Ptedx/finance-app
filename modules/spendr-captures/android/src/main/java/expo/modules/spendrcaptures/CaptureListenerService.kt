@@ -77,6 +77,11 @@ class CaptureListenerService : NotificationListenerService() {
       .put("title", title)
       .put("text", text)
       .put("postedAt", isoInstant(sbn.postTime))
+      // A chave da notificação e o `when` dela (SPD-041): a repostagem da mesma notificação
+      // traz a mesma chave, e `postTime` é a hora da repostagem. O JS faz a impressão digital
+      // com eles; sem eles (fila anotada por binário antigo), com o minuto de `postedAt`.
+      .put("notificationKey", sbn.key)
+    if (notification.`when` > 0L) entry.put("notificationWhen", isoInstant(notification.`when`))
 
     CaptureStore.append(applicationContext, entry)
 
@@ -123,8 +128,13 @@ class CaptureListenerService : NotificationListenerService() {
 
     // Moeda pelo código ("USD 15,99") também passa: é a lista `FOREIGN_CURRENCY_CODES` de
     // `app/utils/captureParser.ts`, e o teste do parser lê este regex daqui para conferir.
+    // Entre a moeda e o número, quantos espaços vierem (SPD-045): "R$  35,90", e o espaço
+    // não separável (U+00A0), o de figura (U+2007) e o fino (U+202F), listados à parte
+    // porque o `\s` do Java não garante nenhum deles. `modules/spendr-captures/__tests__/
+    // amountFilter.test.ts` lê este regex e confere com o `\s` do Java. Fica numa linha só,
+    // entre aspas triplas: é assim que os dois testes o acham.
     private val AMOUNT =
-      Regex("""(?:R\$|US\$|\$|€|£|\b(?:USD|EUR|GBP|ARS|CLP|UYU|PYG|MXN|CAD|AUD|CHF|JPY))\s?\d""")
+      Regex("""(?:R\$|US\$|\$|€|£|\b(?:USD|EUR|GBP|ARS|CLP|UYU|PYG|MXN|CAD|AUD|CHF|JPY))[\s\u00A0\u2007\u202F]*\d""")
 
     private val DIGIT = Regex("""\d""")
 

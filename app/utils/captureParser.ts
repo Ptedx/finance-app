@@ -36,6 +36,18 @@ export interface RawCapture {
 	text: string;
 	/** Instante ISO 8601 em que a notificação foi publicada. */
 	postedAt: string;
+	/**
+	 * A chave da notificação no Android (`StatusBarNotification.getKey()`), quando o serviço
+	 * nativo a mandou (SPD-041). Ausente em binário antigo, extrato e testes antigos: aí a
+	 * impressão digital é a de sempre (`fingerprintOf`).
+	 */
+	notificationKey?: string;
+	/**
+	 * O `when` da notificação (ISO 8601, UTC): a hora que o app do banco deu a ela. A
+	 * repostagem da mesma notificação o mantém; `postedAt` é a hora da repostagem. Ausente
+	 * quando o app não deu hora nenhuma.
+	 */
+	notificationWhen?: string;
 }
 
 export interface ParsedCapture {

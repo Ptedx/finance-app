@@ -17,6 +17,13 @@ export interface NativeRawCapture {
 	text: string;
 	/** Instante ISO 8601 (UTC) em que a notificação foi publicada. */
 	postedAt: string;
+	/**
+	 * `StatusBarNotification.getKey()` (SPD-041): identifica a notificação no aparelho, e a
+	 * repostagem dela traz a mesma. Ausente em binário anterior ao SPD-041.
+	 */
+	notificationKey?: string;
+	/** O `when` da notificação, ISO 8601 (UTC). Ausente quando o app não deu hora. */
+	notificationWhen?: string;
 }
 
 /**
@@ -90,10 +97,25 @@ export const requestCaptureRebind = (): boolean => {
 	}
 };
 
+const filled = (value: unknown): value is string => typeof value === 'string' && value !== '';
+
+/**
+ * A chave e o `when` só passam quando vieram de fato: vazio vale como ausente, e o aviso
+ * sem eles cai na impressão digital de sempre.
+ */
+const toRawCapture = (entry: NativeRawCapture): NativeRawCapture => {
+	const { notificationKey, notificationWhen, ...rest } = entry;
+	return {
+		...rest,
+		...(filled(notificationKey) ? { notificationKey } : {}),
+		...(filled(notificationWhen) ? { notificationWhen } : {}),
+	};
+};
+
 /** Tudo que o serviço anotou desde a última leitura. Esvazia a fila nativa. */
 export const drainCaptures = (): NativeRawCapture[] => {
 	try {
-		return native?.drain() ?? [];
+		return (native?.drain() ?? []).map(toRawCapture);
 	} catch (error) {
 		console.warn('Could not read captured notifications:', error);
 		return [];

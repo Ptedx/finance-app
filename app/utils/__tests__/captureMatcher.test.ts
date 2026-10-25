@@ -464,6 +464,70 @@ describe('fingerprintOf', () => {
 		expect(fingerprintOf({ ...base, text: 'R$ 2,00 em X', postedAt: T0 })).not.toBe(a);
 		expect(fingerprintOf({ ...base, packageName: INTER, postedAt: T0 })).not.toBe(a);
 	});
+
+	// As impressões já gravadas são o id das capturas no sync (v19): sem chave, o formato
+	// não muda nem um caractere.
+	it('sem chave, a impressão é a de sempre', () => {
+		expect(fingerprintOf({ ...base, postedAt: T0 })).toBe('0b626765-e9605672');
+		expect(fingerprintOf({ ...base, notificationKey: '', postedAt: T0 })).toBe('0b626765-e9605672');
+		expect(fingerprintOf({ ...base, notificationWhen: T0, postedAt: T0 })).toBe('0b626765-e9605672');
+	});
+});
+
+/**
+ * SPD-041: com a chave da notificação do Android (`StatusBarNotification.getKey()`), a
+ * impressão deixa de depender do minuto em que o aviso foi publicado.
+ */
+describe('fingerprintOf com a chave da notificação (SPD-041)', () => {
+	const KEY = '0|com.nu.production|1|null|10123';
+	const base = {
+		packageName: NUBANK,
+		appLabel: 'Nubank',
+		title: 'Compra no crédito aprovada',
+		text: 'Compra de R$ 5,00 APROVADA em CAFE DA ESQUINA para o cartão com final 1534.',
+		notificationKey: KEY,
+		notificationWhen: T0,
+		postedAt: T0,
+	};
+
+	it('D8: o Android reposta a mesma notificação minutos ou horas depois: a mesma impressão', () => {
+		const first = fingerprintOf(base);
+		expect(fingerprintOf({ ...base, postedAt: plus(5 * MIN) })).toBe(first);
+		expect(fingerprintOf({ ...base, postedAt: plus(3 * HOUR) })).toBe(first);
+	});
+
+	it('sem o `when`, a mesma chave com o mesmo conteúdo também é a mesma em qualquer horário', () => {
+		const { notificationWhen: _when, ...withoutWhen } = base;
+		expect(fingerprintOf({ ...withoutWhen, postedAt: plus(5 * MIN) })).toBe(fingerprintOf(withoutWhen));
+	});
+
+	it('D6: duas compras iguais no mesmo minuto, chaves diferentes: impressões diferentes', () => {
+		const second = { ...base, notificationKey: '0|com.nu.production|2|null|10123', postedAt: plus(25_000) };
+		expect(fingerprintOf(second)).not.toBe(fingerprintOf(base));
+	});
+
+	it('a mesma chave atualizada com outro valor é outra captura', () => {
+		expect(
+			fingerprintOf({ ...base, text: base.text.replace('R$ 5,00', 'R$ 7,50'), postedAt: plus(2 * MIN) })
+		).not.toBe(fingerprintOf(base));
+		expect(fingerprintOf({ ...base, title: 'Compra no débito aprovada' })).not.toBe(fingerprintOf(base));
+	});
+
+	// O app que reusa sempre o mesmo id: a compra nova, com o mesmo texto, tem a mesma chave,
+	// mas o `when` é o dela. Sem isso, o café de amanhã sumiria como repostagem do de hoje.
+	it('a mesma chave e o mesmo texto com outro `when` é outra notificação', () => {
+		expect(fingerprintOf({ ...base, notificationWhen: plus(HOUR), postedAt: plus(HOUR) })).not.toBe(
+			fingerprintOf(base)
+		);
+	});
+
+	it('o formato com chave é outro, e cabe no id do sync', () => {
+		const keyed = fingerprintOf(base);
+		expect(keyed).toMatch(/^n:[0-9a-f]{8}-[0-9a-f]{8}$/);
+		expect(keyed.length).toBeLessThanOrEqual(64);
+		const { notificationKey: _key, notificationWhen: _when, ...legacy } = base;
+		expect(fingerprintOf(legacy)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{8}$/);
+	});
 });
 
 /**

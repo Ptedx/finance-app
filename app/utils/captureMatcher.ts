@@ -196,12 +196,32 @@ const fnv1a = (input: string): string => {
 	return hash.toString(16).padStart(8, '0');
 };
 
+/** Prefixo das impressões feitas com a chave da notificação (SPD-041). */
+const KEYED_FINGERPRINT_PREFIX = 'n:';
+
 /**
- * Identifica uma notificação. O Android reentrega a mesma notificação quando o app do
- * banco a atualiza; título, texto, app e o minuto em que foi publicada bastam para
- * reconhecê-la — e o minuto, em vez do instante exato, absorve a reentrega.
+ * Identifica uma notificação. É também o id da captura no sync (v19): uma impressão já
+ * gravada nunca muda de formato.
+ *
+ * **Com a chave do Android** (`notificationKey`, SPD-041): a mesma chave com o mesmo
+ * título, texto e `when` é a mesma notificação, em qualquer horário — a repostagem minutos
+ * depois (D8) não vira segunda captura. Chaves diferentes são notificações diferentes,
+ * mesmo no mesmo minuto e com o mesmo texto (dois cafés, D6). A mesma chave com outro
+ * conteúdo (o banco atualizou o aviso com outro valor) é captura nova. O `when` entra
+ * porque há app que reusa sempre o mesmo id: a compra de amanhã, com o mesmo texto, teria
+ * a mesma chave e sumiria como repostagem. O formato é outro (`n:`), e a chave não sai do
+ * aparelho: só o hash dela.
+ *
+ * **Sem a chave** (binário antigo, JS novo por OTA, extrato, testes antigos): título,
+ * texto, app e o minuto em que foi publicada — o minuto, em vez do instante exato, absorve
+ * a reentrega no mesmo minuto. É o formato de sempre, sem mudança.
  */
 export const fingerprintOf = (raw: RawCapture): string => {
+	if (raw.notificationKey) {
+		const when = raw.notificationWhen ?? '';
+		const content = `${raw.packageName}|${raw.notificationKey}|${when}|${raw.title}|${raw.text}`;
+		return `${KEYED_FINGERPRINT_PREFIX}${fnv1a(content)}-${fnv1a(`${raw.text}|${raw.notificationKey}|${when}`)}`;
+	}
 	const minute = raw.postedAt.slice(0, 16);
 	return `${fnv1a(`${raw.packageName}|${raw.title}|${raw.text}|${minute}`)}-${fnv1a(raw.text)}`;
 };

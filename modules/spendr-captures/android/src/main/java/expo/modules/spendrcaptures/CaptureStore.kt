@@ -19,6 +19,9 @@ object CaptureStore {
   private const val MAX_BYTES = 512L * 1024L
   private const val KEEP_LINES_WHEN_TRIMMING = 1000
 
+  /** A chave da notificação e o `when` dela (SPD-041). */
+  private val OPTIONAL_FIELDS = listOf("notificationKey", "notificationWhen")
+
   private val lock = Any()
 
   private fun file(context: Context): File = File(context.filesDir, FILE_NAME)
@@ -57,7 +60,7 @@ object CaptureStore {
     if (line.isBlank()) return null
     return try {
       val json = JSONObject(line)
-      mapOf(
+      val entry = mutableMapOf(
         "id" to json.optString("id"),
         "packageName" to json.optString("packageName"),
         "appLabel" to json.optString("appLabel"),
@@ -65,6 +68,13 @@ object CaptureStore {
         "text" to json.optString("text"),
         "postedAt" to json.optString("postedAt"),
       )
+      // Opcionais (SPD-041): só vão quando a linha os tem. Linha anotada antes da
+      // atualização não tem, e o JS cai na impressão digital de sempre.
+      for (optional in OPTIONAL_FIELDS) {
+        val value = json.optString(optional)
+        if (value.isNotEmpty()) entry[optional] = value
+      }
+      entry
     } catch (e: Exception) {
       null
     }
