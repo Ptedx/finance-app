@@ -46,15 +46,6 @@ const en = {
 		failedClear: 'Failed to clear budget. Please try again.',
 	},
 
-	incomeSection: {
-		periodicTransactions: 'Periodic Transactions',
-		manageTransactions: 'Manage transactions',
-		monthlyIncome: 'Monthly Income',
-		monthlyExpenses: 'Monthly Expenses',
-		income: 'Income',
-		expense: 'Expense',
-	},
-
 	transactions: {
 		screenTitle: 'Recurring Transactions',
 		headerTitle: 'Manage Recurring Transactions',

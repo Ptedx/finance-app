@@ -46,15 +46,6 @@ const it = {
 		failedClear: 'Impossibile cancellare il budget. Riprova.',
 	},
 
-	incomeSection: {
-		periodicTransactions: 'Transazioni Periodiche',
-		manageTransactions: 'Gestisci transazioni',
-		monthlyIncome: 'Entrate Mensili',
-		monthlyExpenses: 'Spese Mensili',
-		income: 'Entrata',
-		expense: 'Spesa',
-	},
-
 	transactions: {
 		screenTitle: 'Transazioni Ricorrenti',
 		headerTitle: 'Gestisci Transazioni Ricorrenti',

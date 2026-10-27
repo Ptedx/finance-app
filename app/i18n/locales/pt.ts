@@ -46,15 +46,6 @@ const pt = {
 		failedClear: 'Não foi possível limpar o orçamento. Tente de novo.',
 	},
 
-	incomeSection: {
-		periodicTransactions: 'Lançamentos periódicos',
-		manageTransactions: 'Gerenciar lançamentos',
-		monthlyIncome: 'Receita mensal',
-		monthlyExpenses: 'Despesa mensal',
-		income: 'Receita',
-		expense: 'Despesa',
-	},
-
 	transactions: {
 		screenTitle: 'Lançamentos recorrentes',
 		headerTitle: 'Gerenciar recorrências',
