@@ -46,50 +46,6 @@ const it = {
 		failedClear: 'Impossibile cancellare il budget. Riprova.',
 	},
 
-	transactions: {
-		screenTitle: 'Transazioni Ricorrenti',
-		headerTitle: 'Gestisci Transazioni Ricorrenti',
-		headerSubtitle: 'Imposta e gestisci le tue entrate e spese periodiche',
-		addIncome: 'Aggiungi Entrata',
-		addExpense: 'Aggiungi Spesa',
-		loading: 'Caricamento transazioni...',
-		empty: 'Nessuna transazione ricorrente ancora.',
-		emptySubtitle:
-			'Aggiungi le tue entrate e spese ricorrenti per tracciare meglio le tue finanze.',
-		monthly: 'Mensile (Giorno {{day}})',
-		yearly: 'Annuale ({{month}} {{day}})',
-		weekly: 'Settimanale ({{weekday}})',
-		deleteTitle: 'Elimina Transazione',
-		deleteMsg: 'Sei sicuro di voler eliminare questa transazione ricorrente?',
-		cancel: 'Annulla',
-		delete: 'Elimina',
-		error: 'Errore',
-		failedDelete: 'Impossibile eliminare la transazione.',
-		months: {
-			jan: 'Gen',
-			feb: 'Feb',
-			mar: 'Mar',
-			apr: 'Apr',
-			may: 'Mag',
-			jun: 'Giu',
-			jul: 'Lug',
-			aug: 'Ago',
-			sep: 'Set',
-			oct: 'Ott',
-			nov: 'Nov',
-			dec: 'Dic',
-		},
-		weekdays: {
-			mon: 'Lun',
-			tue: 'Mar',
-			wed: 'Mer',
-			thu: 'Gio',
-			fri: 'Ven',
-			sat: 'Sab',
-			sun: 'Dom',
-		},
-	},
-
 	/**
 	 * Metriche di ricchezza: tasso di risparmio, autonomia e gli insight costruiti su di
 	 * essi. Le chiavi `insights.*` hanno lo stesso nome dei valori di `InsightId` in
