@@ -436,9 +436,9 @@ const SettingsScreen = () => {
 							/>
 						)
 					)}
-					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts/index'))}
-					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards/index'))}
-					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills/index'))}
+					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts'))}
+					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'))}
+					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills'))}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),

@@ -221,7 +221,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				onPress: async () => {
 					await convertCardToDebit(existing.id, chosenDebitAccount.id);
 					announce(t('cards.edit.debitDone', { account: chosenDebitAccount.name }));
-					router.replace('/cards/index');
+					router.replace('/cards');
 				},
 			},
 		]);
@@ -243,7 +243,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				style: 'destructive',
 				onPress: async () => {
 					await removeAccount(existing.id);
-					router.replace('/cards/index');
+					router.replace('/cards');
 				},
 			},
 		]);

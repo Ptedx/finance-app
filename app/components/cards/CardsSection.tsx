@@ -82,7 +82,7 @@ const CardsSection: React.FC = () => {
 				</Text>
 				{hasCards ? (
 					<Pressable
-						onPress={() => router.push('/cards/index')}
+						onPress={() => router.push('/cards')}
 						accessibilityRole="button"
 						accessibilityLabel={t('cards.seeAll')}
 						hitSlop={12}

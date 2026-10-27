@@ -25,7 +25,7 @@ const BillsMonthCard: React.FC = () => {
 
 	if (isLoading) return null;
 
-	const open = () => router.push('/bills/index');
+	const open = () => router.push('/bills');
 
 	if (activeBills.length === 0) {
 		return (
