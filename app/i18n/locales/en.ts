@@ -622,8 +622,7 @@ const en = {
 		resetFailed: 'Reset Failed',
 		resetError: 'There was an error resetting your data. Please try again.',
 		resetAuthFailed: 'For your security, data reset requires authentication.',
-		aboutMsg:
-			'Spendr is a personal finance tracker that helps you manage expenses, set budgets, and track recurring transactions. All your financial data is stored securely on your device.',
+		aboutMsg: 'Spendr is a personal finance app: it reads your bank notifications, follows your accounts, cards and bills, and shows where your money goes. Your data stays on the device and, if you sign in, also on the Spendr server, so it comes back on a new device.',
 		ok: 'OK',
 		biometricNotAvailableTitle: 'Not Available',
 		biometricNotAvailableMsg: 'Biometric authentication is not available on this device.',
@@ -644,28 +643,26 @@ const en = {
 
 	welcome: {
 		title: 'Welcome to Spendr',
-		subtitle:
-			'The simple way to track expenses, manage your budget, and achieve your financial goals.',
-		trackExpenses: 'Track Expenses',
-		trackExpensesDesc: 'Keep track of all your expenses in one place',
-		manageBudget: 'Manage Budget',
-		manageBudgetDesc: 'Set monthly budgets and stay on track',
+		subtitle: 'Your spending comes in from your bank notifications, and you see where the month’s money goes.',
+		trackExpenses: 'Spending that logs itself',
+		trackExpensesDesc: 'Purchases, Pix and transfers from your bank notifications',
+		manageBudget: 'Accounts, cards and bills',
+		manageBudgetDesc: 'Each account’s balance and what is left after card bills',
 		insightfulReports: 'Insightful Reports',
-		insightfulReportsDesc: 'Visualize your spending patterns',
+		insightfulReportsDesc: 'Where your money goes, month by month',
 		getStarted: 'Get Started',
 	},
 
 	info: {
 		screenTitle: 'How It Works',
-		addTransactions: 'Add Your Transactions',
-		addTransactionsDesc:
-			'Track your daily expenses and income with just a few taps. Categorize them to better understand your spending habits.',
-		recurringTransactions: 'Recurring Transactions',
-		recurringTransactionsDesc:
-			'Set up recurring expenses and income like rent, salary, or subscriptions to automatically track them every month.',
-		monthlyBudget: 'Monthly Budget',
-		monthlyBudgetDesc:
-			"Set a monthly budget to help you stay on track with your financial goals. Get notified when you're close to your limit.",
+		addTransactions: 'Your entries',
+		addTransactionsDesc: 'Purchases, Pix and transfers arrive from your bank notifications for you to confirm with one tap. Anything without a notification you add by hand.',
+		accountsCards: 'Accounts and cards',
+		accountsCardsDesc: 'Each account shows its balance and each card shows its bill. The app adds it all up and tells you what is left after paying the cards.',
+		bills: 'Bills to pay',
+		billsDesc: 'Add the month’s fixed bills. The app reminds you before they are due and marks them paid when it sees the payment.',
+		monthlyBudget: 'Monthly budget',
+		monthlyBudgetDesc: 'Set how much you want to spend this month and follow how much of it is gone on the home screen.',
 		insightfulReports: 'Insightful Reports',
 		insightfulReportsDesc:
 			'Visualize your spending patterns through customized reports. Understand where your money goes with beautiful charts.',
@@ -691,7 +688,7 @@ const en = {
 		preferredCurrency: 'Preferred Currency',
 		preferredCurrencyDesc: 'Select the currency you want to use for tracking expenses',
 		notifications: 'Notifications',
-		notificationsDesc: 'Get reminded about upcoming recurring transactions',
+		notificationsDesc: 'Get reminders for bills that are about to be due',
 		biometricAuth: '{{biometricType}} Authentication',
 		biometricAuthDesc: 'Require {{biometricType}} authentication to access the app',
 		biometricUnavailableDesc: 'Biometric authentication is not available on this device',

@@ -623,8 +623,7 @@ const it = {
 		resetFailed: 'Reimpostazione Fallita',
 		resetError: 'Si è verificato un errore durante la reimpostazione dei dati. Riprova.',
 		resetAuthFailed: "Per la tua sicurezza, la reimpostazione dei dati richiede l'autenticazione.",
-		aboutMsg:
-			"Spendr è un'app di finanza personale che ti aiuta a gestire le spese, impostare budget e monitorare le transazioni ricorrenti. Tutti i tuoi dati finanziari sono archiviati in modo sicuro sul tuo dispositivo.",
+		aboutMsg: 'Spendr è un’app di finanza personale: legge le notifiche della banca, segue conti, carte e bollette e mostra dove vanno i tuoi soldi. I dati restano sul dispositivo e, se accedi con un account, anche sul server di Spendr, per tornare su un nuovo dispositivo.',
 		ok: 'OK',
 		biometricNotAvailableTitle: 'Non Disponibile',
 		biometricNotAvailableMsg:
@@ -646,28 +645,26 @@ const it = {
 
 	welcome: {
 		title: 'Benvenuto su Spendr',
-		subtitle:
-			'Il modo semplice per tracciare le spese, gestire il budget e raggiungere i tuoi obiettivi finanziari.',
-		trackExpenses: 'Traccia le Spese',
-		trackExpensesDesc: 'Tieni traccia di tutte le tue spese in un unico posto',
-		manageBudget: 'Gestisci il Budget',
-		manageBudgetDesc: 'Imposta budget mensili e rimani in linea con i tuoi obiettivi',
+		subtitle: 'Le tue spese arrivano dalle notifiche della banca, e vedi dove vanno i soldi del mese.',
+		trackExpenses: 'Spese che si registrano da sole',
+		trackExpensesDesc: 'Acquisti, Pix e bonifici dalle notifiche della banca',
+		manageBudget: 'Conti, carte e fatture',
+		manageBudgetDesc: 'Il saldo di ogni conto e quanto resta dopo le fatture',
 		insightfulReports: 'Report Dettagliati',
-		insightfulReportsDesc: 'Visualizza le tue abitudini di spesa',
+		insightfulReportsDesc: 'Dove vanno i tuoi soldi, mese per mese',
 		getStarted: 'Inizia',
 	},
 
 	info: {
 		screenTitle: 'Come Funziona',
-		addTransactions: 'Aggiungi le Tue Transazioni',
-		addTransactionsDesc:
-			'Traccia le tue spese e entrate quotidiane con pochi tocchi. Classificale per capire meglio le tue abitudini di spesa.',
-		recurringTransactions: 'Transazioni Ricorrenti',
-		recurringTransactionsDesc:
-			'Imposta spese ed entrate ricorrenti come affitto, stipendio o abbonamenti per tracciarli automaticamente ogni mese.',
-		monthlyBudget: 'Budget Mensile',
-		monthlyBudgetDesc:
-			'Imposta un budget mensile per mantenere il controllo dei tuoi obiettivi finanziari. Ricevi una notifica quando sei vicino al limite.',
+		addTransactions: 'Le tue voci',
+		addTransactionsDesc: 'Acquisti, Pix e bonifici arrivano dalle notifiche della banca da confermare con un tocco. Quello che non ha una notifica lo aggiungi a mano.',
+		accountsCards: 'Conti e carte',
+		accountsCardsDesc: 'Ogni conto mostra il saldo e ogni carta la fattura. L’app somma tutto e ti dice quanto resta dopo aver pagato le carte.',
+		bills: 'Bollette da pagare',
+		billsDesc: 'Aggiungi le spese fisse del mese. L’app te le ricorda prima della scadenza e le segna pagate quando vede il pagamento.',
+		monthlyBudget: 'Budget del mese',
+		monthlyBudgetDesc: 'Decidi quanto vuoi spendere nel mese e segui nella schermata iniziale quanto ne hai già usato.',
 		insightfulReports: 'Report Dettagliati',
 		insightfulReportsDesc:
 			'Visualizza le tue abitudini di spesa attraverso report personalizzati. Scopri dove vanno i tuoi soldi con grafici dettagliati.',
@@ -693,7 +690,7 @@ const it = {
 		preferredCurrency: 'Valuta Preferita',
 		preferredCurrencyDesc: 'Seleziona la valuta da usare per tracciare le spese',
 		notifications: 'Notifiche',
-		notificationsDesc: 'Ricevi promemoria per le prossime transazioni ricorrenti',
+		notificationsDesc: 'Ricevi promemoria per le bollette in scadenza',
 		biometricAuth: 'Autenticazione {{biometricType}}',
 		biometricAuthDesc: "Richiedi l'autenticazione {{biometricType}} per accedere all'app",
 		biometricUnavailableDesc: "L'autenticazione biometrica non è disponibile su questo dispositivo",

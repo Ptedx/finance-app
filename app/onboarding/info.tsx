@@ -30,7 +30,7 @@ export default function InfoScreen() {
 			<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
 				<View style={styles.section}>
 					<View style={styles.iconContainer}>
-						<Ionicons name="card-outline" size={32} color="#15E8FE" />
+						<Ionicons name="flash-outline" size={32} color="#15E8FE" />
 					</View>
 					<Text style={styles.sectionTitle}>{t('info.addTransactions')}</Text>
 					<Text style={styles.sectionDescription}>{t('info.addTransactionsDesc')}</Text>
@@ -38,10 +38,18 @@ export default function InfoScreen() {
 
 				<View style={styles.section}>
 					<View style={styles.iconContainer}>
-						<Ionicons name="repeat-outline" size={32} color="#15E8FE" />
+						<Ionicons name="card-outline" size={32} color="#15E8FE" />
 					</View>
-					<Text style={styles.sectionTitle}>{t('info.recurringTransactions')}</Text>
-					<Text style={styles.sectionDescription}>{t('info.recurringTransactionsDesc')}</Text>
+					<Text style={styles.sectionTitle}>{t('info.accountsCards')}</Text>
+					<Text style={styles.sectionDescription}>{t('info.accountsCardsDesc')}</Text>
+				</View>
+
+				<View style={styles.section}>
+					<View style={styles.iconContainer}>
+						<Ionicons name="calendar-outline" size={32} color="#15E8FE" />
+					</View>
+					<Text style={styles.sectionTitle}>{t('info.bills')}</Text>
+					<Text style={styles.sectionDescription}>{t('info.billsDesc')}</Text>
 				</View>
 
 				<View style={styles.section}>

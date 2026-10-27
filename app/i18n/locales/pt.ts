@@ -616,8 +616,7 @@ const pt = {
 		resetFailed: 'Falha ao apagar',
 		resetError: 'Houve um erro ao apagar seus dados. Tente de novo.',
 		resetAuthFailed: 'Por segurança, apagar os dados exige autenticação.',
-		aboutMsg:
-			'O Spendr é um app de finanças pessoais para acompanhar gastos, definir orçamentos e controlar lançamentos recorrentes. Seus dados financeiros ficam guardados com segurança no seu aparelho.',
+		aboutMsg: 'O Spendr é um app de finanças pessoais: lê os avisos do banco, acompanha contas, cartões e contas a pagar e mostra para onde vai o seu dinheiro. Os dados ficam no aparelho e, se você entrar com uma conta, também no servidor do Spendr, para voltarem num aparelho novo.',
 		ok: 'OK',
 		biometricNotAvailableTitle: 'Indisponível',
 		biometricNotAvailableMsg: 'A autenticação biométrica não está disponível neste aparelho.',
@@ -638,28 +637,26 @@ const pt = {
 
 	welcome: {
 		title: 'Bem-vindo ao Spendr',
-		subtitle:
-			'O jeito simples de acompanhar gastos, gerenciar o orçamento e alcançar seus objetivos financeiros.',
-		trackExpenses: 'Acompanhe gastos',
-		trackExpensesDesc: 'Todos os seus gastos num só lugar',
-		manageBudget: 'Gerencie o orçamento',
-		manageBudgetDesc: 'Defina orçamentos mensais e mantenha o rumo',
+		subtitle: 'Seus gastos entram pelos avisos do banco, e você vê para onde vai o dinheiro do mês.',
+		trackExpenses: 'Gastos que entram sozinhos',
+		trackExpensesDesc: 'Compras, Pix e transferências dos avisos do banco',
+		manageBudget: 'Contas, cartões e faturas',
+		manageBudgetDesc: 'O saldo de cada conta e quanto sobra depois das faturas',
 		insightfulReports: 'Relatórios úteis',
-		insightfulReportsDesc: 'Visualize seus padrões de gastos',
+		insightfulReportsDesc: 'Para onde vai o seu dinheiro, mês a mês',
 		getStarted: 'Começar',
 	},
 
 	info: {
 		screenTitle: 'Como funciona',
-		addTransactions: 'Adicione seus lançamentos',
-		addTransactionsDesc:
-			'Registre gastos e receitas do dia a dia com poucos toques. Categorize para entender melhor seus hábitos.',
-		recurringTransactions: 'Lançamentos recorrentes',
-		recurringTransactionsDesc:
-			'Configure despesas e receitas recorrentes como aluguel, salário ou assinaturas, e o app as registra todo mês.',
-		monthlyBudget: 'Orçamento mensal',
-		monthlyBudgetDesc:
-			'Defina um orçamento mensal para manter o rumo dos seus objetivos. Seja avisado ao chegar perto do limite.',
+		addTransactions: 'Seus lançamentos',
+		addTransactionsDesc: 'Compras, Pix e transferências chegam pelos avisos do banco para você confirmar com um toque. O que não vier por aviso você lança à mão.',
+		accountsCards: 'Contas e cartões',
+		accountsCardsDesc: 'Cada conta mostra o saldo e cada cartão mostra a fatura. O app soma tudo e diz quanto sobra depois de pagar as faturas.',
+		bills: 'Contas a pagar',
+		billsDesc: 'Cadastre as contas fixas do mês. O app lembra antes do vencimento e dá baixa sozinho quando vê o pagamento.',
+		monthlyBudget: 'Orçamento do mês',
+		monthlyBudgetDesc: 'Defina quanto quer gastar no mês e acompanhe na tela inicial quanto dele já foi.',
 		insightfulReports: 'Relatórios úteis',
 		insightfulReportsDesc:
 			'Visualize seus padrões de gastos em relatórios personalizados. Entenda para onde vai o seu dinheiro.',
@@ -685,7 +682,7 @@ const pt = {
 		preferredCurrency: 'Moeda preferida',
 		preferredCurrencyDesc: 'Escolha a moeda que você quer usar para registrar os gastos',
 		notifications: 'Notificações',
-		notificationsDesc: 'Receba lembretes dos lançamentos recorrentes que vão vencer',
+		notificationsDesc: 'Receba lembretes das contas a pagar que vão vencer',
 		biometricAuth: 'Autenticação por {{biometricType}}',
 		biometricAuthDesc: 'Exigir {{biometricType}} para abrir o app',
 		biometricUnavailableDesc: 'A autenticação biométrica não está disponível neste aparelho',
