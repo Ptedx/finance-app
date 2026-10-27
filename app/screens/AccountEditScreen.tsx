@@ -30,6 +30,8 @@ import {
 	type Transaction,
 } from '../database/schema';
 import { feedOwnerOf } from '../utils/accountBinding';
+import { planBusinessFeed } from '../utils/businessFeed';
+import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
@@ -67,7 +69,7 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, takeNotifications, adjustAccountMonth } =
+	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, takeNotifications, takeBusinessNotifications, adjustAccountMonth } =
 		useAccounts();
 	const { transactions } = useTransactions();
 	// O gasto pré-preenchido na folha é o do **período escolhido** na tela inicial, e o
@@ -245,6 +247,39 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					onPress: async () => {
 						await takeNotifications(existing.id);
 						announce(t('accounts.edit.feedMoved', { name: existing.name }));
+					},
+				},
+			]
+		);
+	};
+
+	/**
+	 * Os avisos da PJ ("da conta Nu Empresas"), que o banco marca no texto (SPD-074). Só
+	 * aparece para banco que marca; a resposta vem da preferência, que o sync também traz.
+	 */
+	const businessPlan = existing && feedOwner ? planBusinessFeed(accounts, existing.id) : null;
+	const [businessFeeds, setBusinessFeeds] = useState<Record<string, string>>({});
+	useEffect(() => {
+		void getBusinessFeeds().then(setBusinessFeeds);
+	}, []);
+	const businessHere = !!existing && !!businessPlan && businessFeeds[businessPlan.packageName] === existing.id;
+
+	const handleTakeBusiness = () => {
+		if (!existing || !businessPlan || businessHere) return;
+		const { label, moveFeedTo } = businessPlan;
+		Alert.alert(
+			t('accounts.edit.feedTitle'),
+			moveFeedTo
+				? t('accounts.edit.businessConfirmMove', { label, name: existing.name, other: moveFeedTo.name })
+				: t('accounts.edit.businessConfirm', { label, name: existing.name }),
+			[
+				{ text: t('accounts.edit.cancel'), style: 'cancel' },
+				{
+					text: t('accounts.edit.businessTake', { label }),
+					onPress: async () => {
+						await takeBusinessNotifications(existing.id);
+						setBusinessFeeds(await getBusinessFeeds());
+						announce(t('accounts.edit.businessMoved', { label, name: existing.name }));
 					},
 				},
 			]
@@ -549,6 +584,23 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 									<Text style={styles.secondaryButtonText}>{t('accounts.edit.feedTake')}</Text>
 								</Pressable>
 							)}
+							{businessPlan && businessHere ? (
+								<Text style={styles.empty}>{t('accounts.edit.businessHere', { label: businessPlan.label })}</Text>
+							) : null}
+							{businessPlan && !businessHere ? (
+								<Pressable
+									onPress={handleTakeBusiness}
+									accessibilityRole="button"
+									accessibilityLabel={t('accounts.edit.businessTake', { label: businessPlan.label })}
+									accessibilityHint={t('accounts.edit.businessHint', { label: businessPlan.label })}
+									style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+								>
+									<Ionicons name="briefcase-outline" size={18} color="#FFFFFF" />
+									<Text style={styles.secondaryButtonText}>
+										{t('accounts.edit.businessTake', { label: businessPlan.label })}
+									</Text>
+								</Pressable>
+							) : null}
 						</View>
 					) : null}
 

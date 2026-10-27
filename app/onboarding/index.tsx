@@ -31,7 +31,7 @@ export default function WelcomeScreen() {
 				<View style={styles.featuresContainer}>
 					<View style={styles.featureItem}>
 						<View style={styles.featureIconContainer}>
-							<Ionicons name="cash-outline" size={26} color="#15E8FE" />
+							<Ionicons name="flash-outline" size={26} color="#15E8FE" />
 						</View>
 						<View style={styles.featureTextContainer}>
 							<Text style={styles.featureTitle}>{t('welcome.trackExpenses')}</Text>
@@ -41,7 +41,7 @@ export default function WelcomeScreen() {
 
 					<View style={styles.featureItem}>
 						<View style={styles.featureIconContainer}>
-							<Ionicons name="wallet-outline" size={26} color="#15E8FE" />
+							<Ionicons name="card-outline" size={26} color="#15E8FE" />
 						</View>
 						<View style={styles.featureTextContainer}>
 							<Text style={styles.featureTitle}>{t('welcome.manageBudget')}</Text>

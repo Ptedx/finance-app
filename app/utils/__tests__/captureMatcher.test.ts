@@ -694,3 +694,77 @@ describe('app que o usuário descartou 3 vezes (SPD-022)', () => {
 		expect(decide(candidate({ packageName: 'com.whatsapp' }), context({ appRule: appRule(3) })).action).toBe('pending');
 	});
 });
+
+describe('Pix entre a PJ e a PF do mesmo banco (SPD-074, DEC-34)', () => {
+	// "Pix de R$ 500,00 da conta Nu Empresas foi realizado": a saída da PJ não diz para quem.
+	// A entrada na PF, do mesmo valor e minutos depois, é que diz que foi entre contas suas.
+	const pjOut = known({
+		id: 'pj-out',
+		packageName: NUBANK,
+		direction: 'out',
+		kind: 'pix_out',
+		amountCents: 50_000,
+		merchantKey: null,
+		accountId: 'pj',
+	});
+	const pfIn = (overrides: Partial<Candidate> = {}) =>
+		candidate({
+			packageName: NUBANK,
+			postedAt: plus(MIN),
+			direction: 'in',
+			kind: 'pix_in',
+			amountCents: 50_000,
+			counterparty: 'EMPRESA DO USUARIO LTDA',
+			merchantKey: 'empresa do usuario',
+			accountId: 'pf',
+			...overrides,
+		});
+
+	it('mesmo valor, contas diferentes do mesmo banco, um minuto depois: transferência, sem perguntar', () => {
+		expect(decide(pfIn(), context({ recent: [pjOut] }))).toEqual({
+			action: 'transfer',
+			relatedId: 'pj-out',
+			reason: 'same_bank_accounts',
+		});
+	});
+
+	it('vale nas duas ordens: a saída da PJ depois da entrada na PF', () => {
+		const pfInKnown = known({ id: 'pf-in', packageName: NUBANK, direction: 'in', kind: 'pix_in', amountCents: 50_000, accountId: 'pf' });
+		const out = candidate({
+			packageName: NUBANK,
+			postedAt: plus(2 * MIN),
+			direction: 'out',
+			kind: 'pix_out',
+			amountCents: 50_000,
+			counterparty: null,
+			merchantKey: null,
+			accountId: 'pj',
+		});
+		expect(decide(out, context({ recent: [pfInKnown] }))).toEqual({
+			action: 'transfer',
+			relatedId: 'pf-in',
+			reason: 'same_bank_accounts',
+		});
+	});
+
+	it('na mesma conta são dois Pix: um enviado e outro recebido', () => {
+		expect(decide(pfIn({ accountId: 'pj' }), context({ recent: [pjOut] })).action).toBe('pending');
+	});
+
+	it('sem saber a conta de uma das pontas, não junta', () => {
+		expect(decide(pfIn({ accountId: null }), context({ recent: [pjOut] })).action).toBe('pending');
+	});
+
+	it('longe no tempo não é a mesma transferência', () => {
+		expect(decide(pfIn({ postedAt: plus(HOUR) }), context({ recent: [pjOut] })).action).toBe('pending');
+	});
+
+	it('compra nunca é perna de transferência', () => {
+		const purchase = known({ ...pjOut, kind: 'purchase' });
+		expect(decide(pfIn(), context({ recent: [purchase] })).action).toBe('pending');
+	});
+
+	it('fonte marcada como receita continua receita', () => {
+		expect(decide(pfIn(), context({ recent: [pjOut], externalIncome: true })).action).toBe('pending');
+	});
+});

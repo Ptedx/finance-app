@@ -11,6 +11,8 @@ import {
 	db,
 	deleteAccount,
 	deleteTransfersOf,
+	foldAccountBalance,
+	getAccount,
 	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
@@ -62,6 +64,8 @@ import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
+import { planBusinessFeed } from '../utils/businessFeed';
+import { setBusinessFeed } from '../utils/businessFeedPreference';
 import {
 	externalTransfersInByMonth,
 	externalTransfersOutByMonth,
@@ -215,6 +219,8 @@ interface AccountsContextType {
 	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
 	/** As compras que o app do banco avisa passam a cair nesta conta, e não na outra. */
 	takeNotifications: (accountId: string) => Promise<void>;
+	/** Os avisos da PJ ("da conta Nu Empresas") passam a cair nesta conta (SPD-074). */
+	takeBusinessNotifications: (accountId: string) => Promise<void>;
 	/** Dá nome a um cartão (físico, virtual ou de débito) pelo final; nome vazio tira. */
 	renameCard: (accountId: string, last4: string, name: string | null) => Promise<void>;
 	/** Move todos os lançamentos sem conta para uma conta. Devolve quantos mudaram. */
@@ -771,8 +777,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	 * notificação criou, por exemplo. Lançamentos, capturas e transferências vão para a que
 	 * fica, junto com o app e a chave de extrato, para o que vier depois cair lá.
 	 *
-	 * Os saldos não se somam: cada ficha tinha a sua âncora, e somá-las contaria o mesmo
-	 * dinheiro duas vezes. A conta que fica mantém a dela; "Definir saldo" acerta o resto.
+	 * O total não muda (SPD-073): o saldo da que sai passa para a que fica. Se as duas
+	 * contavam o mesmo dinheiro, o total já estava dobrado antes de juntar, e "Acertar com o
+	 * banco" corrige; somar em silêncio menos do que havia é que não pode.
 	 */
 	const mergeAccounts = useCallback(
 		async (fromId: string, intoId: string) => {
@@ -780,6 +787,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			const into = accounts.find((account) => account.id === intoId);
 			if (!from || !into || fromId === intoId) return;
 
+			await foldAccountBalance(fromId, intoId);
 			await moveAccountLedger(fromId, intoId, from.last4);
 			await repointTransfers(fromId, intoId);
 
@@ -794,8 +802,12 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 			// Uma gravação só: um `updateAccount` depois de `setAccountCardNames` regravaria a
 			// coluna com o valor antigo e apagaria o nome que acabou de entrar.
+			// A âncora vem do banco, não da cópia de antes: `foldAccountBalance` acabou de mudá-la.
+			const anchored = (await getAccount(intoId)) ?? into;
 			await updateAccount({
 				...into,
+				openingBalanceCents: anchored.openingBalanceCents,
+				openingBalanceDate: anchored.openingBalanceDate,
 				cardNames,
 				last4: into.last4 ?? from.last4,
 				packageName: into.packageName ?? from.packageName,
@@ -831,6 +843,28 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[accounts, refresh, refreshData]
+	);
+
+	/**
+	 * "Avisos da Nu Empresas entram aqui" (SPD-074). A marca da PJ fica na preferência; se
+	 * esta conta era a ligada ao app, o resto dos avisos (os da conta pessoal) passa para a
+	 * outra ficha do banco — senão a PF continuaria recebendo nesta conta.
+	 */
+	const takeBusinessNotifications = useCallback(
+		async (accountId: string) => {
+			const plan = planBusinessFeed(accounts, accountId);
+			const target = accounts.find((account) => account.id === accountId);
+			if (!plan || !target) return;
+
+			await setBusinessFeed(plan.packageName, accountId);
+			if (plan.moveFeedTo) {
+				await updateAccount({ ...target, packageName: null });
+				await updateAccount({ ...plan.moveFeedTo, packageName: plan.packageName });
+			}
+			syncQueue.schedule();
+			await refresh();
+		},
+		[accounts, refresh]
 	);
 
 	const convertCardToDebit = useCallback(
@@ -972,6 +1006,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			convertCardToDebit,
 			mergeAccounts,
 			takeNotifications,
+			takeBusinessNotifications,
 			renameCard,
 			assignUnassigned,
 			unassignedBeforeAnchor,
@@ -1010,6 +1045,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			convertCardToDebit,
 			mergeAccounts,
 			takeNotifications,
+			takeBusinessNotifications,
 			renameCard,
 			assignUnassigned,
 			unassignedBeforeAnchor,

@@ -9,7 +9,6 @@ import AccountsOverview from '../components/AccountsOverview';
 import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
-import IncomeSection from '../components/IncomeSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
@@ -99,7 +98,6 @@ const HomeScreen = () => {
 				<MonthOverviewCard />
 				<CardsSection />
 				<AccountsOverview />
-				<IncomeSection />
 			</ScrollView>
 		</View>
 	);

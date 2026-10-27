@@ -51,8 +51,10 @@ Quando a duplicata já existe, duas telas resolvem:
 
 - **Contas** avisa "duas contas do mesmo banco" e pergunta qual fica (`duplicateAccountPairs`).
   Juntar leva lançamentos, capturas, transferências, nomes de cartão e o vínculo com o app
-  para a que ficar. Os saldos **não** se somam: cada ficha tinha a sua âncora, e somá-las
-  contaria o mesmo dinheiro duas vezes — "Definir saldo" acerta o resto.
+  para a que ficar. O total das contas não muda (SPD-073): o saldo que a outra tinha no
+  dia da âncora da que fica entra nessa âncora (`foldAccountBalance`), e o saldo bate em
+  qualquer data. Se as duas contavam o mesmo dinheiro, o total já estava dobrado antes de
+  juntar — "Acertar com o banco" corrige.
 - **A tela da conta** mostra em qual conta entram as compras daquele app e deixa trazê-las
   para esta (`feedOwnerOf`, "Compras do app do banco"). É para quem tem duas contas de
   verdade no mesmo banco — a de todo dia e a do envelope, a PF e a PJ — e o app escolheu a

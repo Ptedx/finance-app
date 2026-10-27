@@ -116,7 +116,7 @@ const AccountsOverview: React.FC = () => {
 					{t('accounts.groupAccounts')}
 				</Text>
 				<Pressable
-					onPress={() => router.push('/accounts/index')}
+					onPress={() => router.push('/accounts')}
 					accessibilityRole="button"
 					accessibilityLabel={t('accounts.manage')}
 					hitSlop={12}

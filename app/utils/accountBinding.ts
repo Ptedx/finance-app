@@ -15,7 +15,7 @@ import type { Account } from '../database/schema';
 import { sameBank } from './notificationTarget';
 
 /** Contas vivas do mesmo lado (conta corrente x cartão) e do mesmo banco. */
-const siblingsOf = (accounts: Account[], account: Account): Account[] =>
+export const siblingsOf = (accounts: Account[], account: Account): Account[] =>
 	account.bankName === null
 		? []
 		: accounts.filter(
@@ -42,6 +42,12 @@ export const feedOwnerOf = (accounts: Account[], account: Account): Account | nu
 	return bound.length === 1 ? bound[0] : null;
 };
 
+/**
+ * A chave de um par de fichas, igual nas duas ordens. Guarda a resposta "são contas
+ * diferentes" do aviso de duplicadas (SPD-072).
+ */
+export const accountPairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
 export interface DuplicateAccounts {
 	/** A ficha que recebe o que o banco avisa. */
 	fed: Account;
@@ -56,8 +62,17 @@ export interface DuplicateAccounts {
  * Com três ou mais fichas do banco a dúvida é real — PF, PJ e conjunta existem — e o app
  * não chuta: não sugere nada. Só o par exato vira sugestão de juntar, porque aí as duas
  * metades do mesmo dinheiro estão à vista.
+ *
+ * O par que o usuário já disse serem contas diferentes (`distinct`, chaves de
+ * `accountPairKey`) não volta: PF e PJ do mesmo banco, uma só ligada ao app, é o caso comum.
+ * A conta que recebe os avisos da PJ (`businessFed`, SPD-074) também é alimentada: com
+ * ela e a ligada ao app, são duas contas de verdade, e não há o que juntar.
  */
-export const duplicateAccountPairs = (accounts: Account[]): DuplicateAccounts[] => {
+export const duplicateAccountPairs = (
+	accounts: Account[],
+	distinct: readonly string[] = [],
+	businessFed: readonly string[] = []
+): DuplicateAccounts[] => {
 	const live = accounts.filter((account) => !account.deletedAt && !account.archived);
 	const pairs: DuplicateAccounts[] = [];
 	const seen = new Set<string>();
@@ -68,12 +83,15 @@ export const duplicateAccountPairs = (accounts: Account[]): DuplicateAccounts[] 
 		for (const member of group) seen.add(member.id);
 		if (group.length !== 2) continue;
 
-		const fed = group.filter(isFed);
-		const loose = group.filter((member) => !isFed(member));
-		if (fed.length === 1 && loose.length === 1) pairs.push({ fed: fed[0], loose: loose[0] });
+		const fedHere = (member: Account) => isFed(member) || businessFed.includes(member.id);
+		const fed = group.filter(fedHere);
+		const loose = group.filter((member) => !fedHere(member));
+		if (fed.length !== 1 || loose.length !== 1) continue;
+		if (distinct.includes(accountPairKey(fed[0].id, loose[0].id))) continue;
+		pairs.push({ fed: fed[0], loose: loose[0] });
 	}
 
 	return pairs;
 };
 
-export default { isFed, feedOwnerOf, duplicateAccountPairs };
+export default { isFed, feedOwnerOf, siblingsOf, accountPairKey, duplicateAccountPairs };

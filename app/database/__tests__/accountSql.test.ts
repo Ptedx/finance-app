@@ -69,9 +69,12 @@ import {
 	db,
 	deleteTransaction,
 	findAccountBySource,
+	foldAccountBalance,
 	getAccount,
 	getAccountBalances,
 	initDatabase,
+	moveAccountLedger,
+	repointTransfers,
 	setAccountBalanceToday,
 } from '../database';
 import type { AccountDraft } from '../schema';
@@ -213,6 +216,75 @@ describeSql('SQL de verdade', () => {
 			await spend(a, '2026-10-11', 1_000);
 			await deleteTransaction(gone);
 			expect(await balanceOn(a, '2026-10-01')).toBe(51_000);
+		});
+	});
+
+	describe('juntar contas mantém o total (foldAccountBalance, SPD-073)', () => {
+		const DATES = ['2026-09-30', '2026-10-01', '2026-10-09', '2026-10-10', '2026-10-19', '2026-10-20', '2026-10-31'];
+
+		// A mesma ordem de `mergeAccounts`: a soma primeiro, depois o livro e as transferências.
+		const merge = async (fromId: string, intoId: string) => {
+			await foldAccountBalance(fromId, intoId);
+			await moveAccountLedger(fromId, intoId);
+			await repointTransfers(fromId, intoId);
+		};
+		const totalsOn = async (ids: string[]) =>
+			Promise.all(
+				DATES.map(async (date) => {
+					const balances = await getAccountBalances(date);
+					return ids.reduce((sum, id) => sum + (balances.get(id) ?? 0), 0);
+				})
+			);
+
+		/*
+		 * O Inter de 27/10: a ficha que o aviso criou (âncora zero, antiga, só com o que o
+		 * banco avisou) e a ficha do usuário (saldo definido em 20/10, com lançamentos de
+		 * antes). Antes da correção, juntar perdia a âncora e o passado de uma delas.
+		 */
+		const inter = async () => {
+			const fed = await addAccount(draft({ name: 'Inter', packageName: INTER, openingBalanceDate: '2026-01-01' }));
+			const own = await addAccount(draft({ name: 'Inter PF', openingBalanceCents: 15_480, openingBalanceDate: '2026-10-20' }));
+			await spend(fed, '2026-10-10', 1_299);
+			await spend(fed, '2026-10-25', 4_000);
+			await earn(own, '2026-10-05', 30_000);
+			await spend(own, '2026-10-15', 2_000);
+			await spend(own, '2026-10-22', 500);
+			await addTransfer({ fromAccountId: own, toAccountId: fed, amountCents: 10_000, date: '2026-10-09', note: '' });
+			return { fed, own };
+		};
+
+		it('a ficha manual entra na do aviso: o total de cada dia é o mesmo de antes', async () => {
+			const { fed, own } = await inter();
+			const before = await totalsOn([fed, own]);
+			await merge(own, fed);
+			expect(await totalsOn([fed])).toEqual(before);
+			expect((await getAccount(fed))?.openingBalanceDate).toBe('2026-01-01');
+		});
+
+		it('o contrário também: a do aviso entra na manual, que guarda a data do saldo definido', async () => {
+			const { fed, own } = await inter();
+			const before = await totalsOn([fed, own]);
+			await merge(fed, own);
+			expect(await totalsOn([own])).toEqual(before);
+			expect((await getAccount(own))?.openingBalanceDate).toBe('2026-10-20');
+		});
+
+		it('a outra conta, que não entrou na junção, não muda', async () => {
+			const { fed, own } = await inter();
+			const other = await addAccount(draft({ name: 'Nubank', openingBalanceCents: 7_000 }));
+			await addTransfer({ fromAccountId: other, toAccountId: own, amountCents: 3_000, date: '2026-10-21', note: '' });
+			const before = await totalsOn([other]);
+			const total = await totalsOn([fed, own]);
+			await merge(own, fed);
+			expect(await totalsOn([other])).toEqual(before);
+			expect(await totalsOn([fed])).toEqual(total);
+		});
+
+		it('ficha que sai zerada: a âncora da que fica não muda', async () => {
+			const keep = await addAccount(draft({ name: 'Fica', openingBalanceCents: 9_900, openingBalanceDate: '2026-10-01' }));
+			const empty = await addAccount(draft({ name: 'Vazia' }));
+			await merge(empty, keep);
+			expect((await getAccount(keep))?.openingBalanceCents).toBe(9_900);
 		});
 	});
 });

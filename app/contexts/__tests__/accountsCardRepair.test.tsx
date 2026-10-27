@@ -8,6 +8,9 @@
  *
  * O banco de dados é um conjunto de listas em memória; `cardLedgerRepair.ts` e
  * `notificationTarget.ts` rodam de verdade.
+ *
+ * No fim, juntar contas (SPD-073): a conta da soma está em `accountSql.test.ts`; aqui fica
+ * a ordem das gravações, que é onde a soma se perdia.
  */
 
 import type { Account, AccountDraft, Capture, Transaction } from '../../database/schema';
@@ -27,6 +30,23 @@ const mockStore: {
 jest.mock('../../database/database', () => ({
 	db: { withTransactionAsync: jest.fn(async (fn: () => Promise<void>) => fn()) },
 	getAccounts: jest.fn(async () => mockStore.accounts.map((account) => ({ ...account }))),
+	getAccount: jest.fn(async (id: string) => {
+		const found = mockStore.accounts.find((account) => account.id === id);
+		return found ? { ...found } : null;
+	}),
+	// O saldo que sai entra na âncora da que fica, como no banco de verdade; o valor é fixo.
+	foldAccountBalance: jest.fn(async (_fromId: string, intoId: string) => {
+		mockStore.accounts = mockStore.accounts.map((account) =>
+			account.id === intoId ? { ...account, openingBalanceCents: account.openingBalanceCents + 15_480 } : account
+		);
+	}),
+	moveAccountLedger: jest.fn(async (fromId: string, toId: string) => {
+		for (const tx of mockStore.transactions) if (tx.accountId === fromId) tx.accountId = toId;
+	}),
+	repointTransfers: jest.fn(async () => undefined),
+	deleteAccount: jest.fn(async (id: string) => {
+		mockStore.accounts = mockStore.accounts.filter((account) => account.id !== id);
+	}),
 	getAccountBalances: jest.fn(async () => new Map()),
 	getUnassignedNet: jest.fn(async () => 0),
 	getUnassignedPeriodSummary: jest.fn(async () => ({
@@ -103,7 +123,7 @@ jest.mock('../PeriodContext', () => ({ usePeriod: () => mockPeriod }));
 
 import { act, create } from 'react-test-renderer';
 import { getAllCaptures } from '../../database/captures';
-import { reassignCaptureLedger } from '../../database/database';
+import { foldAccountBalance, moveAccountLedger, reassignCaptureLedger } from '../../database/database';
 import { AccountsProvider, useAccounts } from '../AccountsContext';
 
 const NUBANK = 'com.nu.production';
@@ -342,5 +362,29 @@ describe('AccountsContext — criar ou editar cartão conserta o livro', () => {
 		expect(txById('tx-c')?.accountId).toBe('card');
 		expect(txById('tx-mexida')?.accountId).toBe('nu-pf');
 		expect(api().cardLedgerRepair).toEqual({ cardId: 'card', movedCount: 1, keptCount: 1 });
+	});
+});
+
+describe('AccountsContext — juntar contas (SPD-073)', () => {
+	it('soma o saldo da que sai antes de mover o livro, e a gravação da ficha não desfaz a soma', async () => {
+		mockStore.accounts.push(
+			account({ id: 'inter', name: 'Inter', bankName: 'Inter', packageName: 'br.com.intermedium' }),
+			account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter', openingBalanceCents: 15_480, openingBalanceDate: '2026-10-20' })
+		);
+		mockStore.transactions.push(posted({ id: 'tx-inter', accountId: 'inter-pf', cardLast4: null }));
+		const api = await mount();
+
+		await act(async () => {
+			await api().mergeAccounts('inter-pf', 'inter');
+		});
+
+		expect(foldAccountBalance).toHaveBeenCalledWith('inter-pf', 'inter');
+		const foldOrder = (foldAccountBalance as jest.Mock).mock.invocationCallOrder[0];
+		expect(foldOrder).toBeLessThan((moveAccountLedger as jest.Mock).mock.invocationCallOrder[0]);
+		const kept = mockStore.accounts.find((item) => item.id === 'inter');
+		expect(kept?.openingBalanceCents).toBe(15_480);
+		expect(kept?.openingBalanceDate).toBe('2026-09-01');
+		expect(mockStore.accounts.some((item) => item.id === 'inter-pf')).toBe(false);
+		expect(txById('tx-inter')?.accountId).toBe('inter');
 	});
 });

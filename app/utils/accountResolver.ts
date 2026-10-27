@@ -25,6 +25,7 @@ import {
 	updateAccount,
 } from '../database/database';
 import { type Account, type AccountKind, defaultRoleFor } from '../database/schema';
+import { type BusinessFeeds, businessAccountOf, isBusinessNotice } from './businessFeed';
 import { provisionalEntries } from './accountMath';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
 import { buildCardSummary, type CardEntry, type CardMovement } from './cardMath';
@@ -149,11 +150,13 @@ export type AccountResolution = 'existing' | 'adopted' | 'created';
  * e esse aviso nem chega aqui desde o SPD-022 (`isNoBankNotice`): a ingestão o ignora.
  *
  * `trace.how` diz, a quem quiser saber, por qual caminho a conta veio. Não muda nada.
+ * `businessFeeds` é a escolha "Avisos da Nu Empresas entram aqui" (SPD-074).
  */
 export const resolveAccountForNotification = async (
 	notification: RawCapture,
 	parsed: ParsedCapture,
-	trace?: { how?: AccountResolution }
+	trace?: { how?: AccountResolution },
+	businessFeeds: BusinessFeeds = {}
 ): Promise<Account | null> => {
 	const via = (how: AccountResolution, account: Account): Account => {
 		if (trace) trace.how = how;
@@ -183,6 +186,13 @@ export const resolveAccountForNotification = async (
 
 	const isCard = target.type === 'new_card';
 	const last4 = isCard ? parsed.cardLast4 : null;
+
+	// "da conta Nu Empresas": o usuário disse qual ficha é a PJ (SPD-074). Vem antes da
+	// conta ligada ao app, que é a do resto dos avisos daquele banco.
+	if (!isCard && !foreign && isBusinessNotice(raw)) {
+		const business = businessAccountOf(accounts, businessFeeds, raw.packageName);
+		if (business) return via('existing', business);
+	}
 
 	// O app do banco é a identidade mais forte: a conta já ligada a ele vem primeiro.
 	if (!foreign) {

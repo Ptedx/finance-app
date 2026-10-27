@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,6 +8,8 @@ import { AccountRow } from '../components/AccountsOverview';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
+import { getBusinessFeeds } from '../utils/businessFeedPreference';
+import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
 import { formatCents } from '../utils/money';
 
 /**
@@ -37,9 +40,24 @@ const AccountsScreen = () => {
 	/**
 	 * Duas fichas da mesma conta do banco mostram metade do dinheiro cada uma, e o que o
 	 * banco avisa cai só numa delas. O aviso aparece aqui porque é a tela onde as duas
-	 * estão lado a lado — quem escolhe qual fica é o usuário, não o app.
+	 * estão lado a lado — quem escolhe qual fica é o usuário, não o app. PF e PJ do mesmo
+	 * banco também parecem par; "são contas diferentes" tira o aviso daquele par (SPD-072).
 	 */
-	const duplicates = duplicateAccountPairs(accounts);
+	const [distinct, setDistinct] = useState<string[]>([]);
+	// A conta dos avisos da PJ (SPD-074) também recebe avisos: com ela, PF e PJ não são par.
+	const [businessFed, setBusinessFed] = useState<string[]>([]);
+	// No foco: a resposta dada em outro aparelho chega pelo sync enquanto esta tela está fechada.
+	useFocusEffect(
+		useCallback(() => {
+			void getDistinctAccountPairs().then(setDistinct);
+			void getBusinessFeeds().then((feeds) => setBusinessFed(Object.values(feeds)));
+		}, [])
+	);
+	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
+
+	const keepBoth = (pair: DuplicateAccounts) => {
+		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);
+	};
 
 	const askMerge = (pair: DuplicateAccounts) => {
 		Alert.alert(
@@ -116,6 +134,15 @@ const AccountsScreen = () => {
 						>
 							<Ionicons name="git-merge-outline" size={18} color="#000000" />
 							<Text style={styles.duplicateButtonText}>{t('accounts.duplicate.action')}</Text>
+						</Pressable>
+						<Pressable
+							onPress={() => keepBoth(pair)}
+							accessibilityRole="button"
+							accessibilityLabel={t('accounts.duplicate.distinct')}
+							accessibilityHint={t('accounts.duplicate.distinctHint')}
+							style={({ pressed }) => [styles.duplicateButton, styles.duplicateSecondary, pressed && styles.pressed]}
+						>
+							<Text style={styles.duplicateButtonText}>{t('accounts.duplicate.distinct')}</Text>
 						</Pressable>
 					</View>
 				))}
@@ -233,6 +260,11 @@ const styles = StyleSheet.create({
 		minHeight: 48,
 		borderRadius: 10,
 		backgroundColor: '#FFFFFF',
+	},
+	duplicateSecondary: {
+		backgroundColor: 'transparent',
+		borderWidth: 1,
+		borderColor: '#000000',
 	},
 	duplicateButtonText: {
 		fontSize: 15,

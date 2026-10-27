@@ -138,6 +138,11 @@ export const WALLET_DUPLICATE_WINDOW_MS = 4 * 60 * 60 * 1000;
 export const WALLET_SUSPECT_WINDOW_MS = 12 * 60 * 60 * 1000;
 export const SUSPECT_DUPLICATE_WINDOW_MS = 3 * 60 * 1000;
 export const TRANSFER_WINDOW_MS = 24 * 60 * 60 * 1000;
+/**
+ * PJ e PF do mesmo banco: o Pix entre as duas é instantâneo, e os dois avisos chegam juntos.
+ * Dez minutos cobrem atraso de notificação sem juntar dois Pix sem relação (DEC-34).
+ */
+export const SAME_BANK_TRANSFER_WINDOW_MS = 10 * 60 * 1000;
 export const DEFAULT_AUTO_CONFIRM_THRESHOLD = 3;
 
 /**
@@ -467,6 +472,30 @@ export const findTransferCounterpart = (
 };
 
 /**
+ * A outra perna de um Pix entre duas contas do mesmo banco (a PJ e a PF, SPD-074).
+ *
+ * O aviso da saída da PJ não diz para quem foi ("Pix de R$ 500,00 da conta Nu Empresas foi
+ * realizado"), então o nome não ajuda. O que diz é o resto: o mesmo app, contas diferentes
+ * (o resolvedor já separou a PJ da PF), mesmo valor, direções opostas, minutos de
+ * diferença. Sem a conta de uma das pontas, nada feito: na mesma conta são dois Pix.
+ */
+export const findSameBankTransferLeg = (candidate: Candidate, recent: KnownCapture[]): KnownCapture | undefined => {
+	if (!TRANSFERABLE_KINDS.has(candidate.kind) || !candidate.accountId) return undefined;
+	return recent.find(
+		(known) =>
+			isLive(known) &&
+			known.packageName === candidate.packageName &&
+			!!known.accountId &&
+			known.accountId !== candidate.accountId &&
+			known.direction !== candidate.direction &&
+			known.amountCents === candidate.amountCents &&
+			TRANSFERABLE_KINDS.has(known.kind) &&
+			!(known.status === 'transfer' && known.relatedId !== null) &&
+			msBetween(known.postedAt, candidate.postedAt) <= SAME_BANK_TRANSFER_WINDOW_MS
+	);
+};
+
+/**
  * Se a contraparte é o próprio usuário.
  *
  * Compara nome a nome, sem acento e sem caixa, e exige ao menos duas palavras iguais
@@ -621,6 +650,11 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 		return { action: 'transfer', relatedId: decidedLeg.id, reason: 'counterpart' };
 	}
 
+	// 5b. Saída de uma conta e entrada noutra do mesmo banco, mesmo valor, minutos depois:
+	//     a PJ mandando para a PF (DEC-34). Certo o bastante para não perguntar.
+	const sameBankLeg = isExternalIncome ? undefined : findSameBankTransferLeg(candidate, context.recent);
+	if (sameBankLeg) return { action: 'transfer', relatedId: sameBankLeg.id, reason: 'same_bank_accounts' };
+
 	// 6. Saída e entrada do mesmo valor em apps diferentes: provável, pergunta.
 	const counterpart = isExternalIncome ? undefined : findTransferCounterpart(candidate, context.recent);
 	if (counterpart) return { action: 'ask_transfer', relatedId: counterpart.id };
@@ -692,6 +726,7 @@ export default {
 	findStatementTwin,
 	findSuspectedDuplicate,
 	findTransferCounterpart,
+	findSameBankTransferLeg,
 	matchesOwnName,
 	learnFromConfirmation,
 	learnFromAppDismissal,

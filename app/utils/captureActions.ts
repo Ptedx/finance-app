@@ -63,6 +63,7 @@ import {
 	isNoBankNotice,
 	resolveAccountForNotification,
 } from './accountResolver';
+import type { BusinessFeeds } from './businessFeed';
 import { emitBillsChanged } from './billEvents';
 import { type BillMatch, type BillMovement, billPaymentPatch, billPaymentUndo, matchBillPayment } from './billMatcher';
 import {
@@ -113,6 +114,8 @@ export interface IngestOptions {
 	ownNames: string[];
 	categories: Category[];
 	autoConfirmThreshold?: number;
+	/** Qual conta recebe os avisos da PJ de cada app ("da conta Nu Empresas", SPD-074). */
+	businessFeeds?: BusinessFeeds;
 }
 
 export interface IngestSummary {
@@ -798,7 +801,7 @@ export const ingestRawCaptures = async (
 
 		stage = 'account';
 		const accountTrace: { how?: AccountResolution } = {};
-		const account = await resolveAccountForNotification(raw, parsed, accountTrace);
+		const account = await resolveAccountForNotification(raw, parsed, accountTrace, options.businessFeeds);
 		stage = 'decide';
 		const candidate = candidateFrom(raw, parsed, account?.id ?? null);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();

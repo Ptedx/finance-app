@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Spendr — Privacy Policy</title>
+  <title>Spendr — Política de privacidade</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -262,49 +262,49 @@
 
   <header>
     <div class="header-inner">
-      <img src="./icon.png" alt="Spendr icon" class="logo" />
+      <img src="./icon.png" alt="Ícone do Spendr" class="logo" />
       <span class="app-name">Spend<span>r</span></span>
-      <span class="badge">Privacy Policy</span>
+      <span class="badge">Política de privacidade</span>
     </div>
   </header>
 
   <main>
     <section class="hero">
-      <h1>Your data stays<br /><span class="highlight">on your device.</span></h1>
-      <p>Spendr is built with privacy by design. We don't collect, share, or sell any personal data — ever.</p>
+      <h1>Seus dados são seus.<br /><span class="highlight">Nada é vendido.</span></h1>
+      <p>O Spendr funciona no seu aparelho. Se você criar uma conta, uma cópia dos seus dados fica no servidor do Spendr para sincronizar e voltar num aparelho novo. Não há anúncios, rastreio nem venda de dados.</p>
       <div class="updated">
         <span class="dot"></span>
-        Last updated: April 6, 2026
+        Atualizada em 27 de outubro de 2026
       </div>
     </section>
 
     <div class="summary-grid">
       <div class="summary-card">
-        <div class="icon">🔒</div>
+        <div class="icon">📱</div>
         <div>
-          <div class="label">No data collected</div>
-          <div class="desc">Zero personal data leaves your device</div>
+          <div class="label">Funciona sem conta</div>
+          <div class="desc">Sem conta, seus dados ficam só no aparelho</div>
         </div>
       </div>
       <div class="summary-card">
-        <div class="icon">📡</div>
+        <div class="icon">☁️</div>
         <div>
-          <div class="label">No internet required</div>
-          <div class="desc">Works fully offline, no backend server</div>
-        </div>
-      </div>
-      <div class="summary-card">
-        <div class="icon">🗄️</div>
-        <div>
-          <div class="label">Local storage only</div>
-          <div class="desc">All data stored in SQLite on your device</div>
+          <div class="label">Conta opcional</div>
+          <div class="desc">Com conta, uma cópia fica no servidor do Spendr</div>
         </div>
       </div>
       <div class="summary-card">
         <div class="icon">🚫</div>
         <div>
-          <div class="label">No third parties</div>
-          <div class="desc">No analytics, ads, or tracking SDKs</div>
+          <div class="label">Sem rastreio</div>
+          <div class="desc">Sem anúncios, sem analytics, sem SDK de terceiros</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">🤝</div>
+        <div>
+          <div class="label">Nada é vendido</div>
+          <div class="desc">Seus dados não são vendidos nem compartilhados</div>
         </div>
       </div>
     </div>
@@ -313,69 +313,138 @@
 
       <div class="section">
         <div class="section-header">
-          <div class="section-icon">📋</div>
-          <h2>Information We Collect</h2>
+          <div class="section-icon">📱</div>
+          <h2>O que fica no seu aparelho</h2>
         </div>
         <div class="section-body">
-          <p>Spendr does not collect any personal information. All data you enter — transactions, categories, budgets, and settings — is stored exclusively in a local SQLite database on your device.</p>
-          <p>This data never leaves your device and is never transmitted to any server.</p>
+          <p>Lançamentos, contas, cartões, contas a pagar, orçamentos, dívidas, metas, categorias e configurações ficam num banco de dados no próprio aparelho.</p>
+          <p>Sem conta, nada disso sai do aparelho. O app só usa a internet para buscar a taxa do CDI e as atualizações do próprio app (veja "Serviços de terceiros").</p>
         </div>
       </div>
 
       <div class="section">
         <div class="section-header">
-          <div class="section-icon">📤</div>
-          <h2>Data Sharing</h2>
+          <div class="section-icon">🔔</div>
+          <h2>Avisos do banco (captura automática)</h2>
         </div>
         <div class="section-body">
-          <p>We do not share, sell, rent, or trade your data with any third party, for any purpose, at any time.</p>
-          <p>Spendr has no backend, no user accounts, and no cloud sync. There is nothing to share.</p>
+          <p>No Android, se você permitir o acesso às notificações, o Spendr lê as notificações que chegam para transformar compras, Pix e transferências em lançamentos.</p>
+          <p>Só fica guardado o aviso que traz um valor em dinheiro e vem de um app de banco (ou de uma mensagem que cita um banco): o título, o texto, o app de origem e o horário. As outras notificações são descartadas sem ser gravadas.</p>
+          <p>Você pode desligar esse acesso quando quiser, nas configurações do Android.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">☁️</div>
+          <h2>Se você criar uma conta</h2>
+        </div>
+        <div class="section-body">
+          <p>A conta é opcional e serve para sincronizar os dados entre aparelhos e recuperá-los num aparelho novo. Com conta, o servidor do Spendr guarda:</p>
+          <ul>
+            <li><strong>Cadastro</strong> — nome, e-mail, moeda e idioma. A senha nunca é guardada: só um resumo criptográfico dela (bcrypt).</li>
+            <li><strong>Seus dados do app</strong> — lançamentos, contas e cartões (nome, banco, 4 últimos dígitos, limite e saldo), transferências, contas a pagar, orçamentos, dívidas, metas, as categorias que o app aprendeu para cada loja e suas preferências.</li>
+            <li><strong>Avisos do banco</strong> — os avisos capturados, incluindo o texto da notificação, para que a revisão continue em outro aparelho.</li>
+          </ul>
+          <p>A conexão com o servidor é criptografada (HTTPS). A sessão usa um acesso que vence em 15 minutos e uma chave de renovação guardada no armazenamento seguro do aparelho; no servidor fica só o resumo dessa chave.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🩺</div>
+          <h2>Diagnóstico</h2>
+        </div>
+        <div class="section-body">
+          <p>Para corrigir erros, o app mantém um registro técnico do que fez: o que decidiu sobre cada aviso, falhas de sincronização, a versão do app, o sistema e um identificador aleatório da instalação (não é o número do aparelho).</p>
+          <p>Com conta, esse registro é enviado ao servidor no máximo a cada 6 horas e apagado depois de 30 dias. Quando um aviso de banco não é entendido, o texto dele vai junto, para que a leitura seja corrigida. O registro nunca leva e-mail, senha ou chave de acesso.</p>
+          <p>O servidor também anota cada pedido que recebe (o caminho, o resultado, o tempo e o endereço IP sem os últimos dígitos), sem o conteúdo do pedido.</p>
+          <p>Em Ajustes, "Exportar diagnóstico" gera esse registro num arquivo que só sai do aparelho se você compartilhar.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🌐</div>
+          <h2>Serviços de terceiros</h2>
+        </div>
+        <div class="section-body">
+          <ul>
+            <li><strong>Banco Central do Brasil</strong> — o app consulta a taxa do CDI para calcular o rendimento das contas. Nenhum dado seu é enviado.</li>
+            <li><strong>Expo</strong> — entrega as atualizações do app.</li>
+          </ul>
+          <p>O Spendr não usa anúncios, analytics, rastreamento nem relatórios de erro de terceiros, e não vende, aluga nem compartilha seus dados.</p>
         </div>
       </div>
 
       <div class="section">
         <div class="section-header">
           <div class="section-icon">🔐</div>
-          <h2>Permissions Used</h2>
+          <h2>Permissões</h2>
         </div>
         <div class="section-body">
-          <p>Spendr requests only the permissions strictly necessary to provide its features:</p>
           <ul>
-            <li><strong>Biometric authentication</strong> — optional lock screen using Face ID or fingerprint, handled entirely by the OS. No biometric data is accessed by the app.</li>
-            <li><strong>Notifications</strong> — local-only reminders for recurring transactions. No notification data is sent externally.</li>
-            <li><strong>Storage</strong> — read/write access to export CSV/PDF reports to your local files. Files stay on your device.</li>
+            <li><strong>Acesso às notificações</strong> — para a captura automática dos avisos do banco. Opcional.</li>
+            <li><strong>Notificações</strong> — para os lembretes das contas a pagar. Feitos no próprio aparelho.</li>
+            <li><strong>Biometria</strong> — para travar o app com digital ou rosto, pelo próprio sistema. O app não recebe dados biométricos.</li>
+            <li><strong>Arquivos</strong> — para exportar e importar backup, relatórios em CSV e extratos OFX.</li>
+            <li><strong>Internet</strong> — para a conta, a sincronização e a taxa do CDI.</li>
           </ul>
         </div>
       </div>
 
       <div class="section">
         <div class="section-header">
-          <div class="section-icon">👶</div>
-          <h2>Children's Privacy</h2>
+          <div class="section-icon">💾</div>
+          <h2>Backup e exportação</h2>
         </div>
         <div class="section-body">
-          <p>Spendr does not knowingly collect any information from anyone, including children under the age of 13. Since no data is collected at all, there is no risk of inadvertent data collection from minors.</p>
+          <p>O backup e os relatórios são arquivos que você gera e manda para onde escolher, pelo compartilhamento do sistema. Eles não são criptografados e o backup inclui o texto dos avisos do banco: guarde-os num lugar seguro.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🗑️</div>
+          <h2>Seus controles</h2>
+        </div>
+        <div class="section-body">
+          <ul>
+            <li><strong>Sair da conta</strong> — encerra a sessão no servidor e mantém tudo neste aparelho.</li>
+            <li><strong>Apagar todos os dados</strong> — em Ajustes, apaga lançamentos, contas, cartões, contas a pagar, orçamentos, dívidas, metas e avisos capturados; as categorias e o que o app aprendeu de cada loja ficam. Com conta, os itens apagados ficam marcados como apagados no servidor, para que os outros aparelhos saibam.</li>
+            <li><strong>Apagar a conta</strong> — para apagar a conta e todos os dados dela no servidor, escreva para vinicosta37@gmail.com.</li>
+          </ul>
+          <p>Pela LGPD, você pode pedir acesso, correção ou exclusão dos seus dados. O backup em Ajustes já entrega uma cópia de tudo; o resto, peça pelo contato abaixo.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">👶</div>
+          <h2>Crianças</h2>
+        </div>
+        <div class="section-body">
+          <p>O Spendr não é feito para menores de 13 anos e não coleta dados deles de propósito.</p>
         </div>
       </div>
 
       <div class="section">
         <div class="section-header">
           <div class="section-icon">🔄</div>
-          <h2>Changes to This Policy</h2>
+          <h2>Mudanças nesta política</h2>
         </div>
         <div class="section-body">
-          <p>If we ever change this privacy policy, the updated version will be published on this page with a new effective date. We encourage you to review this page periodically.</p>
-          <p>Any future features that involve data collection will be clearly disclosed before they are introduced.</p>
+          <p>Quando esta política mudar, a versão nova aparece aqui com a data de atualização. Recursos novos que usem seus dados são explicados antes de entrar no app.</p>
         </div>
       </div>
 
       <div class="section">
         <div class="section-header">
           <div class="section-icon">✉️</div>
-          <h2>Contact</h2>
+          <h2>Contato</h2>
         </div>
         <div class="section-body">
-          <p>If you have any questions about this privacy policy, you can open an issue on the project repository or reach out via GitHub.</p>
+          <p>Dúvidas sobre esta política ou sobre seus dados: vinicosta37@gmail.com.</p>
         </div>
       </div>
 
@@ -383,7 +452,7 @@
   </main>
 
   <footer>
-    <p>Spendr by <a href="https://github.com/okazakee" target="_blank">okazakee</a> — open source.</p>
+    <p>Spendr — feito a partir do projeto de código aberto de <a href="https://github.com/okazakee" target="_blank">okazakee</a>.</p>
   </footer>
 
 </body>
