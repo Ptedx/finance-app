@@ -137,3 +137,17 @@ describe('"são contas diferentes" (SPD-072)', () => {
 		expect(pairs[0].loose.id).toBe('inter-pf');
 	});
 });
+
+describe('a conta que recebe os avisos da PJ não é sugerida para juntar (SPD-074)', () => {
+	const pjBusiness = account({ id: 'pj', name: 'Nubank PJ', bankName: 'Nu' });
+	const pfBound = account({ id: 'pf', name: 'Nubank PF', bankName: 'Nubank', packageName: 'com.nu.production' });
+
+	it('PF ligada ao app e PJ marcada para os avisos da Nu Empresas: as duas recebem avisos, não há par', () => {
+		expect(duplicateAccountPairs([pjBusiness, pfBound])).toHaveLength(1);
+		expect(duplicateAccountPairs([pjBusiness, pfBound], [], ['pj'])).toHaveLength(0);
+	});
+
+	it('a marca de uma conta de outro banco não muda o par', () => {
+		expect(duplicateAccountPairs([pjBusiness, pfBound], [], ['inter'])).toHaveLength(1);
+	});
+});

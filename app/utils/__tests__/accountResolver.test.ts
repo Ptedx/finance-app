@@ -8,7 +8,15 @@ jest.mock('../../database/database', () => ({
 
 import { addAccount, findAccountByKey, findAccountBySource, getAccounts, updateAccount } from '../../database/database';
 import type { Account } from '../../database/schema';
-import { isBlockedPackage, isNoBankNotice, isNonBankApp, isSmsPackage, resolveAccountForNotification, SMS_PACKAGES } from '../accountResolver';
+import {
+	type AccountResolution,
+	isBlockedPackage,
+	isNoBankNotice,
+	isNonBankApp,
+	isSmsPackage,
+	resolveAccountForNotification,
+	SMS_PACKAGES,
+} from '../accountResolver';
 import type { ParsedCapture, RawCapture } from '../captureParser';
 
 const INTER = 'br.com.intermedium';
@@ -390,5 +398,55 @@ describe('pacotes bloqueados e bancos conhecidos (SPD-069)', () => {
 		const raw = notice('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.');
 		expect(isNonBankApp(raw)).toBe(false);
 		expect(isNoBankNotice(raw)).toBe(false);
+	});
+});
+
+describe('aviso da Nu Empresas vai para a conta PJ (SPD-074)', () => {
+	const NUBANK = 'com.nu.production';
+	const pjPix: RawCapture = {
+		packageName: NUBANK,
+		appLabel: 'Nubank',
+		title: 'Pix de R$ 50,00 enviado!',
+		text: 'Pix de R$ 50,00 da conta Nu Empresas foi realizado com sucesso.',
+		postedAt: '2026-10-27T00:10:00.000Z',
+	};
+	const pixParsed: ParsedCapture = { ...parsed, amountCents: 5000, kind: 'pix_out', counterparty: null };
+	const pf = account({ id: 'pf', name: 'Nubank PF', bankName: 'Nubank', packageName: NUBANK });
+	const pj = account({ id: 'pj', name: 'Nubank PJ', bankName: 'Nu' });
+	const feeds = { [NUBANK]: 'pj' };
+
+	it('com a PJ marcada, o aviso dela cai na PJ, mesmo com a PF ligada ao app', async () => {
+		withAccounts([pf, pj]);
+		mocked.findAccountBySource.mockResolvedValue(pf);
+
+		const trace: { how?: AccountResolution } = {};
+		const resolved = await resolveAccountForNotification(pjPix, pixParsed, trace, feeds);
+
+		expect(resolved?.id).toBe('pj');
+		expect(trace.how).toBe('existing');
+		expect(mocked.updateAccount).not.toHaveBeenCalled();
+	});
+
+	it('o aviso da conta pessoal continua na conta ligada ao app', async () => {
+		withAccounts([pf, pj]);
+		mocked.findAccountBySource.mockResolvedValue(pf);
+
+		const resolved = await resolveAccountForNotification(
+			{ ...pjPix, title: 'Pix enviado', text: 'Pix de R$ 50,00 foi realizado com sucesso.' },
+			pixParsed,
+			undefined,
+			feeds
+		);
+
+		expect(resolved?.id).toBe('pf');
+	});
+
+	it('sem a PJ marcada, ou com ela arquivada, tudo segue para a conta ligada, como antes', async () => {
+		withAccounts([pf, pj]);
+		mocked.findAccountBySource.mockResolvedValue(pf);
+		expect((await resolveAccountForNotification(pjPix, pixParsed))?.id).toBe('pf');
+
+		withAccounts([pf, { ...pj, archived: true }]);
+		expect((await resolveAccountForNotification(pjPix, pixParsed, undefined, feeds))?.id).toBe('pf');
 	});
 });

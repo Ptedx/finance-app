@@ -8,6 +8,7 @@ import { AccountRow } from '../components/AccountsOverview';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
+import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
 import { formatCents } from '../utils/money';
 
@@ -43,13 +44,16 @@ const AccountsScreen = () => {
 	 * banco também parecem par; "são contas diferentes" tira o aviso daquele par (SPD-072).
 	 */
 	const [distinct, setDistinct] = useState<string[]>([]);
+	// A conta dos avisos da PJ (SPD-074) também recebe avisos: com ela, PF e PJ não são par.
+	const [businessFed, setBusinessFed] = useState<string[]>([]);
 	// No foco: a resposta dada em outro aparelho chega pelo sync enquanto esta tela está fechada.
 	useFocusEffect(
 		useCallback(() => {
 			void getDistinctAccountPairs().then(setDistinct);
+			void getBusinessFeeds().then((feeds) => setBusinessFed(Object.values(feeds)));
 		}, [])
 	);
-	const duplicates = duplicateAccountPairs(accounts, distinct);
+	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
 
 	const keepBoth = (pair: DuplicateAccounts) => {
 		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);

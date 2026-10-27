@@ -15,7 +15,7 @@ import type { Account } from '../database/schema';
 import { sameBank } from './notificationTarget';
 
 /** Contas vivas do mesmo lado (conta corrente x cartão) e do mesmo banco. */
-const siblingsOf = (accounts: Account[], account: Account): Account[] =>
+export const siblingsOf = (accounts: Account[], account: Account): Account[] =>
 	account.bankName === null
 		? []
 		: accounts.filter(
@@ -65,10 +65,13 @@ export interface DuplicateAccounts {
  *
  * O par que o usuário já disse serem contas diferentes (`distinct`, chaves de
  * `accountPairKey`) não volta: PF e PJ do mesmo banco, uma só ligada ao app, é o caso comum.
+ * A conta que recebe os avisos da PJ (`businessFed`, SPD-074) também é alimentada: com
+ * ela e a ligada ao app, são duas contas de verdade, e não há o que juntar.
  */
 export const duplicateAccountPairs = (
 	accounts: Account[],
-	distinct: readonly string[] = []
+	distinct: readonly string[] = [],
+	businessFed: readonly string[] = []
 ): DuplicateAccounts[] => {
 	const live = accounts.filter((account) => !account.deletedAt && !account.archived);
 	const pairs: DuplicateAccounts[] = [];
@@ -80,8 +83,9 @@ export const duplicateAccountPairs = (
 		for (const member of group) seen.add(member.id);
 		if (group.length !== 2) continue;
 
-		const fed = group.filter(isFed);
-		const loose = group.filter((member) => !isFed(member));
+		const fedHere = (member: Account) => isFed(member) || businessFed.includes(member.id);
+		const fed = group.filter(fedHere);
+		const loose = group.filter((member) => !fedHere(member));
 		if (fed.length !== 1 || loose.length !== 1) continue;
 		if (distinct.includes(accountPairKey(fed[0].id, loose[0].id))) continue;
 		pairs.push({ fed: fed[0], loose: loose[0] });
@@ -90,4 +94,4 @@ export const duplicateAccountPairs = (
 	return pairs;
 };
 
-export default { isFed, feedOwnerOf, accountPairKey, duplicateAccountPairs };
+export default { isFed, feedOwnerOf, siblingsOf, accountPairKey, duplicateAccountPairs };

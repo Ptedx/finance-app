@@ -35,6 +35,11 @@ export const STORAGE_KEYS = {
 	 * para o aviso "Duas contas do mesmo banco" não voltar (`utils/distinctAccounts.ts`).
 	 */
 	distinctAccountPairs: '@spendr_distinct_account_pairs',
+	/**
+	 * Qual conta recebe os avisos da PJ de cada app de banco ("da conta Nu Empresas"), por
+	 * escolha do usuário (`utils/businessFeed.ts`).
+	 */
+	businessFeeds: '@spendr_business_feeds',
 } as const;
 
 /**
@@ -60,6 +65,7 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.accountReminderDismissed,
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
+	STORAGE_KEYS.businessFeeds,
 ];
 
 /**
@@ -80,6 +86,7 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.accountReminderDismissed,
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
+	STORAGE_KEYS.businessFeeds,
 ];
 
 /**

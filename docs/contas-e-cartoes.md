@@ -106,6 +106,18 @@ transferência, mesmo com a saída "você enviou para VINICIUS" (avisada pela PJ
 caixa de entrada; e essa saída, se já tinha virado transferência para fora, é
 neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
 
+Quando a PJ é acompanhada como conta (papel Principal), o Nubank diz no aviso de qual
+conta ele é: "Pix de R$ 50,00 **da conta Nu Empresas** foi realizado". Na tela da
+conta PJ, **"Avisos da Nu Empresas entram aqui"** manda esses avisos para ela; os outros
+avisos do app continuam na conta ligada a ele (a PF). Se a PJ era a ligada, o vínculo
+passa para a única outra conta do banco. A escolha fica na preferência
+`@spendr_business_feeds`, que sincroniza e vai no backup (`utils/businessFeed.ts`, SPD-074).
+Só o Nubank marca o aviso da PJ hoje; outro banco entra quando aparecer um aviso real.
+
+Com as duas contas separadas, a saída da PJ e a entrada na PF do mesmo valor, com até
+10 minutos de diferença, viram uma transferência entre contas suas sem perguntar
+(`same_bank_accounts`). A fonte marcada como receita continua receita.
+
 O aviso "Duas contas do mesmo banco" também aparece para PF e PJ, porque só uma recebe o
 que o app avisa. **"São contas diferentes"** tira o aviso daquele par para sempre
 (`@spendr_distinct_account_pairs`, SPD-072).
@@ -333,9 +345,10 @@ fonte do sistema.
 ## Limites conhecidos
 
 - Conta pessoal e PJ do mesmo banco chegam das notificações com o mesmo `packageName`.
-  As notificações caem na primeira conta criada para aquele app; o extrato OFX de cada
-  uma tem chave própria e corrige a conta dos lançamentos que casar. Para a PJ, importe
-  o OFX dela ao menos uma vez por mês.
+  As notificações caem na conta ligada ao app ("Compras do app do banco" troca qual é),
+  menos as que o banco marca como da PJ ("da conta Nu Empresas"), que vão para a conta
+  escolhida em "Avisos da Nu Empresas entram aqui". Banco que não marca: o extrato OFX
+  de cada conta tem chave própria e corrige a conta dos lançamentos que casar.
 - O `LEDGERBAL` de extrato de **cartão** é ignorado: o sinal varia entre bancos. Use
   "Definir saldo" no cartão.
 - Saldos de contas não sincronizadas (sem conta Spendr) ficam no aparelho; com conta,

@@ -17,6 +17,7 @@ import {
 	pruneResolvedCaptures,
 } from '../database/captures';
 import type { Capture } from '../database/schema';
+import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
 	answerCaptureDuplicate,
 	answerCaptureTransfer,
@@ -157,6 +158,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					const summary = await ingestRawCaptures(raws, {
 						ownNames: ownNamesRef.current,
 						categories: categoriesRef.current,
+						// Lida a cada lote: a escolha pode ter mudado agora, ou chegado pelo sync.
+						businessFeeds: await getBusinessFeeds(),
 					});
 					// Qualquer item novo muda cartões e contas: a compra pendente já aparece na fatura
 					// como "a revisar", e uma conta ou cartão pode ter nascido agora.
