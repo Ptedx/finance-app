@@ -42,6 +42,12 @@ export const feedOwnerOf = (accounts: Account[], account: Account): Account | nu
 	return bound.length === 1 ? bound[0] : null;
 };
 
+/**
+ * A chave de um par de fichas, igual nas duas ordens. Guarda a resposta "são contas
+ * diferentes" do aviso de duplicadas (SPD-072).
+ */
+export const accountPairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
 export interface DuplicateAccounts {
 	/** A ficha que recebe o que o banco avisa. */
 	fed: Account;
@@ -56,8 +62,14 @@ export interface DuplicateAccounts {
  * Com três ou mais fichas do banco a dúvida é real — PF, PJ e conjunta existem — e o app
  * não chuta: não sugere nada. Só o par exato vira sugestão de juntar, porque aí as duas
  * metades do mesmo dinheiro estão à vista.
+ *
+ * O par que o usuário já disse serem contas diferentes (`distinct`, chaves de
+ * `accountPairKey`) não volta: PF e PJ do mesmo banco, uma só ligada ao app, é o caso comum.
  */
-export const duplicateAccountPairs = (accounts: Account[]): DuplicateAccounts[] => {
+export const duplicateAccountPairs = (
+	accounts: Account[],
+	distinct: readonly string[] = []
+): DuplicateAccounts[] => {
 	const live = accounts.filter((account) => !account.deletedAt && !account.archived);
 	const pairs: DuplicateAccounts[] = [];
 	const seen = new Set<string>();
@@ -70,10 +82,12 @@ export const duplicateAccountPairs = (accounts: Account[]): DuplicateAccounts[] 
 
 		const fed = group.filter(isFed);
 		const loose = group.filter((member) => !isFed(member));
-		if (fed.length === 1 && loose.length === 1) pairs.push({ fed: fed[0], loose: loose[0] });
+		if (fed.length !== 1 || loose.length !== 1) continue;
+		if (distinct.includes(accountPairKey(fed[0].id, loose[0].id))) continue;
+		pairs.push({ fed: fed[0], loose: loose[0] });
 	}
 
 	return pairs;
 };
 
-export default { isFed, feedOwnerOf, duplicateAccountPairs };
+export default { isFed, feedOwnerOf, accountPairKey, duplicateAccountPairs };

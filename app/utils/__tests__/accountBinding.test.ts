@@ -1,5 +1,5 @@
 import type { Account } from '../../database/schema';
-import { duplicateAccountPairs, feedOwnerOf, isFed } from '../accountBinding';
+import { accountPairKey, duplicateAccountPairs, feedOwnerOf, isFed } from '../accountBinding';
 
 const INTER = 'br.com.intermedium';
 
@@ -113,5 +113,27 @@ describe('fichas que parecem a mesma conta', () => {
 				account({ id: 'cofre', name: 'Cofre', kind: 'cash' }),
 			])
 		).toHaveLength(0);
+	});
+});
+
+describe('"são contas diferentes" (SPD-072)', () => {
+	const nuPj = account({ id: 'nu', name: 'Nubank PJ', bankName: 'Nu' });
+	const nuPf = account({ id: 'nubank-pf', name: 'Nubank PF', bankName: 'Nubank', packageName: 'com.nu.production' });
+
+	it('a chave do par é a mesma nas duas ordens', () => {
+		expect(accountPairKey('nu', 'nubank-pf')).toBe(accountPairKey('nubank-pf', 'nu'));
+		expect(accountPairKey('a', 'b')).not.toBe(accountPairKey('a', 'c'));
+	});
+
+	it('o par que o usuário disse serem contas diferentes não volta a ser sugerido', () => {
+		expect(duplicateAccountPairs([nuPj, nuPf])).toHaveLength(1);
+		expect(duplicateAccountPairs([nuPj, nuPf], [accountPairKey('nubank-pf', 'nu')])).toHaveLength(0);
+	});
+
+	it('a resposta vale só para aquele par: outro banco continua sugerido', () => {
+		const pairs = duplicateAccountPairs([nuPj, nuPf, interApp, interHand], [accountPairKey('nu', 'nubank-pf')]);
+
+		expect(pairs).toHaveLength(1);
+		expect(pairs[0].loose.id).toBe('inter-pf');
 	});
 });

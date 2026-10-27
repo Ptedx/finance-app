@@ -30,6 +30,11 @@ export const STORAGE_KEYS = {
 	 * misturaria os diários dos dois.
 	 */
 	diagnosticsInstallId: '@spendr_diagnostics_install_id',
+	/**
+	 * Os pares de contas que o usuário disse serem contas diferentes do mesmo banco (PF e PJ),
+	 * para o aviso "Duas contas do mesmo banco" não voltar (`utils/distinctAccounts.ts`).
+	 */
+	distinctAccountPairs: '@spendr_distinct_account_pairs',
 } as const;
 
 /**
@@ -54,6 +59,7 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.language,
 	STORAGE_KEYS.accountReminderDismissed,
 	STORAGE_KEYS.notificationsEnabled,
+	STORAGE_KEYS.distinctAccountPairs,
 ];
 
 /**
@@ -73,6 +79,7 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.language,
 	STORAGE_KEYS.accountReminderDismissed,
 	STORAGE_KEYS.notificationsEnabled,
+	STORAGE_KEYS.distinctAccountPairs,
 ];
 
 /**

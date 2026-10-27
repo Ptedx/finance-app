@@ -856,6 +856,8 @@ account: {
 			confirm: 'Quale conto resta? Movimenti, catture e trasferimenti dell altro passano a lui.',
 			keep: 'Resta {{name}}',
 			cancel: 'Non ora',
+			distinct: 'Sono conti diversi',
+			distinctHint: 'L avviso sparisce e non torna per questi due conti',
 		},
 		edit: {
 			title: 'Conto',

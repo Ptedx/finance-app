@@ -854,6 +854,8 @@ account: {
 			confirm: 'Which account stays? The other one transactions, captures and transfers move into it.',
 			keep: 'Keep {{name}}',
 			cancel: 'Not now',
+			distinct: 'They are different accounts',
+			distinctHint: 'Hides this notice for these two accounts for good',
 		},
 		edit: {
 			title: 'Account',

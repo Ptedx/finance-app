@@ -849,6 +849,8 @@ const pt = {
 			confirm: 'Qual conta fica? Os lançamentos, as capturas e as transferências da outra passam para ela.',
 			keep: 'Fica {{name}}',
 			cancel: 'Agora não',
+			distinct: 'São contas diferentes',
+			distinctHint: 'O aviso some e não volta para estas duas contas',
 		},
 		edit: {
 			title: 'Conta',

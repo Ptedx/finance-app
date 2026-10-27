@@ -106,6 +106,10 @@ transferência, mesmo com a saída "você enviou para VINICIUS" (avisada pela PJ
 caixa de entrada; e essa saída, se já tinha virado transferência para fora, é
 neutralizada (`external_leg`). Não é preciso importar OFX da PJ.
 
+O aviso "Duas contas do mesmo banco" também aparece para PF e PJ, porque só uma recebe o
+que o app avisa. **"São contas diferentes"** tira o aviso daquele par para sempre
+(`@spendr_distinct_account_pairs`, SPD-072).
+
 ### Contas que rendem (% do CDI)
 
 Uma conta pode render uma fração do CDI (a Investimentos MP rende 120%). Sem isso, o
