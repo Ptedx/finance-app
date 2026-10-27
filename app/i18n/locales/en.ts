@@ -1228,7 +1228,7 @@ account: {
 		notSupported: 'Automatic capture reads bank notifications and is available on Android only.',
 		setupTitle: 'Read bank notifications',
 		setupBody:
-			'Spendr reads the notifications your bank apps already send — purchases, Pix, transfers — and turns them into entries for you to confirm with one tap. The text never leaves this device.',
+			'Spendr reads the notifications your bank apps already send — purchases, Pix, transfers — and turns them into entries for you to confirm with one tap. With an account, they are saved with the rest of your data.',
 		setupButton: 'Turn on in Android settings',
 		setupHint: 'Find Spendr in the list and allow notification access.',
 		statusOn: 'On',

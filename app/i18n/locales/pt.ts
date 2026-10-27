@@ -1223,7 +1223,7 @@ const pt = {
 		notSupported: 'A captura automática lê as notificações do banco e só está disponível no Android.',
 		setupTitle: 'Ler notificações do banco',
 		setupBody:
-			'O Spendr lê as notificações que os apps do seu banco já enviam — compras, Pix, transferências — e as transforma em lançamentos para confirmar com um toque. O texto nunca sai deste aparelho.',
+			'O Spendr lê as notificações que os apps do seu banco já enviam — compras, Pix, transferências — e as transforma em lançamentos para confirmar com um toque. Com conta, eles ficam salvos com o resto dos seus dados.',
 		setupButton: 'Ativar nas configurações do Android',
 		setupHint: 'Encontre o Spendr na lista e permita o acesso às notificações.',
 		statusOn: 'Ativo',

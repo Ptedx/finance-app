@@ -1230,7 +1230,7 @@ account: {
 		notSupported: 'La cattura automatica legge le notifiche bancarie ed è disponibile solo su Android.',
 		setupTitle: 'Leggi le notifiche della banca',
 		setupBody:
-			'Spendr legge le notifiche che le app della tua banca già inviano — acquisti, Pix, bonifici — e le trasforma in voci da confermare con un tocco. Il testo non lascia mai questo dispositivo.',
+			'Spendr legge le notifiche che le app della tua banca già inviano — acquisti, Pix, bonifici — e le trasforma in voci da confermare con un tocco. Con un account, vengono salvate insieme al resto dei tuoi dati.',
 		setupButton: 'Attiva nelle impostazioni Android',
 		setupHint: "Trova Spendr nell'elenco e consenti l'accesso alle notifiche.",
 		statusOn: 'Attivo',
