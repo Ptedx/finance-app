@@ -889,7 +889,7 @@ account: {
 			merge: 'Merge into another account',
 			mergeHint: "Moves this account's entries into another one and deletes this one",
 			mergePick: 'Which account should take what is in {{name}}?',
-			mergeConfirm: 'Entries, captures and transfers from {{from}} move to {{into}}, and {{from}} is deleted. The balance of {{into}} does not change: set it afterwards if needed.',
+			mergeConfirm: 'Entries, captures and transfers from {{from}} move to {{into}}, and {{from}} is deleted. The balance of {{from}} is added to {{into}}, so the total across accounts stays the same.',
 			mergeAction: 'Merge',
 			feedTitle: 'Purchases from the bank app',
 			feedHere: 'Purchases this bank app announces land in this account.',

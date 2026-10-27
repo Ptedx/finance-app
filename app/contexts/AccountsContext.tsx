@@ -11,6 +11,8 @@ import {
 	db,
 	deleteAccount,
 	deleteTransfersOf,
+	foldAccountBalance,
+	getAccount,
 	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
@@ -771,8 +773,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	 * notificação criou, por exemplo. Lançamentos, capturas e transferências vão para a que
 	 * fica, junto com o app e a chave de extrato, para o que vier depois cair lá.
 	 *
-	 * Os saldos não se somam: cada ficha tinha a sua âncora, e somá-las contaria o mesmo
-	 * dinheiro duas vezes. A conta que fica mantém a dela; "Definir saldo" acerta o resto.
+	 * O total não muda (SPD-073): o saldo da que sai passa para a que fica. Se as duas
+	 * contavam o mesmo dinheiro, o total já estava dobrado antes de juntar, e "Acertar com o
+	 * banco" corrige; somar em silêncio menos do que havia é que não pode.
 	 */
 	const mergeAccounts = useCallback(
 		async (fromId: string, intoId: string) => {
@@ -780,6 +783,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			const into = accounts.find((account) => account.id === intoId);
 			if (!from || !into || fromId === intoId) return;
 
+			await foldAccountBalance(fromId, intoId);
 			await moveAccountLedger(fromId, intoId, from.last4);
 			await repointTransfers(fromId, intoId);
 
@@ -794,8 +798,12 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 			// Uma gravação só: um `updateAccount` depois de `setAccountCardNames` regravaria a
 			// coluna com o valor antigo e apagaria o nome que acabou de entrar.
+			// A âncora vem do banco, não da cópia de antes: `foldAccountBalance` acabou de mudá-la.
+			const anchored = (await getAccount(intoId)) ?? into;
 			await updateAccount({
 				...into,
+				openingBalanceCents: anchored.openingBalanceCents,
+				openingBalanceDate: anchored.openingBalanceDate,
 				cardNames,
 				last4: into.last4 ?? from.last4,
 				packageName: into.packageName ?? from.packageName,

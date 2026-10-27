@@ -1691,6 +1691,26 @@ export const moveAccountLedger = async (fromId: string, toId: string, cardLast4:
 };
 
 /**
+ * Põe na âncora de uma conta o saldo de outra que vai ser juntada a ela (SPD-073).
+ *
+ * Juntar é arrumação, não dinheiro entrando ou saindo: o total de antes tem que ser o de
+ * depois. Os lançamentos que vêm junto já somam sozinhos o que acontece **depois** da
+ * âncora da conta que fica; o que a outra tinha até aquele dia (a âncora dela e o que
+ * veio antes) sumia com ela. Esse pedaço é o saldo da outra no dia da âncora, e entra na
+ * âncora no mesmo dia — assim o saldo bate em qualquer data, não só hoje. A
+ * transferência entre as duas se anula na soma, então pode sumir depois.
+ *
+ * Chamar **antes** de mover os lançamentos: depois a outra não tem mais saldo para ler.
+ */
+export const foldAccountBalance = async (fromId: string, intoId: string): Promise<void> => {
+	const into = await getAccount(intoId);
+	if (!into || fromId === intoId) return;
+	const carried = (await getAccountBalances(into.openingBalanceDate)).get(fromId) ?? 0;
+	if (carried === 0) return;
+	await setAccountAnchor(intoId, into.openingBalanceCents + carried, into.openingBalanceDate);
+};
+
+/**
  * Repõe em outra conta as transferências de uma. A que ligava as duas vira uma
  * transferência para si mesma e some: ela só existia porque o mesmo dinheiro tinha duas
  * fichas no app.

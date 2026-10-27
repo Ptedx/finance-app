@@ -891,7 +891,7 @@ account: {
 			merge: 'Unisci a un altro conto',
 			mergeHint: 'Sposta le voci di questo conto in un altro ed elimina questo',
 			mergePick: 'In quale conto spostare ciò che è in {{name}}?',
-			mergeConfirm: 'Voci, catture e trasferimenti di {{from}} passano a {{into}}, e {{from}} viene eliminato. Il saldo di {{into}} non cambia: impostalo dopo, se serve.',
+			mergeConfirm: 'Voci, catture e trasferimenti di {{from}} passano a {{into}}, e {{from}} viene eliminato. Il saldo di {{from}} si somma a quello di {{into}}, e il totale dei conti non cambia.',
 			mergeAction: 'Unisci',
 			feedTitle: 'Acquisti dall app della banca',
 			feedHere: 'Gli acquisti segnalati dall app di questa banca entrano in questo conto.',

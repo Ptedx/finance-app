@@ -884,7 +884,7 @@ const pt = {
 			merge: 'Juntar com outra conta',
 			mergeHint: 'Leva os lançamentos desta conta para outra e apaga esta',
 			mergePick: 'Para qual conta levar o que está em {{name}}?',
-			mergeConfirm: 'Os lançamentos, as capturas e as transferências de {{from}} passam para {{into}}, e {{from}} é apagada. O saldo de {{into}} não muda: acerte-o depois, se precisar.',
+			mergeConfirm: 'Os lançamentos, as capturas e as transferências de {{from}} passam para {{into}}, e {{from}} é apagada. O saldo de {{from}} soma no de {{into}}, e o total das contas não muda.',
 			mergeAction: 'Juntar',
 			feedTitle: 'Compras do app do banco',
 			feedHere: 'As compras que o app deste banco avisa entram nesta conta.',
