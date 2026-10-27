@@ -108,6 +108,12 @@ export const formatFullDate = (dateString: string): string => {
 	return `${name} ${day}, ${year}`;
 };
 
+/**
+ * A data por extenso de um *instante* (`nowTimestamp()`), no dia do aparelho. O instante é
+ * UTC: as 23h do dia 26 em São Paulo já são dia 27 nos primeiros dígitos dele.
+ */
+export const formatInstantDate = (timestamp: string): string => formatFullDate(getISODate(new Date(timestamp)));
+
 /** Number of days in a month. `month` is 1-12. */
 export const lastDayOfMonth = (year: number, month: number): number =>
 	new Date(year, month, 0).getDate();

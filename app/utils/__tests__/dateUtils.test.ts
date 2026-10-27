@@ -5,6 +5,7 @@ import {
 	buildClampedDate,
 	configureDateLocale,
 	formatFullDate,
+	formatInstantDate,
 	formatMonthLong,
 	getISODate,
 	getMonthRange,
@@ -47,6 +48,20 @@ describe('formatFullDate', () => {
 		configureDateLocale('pt-BR');
 		expect(formatFullDate('2026-07-22')).toContain('22');
 		expect(formatFullDate('2026-07-22')).toContain('2026');
+	});
+});
+
+describe('formatInstantDate — o dia do aparelho para um instante salvo em UTC (SPD-071)', () => {
+	// "Última sincronização" mostrava 27 de outubro numa sincronização das 23h do dia 26 em
+	// São Paulo: o instante é UTC e a data saía dos primeiros dígitos dele.
+	it('23h30 do dia 26 no aparelho é dia 26, mesmo que em UTC já seja 27', () => {
+		configureDateLocale('pt-BR');
+		expect(formatInstantDate(new Date(2026, 9, 26, 23, 30).toISOString())).toBe('26 de outubro de 2026');
+	});
+
+	it('meia-noite e meia do dia 27 é dia 27, mesmo que em UTC ainda seja 26', () => {
+		configureDateLocale('pt-BR');
+		expect(formatInstantDate(new Date(2026, 9, 27, 0, 30).toISOString())).toBe('27 de outubro de 2026');
 	});
 });
 

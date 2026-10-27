@@ -26,7 +26,7 @@ import { useCurrency } from '../contexts/CurrencyContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { claimSummaryParams } from '../sync/claim';
-import { formatFullDate } from '../utils/dateUtils';
+import { formatInstantDate } from '../utils/dateUtils';
 
 type Mode = 'signIn' | 'signUp';
 
@@ -293,7 +293,7 @@ const AccountScreen: React.FC = () => {
 
 						{lastSyncedAt && (
 							<Text style={styles.cardSubvalue}>
-								{t('account.lastSynced', { date: formatFullDate(lastSyncedAt) })}
+								{t('account.lastSynced', { date: formatInstantDate(lastSyncedAt) })}
 							</Text>
 						)}
 
