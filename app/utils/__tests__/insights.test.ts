@@ -24,9 +24,9 @@ const snapshotOf = (overrides: Partial<WealthSnapshot> = {}): WealthSnapshot => 
 	periodTotals: { incomeCents: 10_000_00, expenseCents: 7_000_00 },
 	previousPeriodTotals: { incomeCents: 10_000_00, expenseCents: 7_500_00 },
 	liquidCents: 30_000_00,
-	recurring: [
-		{ recurrenceType: 'monthly', day: 5, amountCents: 3_000_00, isIncome: false, active: true },
-	],
+	// O custo fixo de R$ 3.000 vem de uma conta a pagar: as recorrências antigas não contam
+	// mais (SPD-122).
+	bills: [{ amountCents: 3_000_00, active: true, debtId: null }],
 	expenseTotalsByNature: { essentialCents: 4_000_00, discretionaryCents: 3_000_00 },
 	categoryTotals: [{ categoryId: 'food', totalCents: 1_000_00 }],
 	previousCategoryTotals: [{ categoryId: 'food', totalCents: 900_00 }],
@@ -59,10 +59,10 @@ describe('computeWealthMetrics', () => {
 		expect(metrics.savingsRateDeltaBasisPoints).toBeNull();
 	});
 
-	// Sem recorrência cadastrada não existe custo fixo, e sem custo fixo o fôlego é uma
+	// Sem conta a pagar nem parcela não existe custo fixo, e sem custo fixo o fôlego é uma
 	// divisão por zero — `null` em vez de "infinitos meses de reserva".
-	it('has no runway to report without recurring expenses', () => {
-		const metrics = computeWealthMetrics(snapshotOf({ recurring: [] }));
+	it('has no runway to report without fixed costs', () => {
+		const metrics = computeWealthMetrics(snapshotOf({ bills: [] }));
 
 		expect(metrics.monthlyFixedCents).toBe(0);
 		expect(metrics.runwayMonths).toBeNull();
@@ -73,7 +73,7 @@ describe('computeWealthMetrics', () => {
 	// nas parcelas, e o fôlego que só olhava as recorrências dizia que não havia custo fixo.
 	it('E2E-24 — o custo fixo e o fôlego contam as contas a pagar e as parcelas das dívidas', () => {
 		const metrics = computeWealthMetrics(
-			snapshotOf({ recurring: [], bills: [{ amountCents: 1_000_00, active: true, debtId: null }], debtInstallmentsCents: 1_500_00, liquidCents: 30_000_00 })
+			snapshotOf({ bills: [{ amountCents: 1_000_00, active: true, debtId: null }], debtInstallmentsCents: 1_500_00, liquidCents: 30_000_00 })
 		);
 
 		expect(metrics.monthlyFixedCents).toBe(2_500_00);
@@ -81,7 +81,7 @@ describe('computeWealthMetrics', () => {
 		expect(metrics.fixedCostBasisPoints).toBe(2_500);
 		// A conta ligada à dívida entra pela parcela, não duas vezes.
 		expect(
-			computeWealthMetrics(snapshotOf({ recurring: [], bills: [{ amountCents: 1_500_00, active: true, debtId: 'car' }], debtInstallmentsCents: 1_500_00 })).monthlyFixedCents
+			computeWealthMetrics(snapshotOf({ bills: [{ amountCents: 1_500_00, active: true, debtId: 'car' }], debtInstallmentsCents: 1_500_00 })).monthlyFixedCents
 		).toBe(1_500_00);
 	});
 });
@@ -210,7 +210,7 @@ describe('o custo fixo tem uma base só', () => {
 			computeWealthMetrics(
 				snapshotOf({
 					periodTotals: { incomeCents: 100_000, expenseCents: 50_000 },
-					recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: fixed, isIncome: false, active: true }],
+					bills: [{ amountCents: fixed, active: true, debtId: null }],
 				})
 			)
 		);
@@ -233,7 +233,7 @@ describe('o custo fixo tem uma base só', () => {
 
 	it('a frase do helper é a mesma de buildInsights, e está na lista que a tela troca', () => {
 		const insights = buildInsights(
-			computeWealthMetrics(snapshotOf({ recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: 9_000_00, isIncome: false, active: true }] }))
+			computeWealthMetrics(snapshotOf({ bills: [{ amountCents: 9_000_00, active: true, debtId: null }] }))
 		);
 		const fromHelper = buildFixedCostInsights({ monthlyFixedCents: 9_000_00, basisPoints: 9_000 });
 		expect(fromHelper).toHaveLength(1);
@@ -334,9 +334,7 @@ describe('buildInsights', () => {
 
 	it('warns when fixed costs already eat half the income', () => {
 		const insights = insightsOf({
-			recurring: [
-				{ recurrenceType: 'monthly', day: 5, amountCents: 6_000_00, isIncome: false, active: true },
-			],
+			bills: [{ amountCents: 6_000_00, active: true, debtId: null }],
 		});
 
 		const heavy = insights.find((i) => i.id === 'fixed-cost-heavy');

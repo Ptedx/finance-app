@@ -4,14 +4,14 @@
  * O livro-caixa responde "quanto sobrou?". Este módulo responde as duas perguntas que
  * de fato movem patrimônio: *que fração da renda vira poupança* e *por quantos meses a
  * reserva sustenta o custo fixo*. São contas simples — o valor está em serem feitas num
- * lugar só, sobre centavos inteiros, com as bordas (renda zero, sem recorrência, mês
+ * lugar só, sobre centavos inteiros, com as bordas (renda zero, sem custo fixo, mês
  * vazio) decididas explicitamente em vez de virarem `NaN` ou `Infinity` na tela.
  *
  * Duas regras atravessam o arquivo:
  *
  *  1. **Funções puras.** Nada de React Native, nada de banco. Todo insumo chega por
  *     argumento — os agregados que `getPeriodSummary`, `getBalanceAsOf` e
- *     `getRecurringTransactions` já produzem. É o que permite testar tudo direto e é o
+ *     `getBills` já produzem. É o que permite testar tudo direto e é o
  *     que vai permitir expor estas funções como ferramentas de leitura do chatbot: o
  *     modelo raciocina sobre números pré-computados e confiáveis, não sobre linhas cruas.
  *
@@ -22,7 +22,6 @@
  */
 
 import { type Cents, sumCents } from './money';
-import { monthlyEquivalentCents, type RecurrenceRule } from './recurrence';
 
 /** Um por cento, em pontos-base. Ter o nome evita `* 100` solto pelo código. */
 export const BASIS_POINTS_PER_PERCENT = 100;
@@ -106,35 +105,6 @@ export const savingsRateDelta = (current: SavingsRate, previous: SavingsRate): n
 // ---------------------------------------------------------------------------
 
 /**
- * Um compromisso recorrente, na forma mínima que o cálculo precisa.
- *
- * Estrutural de propósito: `RecurringTransaction` do banco satisfaz esta interface sem
- * conversão nenhuma, e um teste pode montar o objeto à mão sem arrastar o schema junto.
- */
-export interface RecurringCommitment extends RecurrenceRule {
-	amountCents: Cents;
-	isIncome: boolean;
-	active: boolean;
-}
-
-/**
- * Custo fixo mensal: a soma das recorrências de despesa ativas, normalizadas.
- *
- * A normalização é a parte que importa. Somar os valores crus trataria um seguro anual de
- * R$ 3.000 como R$ 3.000 de custo mensal — `monthlyEquivalentCents` já resolve isso e é
- * de onde a conta vem, para que a Home e esta métrica nunca discordem.
- *
- * Recorrências inativas ficam de fora: elas descrevem um compromisso suspenso, não um que
- * a reserva precise cobrir.
- */
-export const monthlyFixedCostCents = (recurring: RecurringCommitment[]): Cents =>
-	sumCents(
-		recurring
-			.filter((rule) => !rule.isIncome && rule.active)
-			.map((rule) => safeCents(monthlyEquivalentCents(rule, safeCents(rule.amountCents))))
-	);
-
-/**
  * Uma conta a pagar, na forma mínima que o custo fixo precisa. `Bill` do banco satisfaz.
  * `debtId` diz que ela é a parcela de uma dívida.
  */
@@ -144,49 +114,36 @@ export interface BillCommitment {
 	debtId: string | null;
 }
 
-/** A recorrência mensal de despesa com o mesmo valor (1% ou R$ 1 de folga) já conta este compromisso. */
-const inRecurring = (cents: Cents, recurring: RecurringCommitment[]): boolean => {
-	const tolerance = Math.max(100, Math.round(cents * 0.01));
-	return recurring.some((rule) => rule.active && !rule.isIncome && rule.recurrenceType === 'monthly' && Math.abs(safeCents(rule.amountCents) - cents) <= tolerance);
-};
-
 /**
  * As contas a pagar cadastradas à mão, por mês: as ativas com valor. A conta que "varia"
  * (sem valor) fica de fora — não há número para somar. A ligada a uma dívida também: a
- * parcela entra pela dívida (`debtInstallmentsMonthlyCents`), com o valor de hoje. E a que
- * uma recorrência antiga do mesmo valor já conta não soma de novo, como a parcela de dívida.
+ * parcela entra pela dívida (`debtInstallmentsMonthlyCents`), com o valor de hoje.
  */
-export const monthlyBillsCents = (bills: BillCommitment[], recurring: RecurringCommitment[] = []): Cents =>
+export const monthlyBillsCents = (bills: BillCommitment[]): Cents =>
 	sumCents(
 		bills
 			.filter((bill) => bill.active && bill.debtId === null && bill.amountCents !== null && bill.amountCents > 0)
 			.map((bill) => safeCents(bill.amountCents ?? 0))
-			.filter((cents) => !inRecurring(cents, recurring))
 	);
 
 /**
- * O custo fixo do mês: as recorrências de despesa, as contas a pagar e as parcelas das
- * dívidas. A tela de recorrências saiu (SPD-079) e o que vence todo mês mora nas contas a
- * pagar — com só as recorrências, R$ 120 de internet contra R$ 8.000 de receita dava 0%.
+ * O custo fixo do mês: as contas a pagar e as parcelas das dívidas — é onde mora o que vence
+ * todo mês desde que a tela de recorrências saiu (SPD-079).
+ *
+ * As recorrências antigas não entram (SPD-122, DEC-37): elas não lançam mais nada desde o
+ * SPD-113 e o usuário não as vê nem edita, então uma regra de R$ 120 esquecida no banco não
+ * pode pesar no custo fixo nem no fôlego. Elas também não descontam mais a conta a pagar ou a
+ * parcela de mesmo valor (o "já no custo fixo" de antes): com a regra fora, isso tiraria o
+ * compromisso de verdade da conta.
  */
 export const monthlyFixedCommitmentsCents = ({
-	recurring,
 	bills,
 	debtInstallmentsCents,
 }: {
-	recurring: RecurringCommitment[];
 	bills: BillCommitment[];
 	/** `debtInstallmentsMonthlyCents`, de `utils/debt.ts`. */
 	debtInstallmentsCents: Cents;
-}): Cents => monthlyFixedCostCents(recurring) + monthlyBillsCents(bills, recurring) + safeCents(debtInstallmentsCents);
-
-/** Renda recorrente mensal, mesma normalização — o outro lado do mesmo cálculo. */
-export const monthlyRecurringIncomeCents = (recurring: RecurringCommitment[]): Cents =>
-	sumCents(
-		recurring
-			.filter((rule) => rule.isIncome && rule.active)
-			.map((rule) => safeCents(monthlyEquivalentCents(rule, safeCents(rule.amountCents))))
-	);
+}): Cents => monthlyBillsCents(bills) + safeCents(debtInstallmentsCents);
 
 export interface RunwayInput {
 	/**
@@ -453,10 +410,8 @@ export default {
 	NEEDS_WANTS_SAVINGS_TARGET,
 	savingsRate,
 	savingsRateDelta,
-	monthlyFixedCostCents,
 	monthlyBillsCents,
 	monthlyFixedCommitmentsCents,
-	monthlyRecurringIncomeCents,
 	runwayMonths,
 	fixedCostShare,
 	categoryDeltas,

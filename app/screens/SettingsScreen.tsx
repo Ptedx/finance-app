@@ -69,7 +69,7 @@ const SettingsScreen = () => {
 	// tela entregava `transactions`/`categories` daqui, e um contexto que ainda não
 	// carregou (ou que falhou) virava um arquivo válido e vazio.
 	const { refreshData } = useTransactions();
-	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
+	const { refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { rescheduleReminders: rescheduleBillReminders } = useBills();
 	const { authenticate } = useBiometricAuth();
@@ -278,8 +278,9 @@ const SettingsScreen = () => {
 			const newValue = !notifications;
 			await notificationUtils.setNotificationsEnabled(newValue);
 			if (newValue) {
+				// As recorrências antigas não lembram mais nada (SPD-122): ligar a chave só remarca
+				// as contas a pagar e as faturas, logo abaixo.
 				await notificationUtils.registerForPushNotificationsAsync();
-				await notificationUtils.checkAndScheduleNotifications(recurringTransactions);
 			} else {
 				await notificationUtils.cancelAllNotifications();
 			}

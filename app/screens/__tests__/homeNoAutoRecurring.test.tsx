@@ -67,9 +67,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 jest.mock('../../utils/notificationUtils', () => ({
-	checkAndScheduleNotifications: jest.fn(async () => undefined),
-	cancelTransactionNotification: jest.fn(async () => undefined),
-	scheduleTransactionNotification: jest.fn(async () => null),
+	cancelRecurringReminders: jest.fn(async () => 0),
 }));
 
 jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));

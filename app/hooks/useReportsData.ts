@@ -4,7 +4,6 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useBudget } from '../contexts/BudgetContext';
 import { useDebts } from '../contexts/DebtsContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
@@ -27,7 +26,6 @@ import {
 	comparisonYield,
 	type DebtsSummary,
 	type DebtVerdict,
-	debtInstallmentsMonthlyCents,
 	debtMonthLines,
 	debtStateOn,
 	effectiveRateBp,
@@ -48,7 +46,7 @@ import {
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthMetrics,
 } from '../utils/insights';
-import { categoryDeltas, fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents, monthlyFixedCommitmentsCents, monthlyFixedCostCents } from '../utils/metrics';
+import { categoryDeltas, fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents } from '../utils/metrics';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
@@ -231,7 +229,6 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	const { categories, currentPeriodTransactions, refreshData } = useTransactions();
 	const { metrics, insights: wealthInsights } = useWealthMetrics();
 	const { activeDebts, summary: debtsSummary } = useDebts();
-	const { transactions: recurring } = useRecurringTransactions();
 	const { bills } = useBills();
 
 	const todayKey = monthKeyOf(todayISO());
@@ -453,23 +450,10 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// renda" num mês de R$ 12.000 de pró-labore. Um número só, lido pela grade de saúde e pelo
 	// insight "fixed-cost-heavy" — antes o insight dizia 300% onde a grade dizia 23%.
 	//
-	// O custo fixo em si soma as recorrências, as contas a pagar e as parcelas das dívidas
-	// (`monthlyFixedCommitmentsCents`): a tela de recorrências saiu (SPD-079), o que vence todo
-	// mês mora nas contas a pagar, e só com as recorrências a internet de R$ 120 contra R$ 8.000
-	// de receita dava "Custo fixo: 0%".
-	const monthlyFixedCents = useMemo(
-		() =>
-			monthlyFixedCommitmentsCents({
-				recurring,
-				bills,
-				debtInstallmentsCents: debtInstallmentsMonthlyCents(
-					activeDebts.map((debt) => ({ terms: termsOf(debt) })),
-					todayISO(),
-					recurring
-				),
-			}),
-		[recurring, bills, activeDebts]
-	);
+	// O custo fixo em si é o de `useWealthMetrics`: as contas a pagar e as parcelas das dívidas
+	// (`monthlyFixedCommitmentsCents`). A tela de recorrências saiu (SPD-079), o que vence todo
+	// mês mora nas contas a pagar, e as regras antigas não entram mais (SPD-122).
+	const monthlyFixedCents = metrics.monthlyFixedCents;
 	const fixedCostBp = fixedCostShare({ monthlyFixedCents, incomeCents: selected ? selected.overview.incomeCents : metrics.savingsRate.incomeCents });
 
 	const health = useMemo<HealthIndicator[]>(() => {
@@ -566,13 +550,14 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 				const summary = cardSummaries.get(card.id);
 				return summary ? [{ id: card.id, name: card.name, summary }] : [];
 			}),
-			// Os fixos sem as parcelas: elas vêm linha a linha logo abaixo.
-			monthlyFixedCostCents(recurring) + monthlyBillsCents(bills, recurring),
+			// Os fixos sem as parcelas: elas vêm linha a linha logo abaixo. Sem as regras antigas
+			// (SPD-122), nenhuma parcela fica "já no custo fixo": a lista das regras vai vazia.
+			monthlyBillsCents(bills),
 			todayKey,
 			3,
-			debtMonthLines(debtInputs, months, todayISO(), recurring)
+			debtMonthLines(debtInputs, months, todayISO(), [])
 		);
-	}, [creditCards, cardSummaries, bills, todayKey, debtInputs, recurring]);
+	}, [creditCards, cardSummaries, bills, todayKey, debtInputs]);
 
 	// O rendimento contra o qual a dívida é comparada: o da meta; sem meta, o CDI em uso; sem
 	// CDI, 10% ao ano — o mesmo da tela da dívida.

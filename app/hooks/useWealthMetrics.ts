@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePeriod } from '../contexts/PeriodContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useDebts } from '../contexts/DebtsContext';
@@ -26,9 +25,9 @@ import type { CategoryTotal, ExpenseTotalsByNature } from '../utils/metrics';
  * As métricas de riqueza do período selecionado.
  *
  * Selector fino sobre o que os contextos já carregam — `periodTotals`, `balanceCents`,
- * `monthlyData`, `categoryTotals` e as recorrências — em vez de mais estado dentro do
- * `TransactionsContext`. Só o mês anterior é lido do banco aqui, porque nenhum contexto
- * o mantém e ele é o que dá sentido à seta ao lado da taxa de poupança.
+ * `monthlyData`, `categoryTotals`, as contas a pagar e as dívidas — em vez de mais estado
+ * dentro do `TransactionsContext`. Só o mês anterior é lido do banco aqui, porque nenhum
+ * contexto o mantém e ele é o que dá sentido à seta ao lado da taxa de poupança.
  *
  * O cálculo em si mora em `utils/insights.ts` e `utils/metrics.ts`, puros e testados;
  * este arquivo só junta os insumos e memoriza o resultado.
@@ -59,14 +58,14 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 	// O fôlego conta com a reserva: ela fica fora do "Em caixa" porque não paga a fatura do
 	// mês, mas é exatamente o dinheiro que sustentaria os custos fixos se a renda parasse.
 	const liquidCents = activeAccounts.length > 0 ? overview.cashCents + overview.savedCents : balanceCents;
-	const { transactions: recurring } = useRecurringTransactions();
-	// O custo fixo (e o fôlego) também conta as contas a pagar e as parcelas das dívidas: a
-	// tela de recorrências saiu (SPD-079) e o que vence todo mês mora lá.
+	// O custo fixo (e o fôlego) são as contas a pagar e as parcelas das dívidas: a tela de
+	// recorrências saiu (SPD-079) e o que vence todo mês mora lá. As regras antigas não contam
+	// (SPD-122), então nenhuma parcela está "já no custo fixo" por uma regra: a lista vai vazia.
 	const { bills } = useBills();
 	const { activeDebts } = useDebts();
 	const debtInstallmentsCents = useMemo(
-		() => debtInstallmentsMonthlyCents(activeDebts.map((debt) => ({ terms: termsOf(debt) })), todayISO(), recurring),
-		[activeDebts, recurring]
+		() => debtInstallmentsMonthlyCents(activeDebts.map((debt) => ({ terms: termsOf(debt) })), todayISO(), []),
+		[activeDebts]
 	);
 	const { selectedMonth, selectedYear } = usePeriod();
 
@@ -144,7 +143,6 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			periodTotals,
 			previousPeriodTotals: previous?.totals ?? null,
 			liquidCents,
-			recurring,
 			bills,
 			debtInstallmentsCents,
 			expenseTotalsByNature,
@@ -160,7 +158,6 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			periodTotals,
 			previous,
 			liquidCents,
-			recurring,
 			bills,
 			debtInstallmentsCents,
 			expenseTotalsByNature,

@@ -3,8 +3,8 @@
  *
  * Dois problemas de origem: o usuário nunca recebeu aviso de vencimento de consórcio e
  * financiamento (REM-01 — as contas a pagar não avisavam nada), e o lembrete de recorrente
- * só disparava no primeiro vencimento (REM-02): a marca de "já agendado" era o id da
- * recorrente, para sempre, e o texto saía em inglês.
+ * só disparava no primeiro vencimento (REM-02). Desde o SPD-122 as recorrências antigas não
+ * lembram mais nada: o que sobra delas é cancelar o que versões anteriores agendaram.
  *
  * `expo-notifications` é trocado por um mock que guarda os agendados; o AsyncStorage é
  * um mapa em memória. Os textos vêm da i18n de verdade.
@@ -59,43 +59,22 @@ jest.mock('expo-notifications', () => ({
 
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import type { Bill, RecurringTransaction } from '../../database/schema';
+import type { Bill } from '../../database/schema';
 import i18n from '../../i18n';
 import type { CardReminderSource } from '../billReminders';
 import { buildCardSummary, type CardEntry, type CardSettings } from '../cardMath';
-import { getISODate } from '../dateUtils';
 import { formatCents } from '../money';
+import * as notificationUtils from '../notificationUtils';
 import {
-	checkAndScheduleNotifications,
+	cancelRecurringReminders,
 	clearScheduledNotifications,
 	registerForPushNotificationsAsync,
 	scheduleBillReminders,
 	scheduleCardReminders,
-	scheduleTransactionNotification,
 	setNotificationsEnabled,
 } from '../notificationUtils';
 
 const scheduleMock = Notifications.scheduleNotificationAsync as jest.Mock;
-
-const inDays = (days: number): Date => {
-	const date = new Date();
-	date.setHours(0, 0, 0, 0);
-	date.setDate(date.getDate() + days);
-	return date;
-};
-
-const recurring = (overrides: Partial<RecurringTransaction> = {}): RecurringTransaction => ({
-	id: 'aluguel',
-	amountCents: 150_000,
-	isIncome: false,
-	note: 'Aluguel',
-	category: 'housing',
-	recurrenceType: 'monthly',
-	day: 10,
-	active: true,
-	updatedAt: '2026-10-01T00:00:00.000Z',
-	...overrides,
-});
 
 const bill = (overrides: Partial<Bill> = {}): Bill => ({
 	id: 'consorcio',
@@ -128,64 +107,47 @@ beforeEach(() => {
 	jest.clearAllMocks();
 });
 
-describe('lembrete de recorrente (REM-02)', () => {
-	it('cada vencimento agenda o seu, não só o primeiro', async () => {
-		const first = await scheduleTransactionNotification(
-			recurring({ nextDue: getISODate(inDays(10)) }),
-			inDays(10)
-		);
-		expect(first).not.toBeNull();
+describe('lembretes das recorrências antigas (SPD-122)', () => {
+	// O que versões anteriores agendavam para cada regra: `transaction_<id>`, na véspera.
+	const seedOld = () => {
+		mockScheduled.set('transaction_aluguel', { content: { title: 'Vence amanhã' }, trigger: {} });
+		mockScheduled.set('transaction_salario', { content: { title: 'Receita amanhã' }, trigger: {} });
+		mockStorage.set('@spendr_scheduled_notifications', JSON.stringify({ 'aluguel:2026-11-10': true, salario: true }));
+	};
 
-		// A ocorrência foi lançada e a recorrente avançou para o mês seguinte.
-		const second = await scheduleTransactionNotification(
-			recurring({ nextDue: getISODate(inDays(40)) }),
-			inDays(40)
-		);
-		expect(second).not.toBeNull();
+	it('cancela os transaction_ e esquece as marcas; os bill: ficam', async () => {
+		seedOld();
+		await scheduleBillReminders([bill()], new Date(2026, 9, 24, 12, 0));
+		const bills = Array.from(mockScheduled.keys()).filter((id) => id.startsWith('bill:'));
+		expect(bills.length).toBeGreaterThan(0);
 
-		expect(scheduleMock).toHaveBeenCalledTimes(2);
-		const [, secondCall] = scheduleMock.mock.calls;
-		const expected = inDays(39);
-		expect((secondCall[0].trigger.date as Date).getTime()).toBe(expected.getTime());
+		expect(await cancelRecurringReminders()).toBe(2);
+
+		expect(Array.from(mockScheduled.keys()).filter((id) => id.startsWith('transaction_'))).toEqual([]);
+		expect(Array.from(mockScheduled.keys()).filter((id) => id.startsWith('bill:'))).toEqual(bills);
+		expect(mockStorage.has('@spendr_scheduled_notifications')).toBe(false);
 	});
 
-	it('o mesmo vencimento não agenda duas vezes', async () => {
-		await scheduleTransactionNotification(recurring(), inDays(10));
-		await scheduleTransactionNotification(recurring(), inDays(10));
-		expect(scheduleMock).toHaveBeenCalledTimes(1);
+	it('sem nada das recorrências agendado, não cancela nada', async () => {
+		await scheduleBillReminders([bill()], new Date(2026, 9, 24, 12, 0));
+		const before = mockScheduled.size;
+
+		expect(await cancelRecurringReminders()).toBe(0);
+		expect(mockScheduled.size).toBe(before);
+		expect(Notifications.cancelScheduledNotificationAsync).not.toHaveBeenCalled();
 	});
 
-	it('pela checagem geral: a recorrente que avançou volta a ser lembrada', async () => {
-		await checkAndScheduleNotifications([recurring({ nextDue: getISODate(inDays(5)) })]);
-		await checkAndScheduleNotifications([recurring({ nextDue: getISODate(inDays(5)) })]);
-		await checkAndScheduleNotifications([recurring({ nextDue: getISODate(inDays(25)) })]);
-		expect(scheduleMock).toHaveBeenCalledTimes(2);
-	});
-
-	it('pela checagem geral, o vencimento é lido como data local (véspera à meia-noite local)', async () => {
-		await checkAndScheduleNotifications([recurring({ nextDue: getISODate(inDays(5)) })]);
-		const trigger = scheduleMock.mock.calls[0][0].trigger;
-		expect((trigger.date as Date).getTime()).toBe(inDays(4).getTime());
-	});
-
-	it('o texto vem da i18n, em português', async () => {
-		await scheduleTransactionNotification(recurring(), inDays(10));
-		const { content } = scheduleMock.mock.calls[0][0];
-		expect(content.title).toBe('Vence amanhã');
-		expect(content.body).toBe(`Aluguel — ${formatCents(150_000)}`);
-	});
-
-	it('receita e recorrente sem descrição também em português', async () => {
-		await scheduleTransactionNotification(recurring({ isIncome: true, note: '' }), inDays(10));
-		const { content } = scheduleMock.mock.calls[0][0];
-		expect(content.title).toBe('Receita amanhã');
-		expect(content.body).toBe(`Lançamento recorrente — ${formatCents(150_000)}`);
+	it('o módulo não oferece mais como agendar um lembrete de recorrência', () => {
+		const exported = Object.keys(notificationUtils);
+		expect(exported).not.toContain('scheduleTransactionNotification');
+		expect(exported).not.toContain('checkAndScheduleNotifications');
 	});
 });
 
 describe('apagar todos os dados (SPD-082)', () => {
-	it('cancela todo lembrete agendado, de recorrente e de conta a pagar, e esquece as marcas', async () => {
-		await scheduleTransactionNotification(recurring(), inDays(10));
+	it('cancela todo lembrete agendado, de recorrente antiga e de conta a pagar, e esquece as marcas', async () => {
+		mockScheduled.set('transaction_aluguel', { content: {}, trigger: {} });
+		mockStorage.set('@spendr_scheduled_notifications', JSON.stringify({ 'aluguel:2026-11-10': true }));
 		await scheduleBillReminders([bill()], new Date(2026, 9, 24, 12, 0));
 		expect(mockScheduled.size).toBeGreaterThan(1);
 
@@ -193,14 +155,6 @@ describe('apagar todos os dados (SPD-082)', () => {
 
 		expect(mockScheduled.size).toBe(0);
 		expect(mockStorage.has('@spendr_scheduled_notifications')).toBe(false);
-	});
-
-	it('uma recorrente nova com o mesmo id volta a ser lembrada: a marca antiga não a esconde', async () => {
-		await scheduleTransactionNotification(recurring(), inDays(10));
-		await clearScheduledNotifications();
-
-		expect(await scheduleTransactionNotification(recurring(), inDays(10))).not.toBeNull();
-		expect(scheduleMock).toHaveBeenCalledTimes(2);
 	});
 });
 

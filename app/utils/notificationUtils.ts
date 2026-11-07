@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Device from 'expo-device';
 import i18next from 'i18next';
 import { Platform } from 'react-native';
-import type { Bill, RecurringTransaction } from '../database/schema';
+import type { Bill } from '../database/schema';
 import { errorData, log } from '../diagnostics/log';
 import {
 	type BillReminder,
@@ -11,7 +11,6 @@ import {
 	type CardReminderSource,
 	cardReminders,
 } from './billReminders';
-import { getISODate, parseISODate } from './dateUtils';
 import { formatCents } from './money';
 import { STORAGE_KEYS } from './storageUtils';
 
@@ -151,121 +150,43 @@ export const setNotificationsEnabled = async (enabled: boolean): Promise<void> =
 	}
 };
 
-const getNotificationIdentifier = (transactionId: string): string => {
-	return `transaction_${transactionId}`;
-};
+/**
+ * Prefixo dos lembretes das recorrências antigas: `transaction_<id>`. Nada agenda mais com
+ * ele (SPD-122, DEC-37): a tela das recorrências saiu no SPD-079, as regras não lançam mais
+ * nada desde o SPD-113, e o "Aluguel vence amanhã" de uma regra que o usuário não vê nem
+ * edita só confundia. As regras seguem no banco, no sync e no backup.
+ */
+const RECURRING_IDENTIFIER_PREFIX = 'transaction_';
 
 /**
- * Marca de "já agendado" de uma ocorrência: recorrente + data do vencimento.
+ * Cancela os lembretes das recorrências antigas que versões anteriores deixaram agendados
+ * (`transaction_<id>`) e esquece as marcas de "já agendado" deles. Os das Contas do mês
+ * (`bill:`) e das faturas (`card:`) não são tocados.
  *
- * Era só o id da recorrente, e a marca nunca saía — então só o primeiro vencimento era
- * lembrado (REM-02). Por ocorrência, cada vencimento agenda o seu.
+ * Chamada na abertura do app (`RecurringTransactionsProvider`); sem nada agendado, só lê a
+ * agenda. Cancela mesmo com as notificações desligadas. No Expo Go não faz nada. Devolve
+ * quantos cancelou.
  */
-const getOccurrenceKey = (transactionId: string, dueDate: Date): string =>
-	`${transactionId}:${getISODate(dueDate)}`;
-
-/**
- * Schedule a notification for an upcoming recurring transaction.
- * No-ops silently when running in Expo Go.
- */
-export const scheduleTransactionNotification = async (
-	transaction: RecurringTransaction,
-	dueDate: Date
-): Promise<string | null> => {
+export const cancelRecurringReminders = async (): Promise<number> => {
 	const Notifications = getNotifications();
-	if (!Notifications) return null;
+	if (!Notifications) return 0;
 
 	try {
-		const isEnabled = await areNotificationsEnabled();
-		if (!isEnabled) return null;
-
-		const occurrenceKey = getOccurrenceKey(transaction.id, dueDate);
-		const scheduledNotifications = await getScheduledNotifications();
-		if (scheduledNotifications[occurrenceKey]) return null;
-
-		const notificationDate = new Date(dueDate);
-		notificationDate.setDate(notificationDate.getDate() - 1);
-
-		if (notificationDate < new Date()) return null;
-
-		const content = {
-			title: i18next.t(
-				transaction.isIncome
-					? 'reminders.recurring.incomeTitle'
-					: 'reminders.recurring.expenseTitle'
-			),
-			body: i18next.t('reminders.recurring.body', {
-				name: transaction.note || i18next.t('reminders.recurring.fallbackName'),
-				amount: formatCents(transaction.amountCents),
-			}),
-			data: { transactionId: transaction.id },
-			sound: true,
-		};
-
-		const identifier = getNotificationIdentifier(transaction.id);
-		await cancelTransactionNotification(transaction.id);
-
-		const notificationId = await Notifications.scheduleNotificationAsync({
-			content,
-			trigger: {
-				type: Notifications.SchedulableTriggerInputTypes.DATE,
-				date: notificationDate,
-				channelId: Platform.OS === 'android' ? 'recurring-transactions' : undefined,
-			},
-			identifier,
-		});
-
-		await markNotificationScheduled(occurrenceKey);
-		return notificationId;
-	} catch (error) {
-		console.error('Error scheduling transaction notification:', error);
-		return null;
-	}
-};
-
-/**
- * Cancel a scheduled notification for a transaction.
- */
-export const cancelTransactionNotification = async (transactionId: string): Promise<void> => {
-	const Notifications = getNotifications();
-	if (!Notifications) return;
-
-	try {
-		const identifier = getNotificationIdentifier(transactionId);
-		await Notifications.cancelScheduledNotificationAsync(identifier);
-		await clearScheduledNotification(transactionId);
-	} catch (error) {
-		console.error('Error canceling transaction notification:', error);
-	}
-};
-
-/**
- * Check for upcoming transactions and schedule notifications.
- */
-export const checkAndScheduleNotifications = async (
-	transactions: RecurringTransaction[]
-): Promise<void> => {
-	if (!getNotifications()) return;
-
-	try {
-		const isEnabled = await areNotificationsEnabled();
-		if (!isEnabled) return;
-
-		const now = new Date();
-		const thirtyDaysFromNow = new Date();
-		thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-
-		for (const transaction of transactions) {
-			if (!transaction.active || !transaction.nextDue) continue;
-
-			// Data de calendário, em hora local: `new Date('2026-11-10')` seria meia-noite UTC.
-			const dueDate = parseISODate(transaction.nextDue);
-			if (dueDate >= now && dueDate <= thirtyDaysFromNow) {
-				await scheduleTransactionNotification(transaction, dueDate);
+		let cancelled = 0;
+		const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+		for (const request of scheduled) {
+			if (request.identifier.startsWith(RECURRING_IDENTIFIER_PREFIX)) {
+				await Notifications.cancelScheduledNotificationAsync(request.identifier);
+				cancelled += 1;
 			}
 		}
+		// As marcas só existiam para os lembretes das recorrências.
+		await AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY);
+		if (cancelled > 0) log('reminders', 'recurring_reminders_cancelled', { data: { cancelled } });
+		return cancelled;
 	} catch (error) {
-		console.error('Error checking and scheduling notifications:', error);
+		console.error('Error canceling recurring reminders:', error);
+		return 0;
 	}
 };
 
@@ -343,9 +264,9 @@ export const scheduleBillReminders = (bills: Bill[], now: Date = new Date()): Pr
 };
 
 /**
- * "Apagar todos os dados" (SPD-082): cancela todo lembrete agendado — das recorrentes
- * (`transaction_*`) e das contas a pagar (`bill:`) — e esquece as marcas de "já agendado".
- * Sem esquecer, uma recorrente nova que caísse na mesma marca nunca seria lembrada.
+ * "Apagar todos os dados" (SPD-082): cancela todo lembrete agendado — das contas a pagar
+ * (`bill:`), das faturas (`card:`) e algum das recorrentes antigas (`transaction_*`) que
+ * tenha sobrado — e esquece as marcas de "já agendado" delas.
  *
  * Entra na fila das remarcações das contas a pagar: uma remarcação em curso não agenda de
  * novo, depois do cancelamento, os lembretes de contas que acabaram de ser apagadas.
@@ -548,49 +469,11 @@ const rescheduleCardReminders = async (cards: CardReminderSource[], now: Date): 
 	}
 };
 
-const getScheduledNotifications = async (): Promise<Record<string, boolean>> => {
-	try {
-		const value = await AsyncStorage.getItem(SCHEDULED_NOTIFICATIONS_KEY);
-		return value ? JSON.parse(value) : {};
-	} catch (error) {
-		console.error('Error getting scheduled notifications:', error);
-		return {};
-	}
-};
-
-const markNotificationScheduled = async (occurrenceKey: string): Promise<void> => {
-	try {
-		const scheduled = await getScheduledNotifications();
-		scheduled[occurrenceKey] = true;
-		await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduled));
-	} catch (error) {
-		console.error('Error marking notification as scheduled:', error);
-	}
-};
-
-/**
- * Tira as marcas da recorrente: as por ocorrência (`<id>:<data>`) e a antiga, só pelo id,
- * que instalações anteriores deixaram gravada.
- */
-const clearScheduledNotification = async (transactionId: string): Promise<void> => {
-	try {
-		const scheduled = await getScheduledNotifications();
-		for (const key of Object.keys(scheduled)) {
-			if (key === transactionId || key.startsWith(`${transactionId}:`)) delete scheduled[key];
-		}
-		await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduled));
-	} catch (error) {
-		console.error('Error clearing scheduled notification:', error);
-	}
-};
-
 export default {
 	registerForPushNotificationsAsync,
 	areNotificationsEnabled,
 	setNotificationsEnabled,
-	scheduleTransactionNotification,
-	cancelTransactionNotification,
-	checkAndScheduleNotifications,
+	cancelRecurringReminders,
 	cancelAllNotifications,
 	clearScheduledNotifications,
 	scheduleBillReminders,

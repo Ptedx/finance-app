@@ -29,13 +29,11 @@ import {
 	type MonthlySavingsRate,
 	type MonthlyTotal,
 	monthlyFixedCommitmentsCents,
-	monthlyRecurringIncomeCents,
 	NEEDS_WANTS_SAVINGS_TARGET,
 	type NeedsWantsSavings,
 	needsWantsSavingsSplit,
 	type PeriodTotals,
 	type CategoryTotal as PeriodCategoryTotal,
-	type RecurringCommitment,
 	type SavingsRate,
 	runwayMonths,
 	savingsRate,
@@ -70,12 +68,11 @@ export interface WealthSnapshot {
 	 * Pilar 1 existir passa a ser o ativo líquido real, e só este campo muda.
 	 */
 	liquidCents: Cents;
-	/** Recorrências vivas, ativas ou não — o filtro é feito por `metrics.ts`. */
-	recurring: RecurringCommitment[];
 	/**
 	 * As contas a pagar, ativas ou não, e as parcelas do mês das dívidas
-	 * (`debtInstallmentsMonthlyCents`). Entram no custo fixo e no fôlego junto com as
-	 * recorrências (`monthlyFixedCommitmentsCents`); ausentes, contam como nada.
+	 * (`debtInstallmentsMonthlyCents`). São o custo fixo e o fôlego
+	 * (`monthlyFixedCommitmentsCents`); ausentes, contam como nada. As recorrências antigas
+	 * não entram (SPD-122).
 	 */
 	bills?: BillCommitment[];
 	debtInstallmentsCents?: Cents;
@@ -99,7 +96,6 @@ export interface WealthMetrics {
 	/** Há quantos meses seguidos a taxa cai, terminando no mês selecionado. */
 	consecutiveDrops: number;
 	monthlyFixedCents: Cents;
-	monthlyRecurringIncomeCents: Cents;
 	/** Fatia da renda já comprometida com custo fixo, em pontos-base. */
 	fixedCostBasisPoints: number | null;
 	/** Meses de fôlego. `null` quando não há custo fixo cadastrado. */
@@ -116,9 +112,8 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		: null;
 
 	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
-	// nas parcelas, e só com as recorrências o fôlego dizia que não havia custo fixo.
+	// nas parcelas. As regras antigas ficaram de fora do custo fixo (SPD-122).
 	const monthlyFixedCents = monthlyFixedCommitmentsCents({
-		recurring: snapshot.recurring,
 		bills: snapshot.bills ?? [],
 		debtInstallmentsCents: snapshot.debtInstallmentsCents ?? 0,
 	});
@@ -130,7 +125,6 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		savingsRateDeltaBasisPoints: previous ? savingsRateDelta(current, previous) : null,
 		consecutiveDrops: consecutiveSavingsRateDrops(trend, snapshot.month),
 		monthlyFixedCents,
-		monthlyRecurringIncomeCents: monthlyRecurringIncomeCents(snapshot.recurring),
 		fixedCostBasisPoints: fixedCostShare({
 			monthlyFixedCents,
 			incomeCents: snapshot.periodTotals.incomeCents,

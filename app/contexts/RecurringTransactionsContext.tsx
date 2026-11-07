@@ -15,7 +15,6 @@ import type {
 } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import { parseISODate, todayISO } from '../utils/dateUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 
 interface RecurringTransactionsContextType {
@@ -34,10 +33,10 @@ const RecurringTransactionsContext = createContext<RecurringTransactionsContextT
 );
 
 /**
- * As recorrências antigas: a lista segue lida (relatórios e métricas contam as regras como
- * custo fixo, Ajustes as leva no backup) e sincronizada, mas as regras não lançam mais
- * nada — o `processTransactions` que a Início chamava ao abrir saiu no SPD-113 (ver o
- * comentário em `database.ts`, onde ficava `processRecurringTransactions`).
+ * As recorrências antigas: a lista segue lida e sincronizada (Ajustes as leva no backup), mas
+ * as regras não lançam mais nada — o `processTransactions` que a Início chamava ao abrir saiu
+ * no SPD-113 (ver o comentário em `database.ts`, onde ficava `processRecurringTransactions`).
+ * Também não lembram mais nada nem contam como custo fixo (SPD-122, DEC-37).
  */
 export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode }> = ({
 	children,
@@ -50,16 +49,15 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		const loadTransactions = async () => {
 			try {
 				await refreshTransactions();
-
-				// After loading transactions, check and schedule notifications
-				const allTransactions = await getRecurringTransactions();
-				await notificationUtils.checkAndScheduleNotifications(allTransactions);
 			} catch (error) {
 				console.error('Failed to load recurring transactions:', error);
 			}
 		};
 
 		loadTransactions();
+		// As regras não agendam mais lembrete (SPD-122): na abertura, sai o "X vence amanhã"
+		// que versões anteriores deixaram agendado. Os das contas e das faturas ficam.
+		notificationUtils.cancelRecurringReminders();
 	}, []);
 
 	const refreshTransactions = async () => {
@@ -83,25 +81,6 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 	const addTransaction = async (transaction: RecurringTransactionDraft) => {
 		try {
 			const id = await addRecurringTransaction(transaction);
-
-			// Get the complete transaction with the calculated nextDue date
-			const addedTransaction = (await getRecurringTransactions()).find((t) => t.id === id);
-
-			// Notify a day ahead, but only for due dates that are actually in the future
-			// and near enough to be worth a reminder. Comparisons are on calendar dates,
-			// parsed locally — `new Date('2026-07-22')` would be a UTC instant.
-			if (addedTransaction?.nextDue) {
-				const today = todayISO();
-				const dueDate = parseISODate(addedTransaction.nextDue);
-				const daysUntilDue = Math.round(
-					(dueDate.getTime() - parseISODate(today).getTime()) / 86_400_000
-				);
-
-				if (daysUntilDue >= 2 && daysUntilDue <= 30) {
-					await notificationUtils.scheduleTransactionNotification(addedTransaction, dueDate);
-				}
-			}
-
 			await refreshTransactions();
 			syncQueue.schedule();
 			return id;
@@ -117,18 +96,6 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 			// The next due date is derived from the rule inside updateRecurringTransaction,
 			// so editing the day of the month takes effect immediately rather than a cycle late.
 			await updateRecurringTransaction(transaction);
-
-			await notificationUtils.cancelTransactionNotification(transaction.id);
-
-			const stored = (await getRecurringTransactions()).find((t) => t.id === transaction.id);
-
-			if (stored?.active && stored.nextDue) {
-				await notificationUtils.scheduleTransactionNotification(
-					stored,
-					parseISODate(stored.nextDue)
-				);
-			}
-
 			await refreshTransactions();
 			syncQueue.schedule();
 		} catch (error) {
@@ -140,9 +107,6 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 
 	const removeTransaction = async (id: string) => {
 		try {
-			// Cancel any scheduled notification for this transaction
-			await notificationUtils.cancelTransactionNotification(id);
-
 			await deleteRecurringTransaction(id);
 			await refreshTransactions();
 			syncQueue.schedule();
