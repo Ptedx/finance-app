@@ -1023,6 +1023,9 @@ account: {
 			cancel: 'Not now',
 			distinct: 'They are different accounts',
 			distinctHint: 'Hides this notice for these two accounts for good',
+			autoMerged: 'We merged {{from}} into {{into}}',
+			autoMergedBody: '{{from}} was at the same bank and was empty, with no transactions, captures or balance. What the bank announces now goes to {{into}}.',
+			autoMergedOk: 'Got it',
 		},
 		edit: {
 			title: 'Account',

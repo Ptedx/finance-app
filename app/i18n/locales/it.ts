@@ -1024,6 +1024,9 @@ account: {
 			cancel: 'Non ora',
 			distinct: 'Sono conti diversi',
 			distinctHint: 'L avviso sparisce e non torna per questi due conti',
+			autoMerged: 'Abbiamo unito {{from}} a {{into}}',
+			autoMergedBody: '{{from}} era della stessa banca ed era vuoto, senza movimenti, catture né saldo. Quello che la banca segnala ora va a {{into}}.',
+			autoMergedOk: 'Ho capito',
 		},
 		edit: {
 			title: 'Conto',

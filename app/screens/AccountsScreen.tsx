@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,7 +23,7 @@ const ACCENT = '#15E8FE';
 const AccountsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, overview, provisionalOverview, mergeAccounts } = useAccounts();
+	const { accounts, balances, overview, provisionalOverview, mergeAccounts, autoMergeNotices, dismissAutoMergeNotices } = useAccounts();
 
 	// "Em caixa" e "Depois das faturas" já contam as compras a revisar, como na Home.
 	const pendingOf = (cents: number) =>
@@ -57,6 +57,22 @@ const AccountsScreen = () => {
 	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
 	// "Saldo não informado" (SPD-114): a conta que a captura criou com saldo 0, até ser acertada.
 	const dismissedBalanceUnset = useDismissedBalanceUnset();
+
+	/**
+	 * "Juntamos X em Y" (SPD-116): a ficha duplicada vazia que o app juntou sozinho. Aparece
+	 * aqui, no lugar do aviso de duplicadas que ela teria disparado, e uma vez só: sai ao tocar
+	 * em "Entendi" ou ao deixar a tela. Não bloqueia nada — a lista continua embaixo.
+	 */
+	const noticesShown = useRef(false);
+	noticesShown.current = autoMergeNotices.length > 0;
+	useFocusEffect(
+		useCallback(
+			() => () => {
+				if (noticesShown.current) dismissAutoMergeNotices();
+			},
+			[dismissAutoMergeNotices]
+		)
+	);
 
 	const keepBoth = (pair: DuplicateAccounts) => {
 		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);
@@ -119,6 +135,29 @@ const AccountsScreen = () => {
 					{netPending ? <Text style={styles.totalsPending}>{netPending}</Text> : null}
 
 				</View>
+
+				{autoMergeNotices.length > 0 && (
+					<View style={styles.merged} accessibilityLiveRegion="polite">
+						{autoMergeNotices.map((notice) => (
+							<View key={`${notice.from}|${notice.into}`} style={styles.mergedItem}>
+								<Text style={styles.mergedTitle} accessibilityRole="header">
+									{t('accounts.duplicate.autoMerged', { from: notice.from, into: notice.into })}
+								</Text>
+								<Text style={styles.mergedBody}>
+									{t('accounts.duplicate.autoMergedBody', { from: notice.from, into: notice.into })}
+								</Text>
+							</View>
+						))}
+						<Pressable
+							onPress={dismissAutoMergeNotices}
+							accessibilityRole="button"
+							accessibilityLabel={t('accounts.duplicate.autoMergedOk')}
+							style={({ pressed }) => [styles.mergedButton, pressed && styles.pressed]}
+						>
+							<Text style={styles.mergedButtonText}>{t('accounts.duplicate.autoMergedOk')}</Text>
+						</Pressable>
+					</View>
+				)}
 
 				{duplicates.map((pair) => (
 					<View key={pair.loose.id} style={styles.duplicate}>
@@ -271,6 +310,40 @@ const styles = StyleSheet.create({
 		borderColor: '#000000',
 	},
 	duplicateButtonText: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: '#000000',
+	},
+	merged: {
+		backgroundColor: '#1E1E1E',
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: ACCENT,
+		padding: 16,
+		marginBottom: 12,
+		gap: 12,
+	},
+	mergedItem: {
+		gap: 4,
+	},
+	mergedTitle: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#FFFFFF',
+	},
+	mergedBody: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: 'rgba(255,255,255,0.85)',
+	},
+	mergedButton: {
+		alignItems: 'center',
+		justifyContent: 'center',
+		minHeight: 48,
+		borderRadius: 10,
+		backgroundColor: ACCENT,
+	},
+	mergedButtonText: {
 		fontSize: 15,
 		fontWeight: '600',
 		color: '#000000',

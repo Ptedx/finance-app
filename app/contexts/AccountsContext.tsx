@@ -18,7 +18,9 @@ import {
 	getAccounts,
 	getAccountTransactions,
 	getAccountTransfers,
+	getBills,
 	getCardPurchasesOriginated,
+	getDebts,
 	getTransactions,
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
@@ -37,6 +39,7 @@ import {
 } from '../database/database';
 import { getAllCaptures, getPendingCaptures, updateCapture } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Transfer } from '../database/schema';
+import { log } from '../diagnostics/log';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import {
@@ -74,8 +77,12 @@ import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
+import { type AccountLinks, autoMergeCandidates, isEmptyUntouched, planAutoMerges } from '../utils/autoMergeAccounts';
+import { type AutoMergeNotice, addAutoMergeNotice, clearAutoMergeNotices, getAutoMergeNotices } from '../utils/autoMergeNotices';
+import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { planBusinessFeed } from '../utils/businessFeed';
-import { setBusinessFeed } from '../utils/businessFeedPreference';
+import { getBusinessFeeds, setBusinessFeed } from '../utils/businessFeedPreference';
+import { getDistinctAccountPairs } from '../utils/distinctAccounts';
 import {
 	externalTransfersInByMonth,
 	externalTransfersOutByMonth,
@@ -273,6 +280,13 @@ interface AccountsContextType {
 	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
 	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
 	/**
+	 * "Juntamos X em Y": as fichas duplicadas vazias que o app juntou sozinho e que a tela de
+	 * Contas ainda não mostrou (SPD-116). Ficam guardadas no aparelho até lá.
+	 */
+	autoMergeNotices: AutoMergeNotice[];
+	/** A tela mostrou: os avisos saem, aqui e no aparelho. */
+	dismissAutoMergeNotices: () => void;
+	/**
 	 * Junta dois cartões de crédito do mesmo cartão do banco (E2E-34): compras, parcelas,
 	 * encargos e pagamentos vão para `intoId`, que mantém fechamento, limite e fatura
 	 * informada; o ajuste com a fatura do banco do que sai some com ele (`mergeCardInto`).
@@ -349,6 +363,30 @@ const repairCardLedger = async (cardId: string): Promise<CardLedgerRepairNotice 
 		console.error('Error repairing card ledger:', error);
 	}
 	return movedCount > 0 || keptCount > 0 ? { cardId, movedCount, keptCount } : null;
+};
+
+/**
+ * O que está ligado a uma conta, para dizer se ela está vazia (`isEmptyUntouched`). Para no
+ * primeiro tipo que achar: a ficha com captura ou lançamento é o caso comum do par, e não
+ * precisa ler o resto. Nula se a leitura falhar — na dúvida, a conta não é vazia.
+ */
+const linksOf = async (accountId: string): Promise<AccountLinks | null> => {
+	const links: AccountLinks = { transactions: 0, transfers: 0, captures: 0, bills: 0, debts: 0 };
+	try {
+		links.transactions = (await getAccountTransactions(accountId)).length;
+		if (links.transactions > 0) return links;
+		links.transfers = (await getAccountTransfers(accountId)).length;
+		if (links.transfers > 0) return links;
+		// Viva, de qualquer status: a descartada também diz que o banco avisou algo ali.
+		links.captures = (await getAllCaptures()).filter((capture) => capture.accountId === accountId).length;
+		if (links.captures > 0) return links;
+		links.bills = (await getBills()).filter((bill) => bill.accountId === accountId).length;
+		links.debts = (await getDebts()).filter((debt) => debt.accountId === accountId).length;
+		return links;
+	} catch (error) {
+		console.error('Error reading account links:', error);
+		return null;
+	}
 };
 
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -974,6 +1012,71 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	/**
+	 * Juntar sozinho a ficha duplicada vazia (SPD-116, DEC-36 Q4).
+	 *
+	 * Roda aqui porque é onde as contas são carregadas: na abertura, depois de cada escrita,
+	 * ao voltar ao app e depois do sync (`useAfterPull`), sempre por `setAccounts`. Do par do
+	 * aviso "Duas contas do mesmo banco", a ficha totalmente vazia e nunca editada
+	 * (`autoMergeAccounts.ts`) vai para a outra pelo `mergeAccounts` de sempre — sync, lápide,
+	 * contas a pagar, tudo como no botão. O par marcado como contas diferentes, o da PJ e os
+	 * cartões ficam com o aviso.
+	 *
+	 * Com o sync no meio, não: uma ficha baixada pode parecer vazia só porque os lançamentos
+	 * dela ainda estão numa página por vir (o mesmo cuidado do reparo das contas fantasma). O
+	 * fim da rodada relê as contas e isto roda de novo.
+	 *
+	 * Cada ficha é tentada uma vez por abertura do app: junta, e a ficha sai; se a junção
+	 * falhar no meio, o aviso de sempre continua lá para o usuário decidir.
+	 */
+	const [autoMergeNotices, setAutoMergeNotices] = useState<AutoMergeNotice[]>([]);
+	const autoMergeBusy = useRef(false);
+	const autoMergeTried = useRef(new Set<string>());
+
+	useEffect(() => {
+		void getAutoMergeNotices().then((stored) => {
+			if (stored.length > 0) setAutoMergeNotices((current) => (current.length > 0 ? current : stored));
+		});
+	}, []);
+
+	const dismissAutoMergeNotices = useCallback(() => {
+		setAutoMergeNotices([]);
+		void clearAutoMergeNotices();
+	}, []);
+
+	useEffect(() => {
+		if (autoMergeBusy.current) return;
+		const candidates = autoMergeCandidates(accounts).filter((account) => !autoMergeTried.current.has(account.id));
+		if (candidates.length === 0) return;
+
+		autoMergeBusy.current = true;
+		void (async () => {
+			try {
+				if (syncQueue.getState().status === 'syncing') return;
+				const [distinct, feeds, dismissed] = await Promise.all([
+					getDistinctAccountPairs(),
+					getBusinessFeeds(),
+					getDismissedBalanceUnset(),
+				]);
+				const empty = new Set<string>();
+				for (const account of candidates) {
+					if (isEmptyUntouched(account, await linksOf(account.id), dismissed.has(account.id))) empty.add(account.id);
+				}
+				for (const { from, into } of planAutoMerges(accounts, empty, distinct, Object.values(feeds))) {
+					autoMergeTried.current.add(from.id);
+					await mergeAccounts(from.id, into.id);
+					setAutoMergeNotices(await addAutoMergeNotice({ from: from.name, into: into.name }));
+					// Diário (SPD-014): a decisão, sem nome nem valor.
+					log('app', 'account_auto_merged', { data: { reason: 'empty_duplicate' } });
+				}
+			} catch (error) {
+				console.error('Error auto-merging accounts:', error);
+			} finally {
+				autoMergeBusy.current = false;
+			}
+		})();
+	}, [accounts, mergeAccounts]);
+
+	/**
 	 * Dois cartões para o mesmo cartão do banco — o cadastrado à mão e o que o extrato OFX
 	 * criou, por exemplo. Não é o `mergeAccounts`: lá o saldo de uma soma no da outra, e aqui
 	 * a fatura do que fica é a que o banco mostra para ele, e não pode ganhar a âncora nem o
@@ -1178,6 +1281,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			autoMergeNotices,
+			dismissAutoMergeNotices,
 			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,
@@ -1221,6 +1326,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			autoMergeNotices,
+			dismissAutoMergeNotices,
 			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,

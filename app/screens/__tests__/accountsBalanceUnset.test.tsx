@@ -52,6 +52,8 @@ jest.mock('../../contexts/AccountsContext', () => ({
 		unassignedNetCents: 0,
 		isLoading: false,
 		mergeAccounts: jest.fn(),
+		autoMergeNotices: [],
+		dismissAutoMergeNotices: jest.fn(),
 	}),
 }));
 

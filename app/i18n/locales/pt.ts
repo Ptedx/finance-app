@@ -1018,6 +1018,9 @@ const pt = {
 			cancel: 'Agora não',
 			distinct: 'São contas diferentes',
 			distinctHint: 'O aviso some e não volta para estas duas contas',
+			autoMerged: 'Juntamos {{from}} em {{into}}',
+			autoMergedBody: '{{from}} era do mesmo banco e estava vazia, sem lançamento, captura nem saldo. O que o banco avisar agora cai em {{into}}.',
+			autoMergedOk: 'Entendi',
 		},
 		edit: {
 			title: 'Conta',
