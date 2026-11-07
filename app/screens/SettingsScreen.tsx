@@ -41,11 +41,15 @@ import {
 } from '../utils/biometricLock';
 import * as biometricUtils from '../utils/biometricUtils';
 import { eraseAllData } from '../utils/dataWipe';
+import { formatMonthYear } from '../utils/dateUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
+import { formatCents } from '../utils/money';
 import * as notificationUtils from '../utils/notificationUtils';
 import {
+	createStatementInstallments,
 	type StatementChoiceAnswer,
 	StatementImportError,
+	type StatementInstallmentOffer,
 	walkStatementChoice,
 	withStatementAccountChooser,
 } from '../utils/statementImport';
@@ -115,11 +119,42 @@ const SettingsScreen = () => {
 				})
 		);
 
+	/**
+	 * "PADARIA 3/10 de R$ 50,00 veio no extrato, mas o app não tem as outras parcelas"
+	 * (SPD-117): uma pergunta por compra, depois do resumo. Só cria com o "Criar parcelas".
+	 */
+	const askInstallmentOffer = (offer: StatementInstallmentOffer) =>
+		new Promise<boolean>((resolve) => {
+			const first = offer.parcels[0];
+			const last = offer.parcels[offer.parcels.length - 1];
+			Alert.alert(
+				t('captures.import.installmentsTitle'),
+				t('captures.import.installmentsOffer', {
+					count: offer.parcels.length,
+					name: offer.description,
+					index: offer.index,
+					total: offer.count,
+					amount: formatCents(offer.parcelCents),
+					account: offer.accountName,
+					first: first.index,
+					firstMonth: formatMonthYear(first.date),
+					lastMonth: formatMonthYear(last.date),
+				}),
+				[
+					{ text: t('captures.import.installmentsSkip'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('captures.import.installmentsCreate'), onPress: () => resolve(true) },
+				],
+				{ cancelable: false }
+			);
+		});
+
 	const handleImportStatement = async () => {
 		try {
 			setIsImportingStatement(true);
 			const result = await withStatementAccountChooser(askStatementAccount, importStatement);
 			if (!result) return;
+			// O import terminou: o resumo e as ofertas não são mais "importando".
+			setIsImportingStatement(false);
 
 			const s = result.summary;
 			const toReview = s.pending + s.questions;
@@ -130,16 +165,26 @@ const SettingsScreen = () => {
 				auto: s.autoConfirmed,
 				ignored: s.ignored + s.transfers,
 			});
-			Alert.alert(
-				t('captures.import.title'),
-				body,
-				toReview > 0
-					? [
-							{ text: t('settings.ok') },
-							{ text: t('captures.import.review'), onPress: () => router.push('/inbox') },
-						]
-					: [{ text: t('settings.ok') }]
+			// O resumo primeiro; as ofertas de parcelas depois dele, e só então a revisão.
+			const review = await new Promise<boolean>((resolve) =>
+				Alert.alert(
+					t('captures.import.title'),
+					body,
+					toReview > 0
+						? [
+								{ text: t('settings.ok'), onPress: () => resolve(false) },
+								{ text: t('captures.import.review'), onPress: () => resolve(true) },
+							]
+						: [{ text: t('settings.ok'), onPress: () => resolve(false) }],
+					{ cancelable: false }
+				)
 			);
+			let created = 0;
+			for (const offer of result.installmentOffers) {
+				if (await askInstallmentOffer(offer)) created += await createStatementInstallments(offer);
+			}
+			if (created > 0) await refreshData();
+			if (review) router.push('/inbox');
 		} catch (error) {
 			console.error('Error importing statement:', error);
 			const code = error instanceof StatementImportError ? error.code : 'failed';

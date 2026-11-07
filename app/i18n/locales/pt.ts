@@ -1506,6 +1506,7 @@ const pt = {
 		hideOriginal: 'Esconder original',
 		originalNotificationHint: 'Mostra o texto que o app leu',
 		statementLine: 'Linha do extrato',
+		statementConfirmed: 'Valor confirmado pelo extrato',
 		questionDuplicateTitle: 'Parece o mesmo lançamento',
 		questionDuplicateBody: 'Mesmo valor e mesma direção de uma notificação do {{app}} às {{time}}.',
 		sameEntry: 'É o mesmo, ficar com um',
@@ -1584,6 +1585,13 @@ const pt = {
 			matchOtherCard: 'Outro cartão',
 			matchOtherAccount: 'Outra conta',
 			matchNew: 'Criar novo',
+			installmentsTitle: 'Parcelas que faltam',
+			installmentsOffer_one:
+				'{{name}} {{index}}/{{total}} de {{amount}} veio no extrato, mas o app não tem a parcela seguinte.\n\nCriar a parcela {{first}}/{{total}} no cartão {{account}}, em {{firstMonth}}?',
+			installmentsOffer_other:
+				'{{name}} {{index}}/{{total}} de {{amount}} veio no extrato, mas o app não tem as outras parcelas.\n\nCriar {{count}} parcelas de {{amount}} no cartão {{account}}, de {{firstMonth}} a {{lastMonth}}?',
+			installmentsCreate: 'Criar parcelas',
+			installmentsSkip: 'Agora não',
 		},
 		kind: {
 			purchase: 'Compra',

@@ -41,6 +41,7 @@ import {
 	ledgerSuspectLabel,
 	rawSourceLabel,
 	resolvedReasonLabel,
+	statementConfirmedLabel,
 } from '../CaptureInboxScreen';
 
 /** `t` mínimo: busca a chave no português e interpola `{{assim}}`, como o i18next. */
@@ -212,5 +213,18 @@ describe('categoria de reserva', () => {
 	// A sugestão que não bate com nenhuma categoria caía em "Uncategorized", fixo em inglês.
 	it('chama-se "Sem categoria" em português', () => {
 		expect(fallbackCategory(t)).toMatchObject({ id: 'uncategorized', name: 'Sem categoria' });
+	});
+});
+
+describe('a pendente que o extrato confirmou leva a marca (SPD-117, AUTO-13)', () => {
+	const claimed = new Set(['cap-padaria']);
+
+	it('pendente casada com uma linha do extrato: "Valor confirmado pelo extrato"', () => {
+		expect(statementConfirmedLabel({ id: 'cap-padaria', status: 'pending' }, claimed, t)).toBe('Valor confirmado pelo extrato');
+	});
+
+	it('sem linha do extrato, ou já fora da revisão: sem marca', () => {
+		expect(statementConfirmedLabel({ id: 'outra', status: 'pending' }, claimed, t)).toBeNull();
+		expect(statementConfirmedLabel({ id: 'cap-padaria', status: 'confirmed' }, claimed, t)).toBeNull();
 	});
 });

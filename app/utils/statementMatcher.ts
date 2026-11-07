@@ -36,6 +36,7 @@ import {
 	STATEMENT_PACKAGE_PREFIX,
 	withinStatementLag,
 } from './captureMatcher';
+import { type CycleRule, cardInstallmentDates, inInformedValue } from './cardMath';
 import { parseInstallmentMarker } from './installments';
 import type { OfxAccount, OfxEntry } from './ofxParser';
 
@@ -467,9 +468,152 @@ export const planStatementImport = (
 	return { planned, summary };
 };
 
+// ---------------------------------------------------------------------------
+// A pendente que o extrato confirmou (SPD-117, AUTO-13)
+// ---------------------------------------------------------------------------
+
+/**
+ * O que o extrato faz com a captura **pendente** que ele casou (DEC-36 Q5).
+ *
+ * O extrato prova o valor e a conta, não a categoria. Confirma sozinho só quando a
+ * categoria sugerida é a da regra aprendida do estabelecimento — a que o próprio usuário
+ * já escolheu; com a categoria só palpitada, a captura continua na revisão, marcada
+ * "valor confirmado pelo extrato". A captura não guarda de onde veio a sugestão: a regra
+ * de hoje com a mesma categoria é a prova.
+ *
+ * Também ficam marcadas, mesmo com a regra: a pergunta em aberto ("parece repetido?",
+ * "transferência?"), que o valor não responde; o motivo gravado (a moeda estrangeira); e
+ * o estorno, cuja categoria nunca é a da regra da loja (SPD-043).
+ */
+export type StatementSettlement =
+	| { action: 'confirm' }
+	| { action: 'mark'; why: 'question' | 'reason' | 'refund' | 'suggested' };
+
+export const settleMatchedCapture = (
+	capture: { question: string | null; reason: string | null; kind: string; suggestedCategory: string | null },
+	rule: MerchantRule | undefined
+): StatementSettlement => {
+	if (capture.question) return { action: 'mark', why: 'question' };
+	if (capture.reason) return { action: 'mark', why: 'reason' };
+	if (capture.kind === 'refund') return { action: 'mark', why: 'refund' };
+	if (rule?.treatAs === 'transaction' && rule.categoryId !== null && rule.categoryId === capture.suggestedCategory) {
+		return { action: 'confirm' };
+	}
+	return { action: 'mark', why: 'suggested' };
+};
+
+// ---------------------------------------------------------------------------
+// As parcelas que faltam (SPD-117, AUTO-15)
+// ---------------------------------------------------------------------------
+
+/** O cartão, o bastante para datar as parcelas: o ciclo e a âncora. */
+export interface InstallmentCard {
+	rule: CycleRule | null;
+	/** O que é datado até aqui já está no valor informado (`inInformedValue`). */
+	openingBalanceDate: string;
+}
+
+/** Uma compra parcelada que o extrato mostra e o app não tem como plano. */
+export interface InstallmentGap {
+	/** A linha da maior parcela da compra no arquivo: "PADARIA 3/10". */
+	planned: PlannedLine;
+	accountId: string;
+	/** A parcela da linha (o 3 de "3/10"). */
+	index: number;
+	/** O total de parcelas (o 10). */
+	count: number;
+	/** As que faltam, uma por fatura a partir da fatura da linha. */
+	parcels: Array<{ index: number; date: string }>;
+}
+
+/** A linha que entra no app agora, sem pergunta: a que pode puxar a oferta. */
+const offersInstallments = (item: PlannedLine): boolean =>
+	item.action.type === 'match_capture' ||
+	(item.action.type === 'decision' &&
+		(item.action.decision.action === 'pending' || item.action.decision.action === 'auto_confirm'));
+
+/**
+ * As parcelas que faltam de cada compra "k/N" do extrato do cartão (DEC-36 Q6). Só
+ * planeja; criar é com o usuário (`createStatementInstallments`), nunca sozinho.
+ *
+ * A compra é o estabelecimento, o valor da parcela e o N, no mesmo cartão: um arquivo de
+ * dois meses traz a 3/10 e a 4/10 da mesma padaria, e a oferta sai da maior. Não há oferta
+ * quando o plano já existe — uma linha da compra casou com uma parcela do livro —, quando a
+ * maior linha já tinha sido importada (reimportar não pergunta de novo) ou quando ela ficou
+ * com pergunta (pode ser um lançamento noutro cartão, com o plano lá).
+ *
+ * As datas seguem o ciclo do cartão como na compra parcelada (`cardInstallmentDates`), a
+ * partir da data da linha: a k+1 na fatura seguinte à da linha, e assim por diante. Fica de
+ * fora a parcela que o livro já tem (mesmo índice, N e valor, na janela das parcelas) e a
+ * que cai até a âncora do cartão, que já está no valor informado.
+ */
+export const planInstallmentGaps = (
+	planned: PlannedLine[],
+	context: {
+		accountIdByKey: Map<string, string>;
+		/** Só os cartões: a parcela "k/N" na conta corrente não é oferecida. */
+		cards: Map<string, InstallmentCard>;
+		/** Os lançamentos dos cartões do arquivo, inteiros (as parcelas seguintes são futuras). */
+		ledger: LedgerTransaction[];
+	}
+): InstallmentGap[] => {
+	const purchases = new Map<string, { accountId: string; count: number; lines: Array<{ item: PlannedLine; index: number }> }>();
+	for (const item of planned) {
+		const { line } = item;
+		if (!line.isCard || line.direction !== 'out' || line.neutral) continue;
+		const accountId = context.accountIdByKey.get(line.accountKey);
+		if (!accountId || !context.cards.has(accountId)) continue;
+		const marker = parseInstallmentMarker(line.text);
+		if (!marker) continue;
+		// Sem estabelecimento reconhecido, cada linha é uma compra.
+		const key = [accountId, line.merchantKey ?? `fitid:${line.fitid}`, marker.count, line.amountCents].join('|');
+		const purchase = purchases.get(key) ?? { accountId, count: marker.count, lines: [] };
+		purchase.lines.push({ item, index: marker.index });
+		purchases.set(key, purchase);
+	}
+
+	const gaps: InstallmentGap[] = [];
+	for (const purchase of purchases.values()) {
+		if (purchase.lines.some(({ item }) => item.action.type === 'match_transaction')) continue;
+		const last = purchase.lines.reduce((best, entry) =>
+			entry.index > best.index || (entry.index === best.index && entry.item.line.postedDate > best.item.line.postedDate)
+				? entry
+				: best
+		);
+		if (last.index >= purchase.count || !offersInstallments(last.item)) continue;
+
+		const card = context.cards.get(purchase.accountId) as InstallmentCard;
+		const { line } = last.item;
+		// A primeira data é a da própria linha (a parcela k); as outras, uma por fatura.
+		const dates = cardInstallmentDates(line.postedDate, purchase.count - last.index + 1, card.rule);
+		const parcels: Array<{ index: number; date: string }> = [];
+		for (let offset = 1; offset < dates.length; offset += 1) {
+			const index = last.index + offset;
+			const date = dates[offset];
+			if (inInformedValue(card, date)) continue;
+			const inLedger = context.ledger.some(
+				(transaction) =>
+					transaction.accountId === purchase.accountId &&
+					!transaction.isIncome &&
+					transaction.installmentCount === purchase.count &&
+					transaction.installmentIndex === index &&
+					transaction.amountCents === line.amountCents &&
+					Math.abs(dayNumber(transaction.date) - dayNumber(date)) <= MATCH_INSTALLMENT_WINDOW_DAYS
+			);
+			if (!inLedger) parcels.push({ index, date });
+		}
+		if (parcels.length > 0) {
+			gaps.push({ planned: last.item, accountId: purchase.accountId, index: last.index, count: purchase.count, parcels });
+		}
+	}
+	return gaps;
+};
+
 export default {
 	linesOf,
 	planStatementImport,
+	settleMatchedCapture,
+	planInstallmentGaps,
 	findCaptureForLine,
 	findTransactionForLine,
 	findRecordForLine,

@@ -1512,6 +1512,7 @@ account: {
 		hideOriginal: 'Nascondi originale',
 		originalNotificationHint: "Mostra il testo che l'app ha letto",
 		statementLine: "Riga dell'estratto conto",
+		statementConfirmed: "Importo confermato dall'estratto conto",
 		questionDuplicateTitle: 'Sembra la stessa voce',
 		questionDuplicateBody: 'Stesso importo e stessa direzione di una notifica di {{app}} alle {{time}}.',
 		sameEntry: 'Stessa voce, tienine una',
@@ -1590,6 +1591,13 @@ account: {
 			matchOtherCard: "Un'altra carta",
 			matchOtherAccount: 'Un altro conto',
 			matchNew: 'Crea nuovo',
+			installmentsTitle: 'Rate mancanti',
+			installmentsOffer_one:
+				"{{name}} {{index}}/{{total}} da {{amount}} è nell'estratto conto, ma l'app non ha la rata successiva.\n\nCreare la rata {{first}}/{{total}} sulla carta {{account}}, a {{firstMonth}}?",
+			installmentsOffer_other:
+				"{{name}} {{index}}/{{total}} da {{amount}} è nell'estratto conto, ma l'app non ha le altre rate.\n\nCreare {{count}} rate da {{amount}} sulla carta {{account}}, da {{firstMonth}} a {{lastMonth}}?",
+			installmentsCreate: 'Crea le rate',
+			installmentsSkip: 'Non ora',
 		},
 		kind: {
 			purchase: 'Acquisto',

@@ -18,6 +18,7 @@ import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { getStatementClaimedCaptureIds } from '../database/captures';
 import type { Account, Capture, Category, Transaction } from '../database/schema';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage, STATEMENT_LEDGER_SUSPECT_REASON } from '../utils/captureMatcher';
@@ -103,6 +104,18 @@ export const currencyWarning = (
 				defaultValue: 'Valor em moeda estrangeira: confira o valor em reais antes de confirmar',
 			})
 		: null;
+
+/**
+ * "Valor confirmado pelo extrato" (SPD-117), ou `null`: a pendente que uma linha de extrato
+ * importado casou. O extrato provou o valor e a conta; a categoria era só palpite, então ela
+ * continua na revisão. Sem coluna nova: a marca é a linha do extrato que aponta para ela.
+ */
+export const statementConfirmedLabel = (
+	capture: Pick<Capture, 'id' | 'status'>,
+	claimedByStatement: ReadonlySet<string>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string | null =>
+	capture.status === 'pending' && claimedByStatement.has(capture.id) ? t('captures.statementConfirmed') : null;
 
 /**
  * "Avisos do WhatsApp estão sendo ignorados": o app que não é banco e que o usuário
@@ -208,6 +221,8 @@ interface CaptureCardProps {
 	categories: Category[];
 	/** Os lançamentos, para o "Parece repetido" da linha de extrato dizer qual. */
 	transactions: Transaction[];
+	/** As capturas que uma linha de extrato casou: a marca "valor confirmado pelo extrato". */
+	claimedByStatement: ReadonlySet<string>;
 	/** `accountId`: a conta escolhida no cartão; `undefined` quando o usuário não mexeu nela. */
 	onConfirm: (capture: Capture, categoryId: string, accountId?: string | null) => void;
 	onDismiss: (capture: Capture) => void;
@@ -221,6 +236,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	related,
 	categories,
 	transactions,
+	claimedByStatement,
 	onConfirm,
 	onDismiss,
 	onTransfer,
@@ -250,12 +266,13 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const destination = destinationLabel({ accountId }, accounts, t);
 	const installments = installmentsLabel(capture, t);
 	const warning = currencyWarning(capture, t);
+	const confirmedByStatement = statementConfirmedLabel(capture, claimedByStatement, t);
 	const summary = `${isIncome ? t('captures.income') : t('captures.expense')}, ${amount}, ${
 		capture.counterparty ?? kindLabel
 	}, ${t('captures.inAccount', { account: destination })}${installments ? `, ${installments}` : ''}, ${t(
 		'captures.from',
 		{ app: capture.appLabel, time: whenLabelFor(capture) }
-	)}${warning ? `. ${warning}` : ''}`;
+	)}${warning ? `. ${warning}` : ''}${confirmedByStatement ? `. ${confirmedByStatement}` : ''}`;
 
 	return (
 		<View style={styles.card}>
@@ -279,6 +296,13 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					<View style={styles.currencyWarning}>
 						<Ionicons name="alert-circle-outline" size={18} color="#FFD166" />
 						<Text style={styles.currencyWarningText}>{warning}</Text>
+					</View>
+				)}
+				{/* Junto do valor, que é o que o extrato confirmou. Ícone e texto, não só cor. */}
+				{confirmedByStatement && (
+					<View style={styles.statementConfirmed}>
+						<Ionicons name="checkmark-circle-outline" size={16} color={ACCENT} />
+						<Text style={styles.statementConfirmedText}>{confirmedByStatement}</Text>
 					</View>
 				)}
 			</View>
@@ -545,6 +569,21 @@ const CaptureInboxScreen = () => {
 
 	const [refreshing, setRefreshing] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
+	// As pendentes que um extrato importado casou (SPD-117), relidas quando a fila muda.
+	const [claimedByStatement, setClaimedByStatement] = useState<ReadonlySet<string>>(() => new Set());
+	const pendingIds = useMemo(() => pending.map((capture) => capture.id).join(','), [pending]);
+	useEffect(() => {
+		if (!pendingIds) return undefined;
+		let active = true;
+		getStatementClaimedCaptureIds()
+			.then((ids) => {
+				if (active) setClaimedByStatement(ids);
+			})
+			.catch((error) => console.error('Failed to load statement matches:', error));
+		return () => {
+			active = false;
+		};
+	}, [pendingIds]);
 	const [undoVisible, setUndoVisible] = useState(false);
 
 	// A barra de desfazer some sozinha, mas sem pressa: oito segundos dá tempo de ler.
@@ -723,6 +762,7 @@ const CaptureInboxScreen = () => {
 						related={capture.relatedId ? (byId.get(capture.relatedId) ?? null) : null}
 						categories={categories}
 						transactions={transactions}
+						claimedByStatement={claimedByStatement}
 						onConfirm={handleConfirm}
 						onDismiss={handleDismiss}
 						onTransfer={handleTransfer}
@@ -984,6 +1024,18 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		lineHeight: 20,
 		color: '#FFD166',
+	},
+	statementConfirmed: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 6,
+		marginBottom: 12,
+	},
+	statementConfirmedText: {
+		flex: 1,
+		fontSize: 14,
+		lineHeight: 20,
+		color: ACCENT,
 	},
 	question: {
 		backgroundColor: 'rgba(21, 232, 254, 0.08)',

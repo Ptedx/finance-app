@@ -19,7 +19,13 @@ jest.mock('../../database/database', () => ({
 	assignTransactionAccount: jest.fn(async () => {}),
 	getTransactionsByDateRange: jest.fn(async () => []),
 	reassignCaptureLedger: jest.fn(async () => {}),
+	getAccountTransactions: jest.fn(async () => []),
+	addTransaction: jest.fn(async () => 'tx'),
 }));
+
+jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
+
+jest.mock('../../diagnostics/capture', () => ({ logCaptureDecision: jest.fn() }));
 
 jest.mock('../../database/captures', () => ({
 	getCapture: jest.fn(async () => null),
@@ -35,6 +41,8 @@ jest.mock('../../database/captures', () => ({
 
 jest.mock('../captureActions', () => ({
 	applyDecision: jest.fn(async () => ({ id: 'x', autoConfirmed: false })),
+	confirmCapture: jest.fn(async (id: string) => ({ id, status: 'confirmed' })),
+	resolveCategoryId: (wanted: string | null) => wanted ?? 'other',
 	toKnownCapture: (capture: unknown) => capture,
 	toMerchantRule: jest.fn(() => undefined),
 }));
@@ -44,12 +52,25 @@ jest.mock('../categoryEditUtils', () => ({ generateUniqueId: () => `id-${++mockN
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { insertCapture } from '../../database/captures';
-import { addAccount, assignTransactionAccount, getAccounts, getTransactionsByDateRange } from '../../database/database';
-import type { Account, Transaction } from '../../database/schema';
-import { applyDecision } from '../captureActions';
+import { getCapture, getMerchantRule, getRecentCaptures, insertCapture, updateCapture } from '../../database/captures';
+import {
+	addAccount,
+	addTransaction,
+	assignTransactionAccount,
+	getAccounts,
+	getAccountTransactions,
+	getTransactionsByDateRange,
+} from '../../database/database';
+import type { Account, Capture, Transaction } from '../../database/schema';
+import { logCaptureDecision } from '../../diagnostics/capture';
+import { applyDecision, confirmCapture, toMerchantRule } from '../captureActions';
 import { STATEMENT_LEDGER_SUSPECT_REASON } from '../captureMatcher';
-import { importOfxContent, walkStatementChoice, withStatementAccountChooser } from '../statementImport';
+import {
+	createStatementInstallments,
+	importOfxContent,
+	walkStatementChoice,
+	withStatementAccountChooser,
+} from '../statementImport';
 
 const E2E_CARD_OFX = readFileSync(join(__dirname, 'fixtures', 'e2e-cartao.ofx'), 'latin1');
 
@@ -265,5 +286,279 @@ describe('a pergunta "de qual cartão é este extrato?"', () => {
 		]);
 		expect(choice).toEqual({ type: 'existing', accountId: 'itau' });
 		expect(await walkStatementChoice(question, async () => 'new')).toEqual({ type: 'new' });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// SPD-117: a pendente que o extrato confirmou (AUTO-13) e as parcelas que faltam (AUTO-15)
+// ---------------------------------------------------------------------------
+
+/** O mesmo arquivo do cartão final 1111, com outras linhas. */
+const cardOfx = (rows: string): string =>
+	E2E_CARD_OFX.replace(/<BANKTRANLIST>[\s\S]*<\/BANKTRANLIST>/, `<BANKTRANLIST>${rows}</BANKTRANLIST>`);
+
+const row = (fitid: string, date: string, amount: string, memo: string): string =>
+	`<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>${date.replace(/-/g, '')}000000[-3:BRT]<TRNAMT>${amount}<FITID>${fitid}<MEMO>${memo}</STMTTRN>`;
+
+/** A notificação da padaria de R$ 50 em 01/11, ainda na revisão. */
+const pendingPadaria = (overrides: Partial<Capture> = {}): Capture => ({
+	id: 'cap-padaria',
+	fingerprint: 'fp-padaria',
+	packageName: 'com.nu.production',
+	appLabel: 'Nubank',
+	title: 'Compra aprovada',
+	text: 'Compra de R$ 50,00 em PADARIA PAO QUENTE',
+	// Meio-dia local: o mesmo dia de calendário em qualquer fuso.
+	postedAt: '2026-11-01T12:00:00.000',
+	amountCents: 5_000,
+	direction: 'out',
+	kind: 'purchase',
+	counterparty: 'PADARIA PAO QUENTE',
+	merchantKey: 'padaria pao quente',
+	cardLast4: '1111',
+	status: 'pending',
+	question: null,
+	relatedId: null,
+	suggestedCategory: 'alimentacao',
+	transactionId: null,
+	autoConfirmed: false,
+	reason: null,
+	accountId: 'nubank-teste',
+	transferId: null,
+	installments: null,
+	createdAt: '',
+	updatedAt: '',
+	...overrides,
+});
+
+const PADARIA_OFX = cardOfx(row('e2e-fit-001', '2026-11-01', '-50.00', 'Padaria Pao Quente'));
+
+const more = {
+	getCapture: getCapture as jest.Mock,
+	getRecentCaptures: getRecentCaptures as jest.Mock,
+	getMerchantRule: getMerchantRule as jest.Mock,
+	toMerchantRule: toMerchantRule as jest.Mock,
+	confirmCapture: confirmCapture as jest.Mock,
+	logCaptureDecision: logCaptureDecision as jest.Mock,
+	getAccountTransactions: getAccountTransactions as jest.Mock,
+	addTransaction: addTransaction as jest.Mock,
+	updateCapture: updateCapture as jest.Mock,
+};
+
+const withPending = (capture: Capture) => {
+	more.getRecentCaptures.mockResolvedValue([capture]);
+	more.getCapture.mockImplementation(async (id: string) => (id === capture.id ? capture : null));
+};
+
+/** A regra aprendida do estabelecimento, com a categoria dada. */
+const learned = (categoryId: string) =>
+	more.toMerchantRule.mockImplementation((stored: unknown) =>
+		stored ? { merchantKey: 'padaria pao quente', categoryId, treatAs: 'transaction', confirmations: 1 } : undefined
+	);
+
+const statementLineDraft = () =>
+	mocked.insertCapture.mock.calls.find(([draft]) => draft.reason === 'statement_capture')?.[0];
+
+describe('pendente que o extrato confirmou (SPD-117, AUTO-13)', () => {
+	beforeEach(() => {
+		withAccounts([nubankTeste]);
+		mocked.getTransactionsByDateRange.mockResolvedValue([]);
+		more.getMerchantRule.mockImplementation(async (key: string) => ({ merchantKey: key }));
+	});
+	afterEach(() => {
+		more.getRecentCaptures.mockResolvedValue([]);
+		more.getCapture.mockImplementation(async () => null);
+		more.getMerchantRule.mockImplementation(async () => null);
+		more.toMerchantRule.mockImplementation(() => undefined);
+	});
+
+	it('categoria da regra aprendida + linha do extrato igual: confirmada sozinha, com a categoria da regra', async () => {
+		withPending(pendingPadaria());
+		learned('alimentacao');
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(result.summary.matchedCaptures).toBe(1);
+		expect(more.confirmCapture).toHaveBeenCalledTimes(1);
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories);
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'confirmed' }]);
+		// A linha do extrato continua "já vista", apontando para a captura.
+		expect(statementLineDraft()).toMatchObject({ status: 'duplicate', relatedId: 'cap-padaria' });
+		// Diário: a decisão, sem valor, nome nem texto.
+		expect(more.logCaptureDecision).toHaveBeenCalledWith({
+			raw: { packageName: 'com.nu.production', title: '', text: '' },
+			fingerprint: 'fp-padaria',
+			outcome: { step: 'statement_match', captureId: 'cap-padaria', confirmed: true, why: 'rule', accountMoved: false },
+		});
+	});
+
+	it('categoria só sugerida (sem regra): continua pendente, marcada "valor confirmado pelo extrato"', async () => {
+		withPending(pendingPadaria());
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'marked' }]);
+		// A marca é a linha do extrato casada com ela (`reason: statement_capture`), sem coluna nova.
+		expect(statementLineDraft()).toMatchObject({ status: 'duplicate', relatedId: 'cap-padaria' });
+		expect(more.logCaptureDecision).toHaveBeenCalledWith(
+			expect.objectContaining({
+				outcome: { step: 'statement_match', captureId: 'cap-padaria', confirmed: false, why: 'suggested', accountMoved: false },
+			})
+		);
+	});
+
+	it('regra aprendida com outra categoria: a sugerida não veio dela, continua pendente', async () => {
+		withPending(pendingPadaria());
+		learned('lazer');
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'marked' }]);
+	});
+
+	it('pendente com pergunta ("parece repetido?"): o extrato confirma o valor, não responde a pergunta', async () => {
+		withPending(pendingPadaria({ question: 'duplicate', relatedId: 'outra' }));
+		learned('alimentacao');
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'marked' }]);
+	});
+
+	it('o extrato do cartão tira a compra da conta corrente e confirma já no cartão', async () => {
+		withPending(pendingPadaria({ accountId: 'nu-conta' }));
+		learned('alimentacao');
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(more.updateCapture).toHaveBeenCalledWith('cap-padaria', { accountId: 'nubank-teste' });
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories);
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'confirmed' }]);
+		expect(more.logCaptureDecision.mock.calls[0][0].outcome.accountMoved).toBe(true);
+	});
+
+	it('captura que já foi confirmada: nada muda nela', async () => {
+		withPending(pendingPadaria({ status: 'confirmed', transactionId: 'tx-padaria' }));
+		learned('alimentacao');
+
+		const result = await importOfxContent(PADARIA_OFX, options);
+
+		expect(result.summary.matchedCaptures).toBe(1);
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([]);
+	});
+});
+
+/** O cartão que fecha dia 3: a compra do dia 5 é da fatura do mês seguinte. */
+const nubankFecha3 = card({
+	id: 'nubank-teste',
+	name: 'Nubank Teste',
+	bankName: 'Nubank',
+	last4: '1111',
+	closingDay: 3,
+	closingDaysBefore: 7,
+	openingBalanceDate: '2026-10-20',
+});
+
+const parcel = (id: string, index: number, date: string): Transaction =>
+	({
+		...manual(id, 5_000, date, `PADARIA (${index}/10)`, 'nubank-teste'),
+		installmentGroup: 'plano',
+		installmentIndex: index,
+		installmentCount: 10,
+	}) as Transaction;
+
+const PARCELA_OFX = cardOfx(row('parc-3', '2026-11-05', '-50.00', 'PADARIA 3/10'));
+
+describe('parcela "k/N" do extrato sem plano no app (SPD-117, AUTO-15)', () => {
+	beforeEach(() => {
+		withAccounts([nubankFecha3]);
+		mocked.getTransactionsByDateRange.mockResolvedValue([]);
+		more.getAccountTransactions.mockResolvedValue([]);
+	});
+
+	it('"PADARIA 3/10 R$ 50,00" sem plano: o resultado oferece as 7 parcelas que faltam, 4 a 10, uma por fatura', async () => {
+		const result = await importOfxContent(PARCELA_OFX, options);
+
+		expect(result.installmentOffers).toHaveLength(1);
+		const [offer] = result.installmentOffers;
+		expect(offer).toMatchObject({
+			accountId: 'nubank-teste',
+			accountName: 'Nubank Teste',
+			description: 'PADARIA',
+			parcelCents: 5_000,
+			index: 3,
+			count: 10,
+		});
+		expect(offer.parcels).toEqual([
+			{ index: 4, date: '2026-12-05' },
+			{ index: 5, date: '2027-01-05' },
+			{ index: 6, date: '2027-02-05' },
+			{ index: 7, date: '2027-03-05' },
+			{ index: 8, date: '2027-04-05' },
+			{ index: 9, date: '2027-05-05' },
+			{ index: 10, date: '2027-06-05' },
+		]);
+		// Nunca sozinho: o import não lança parcela nenhuma.
+		expect(more.addTransaction).not.toHaveBeenCalled();
+	});
+
+	it('aceitar cria as parcelas 4 a 10 no cartão, nas datas da oferta, num plano só', async () => {
+		const { installmentOffers } = await importOfxContent(PARCELA_OFX, options);
+
+		const created = await createStatementInstallments(installmentOffers[0]);
+
+		expect(created).toBe(7);
+		const drafts = more.addTransaction.mock.calls.map(([draft]) => draft);
+		expect(drafts.map((draft) => [draft.installmentIndex, draft.date])).toEqual([
+			[4, '2026-12-05'],
+			[5, '2027-01-05'],
+			[6, '2027-02-05'],
+			[7, '2027-03-05'],
+			[8, '2027-04-05'],
+			[9, '2027-05-05'],
+			[10, '2027-06-05'],
+		]);
+		expect(new Set(drafts.map((draft) => draft.installmentGroup)).size).toBe(1);
+		expect(drafts[0]).toMatchObject({
+			amountCents: 5_000,
+			isIncome: false,
+			accountId: 'nubank-teste',
+			installmentCount: 10,
+			note: 'PADARIA (4/10)',
+		});
+		expect(drafts.reduce((sum, draft) => sum + draft.amountCents, 0)).toBe(35_000);
+	});
+
+	it('parcela que já tem plano no app: a linha casa com a parcela 3/10 e não há oferta', async () => {
+		mocked.getTransactionsByDateRange.mockResolvedValue([parcel('p3', 3, '2026-11-05')]);
+
+		const result = await importOfxContent(PARCELA_OFX, options);
+
+		expect(result.summary.matchedTransactions).toBe(1);
+		expect(result.installmentOffers).toEqual([]);
+	});
+
+	it('as seguintes já lançadas ("Parcela antiga" de 4 a 10): sem oferta', async () => {
+		const dates = ['2026-12-04', '2027-01-04', '2027-02-04', '2027-03-04', '2027-04-04', '2027-05-04', '2027-06-04'];
+		more.getAccountTransactions.mockResolvedValue(dates.map((date, offset) => parcel(`p${offset + 4}`, offset + 4, date)));
+
+		const result = await importOfxContent(PARCELA_OFX, options);
+
+		expect(result.installmentOffers).toEqual([]);
+	});
+
+	it('última parcela (10/10) e compra à vista: nada a oferecer', async () => {
+		const result = await importOfxContent(
+			cardOfx(
+				[row('parc-10', '2026-11-05', '-50.00', 'PADARIA 10/10'), row('vista', '2026-11-06', '-80.00', 'MERCADO')].join('')
+			),
+			options
+		);
+
+		expect(result.installmentOffers).toEqual([]);
 	});
 });

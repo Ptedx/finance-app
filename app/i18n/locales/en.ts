@@ -1511,6 +1511,7 @@ account: {
 		hideOriginal: 'Hide original',
 		originalNotificationHint: 'Shows the text the app read',
 		statementLine: 'Statement line',
+		statementConfirmed: 'Amount confirmed by the statement',
 		questionDuplicateTitle: 'Looks like the same entry',
 		questionDuplicateBody: 'Same amount and direction as a notification from {{app}} at {{time}}.',
 		sameEntry: 'Same entry, keep one',
@@ -1589,6 +1590,13 @@ account: {
 			matchOtherCard: 'Another card',
 			matchOtherAccount: 'Another account',
 			matchNew: 'Create new',
+			installmentsTitle: 'Missing installments',
+			installmentsOffer_one:
+				"{{name}} {{index}}/{{total}} of {{amount}} is in the statement, but the app doesn't have the next installment.\n\nCreate installment {{first}}/{{total}} on the {{account}} card, in {{firstMonth}}?",
+			installmentsOffer_other:
+				"{{name}} {{index}}/{{total}} of {{amount}} is in the statement, but the app doesn't have the other installments.\n\nCreate {{count}} installments of {{amount}} on the {{account}} card, from {{firstMonth}} to {{lastMonth}}?",
+			installmentsCreate: 'Create installments',
+			installmentsSkip: 'Not now',
 		},
 		kind: {
 			purchase: 'Purchase',

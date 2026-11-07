@@ -631,4 +631,29 @@ describe('nenhum data carrega valor, nome nem texto', () => {
 		expect(Object.keys(data).length).toBeLessThanOrEqual(20);
 		expect(JSON.stringify(data)).not.toMatch(/PADARIA|9876|35,90|3590/);
 	});
+
+	it('a pendente que o extrato confirmou (SPD-117): confirmada pela regra, ou pendente e marcada', () => {
+		const confirmed = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: { step: 'statement_match', captureId: 'cap', confirmed: true, why: 'rule', accountMoved: true },
+		});
+		expect(confirmed).toEqual({
+			pkg: NUBANK,
+			knownBank: true,
+			fingerprint: 'fp',
+			captureId: 'cap',
+			outcome: 'confirmed',
+			reason: 'statement',
+			why: 'rule',
+			accountMoved: true,
+		});
+		const marked = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: { step: 'statement_match', captureId: 'cap', confirmed: false, why: 'suggested', accountMoved: false },
+		});
+		expect(marked).toMatchObject({ outcome: 'pending', reason: 'statement', why: 'suggested', accountMoved: false });
+		expect(marked.parse).toBeUndefined();
+	});
 });

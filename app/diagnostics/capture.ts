@@ -1,6 +1,7 @@
 /**
  * O evento `capture_decision` (SPD-014): um por aviso que a ingestão processou, dizendo o
- * que o parser entendeu, de onde saiu o dinheiro e o que o app decidiu — e por quê.
+ * que o parser entendeu, de onde saiu o dinheiro e o que o app decidiu — e por quê. E mais
+ * um quando o extrato importado casa com o aviso ainda pendente e decide por ele (SPD-117).
  *
  * Só metadados (DEC-11 b): o pacote, o tipo, a direção, a decisão e o motivo. Nunca o
  * valor, o estabelecimento, a contraparte, o final do cartão nem o nome da conta — no
@@ -47,6 +48,19 @@ export type CaptureStep =
 			 * lado da transferência foi achado (SPD-023). Nunca qual conta.
 			 */
 			destination?: DestinationResolution;
+	  }
+	/**
+	 * Uma linha do extrato casou com o aviso ainda pendente (SPD-117): confirmado sozinho
+	 * porque a categoria é a da regra aprendida, ou mantido na revisão com a marca "valor
+	 * confirmado pelo extrato" (`why`: palpite, pergunta em aberto, motivo gravado, estorno).
+	 */
+	| {
+			step: 'statement_match';
+			captureId: string;
+			confirmed: boolean;
+			why: 'rule' | 'question' | 'reason' | 'refund' | 'suggested' | 'confirm_failed';
+			/** O extrato tirou o aviso de outra conta e o pôs na do extrato. Nunca qual. */
+			accountMoved: boolean;
 	  };
 
 export interface CaptureDecisionInput {
@@ -158,6 +172,13 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			}
 			break;
 		}
+		case 'statement_match':
+			data.captureId = outcome.captureId;
+			data.outcome = outcome.confirmed ? 'confirmed' : 'pending';
+			data.reason = 'statement';
+			data.why = outcome.why;
+			data.accountMoved = outcome.accountMoved;
+			break;
 	}
 	return data;
 };
