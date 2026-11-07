@@ -381,18 +381,37 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 	}
 
 	// --- A categoria que explica o mês --------------------------------------
-	const jump = metrics.categoryDeltas.find(
+	insights.push(...buildCategoryJumpInsights(metrics.categoryDeltas, snapshot?.categoryNameById));
+
+	// Empate resolvido pela ordem de inserção acima, que já vai do estrutural (poupança,
+	// custo fixo) para o episódico (uma categoria que saltou num mês).
+	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+};
+
+/**
+ * A frase da categoria que saltou, e só ela.
+ *
+ * Separada pelo mesmo motivo das de poupança e de custo fixo: os totais por categoria do
+ * período contam o lançamento de ajuste com a fatura do banco como gasto, e o "Other Expense
+ * subiu 2.000%" de um mês de acerto de fatura não explica nada. A tela de Relatórios passa
+ * aqui as variações das categorias sem o ajuste e com os encargos do cartão na linha deles
+ * (`separateCardBookkeeping`, SPD-092).
+ */
+export const CATEGORY_INSIGHT_IDS: InsightId[] = ['category-jump'];
+
+export const buildCategoryJumpInsights = (deltas: CategoryDelta[], nameById?: Record<string, string>): Insight[] => {
+	const jump = deltas.find(
 		(delta) =>
 			delta.pct !== null &&
 			delta.pct >= CATEGORY_JUMP_PCT &&
 			delta.deltaCents >= CATEGORY_JUMP_MIN_CENTS
 	);
+	if (!jump) return [];
 
-	if (jump) {
-		const name = snapshot?.categoryNameById?.[jump.categoryId] ?? jump.categoryId;
-		const percent = `${Math.round((jump.pct ?? 0) * 100)}%`;
-
-		insights.push({
+	const name = nameById?.[jump.categoryId] ?? jump.categoryId;
+	const percent = `${Math.round((jump.pct ?? 0) * 100)}%`;
+	return [
+		{
 			id: 'category-jump',
 			severity: 'attention',
 			title: `You spent ${percent} more on ${name} than last month (${formatCents(jump.deltaCents)}).`,
@@ -400,12 +419,8 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 			valueCents: jump.deltaCents,
 			pct: jump.pct ?? undefined,
 			categoryId: jump.categoryId,
-		});
-	}
-
-	// Empate resolvido pela ordem de inserção acima, que já vai do estrutural (poupança,
-	// custo fixo) para o episódico (uma categoria que saltou num mês).
-	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+		},
+	];
 };
 
 // ---------------------------------------------------------------------------
@@ -621,4 +636,5 @@ export default {
 	buildGoalInsights,
 	buildDebtInsights,
 	mergeInsights,
+	buildCategoryJumpInsights,
 };

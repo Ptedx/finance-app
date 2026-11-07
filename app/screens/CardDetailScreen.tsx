@@ -16,13 +16,24 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
 import { findCheckingForCard } from '../utils/accountResolver';
 import {
+	CARD_CHARGE_NOTE,
+	type CardChargeKind,
+	type CardChargeShown,
+	cardChargeDate,
+	cardChargeKindOf,
+	cardChargeShown,
+	chargeMonthOptions,
+	cycleFor,
 	cycleRuleOf,
 	existingInstallmentDates,
 	invoiceMonthOf,
 	invoiceStatusOf,
 	type InvoiceView,
 	isCardAdjustment,
+	isCardCharge,
+	isCardNonPurchase,
 	openInvoiceInformed,
+	splitCardCharges,
 } from '../utils/cardMath';
 import { usageByCard } from '../utils/cardNames';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
@@ -31,10 +42,11 @@ import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/m
 /**
  * Um cartão por inteiro.
  *
- * De cima para baixo: o cartão (o que já se vê na tela inicial), as três coisas que se
- * faz com ele (pagar a fatura, acertar o valor com o banco, cadastrar uma parcela antiga),
- * as faturas mês a mês com os lançamentos de cada uma, o limite explicado, as parcelas
- * que ainda vão cair, e as datas que decidem quando comprar.
+ * De cima para baixo: o cartão (o que já se vê na tela inicial), as quatro coisas que se
+ * faz com ele (pagar a fatura, acertar o valor com o banco, cadastrar uma parcela antiga,
+ * registrar um encargo), as faturas mês a mês com os lançamentos de cada uma e o que o app
+ * não vê nelas (juros, IOF, anuidade), o limite explicado, as parcelas que ainda vão cair,
+ * e as datas que decidem quando comprar.
  *
  * As faturas são abas horizontais, uma por mês, com o valor na própria aba: dá para
  * comparar meses sem abrir nenhum. A aba aberta vem selecionada.
@@ -49,13 +61,24 @@ interface CardDetailScreenProps {
 	cardId: string;
 }
 
-type SheetKind = 'pay' | 'adjust' | 'installments' | null;
+type SheetKind = 'pay' | 'adjust' | 'installments' | 'charge' | null;
+
+/** Os tipos que a folha "Registrar encargo" oferece; `bank` é só do "Acertar valor". */
+const CHARGE_KINDS: CardChargeKind[] = ['interest', 'iof', 'annualFee', 'fee', 'other'];
 
 const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, cardSummaries, recordCardPayment, adjustCardInvoices, addExistingInstallments, renameCard } =
-		useAccounts();
+	const {
+		accounts,
+		bankAccounts,
+		cardSummaries,
+		recordCardPayment,
+		adjustCardInvoices,
+		addCardCharge,
+		addExistingInstallments,
+		renameCard,
+	} = useAccounts();
 	const { transactions, categories } = useTransactions();
 
 	const card: Account | undefined = accounts.find((account) => account.id === cardId && account.kind === 'credit_card');
@@ -66,6 +89,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	// Filtro da lista da fatura por cartão: undefined = todos, null = sem cartão identificado.
 	const [cardFilter, setCardFilter] = useState<string | null | undefined>(undefined);
 	const [renaming, setRenaming] = useState<{ last4: string; name: string | null } | null>(null);
+	// O "Como funciona?" dos encargos: fechado, para não empurrar as faturas para baixo.
+	const [howOpen, setHowOpen] = useState(false);
 
 	// Abre na fatura atual, e volta para ela quando a escolhida some da lista (virou o
 	// ciclo, ou uma fatura futura zerou) — senão o painel sumiria.
@@ -103,9 +128,10 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		.sort((a, b) => b.date.localeCompare(a.date));
 	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
 	// Quem gastou nesta fatura: o físico e cada virtual. A fatura é uma só; isto é o "por cartão".
-	// O ajuste com a fatura do banco não é compra de cartão nenhum: fica fora.
+	// O ajuste com a fatura do banco e o encargo (juros, anuidade) não são compra de cartão
+	// nenhum: ficam fora.
 	const usage = usageByCard(
-		[...selectedTransactions.filter((tx) => !isCardAdjustment(tx)), ...selectedPending],
+		[...selectedTransactions.filter((tx) => !isCardNonPurchase(tx)), ...selectedPending],
 		card.cardNames,
 		card.last4
 	);
@@ -122,6 +148,16 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const showBeforeAnchor = anchorDateInSelected && beforeAnchor.length > 0;
 	const beforeAnchorInformed = anchorInSelected || selectedTransactions.some((tx) => isCardAdjustment(tx));
 	const today = todayISO();
+
+	// O encargo é gravado com a nota-marcador em português (é o que o reconhece); na lista da
+	// fatura ele aparece com o tipo no idioma do app. Nota editada à mão fica como está.
+	const shownNote = <T extends { note: string }>(tx: T): T => {
+		if (!isCardCharge(tx)) return tx;
+		const kind = cardChargeKindOf(tx.note);
+		if (tx.note.trim() === CARD_CHARGE_NOTE) return { ...tx, note: t('cards.charges.listLabelOther') };
+		if (kind === null || kind === 'other') return tx;
+		return { ...tx, note: t('cards.charges.listLabel', { kind: t(`cards.charges.kinds.${kind}`) }) };
+	};
 
 	const invoiceStatus = (invoice: InvoiceView): string => {
 		const due = formatDayMonth(invoice.cycle.dueDate);
@@ -175,6 +211,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 					<ActionTile icon="cash-outline" label={t('cards.actions.pay')} onPress={() => setSheet('pay')} />
 					<ActionTile icon="scale-outline" label={t('cards.actions.adjust')} onPress={() => setSheet('adjust')} />
 					<ActionTile icon="layers-outline" label={t('cards.actions.installments')} onPress={() => setSheet('installments')} />
+					<ActionTile icon="receipt-outline" label={t('cards.charges.action')} onPress={() => setSheet('charge')} />
 				</View>
 
 				{summary && !summary.configured ? (
@@ -337,7 +374,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									selectedTransactions.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
 										<TransactionItem
 											key={transaction.id}
-											transaction={transaction}
+											transaction={shownNote(transaction)}
 											onPress={(tx) => router.push({ pathname: '/transaction/[id]', params: { id: tx.id } })}
 										/>
 									))
@@ -365,6 +402,25 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						) : null}
 					</View>
 				) : null}
+
+				{/* O que o app não vê na fatura: juros, IOF, anuidade, tarifas (E2E-20). */}
+				<View style={styles.chargesNote}>
+					<View style={styles.chargesRow}>
+						<Ionicons name="information-circle-outline" size={20} color="rgba(255,255,255,0.8)" />
+						<Text style={styles.chargesText}>{t('cards.charges.explain')}</Text>
+					</View>
+					<Pressable
+						onPress={() => setHowOpen((open) => !open)}
+						accessibilityRole="button"
+						accessibilityState={{ expanded: howOpen }}
+						accessibilityLabel={howOpen ? t('cards.charges.howHide') : t('cards.charges.howTitle')}
+						style={({ pressed }) => [styles.howButton, pressed && styles.pressed]}
+					>
+						<Text style={styles.howLabel}>{t('cards.charges.howTitle')}</Text>
+						<Ionicons name={howOpen ? 'chevron-up' : 'chevron-down'} size={18} color={ACCENT} />
+					</Pressable>
+					{howOpen ? <Text style={styles.chargesHow}>{t('cards.charges.how')}</Text> : null}
+				</View>
 
 				{summary ? (
 					<View style={styles.section}>
@@ -489,12 +545,25 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						onClose={() => setSheet(null)}
 						openNowCents={summary.configured ? summary.openInvoiceCents : summary.owedCents}
 						closedToPayCents={summary.configured ? summary.toPayCents : 0}
-						onConfirm={async (openCents, closedCents) => {
-							await adjustCardInvoices(card.id, openCents, closedCents);
+						chargeShown={cardChargeShown(card, summary)}
+						onConfirm={async (openCents, closedCents, asCharge) => {
+							const charged = await adjustCardInvoices(card.id, openCents, closedCents, { asCharge });
 							setSheet(null);
 							AccessibilityInfo.announceForAccessibility(
-								t('cards.adjust.done', { amount: formatCents((openCents ?? 0) + (closedCents ?? 0)) })
+								charged > 0
+									? t('cards.charges.adjustedAsCharge', { amount: formatCents(charged) })
+									: t('cards.adjust.done', { amount: formatCents((openCents ?? 0) + (closedCents ?? 0)) })
 							);
+						}}
+					/>
+					<ChargeSheet
+						visible={sheet === 'charge'}
+						onClose={() => setSheet(null)}
+						card={card}
+						onConfirm={async (kind, cents, date) => {
+							await addCardCharge(card.id, kind, cents, date);
+							setSheet(null);
+							AccessibilityInfo.announceForAccessibility(t('cards.charges.done', { amount: formatCents(cents) }));
 						}}
 					/>
 					<RenameCardSheet
@@ -654,6 +723,10 @@ const PaySheet: React.FC<{
  * chance de perceber que um dos números está errado, em vez de digitar no escuro. Um
  * campo apagado é "não informei" (`null`), nunca "o banco mostra zero": só a fatura
  * preenchida é acertada, e a outra fica exatamente como está.
+ *
+ * Quando o banco mostra **mais** do que o app, a folha pergunta antes de gravar se a
+ * diferença é juros, IOF, anuidade ou tarifa (`splitCardCharges`): sim lança encargo, não
+ * lança o ajuste de sempre. Banco menor ou igual não pergunta nada.
  */
 const AdjustSheet: React.FC<{
 	visible: boolean;
@@ -661,20 +734,34 @@ const AdjustSheet: React.FC<{
 	/** O que o app acha da fatura aberta e do que falta pagar da fechada, para pré-preencher. */
 	openNowCents: number;
 	closedToPayCents: number;
-	onConfirm: (openCents: number | null, closedCents: number | null) => Promise<void>;
-}> = ({ visible, onClose, openNowCents, closedToPayCents, onConfirm }) => {
+	/** O mesmo, do jeito que a pergunta do encargo compara (`cardChargeShown`). */
+	chargeShown: CardChargeShown;
+	onConfirm: (openCents: number | null, closedCents: number | null, asCharge: boolean) => Promise<void>;
+}> = ({ visible, onClose, openNowCents, closedToPayCents, chargeShown, onConfirm }) => {
 	const { t } = useTranslation();
-	const [open, setOpen] = useState('');
-	const [closed, setClosed] = useState('');
+	const [open, setOpenText] = useState('');
+	const [closed, setClosedText] = useState('');
 	const [error, setError] = useState<string | undefined>();
+	// A diferença a mais que espera a resposta "é encargo?"; nula enquanto não perguntou.
+	const [askCharge, setAskCharge] = useState<number | null>(null);
+	// Mudar um número depois da pergunta muda a diferença: pergunta de novo.
+	const setOpen = (text: string) => {
+		setOpenText(text);
+		setAskCharge(null);
+	};
+	const setClosed = (text: string) => {
+		setClosedText(text);
+		setAskCharge(null);
+	};
 
 	useEffect(() => {
 		if (!visible) return;
 		// Fatura sem valor fica em branco: "não informei" é a resposta certa para uma fatura
 		// fechada que o app não vê — e preencher "0,00" faria o dono confirmar um zero.
-		setOpen(openNowCents > 0 ? centsToDisplayInput(openNowCents) : '');
-		setClosed(closedToPayCents > 0 ? centsToDisplayInput(closedToPayCents) : '');
+		setOpenText(openNowCents > 0 ? centsToDisplayInput(openNowCents) : '');
+		setClosedText(closedToPayCents > 0 ? centsToDisplayInput(closedToPayCents) : '');
 		setError(undefined);
+		setAskCharge(null);
 	}, [visible, openNowCents, closedToPayCents]);
 
 	const openCents = open.trim() ? parseAmountToCents(open) : null;
@@ -704,16 +791,120 @@ const AdjustSheet: React.FC<{
 						: t('cards.adjust.previewPartial', { amount: formatCents(total) })}
 				</Text>
 			) : null}
+			{askCharge !== null ? (
+				<View style={styles.question} accessibilityLiveRegion="polite">
+					<Text style={styles.questionTitle}>{t('cards.charges.question', { amount: formatCents(askCharge) })}</Text>
+					<Text style={styles.questionBody}>{t('cards.charges.questionBody')}</Text>
+					<Button label={t('cards.charges.yes')} icon="receipt-outline" onPress={() => onConfirm(openCents, closedCents, true)} />
+					<Button label={t('cards.charges.no')} variant="secondary" onPress={() => onConfirm(openCents, closedCents, false)} />
+				</View>
+			) : (
+				<Button
+					label={t('cards.adjust.confirm')}
+					icon="checkmark"
+					onPress={async () => {
+						if (total === null) {
+							setError(t('cards.edit.invalidAmount'));
+							AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
+							return;
+						}
+						const { totalCents } = splitCardCharges(chargeShown, todayISO(), openCents, closedCents);
+						if (totalCents > 0) {
+							setAskCharge(totalCents);
+							AccessibilityInfo.announceForAccessibility(t('cards.charges.question', { amount: formatCents(totalCents) }));
+							return;
+						}
+						await onConfirm(openCents, closedCents, false);
+					}}
+				/>
+			)}
+		</Sheet>
+	);
+};
+
+/**
+ * "Registrar encargo": juros, IOF, anuidade, multa ou tarifa que o banco cobrou no cartão.
+ *
+ * A data é o dia e o mês (dois para trás, o atual e o seguinte, `chargeMonthOptions`), sem
+ * seletor de data: é o que a fatura do banco mostra, e um campo de texto com dia/mês trocaria
+ * a ordem conforme o idioma. A prévia diz em qual fatura o encargo cai (a do ciclo da data).
+ */
+const ChargeSheet: React.FC<{
+	visible: boolean;
+	onClose: () => void;
+	card: Account;
+	onConfirm: (kind: CardChargeKind, cents: number, date: string) => Promise<void>;
+}> = ({ visible, onClose, card, onConfirm }) => {
+	const { t } = useTranslation();
+	const today = todayISO();
+	const months = chargeMonthOptions(today);
+	const [kind, setKind] = useState<CardChargeKind | null>(null);
+	const [amount, setAmount] = useState('');
+	const [day, setDay] = useState('');
+	const [month, setMonth] = useState<string>(months[2]);
+	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
+
+	useEffect(() => {
+		if (!visible) return;
+		const now = todayISO();
+		setKind(null);
+		setAmount('');
+		setDay(String(Number(now.slice(8, 10))));
+		setMonth(now.slice(0, 7));
+		setErrors({});
+	}, [visible]);
+
+	const cents = parseAmountToCents(amount);
+	const date = day.trim() ? cardChargeDate(month, Number(day)) : null;
+	const rule = cycleRuleOf(card);
+	const cycle = date && rule ? cycleFor(date, rule) : null;
+
+	return (
+		<Sheet visible={visible} onClose={onClose} title={t('cards.charges.title')} subtitle={t('cards.charges.subtitle')}>
+			<ChipGroup
+				label={t('cards.charges.kind')}
+				options={CHARGE_KINDS.map((value) => ({ value, label: t(`cards.charges.kinds.${value}`) }))}
+				selected={kind}
+				onSelect={setKind}
+				error={errors.kind}
+			/>
+			<Field label={t('cards.charges.amount')} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" error={errors.amount} />
+			<Field
+				label={t('cards.charges.day')}
+				value={day}
+				onChangeText={(text) => setDay(text.replace(/\D/g, '').slice(0, 2))}
+				keyboardType="number-pad"
+				hint={t('cards.charges.dayHint')}
+				error={errors.date}
+			/>
+			<ChipGroup
+				label={t('cards.charges.month')}
+				options={months.map((value) => ({ value, label: formatMonthShort(`${value}-01`) }))}
+				selected={month}
+				onSelect={setMonth}
+			/>
+			{date ? (
+				<Text style={styles.preview} accessibilityLiveRegion="polite">
+					{cycle
+						? t('cards.charges.preview', { month: formatMonthLong(`${cycle.key}-01`), due: formatDayMonth(cycle.dueDate) })
+						: t('cards.charges.previewNoCycle', { date: formatDayMonth(date) })}
+				</Text>
+			) : null}
 			<Button
-				label={t('cards.adjust.confirm')}
+				label={t('cards.charges.confirm')}
 				icon="checkmark"
 				onPress={async () => {
-					if (total === null) {
-						setError(t('cards.edit.invalidAmount'));
-						AccessibilityInfo.announceForAccessibility(t('cards.edit.invalidAmount'));
+					const next: Record<string, string | undefined> = {};
+					if (!kind) next.kind = t('cards.charges.kindRequired');
+					if (cents === null || cents <= 0) next.amount = t('cards.edit.invalidAmount');
+					if (!date) next.date = t('cards.charges.invalidDay');
+					setErrors(next);
+					const messages = Object.values(next).filter(Boolean);
+					if (messages.length > 0 || !kind || cents === null || !date) {
+						AccessibilityInfo.announceForAccessibility(messages.join('. '));
 						return;
 					}
-					await onConfirm(openCents, closedCents);
+					await onConfirm(kind, cents, date);
 				}}
 			/>
 		</Sheet>
@@ -1184,6 +1375,60 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		lineHeight: 20,
 		color: ACCENT,
+	},
+	chargesNote: {
+		backgroundColor: '#1E1E1E',
+		borderRadius: 16,
+		padding: 14,
+		gap: 6,
+	},
+	chargesRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: 10,
+	},
+	chargesText: {
+		flex: 1,
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.8)',
+	},
+	howButton: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		alignSelf: 'flex-start',
+		gap: 4,
+		minHeight: 44,
+		paddingLeft: 30,
+	},
+	howLabel: {
+		fontSize: 14,
+		fontWeight: '600',
+		color: ACCENT,
+	},
+	chargesHow: {
+		fontSize: 13,
+		lineHeight: 19,
+		color: 'rgba(255,255,255,0.75)',
+		paddingLeft: 30,
+	},
+	question: {
+		gap: 10,
+		padding: 14,
+		borderRadius: 14,
+		backgroundColor: 'rgba(21,232,254,0.08)',
+		borderWidth: 1,
+		borderColor: 'rgba(21,232,254,0.4)',
+	},
+	questionTitle: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#FFFFFF',
+	},
+	questionBody: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: 'rgba(255,255,255,0.8)',
 	},
 	twoColumns: {
 		flexDirection: 'row',

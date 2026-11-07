@@ -1,5 +1,5 @@
 import { brandFor } from '../utils/bankBrands';
-import { CARD_ADJUSTMENT_NOTE } from '../utils/cardMath';
+import { CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, CARD_CHARGE_NOTE_GLOB } from '../utils/cardMath';
 import { planDebitCardConversions } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1910,7 +1910,9 @@ export const getUnassignedPeriodSummary = async (
  *
  * O ajuste com a fatura do banco (`isCardAdjustment`: a nota-marcador, sem parcela) fica
  * de fora: está na fatura, mas não é compra feita no mês — a fatura informada no cadastro
- * aparecia como "R$ 1.234,56 comprados neste mês".
+ * aparecia como "R$ 1.234,56 comprados neste mês". O encargo do cartão (`isCardCharge`:
+ * juros, IOF, anuidade) também: a nota pura ou com o tipo entre parênteses — `GLOB`, e não
+ * `LIKE`, porque diferencia maiúsculas como a função.
  */
 export const getCardPurchasesOriginated = async (
 	accountId: string,
@@ -1922,8 +1924,9 @@ export const getCardPurchasesOriginated = async (
 			`SELECT COALESCE(SUM(amountCents), 0) AS total FROM transactions
        WHERE accountId = ? AND isIncome = 0 AND installmentGroup IS NULL
          AND TRIM(COALESCE(note, '')) <> ?
+         AND TRIM(COALESCE(note, '')) <> ? AND TRIM(COALESCE(note, '')) NOT GLOB ?
          AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
-			[accountId, CARD_ADJUSTMENT_NOTE, startDate, endDate]
+			[accountId, CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, CARD_CHARGE_NOTE_GLOB, startDate, endDate]
 		),
 		db.getFirstAsync<{ total: number }>(
 			`SELECT COALESCE(SUM(t.amountCents), 0) AS total FROM transactions t

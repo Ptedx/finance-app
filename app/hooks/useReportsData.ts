@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useBudget } from '../contexts/BudgetContext';
@@ -35,17 +36,19 @@ import {
 } from '../utils/debt';
 import { buildHealthIndicators, type HealthIndicator, type PaceWindow, spendingPaceWindows } from '../utils/healthScore';
 import {
+	buildCategoryJumpInsights,
 	buildDebtInsights,
 	buildFixedCostInsights,
 	buildGoalInsights,
 	buildSavingsRateInsights,
+	CATEGORY_INSIGHT_IDS,
 	FIXED_COST_INSIGHT_IDS,
 	type Insight,
 	mergeInsights,
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthMetrics,
 } from '../utils/insights';
-import { fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents, monthlyFixedCommitmentsCents, monthlyFixedCostCents } from '../utils/metrics';
+import { categoryDeltas, fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents, monthlyFixedCommitmentsCents, monthlyFixedCostCents } from '../utils/metrics';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
@@ -54,6 +57,7 @@ import {
 	committedMonths,
 	type DuplicateIncome,
 	buildMonthSeries,
+	cardChargesCategory,
 	externalIncomeTransfers,
 	findDuplicateIncomes,
 	findRecurringDoubleCharges,
@@ -70,6 +74,7 @@ import {
 	rankCategories,
 	rankSpendSources,
 	savingsRateDropsEnding,
+	separateCardBookkeeping,
 	type SpendSourceRow,
 	toCardEntry,
 	withProvisionalActivity,
@@ -218,6 +223,7 @@ export interface ReportsData {
 }
 
 export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, anchor: ReportsAnchor = 'selected'): ReportsData => {
+	const { t } = useTranslation();
 	const { selectedMonth, selectedYear } = usePeriod();
 	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, accruedYield12m, cdi, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
 	const { currentBudgetCents } = useBudget();
@@ -364,11 +370,16 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	const averageIncomeCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.incomeCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
 	const averageSavedCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.savedCents, CONTRIBUTION_WINDOW_MONTHS) ?? 0, [fullSeries]);
 
+	// As categorias sem o ajuste com a fatura do banco e com os encargos do cartão numa linha
+	// própria (SPD-092): o ajuste não é gasto de categoria nenhuma, e o encargo diluído em
+	// "Other Expense" ninguém via. O ranking, a categoria que saltou e o custo da reserva leem daqui.
+	const spendCategoryRows = useMemo(() => (raw ? separateCardBookkeeping(raw.categoryRows, raw.cardEntries.values()) : []), [raw]);
+
 	// Reserva de emergência. O custo essencial sai dos meses fechados; sem nenhum, do
 	// orçamento do mês; o valor à mão vence os dois.
 	const natureById = useMemo(() => new Map(categories.map((category) => [category.id, category.nature])), [categories]);
 	const computedCost = useMemo(() => {
-		const rows = raw?.categoryRows ?? [];
+		const rows = spendCategoryRows;
 		return resolveMonthlyCost({
 			customCents: null,
 			historyCents: essentialMonthlyCostCents(fullSeries, rows, natureById),
@@ -378,7 +389,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 				natureById
 			),
 		});
-	}, [raw, fullSeries, natureById, currentBudgetCents, todayKey]);
+	}, [spendCategoryRows, fullSeries, natureById, currentBudgetCents, todayKey]);
 
 	const reserve = useMemo<ReserveReadModel>(() => {
 		const custom = reserveGoal.customMonthlyCostCents;
@@ -498,15 +509,29 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 		});
 	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve, paceSpend]);
 
+	const rankingCategories = useMemo(() => [...categories, cardChargesCategory(t('cards.charges.reportLine'))], [categories, t]);
+
 	const rankedCategories = useMemo(() => {
 		if (!raw) return [];
 		const previousKey = shiftMonthKey(selectedKey, -1);
 		return rankCategories(
-			raw.categoryRows.filter((row) => row.month === selectedKey),
-			raw.categoryRows.filter((row) => row.month === previousKey),
-			categories
+			spendCategoryRows.filter((row) => row.month === selectedKey),
+			spendCategoryRows.filter((row) => row.month === previousKey),
+			rankingCategories
 		);
-	}, [raw, selectedKey, categories]);
+	}, [raw, spendCategoryRows, selectedKey, rankingCategories]);
+
+	// A categoria que saltou na mesma base do ranking. A de `useWealthMetrics` sai dos totais
+	// crus do período, que contam o ajuste como gasto.
+	const categoryInsights = useMemo(() => {
+		const previousKey = shiftMonthKey(selectedKey, -1);
+		const spendOf = (month: MonthKey) =>
+			spendCategoryRows
+				.filter((row) => row.month === month && natureById.get(row.categoryId) !== 'passthrough')
+				.map((row) => ({ categoryId: row.categoryId, totalCents: row.totalCents }));
+		const nameById = Object.fromEntries(rankingCategories.map((category) => [category.id, category.name]));
+		return buildCategoryJumpInsights(categoryDeltas(spendOf(selectedKey), spendOf(previousKey)), nameById);
+	}, [spendCategoryRows, selectedKey, natureById, rankingCategories]);
 
 	const sources = useMemo(
 		() =>
@@ -626,8 +651,9 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// paga em vez de fatura que fecha, envelope pelo que foi gasto lá dentro, reserva
 	// contada), e a tela se contradizia num mesmo scroll — "taxa de poupança 4%" na grade e
 	// "54% da sua renda virou poupança" no insight logo abaixo. O de custo fixo também é
-	// trocado (abaixo, `fixedCostInsights`); os outros insights de riqueza (fôlego, 50/30/20,
-	// categoria que saltou) continuam vindo de lá.
+	// trocado (abaixo, `fixedCostInsights`), e o da categoria que saltou (`categoryInsights`,
+	// SPD-092 — o de lá conta o ajuste de fatura como gasto); os outros insights de riqueza
+	// (fôlego, 50/30/20) continuam vindo de lá.
 	const savingsRateInsights = useMemo(() => {
 		if (!selected) return [];
 		const { incomeCents, leftoverCents, savingsRateBp } = selected.overview;
@@ -650,9 +676,13 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 				debtInsights,
 				savingsRateInsights,
 				fixedCostInsights,
-				wealthInsights.filter((insight) => !SAVINGS_RATE_INSIGHT_IDS.includes(insight.id) && !FIXED_COST_INSIGHT_IDS.includes(insight.id))
+				wealthInsights.filter(
+					(insight) =>
+						!SAVINGS_RATE_INSIGHT_IDS.includes(insight.id) && !FIXED_COST_INSIGHT_IDS.includes(insight.id) && !CATEGORY_INSIGHT_IDS.includes(insight.id)
+				),
+				categoryInsights
 			),
-		[retirement, health, duplicates, debtInsights, savingsRateInsights, fixedCostInsights, wealthInsights]
+		[retirement, health, duplicates, debtInsights, savingsRateInsights, fixedCostInsights, wealthInsights, categoryInsights]
 	);
 
 	const priorities = useMemo(

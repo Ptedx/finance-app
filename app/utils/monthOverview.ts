@@ -14,7 +14,7 @@
  */
 
 import type { AccountKind, AccountRole } from '../database/schema';
-import { isCardAdjustment } from './cardMath';
+import { isCardNonPurchase } from './cardMath';
 
 export interface AccountMonthActivity {
 	accountId: string;
@@ -80,7 +80,8 @@ export interface CardMonth {
 	spendCents: number;
 	/**
 	 * O que foi comprado neste mês, valor cheio — a métrica secundária. O ajuste com a fatura
-	 * do banco não entra: está na fatura, mas não é compra feita no mês.
+	 * do banco e os encargos (juros, IOF, anuidade) não entram: estão na fatura, mas não são
+	 * compra feita no mês.
 	 */
 	purchasesCents: number;
 	/**
@@ -323,6 +324,9 @@ export interface TotalsEntry {
  * acertando a fatura, não dinheiro que entrou nem compra feita. Antes, acertar o Inter para
  * fechada R$ 2.000 e aberta R$ 80 aparecia como "Entrou R$ 1.920" e "Saiu R$ 2.000". Fora de
  * cartão (`cardIds`) a mesma nota é lançamento comum, como na tela inicial.
+ *
+ * O encargo do cartão (juros, IOF, anuidade) segue o mesmo filtro (`isCardNonPurchase`): está
+ * na fatura e no "Gastos" da tela inicial, que é por fatura, mas não é compra do mês.
  */
 export const transactionTotals = (
 	transactions: TotalsEntry[],
@@ -332,7 +336,7 @@ export const transactionTotals = (
 	let incomeCents = 0;
 	let expenseCents = 0;
 	for (const transaction of transactions) {
-		if (transaction.accountId && cardIds.has(transaction.accountId) && isCardAdjustment(transaction)) continue;
+		if (transaction.accountId && cardIds.has(transaction.accountId) && isCardNonPurchase(transaction)) continue;
 		if (transaction.isIncome) incomeCents += transaction.amountCents;
 		// Repasse: entrou e foi adiante. Sai da receita e não é gasto — a mesma regra
 		// do "Este mês" da Home, para os totais baterem entre as telas.

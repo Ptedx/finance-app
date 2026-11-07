@@ -14,7 +14,7 @@
 
 import type { Account, Category, Transaction, Transfer } from '../database/schema';
 import { provisionalFlows } from './accountMath';
-import { type CardEntry, type CardSummary, invoicesClosingBetween } from './cardMath';
+import { type CardEntry, type CardSummary, invoicesClosingBetween, isCardAdjustment, isCardCharge } from './cardMath';
 import type { DebtMonthLine } from './debt';
 import { lastDayOfMonth, monthKeyOf, monthKeyRange, shiftMonthKey } from './dateUtils';
 import { type CategoryTotal, categoryDeltas, FULL_BASIS_POINTS } from './metrics';
@@ -385,6 +385,58 @@ export const rankCategories = (
 			shareBp: total > 0 ? Math.round((delta.currentCents * FULL_BASIS_POINTS) / total) : 0,
 		}))
 		.sort((a, b) => b.currentCents - a.currentCents || a.categoryId.localeCompare(b.categoryId));
+};
+
+/**
+ * A linha "Encargos do cartão" das categorias. Não é categoria gravada: é a soma dos encargos
+ * (`isCardCharge`), tirados da categoria em que foram lançados.
+ */
+export const CARD_CHARGES_CATEGORY_ID = 'card_charges';
+
+/** A categoria de mentira que dá nome e cor à linha dos encargos no ranking. */
+export const cardChargesCategory = (name: string): Pick<Category, 'id' | 'name' | 'color' | 'nature'> => ({
+	id: CARD_CHARGES_CATEGORY_ID,
+	name,
+	color: '#FF8A80',
+	nature: 'discretionary',
+});
+
+/**
+ * As categorias do mês sem o que não é compra no cartão (SPD-092, E2E-25).
+ *
+ * As linhas vêm do banco, somadas por categoria e mês, e contavam o lançamento de ajuste com
+ * a fatura do banco como gasto: em novembro, "Other Expense" tinha R$ 3.334,56, 80% do mês,
+ * dos quais R$ 3.234,56 eram os acertos do Nubank e do Inter. Aqui, com as linhas de cada
+ * cartão (`cardEntries`):
+ *
+ * - o ajuste (`isCardAdjustment`) sai da categoria em que foi lançado. É o app acertando a
+ *   fatura, não um gasto de alguma categoria;
+ * - o encargo (`isCardCharge`) sai dela e vai para a linha própria, `CARD_CHARGES_CATEGORY_ID`:
+ *   juros e anuidade são dinheiro perdido, e diluídos em "Other Expense" ninguém os via.
+ *
+ * Só despesas: as linhas são de despesa (o +R$ 1.920 do acerto é receita e não está nelas).
+ * O que é de um mês sem linha daquela categoria está fora do período lido e é ignorado — não
+ * cria linha negativa. Linha que zera some. Não mexe no que recebe.
+ */
+export const separateCardBookkeeping = (rows: MonthCategoryRow[], cardEntries: Iterable<CardEntry[]>): MonthCategoryRow[] => {
+	const byKey = new Map(rows.map((row) => [`${row.month}|${row.categoryId}`, { ...row }]));
+	const charges = new Map<string, MonthCategoryRow>();
+	for (const entries of cardEntries) {
+		for (const entry of entries) {
+			if (entry.isIncome) continue;
+			const isCharge = isCardCharge(entry);
+			if (!isCharge && !isCardAdjustment(entry)) continue;
+			const month = monthKeyOf(entry.date);
+			const row = byKey.get(`${month}|${entry.category}`);
+			if (!row) continue;
+			row.totalCents -= entry.amountCents;
+			if (!isCharge) continue;
+			const line = charges.get(month) ?? { month, categoryId: CARD_CHARGES_CATEGORY_ID, totalCents: 0 };
+			line.totalCents += entry.amountCents;
+			charges.set(month, line);
+		}
+	}
+	return [...byKey.values(), ...charges.values()].filter((row) => row.totalCents !== 0);
 };
 
 export type SpendSourceKind = 'card' | 'debit' | 'pix' | 'envelope' | 'unassigned';
@@ -832,6 +884,7 @@ export default {
 	lastInvestmentIncomeDateByAccount,
 	yield12m,
 	rankCategories,
+	separateCardBookkeeping,
 	rankSpendSources,
 	committedMonths,
 	findDuplicateIncomes,

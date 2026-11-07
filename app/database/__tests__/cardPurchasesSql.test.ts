@@ -59,7 +59,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	multiRemove: jest.fn(async () => undefined),
 }));
 
-import { CARD_ADJUSTMENT_NOTE } from '../../utils/cardMath';
+import { CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, cardChargeNote, isCardCharge } from '../../utils/cardMath';
 import { addAccount, addTransaction, db, getCardPurchasesOriginated, initDatabase } from '../database';
 import type { AccountDraft } from '../schema';
 
@@ -117,5 +117,24 @@ describeSql('getCardPurchasesOriginated — ajuste não é compra', () => {
 		await addTransaction({ accountId: id, date: '2026-11-07', amountCents: 200_000, isIncome: false, note: CARD_ADJUSTMENT_NOTE, category: 'other_expense' });
 		await addTransaction({ accountId: id, date: '2026-11-07', amountCents: 192_000, isIncome: true, note: CARD_ADJUSTMENT_NOTE, category: 'other_income' });
 		expect(await getCardPurchasesOriginated(id, '2026-11-01', '2026-11-30')).toBe(0);
+	});
+
+	// SPD-092: o encargo (juros, IOF, anuidade) está na fatura, mas não é compra — o mesmo
+	// critério de `isCardCharge`, inclusive o que ele não reconhece.
+	it('encargo do cartão não entra em "comprados"; nota só parecida entra', async () => {
+		const id = await addAccount(card);
+		const add = (amountCents: number, note: string) =>
+			addTransaction({ accountId: id, date: '2026-11-07', amountCents, isIncome: false, note, category: 'other_expense' });
+		await add(3_890, cardChargeNote('bank'));
+		await add(2_500, cardChargeNote('annualFee'));
+		await add(1_000, ` ${CARD_CHARGE_NOTE} `);
+		await add(10_000, 'Compra');
+		await add(700, `${CARD_CHARGE_NOTE} extra`);
+		await add(300, 'encargo do cartão (juros)');
+		const notes = [cardChargeNote('bank'), cardChargeNote('annualFee'), ` ${CARD_CHARGE_NOTE} `, 'Compra', `${CARD_CHARGE_NOTE} extra`, 'encargo do cartão (juros)'];
+		const expected = notes.map((note, index) => ({ note, cents: [3_890, 2_500, 1_000, 10_000, 700, 300][index] }));
+		const bought = expected.filter(({ note }) => !isCardCharge({ note })).reduce((sum, { cents }) => sum + cents, 0);
+		expect(bought).toBe(11_000);
+		expect(await getCardPurchasesOriginated(id, '2026-11-01', '2026-11-30')).toBe(bought);
 	});
 });

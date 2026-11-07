@@ -1,10 +1,12 @@
 import { buildHealthIndicators, type HealthInput } from '../healthScore';
 import {
+	buildCategoryJumpInsights,
 	buildDebtInsights,
 	buildFixedCostInsights,
 	buildGoalInsights,
 	buildInsights,
 	buildSavingsRateInsights,
+	CATEGORY_INSIGHT_IDS,
 	computeWealthMetrics,
 	FIXED_COST_INSIGHT_IDS,
 	type Insight,
@@ -12,7 +14,7 @@ import {
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthSnapshot,
 } from '../insights';
-import { fixedCostShare } from '../metrics';
+import { categoryDeltas, fixedCostShare } from '../metrics';
 import { configureMoney } from '../money';
 import { buildMonthOverview } from '../monthOverview';
 import { buildRetirementReadModel, type RetirementInput } from '../retirement';
@@ -237,6 +239,37 @@ describe('o custo fixo tem uma base só', () => {
 		expect(fromHelper).toHaveLength(1);
 		expect(insights.find((i) => i.id === 'fixed-cost-heavy')).toEqual(fromHelper[0]);
 		for (const id of idsOf(fromHelper)) expect(FIXED_COST_INSIGHT_IDS).toContain(id);
+	});
+});
+
+// A categoria que saltou também é refeita na tela de Relatórios, sobre as categorias sem o
+// ajuste de fatura e com os encargos do cartão na linha deles (SPD-092, E2E-25).
+describe('a categoria que saltou tem uma base só', () => {
+	it('é a mesma regra do buildInsights, com o nome que a tela passa', () => {
+		const deltas = categoryDeltas([{ categoryId: 'food', totalCents: 1_500_00 }], [{ categoryId: 'food', totalCents: 1_000_00 }]);
+		const [jump] = buildCategoryJumpInsights(deltas, { food: 'Food' });
+		expect(jump).toMatchObject({ id: 'category-jump', params: { category: 'Food', percent: '50%' }, valueCents: 500_00, categoryId: 'food' });
+		expect(CATEGORY_INSIGHT_IDS).toEqual(['category-jump']);
+
+		const snapshot = snapshotOf({
+			categoryTotals: [{ categoryId: 'food', totalCents: 1_500_00 }],
+			previousCategoryTotals: [{ categoryId: 'food', totalCents: 1_000_00 }],
+		});
+		const fromWealth = buildInsights(computeWealthMetrics(snapshot), snapshot).find((insight) => insight.id === 'category-jump');
+		expect(fromWealth).toEqual(jump);
+	});
+
+	it('o ajuste de R$ 2.000 que sai das categorias não vira "Other Expense saltou"', () => {
+		// Outubro: R$ 100 em Other Expense. Novembro: R$ 100 de compra + R$ 2.000 de ajuste.
+		const withAdjustment = categoryDeltas([{ categoryId: 'other_expense', totalCents: 2_100_00 }], [{ categoryId: 'other_expense', totalCents: 100_00 }]);
+		expect(buildCategoryJumpInsights(withAdjustment)).toHaveLength(1);
+		const withoutAdjustment = categoryDeltas([{ categoryId: 'other_expense', totalCents: 100_00 }], [{ categoryId: 'other_expense', totalCents: 100_00 }]);
+		expect(buildCategoryJumpInsights(withoutAdjustment)).toEqual([]);
+	});
+
+	it('sem nome, fica o id', () => {
+		const deltas = categoryDeltas([{ categoryId: 'food', totalCents: 1_500_00 }], [{ categoryId: 'food', totalCents: 1_000_00 }]);
+		expect(buildCategoryJumpInsights(deltas)[0].params.category).toBe('food');
 	});
 });
 

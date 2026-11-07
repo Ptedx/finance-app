@@ -1,4 +1,4 @@
-import { CARD_ADJUSTMENT_NOTE } from '../cardMath';
+import { CARD_ADJUSTMENT_NOTE, cardChargeNote } from '../cardMath';
 import { type AccountMonthActivity, buildMonthOverview, transactionTotals } from '../monthOverview';
 
 const activity = (overrides: Partial<AccountMonthActivity>): AccountMonthActivity => ({
@@ -504,6 +504,19 @@ describe('transactionTotals — Entrou e Saiu da tela Lançamentos (E2E-17)', ()
 			cards
 		);
 		expect(totals).toEqual({ incomeCents: 0, expenseCents: 15_000, netCents: -15_000 });
+	});
+
+	it('o encargo do cartão também não é saída: entra na fatura, não é compra (SPD-092)', () => {
+		const totals = transactionTotals(
+			[
+				tx('nu', 3_890, false, cardChargeNote('bank'), 'other_expense'),
+				tx('nu', 2_500, false, cardChargeNote('annualFee'), 'other_expense'),
+				tx('nu', 10_000, false),
+			],
+			new Set(),
+			cards
+		);
+		expect(totals).toEqual({ incomeCents: 0, expenseCents: 10_000, netCents: -10_000 });
 	});
 
 	it('a mesma nota fora de cartão é lançamento comum, como na tela inicial', () => {

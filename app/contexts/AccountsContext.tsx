@@ -51,6 +51,9 @@ import {
 import {
 	buildCardSummary,
 	CARD_ADJUSTMENT_NOTE,
+	type CardChargeKind,
+	cardChargeNote,
+	cardChargeShown,
 	type CardEntry,
 	type CardMovement,
 	type CardSummary,
@@ -62,6 +65,7 @@ import {
 	pickOpenCardPayment,
 	planCardAdjustment,
 	planCardOpening,
+	splitCardCharges,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
@@ -207,8 +211,22 @@ interface AccountsContextType {
 	 *
 	 * `opening`: é o cadastro do cartão. A aberta vira a âncora sempre que dá, sem lançamento
 	 * de ajuste (`planCardOpening`) — como o saldo informado de uma conta.
+	 *
+	 * `asCharge`: o dono disse que a diferença a mais é juros, IOF, anuidade ou tarifa. O que
+	 * passa do que o app mostrava vira encargo do cartão em cada fatura (`splitCardCharges`), e
+	 * o resto segue o acerto de sempre. Devolve quanto foi lançado como encargo.
 	 */
-	adjustCardInvoices: (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean }) => Promise<void>;
+	adjustCardInvoices: (
+		cardId: string,
+		openCents: number | null,
+		closedCents: number | null,
+		options?: { opening?: boolean; asCharge?: boolean }
+	) => Promise<number>;
+	/**
+	 * Juros, IOF, anuidade, multa ou tarifa cobrados no cartão: um lançamento "Encargo do
+	 * cartão" na data, que entra na fatura do ciclo dela e não conta como compra.
+	 */
+	addCardCharge: (cardId: string, kind: CardChargeKind, amountCents: number, date: string) => Promise<void>;
 	/**
 	 * Pagamento de fatura: transferência da conta (ou de fora) para o cartão. Devolve falso
 	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
@@ -656,9 +674,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	const adjustCardInvoices = useCallback(
-		async (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean }) => {
+		async (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean; asCharge?: boolean }) => {
 			const card = (await getAccounts()).find((account) => account.id === cardId);
-			if (!card) return;
+			if (!card) return 0;
 			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
 			const entries: CardEntry[] = cardTransactions.map((tx) => ({
 				id: tx.id,
@@ -681,7 +699,12 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			}));
 
 			const today = todayISO();
-			const plan = (options?.opening ? planCardOpening : planCardAdjustment)(card, entries, movements, today, openCents, closedCents);
+			// A diferença a mais como encargo: comparada com o que a folha mostrou, que é o mesmo
+			// resumo calculado aqui, e o resto vai para o acerto de sempre.
+			const split = options?.asCharge
+				? splitCardCharges(cardChargeShown(card, buildCardSummary(card, entries, movements, today)), today, openCents, closedCents)
+				: { openCents, closedCents, charges: [], totalCents: 0 };
+			const plan = (options?.opening ? planCardOpening : planCardAdjustment)(card, entries, movements, today, split.openCents, split.closedCents);
 			// Sem a fatura fechada informada não há âncora nova: mexer nela zeraria a fechada
 			// que o usuário não falou nada sobre.
 			if (plan.anchor) await setAccountAnchor(card.id, plan.anchor.cents, plan.anchor.date);
@@ -696,6 +719,36 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					accountId: card.id,
 				});
 			}
+			for (const charge of split.charges) {
+				await addTransaction({
+					amountCents: charge.cents,
+					category: resolveCategoryId('other_expense', 'out', categories),
+					date: charge.date,
+					note: cardChargeNote('bank'),
+					isIncome: false,
+					accountId: card.id,
+				});
+			}
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+			return split.totalCents;
+		},
+		[refresh, refreshData, categories]
+	);
+
+	const addCardCharge = useCallback(
+		async (cardId: string, kind: CardChargeKind, amountCents: number, date: string) => {
+			if (amountCents <= 0) return;
+			await addTransaction({
+				amountCents,
+				// Nasce em "Outras despesas", como o ajuste; os relatórios o tiram de lá e mostram
+				// numa linha própria pela nota (`isCardCharge`), seja qual for a categoria.
+				category: resolveCategoryId('other_expense', 'out', categories),
+				date,
+				note: cardChargeNote(kind),
+				isIncome: false,
+				accountId: cardId,
+			});
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
@@ -1025,6 +1078,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			removeAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			addCardCharge,
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,
@@ -1064,6 +1118,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			removeAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			addCardCharge,
 			recordCardPayment,
 			addExistingInstallments,
 			convertCardToDebit,

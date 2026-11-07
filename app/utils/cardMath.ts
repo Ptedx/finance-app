@@ -39,6 +39,14 @@
  * (`isCardAdjustment`). No cadastro, fora da janela entre o fechamento e o vencimento, a
  * fatura informada vira a âncora e nenhum lançamento (`planCardOpening`).
  *
+ * ## Encargos
+ *
+ * Juros, IOF, anuidade, multa e tarifas o app não vê: nenhuma notificação de compra os traz.
+ * Entram por um lançamento "Encargo do cartão" (`CARD_CHARGE_NOTE`, `isCardCharge`),
+ * registrado à mão ou criado pelo "Acertar valor" com a diferença para o banco
+ * (`splitCardCharges`). Como o ajuste, conta na fatura, no devido e no limite e não é compra
+ * (`isCardNonPurchase`); ao contrário dele, é gasto de verdade e aparece nos relatórios.
+ *
  * ## Crédito levado adiante
  *
  * Estorno maior que as compras do ciclo deixa a fatura negativa. Como no banco, isso é
@@ -57,7 +65,7 @@
 import { DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
 import { nextBusinessDay } from './businessDays';
 import { MAX_INSTALLMENTS } from './installments';
-import { addDays, addMonthsClamped, buildClampedDate, parseISODate } from './dateUtils';
+import { addDays, addMonthsClamped, buildClampedDate, lastDayOfMonth, parseISODate } from './dateUtils';
 
 export interface InvoiceCycle {
 	/** `YYYY-MM` do mês em que a fatura fecha. Identifica a fatura e dá o nome dela. */
@@ -142,6 +150,72 @@ export const CARD_ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
  */
 export const isCardAdjustment = (entry: { note: string | null | undefined; installmentGroup?: string | null }): boolean =>
 	!entry.installmentGroup && (entry.note ?? '').trim() === CARD_ADJUSTMENT_NOTE;
+
+/**
+ * Encargo do cartão: juros, IOF, anuidade, multa, tarifas — o que o banco cobra na fatura e
+ * nenhuma notificação de compra traz (E2E-20). Como o ajuste, é um lançamento do cartão que
+ * entra na fatura, no devido e no limite, mas não é compra. Ao contrário do ajuste, é
+ * dinheiro perdido de verdade: os relatórios o mostram numa linha própria.
+ *
+ * A nota é o marcador, no mesmo texto em qualquer idioma — `Encargo do cartão`, com o tipo
+ * entre parênteses quando há (`Encargo do cartão (juros)`). Grave assim e não mude: o SQL
+ * de "comprados no mês" (`CARD_CHARGE_NOTE_GLOB`) reconhece pelo mesmo texto.
+ */
+export const CARD_CHARGE_NOTE = 'Encargo do cartão';
+
+/** O padrão `GLOB` do SQLite para o encargo com tipo: o mesmo critério de `isCardCharge`. */
+export const CARD_CHARGE_NOTE_GLOB = `${CARD_CHARGE_NOTE} (*)`;
+
+/**
+ * Os tipos que a folha "Registrar encargo" oferece, e `bank`: a diferença para a fatura do
+ * banco que o "Acertar valor" lançou como encargo, sem o dono dizer qual.
+ */
+export type CardChargeKind = 'interest' | 'iof' | 'annualFee' | 'fee' | 'other' | 'bank';
+
+/** O texto entre parênteses de cada tipo. "Outro" fica sem: é a nota pura. */
+const CARD_CHARGE_SUFFIX: Record<CardChargeKind, string | null> = {
+	interest: 'juros',
+	iof: 'IOF',
+	annualFee: 'anuidade',
+	fee: 'multa ou tarifa',
+	other: null,
+	bank: 'pela fatura do banco',
+};
+
+/** A nota-marcador de um encargo do tipo. */
+export const cardChargeNote = (kind: CardChargeKind): string => {
+	const suffix = CARD_CHARGE_SUFFIX[kind];
+	return suffix === null ? CARD_CHARGE_NOTE : `${CARD_CHARGE_NOTE} (${suffix})`;
+};
+
+/**
+ * O tipo do encargo pela nota, ou nulo quando a nota não é de encargo. Um texto entre
+ * parênteses que o app não gravou (o dono editou) continua encargo, do tipo "outro".
+ */
+export const cardChargeKindOf = (note: string | null | undefined): CardChargeKind | null => {
+	const text = (note ?? '').trim();
+	if (text === CARD_CHARGE_NOTE) return 'other';
+	if (!text.startsWith(`${CARD_CHARGE_NOTE} (`) || !text.endsWith(')')) return null;
+	const suffix = text.slice(CARD_CHARGE_NOTE.length + 2, -1);
+	const kind = (Object.keys(CARD_CHARGE_SUFFIX) as CardChargeKind[]).find((key) => CARD_CHARGE_SUFFIX[key] === suffix);
+	return kind ?? 'other';
+};
+
+/**
+ * O lançamento é um encargo do cartão? Pela nota-marcador, como `isCardAdjustment`, e com o
+ * mesmo limite: editar a nota o faz voltar a ser compra; digitar o marcador numa compra a
+ * faz deixar de ser. A categoria não entra — o encargo nasce em "Outras despesas", mas o dono
+ * pode trocá-la. Parcela nunca é encargo. Quem chama garante que é lançamento de cartão.
+ */
+export const isCardCharge = (entry: { note: string | null | undefined; installmentGroup?: string | null }): boolean =>
+	!entry.installmentGroup && cardChargeKindOf(entry.note) !== null;
+
+/**
+ * O lançamento do cartão não é compra: o ajuste com a fatura do banco ou um encargo. É o que
+ * "comprados no mês", "Por cartão" e o Entrou/Saiu de Lançamentos deixam de fora.
+ */
+export const isCardNonPurchase = (entry: { note: string | null | undefined; installmentGroup?: string | null }): boolean =>
+	isCardAdjustment(entry) || isCardCharge(entry);
 
 // ---------------------------------------------------------------------------
 // Datas
@@ -796,6 +870,119 @@ export const planCardOpening = (
 	return { anchor: { date: yesterday, cents: 0 - (openTypedCents - fromToday) }, adjustmentCents: 0 };
 };
 
+// ---------------------------------------------------------------------------
+// Encargos
+// ---------------------------------------------------------------------------
+
+/**
+ * O que a folha "Acertar valor" mostra em cada fatura, e onde um encargo da fechada caberia.
+ * A pergunta "a diferença é juros?" compara o número do banco com **isto** — o que o dono
+ * viu —, e o `AccountsContext` recalcula o mesmo na hora de gravar.
+ */
+export interface CardChargeShown {
+	/** A fatura aberta (sem fechamento: o devido), nunca abaixo de zero — a folha mostra o campo em branco. */
+	openCents: number;
+	/** O que falta pagar da fechada; zero sem fechamento. */
+	closedCents: number;
+	/**
+	 * Onde o encargo da fechada entra: a véspera do fechamento dela, o último dia do ciclo.
+	 * Nulo quando não dá:
+	 *
+	 * - a âncora está nesse dia ou depois — o que é datado até a âncora já está dentro dela e
+	 *   o encargo não somaria (o cartão cadastrado na janela, com a fechada informada);
+	 * - nada falta pagar da fechada: o "a pagar" é o devido menos a aberta, cortado em zero, e
+	 *   com crédito no meio o encargo não daria o número do banco.
+	 *
+	 * Nesses casos a fechada é acertada pela âncora, como antes, e a diferença não aparece
+	 * como encargo.
+	 */
+	closedChargeDate: string | null;
+}
+
+export const cardChargeShown = (
+	settings: Pick<CardSettings, 'openingBalanceDate'>,
+	summary: Pick<CardSummary, 'configured' | 'openInvoiceCents' | 'owedCents' | 'toPayCents' | 'closedCycle'>
+): CardChargeShown => {
+	if (!summary.configured || summary.closedCycle === null) {
+		return { openCents: Math.max(0, summary.owedCents), closedCents: 0, closedChargeDate: null };
+	}
+	const closedEnd = summary.closedCycle.end;
+	return {
+		openCents: Math.max(0, summary.openInvoiceCents),
+		closedCents: summary.toPayCents,
+		closedChargeDate: closedEnd > settings.openingBalanceDate && summary.toPayCents > 0 ? closedEnd : null,
+	};
+};
+
+export interface CardChargeSplit {
+	/** O que segue para o `planCardAdjustment` de sempre, já sem os encargos. */
+	openCents: number | null;
+	closedCents: number | null;
+	/** Os encargos a lançar, cada um na data que o põe na fatura certa: a fechada antes. */
+	charges: Array<{ date: string; cents: number }>;
+	/** A soma, para a pergunta. Zero: não há o que perguntar. */
+	totalCents: number;
+}
+
+/**
+ * "Acertar valor" com a diferença para o banco como encargo (decisão do usuário, E2E-20):
+ * quando o banco mostra **mais** do que o app numa fatura, o que passa vira um encargo
+ * (`bank`) naquela fatura; o resto segue o acerto de sempre. Banco menor, igual ou fatura
+ * não informada: nada muda — é ajuste, como hoje.
+ *
+ * - Aberta: o encargo é de hoje (está no ciclo aberto) e a aberta vai para o acerto com o
+ *   valor que o app já mostrava. Se o acerto mexe na âncora (a fechada informada), o ajuste
+ *   devolve o que a mudança tirar — e o encargo soma por cima.
+ * - Fechada: o encargo vai para a véspera do fechamento dela (`closedChargeDate`) e a
+ *   fechada **não** é ancorada de novo: com o encargo ela já dá o número do banco, e as
+ *   faturas de antes continuam como estavam (o "saldo anterior não pago" inclusive). Sem
+ *   onde pôr o encargo, a fechada vai inteira para a âncora.
+ *
+ * A pergunta é uma só, pela soma: quem acerta as duas responde de uma vez.
+ */
+export const splitCardCharges = (
+	shown: CardChargeShown,
+	today: string,
+	openTypedCents: number | null,
+	closedTypedCents: number | null
+): CardChargeSplit => {
+	const charges: Array<{ date: string; cents: number }> = [];
+	let closedCents = closedTypedCents;
+	if (closedTypedCents !== null && shown.closedChargeDate !== null && closedTypedCents > shown.closedCents) {
+		charges.push({ date: shown.closedChargeDate, cents: closedTypedCents - shown.closedCents });
+		closedCents = null;
+	}
+	let openCents = openTypedCents;
+	if (openTypedCents !== null && openTypedCents > shown.openCents) {
+		charges.push({ date: today, cents: openTypedCents - shown.openCents });
+		openCents = shown.openCents;
+	}
+	return { openCents, closedCents, charges, totalCents: charges.reduce((sum, item) => sum + item.cents, 0) };
+};
+
+/**
+ * Os meses que a folha "Registrar encargo" oferece: dois para trás (o encargo que o dono só
+ * viu agora na fatura fechada), o atual e o seguinte (a anuidade que já vem anunciada).
+ */
+export const chargeMonthOptions = (today: string): string[] => {
+	const [year, month] = today.split('-').map(Number);
+	return [-2, -1, 0, 1].map((delta) => {
+		const [ty, tm] = shiftYearMonth(year, month, delta);
+		return `${ty}-${pad(tm)}`;
+	});
+};
+
+/**
+ * A data do encargo: o dia escolhido no mês (`YYYY-MM`). Nula quando o dia não existe no
+ * mês — 30 de fevereiro não vira 28 calado, o dono corrige. A fatura é a do ciclo da data
+ * (`cycleFor`): a anuidade de 15/11 num cartão que fecha dia 10 é da fatura de dezembro.
+ */
+export const cardChargeDate = (monthKey: string, day: number): string | null => {
+	const [year, month] = monthKey.split('-').map(Number);
+	if (!Number.isInteger(day) || day < 1 || day > lastDayOfMonth(year, month)) return null;
+	return `${monthKey}-${pad(day)}`;
+};
+
 /**
  * Datas das parcelas de uma compra parcelada no cartão: a primeira no dia da compra, as
  * seguintes um mês depois cada, **uma por fatura**. Somar um mês nem sempre muda de
@@ -883,6 +1070,9 @@ export const existingInstallmentDates = (
  * antes desta versão, que deixava a âncora em zero e lançava o ajuste). Âncora zero sem
  * ajuste é cartão cadastrado sem a fatura: o app não sabe de nada que estava nela.
  *
+ * O encargo que o "Acertar valor" lançou com a diferença (`bank`) também é acerto com o
+ * banco e conta; o registrado à mão (uma anuidade) não diz nada do resto da fatura.
+ *
  * Limite: quem informou exatamente o que o app já tinha não gera ajuste, e aí a fatura
  * conta como não informada.
  */
@@ -894,7 +1084,8 @@ export const openInvoiceInformed = (settings: CardSettings, entries: CardEntry[]
 	const open = cycleFor(today, rule);
 	const inOpen = (date: string) => date >= open.start && date <= open.end;
 	if (settings.openingBalanceCents !== 0 && inOpen(settings.openingBalanceDate)) return true;
-	return entries.some((entry) => isCardAdjustment(entry) && inOpen(entry.date) && entry.date > settings.openingBalanceDate);
+	const fromBank = (entry: CardEntry) => isCardAdjustment(entry) || (isCardCharge(entry) && cardChargeKindOf(entry.note) === 'bank');
+	return entries.some((entry) => fromBank(entry) && inOpen(entry.date) && entry.date > settings.openingBalanceDate);
 };
 
 /** O que o chip de uma fatura diz. As datas saem do próprio ciclo. */
@@ -966,8 +1157,16 @@ export const invoicesClosingBetween = (
 
 export default {
 	cardInstallmentDates,
+	cardChargeDate,
+	cardChargeKindOf,
+	cardChargeNote,
+	cardChargeShown,
+	chargeMonthOptions,
 	isCardAdjustment,
+	isCardCharge,
+	isCardNonPurchase,
 	isSameCardPayment,
+	splitCardCharges,
 	invoiceStatusOf,
 	invoicesToInform,
 	openInvoiceInformed,

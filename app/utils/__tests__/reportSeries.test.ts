@@ -1,9 +1,11 @@
 import type { Account, Category } from '../../database/schema';
-import { buildCardSummary, cardInstallmentDates, type CardEntry } from '../cardMath';
+import { buildCardSummary, CARD_ADJUSTMENT_NOTE, cardChargeNote, cardInstallmentDates, type CardEntry } from '../cardMath';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
 	buildMonthSeries,
+	CARD_CHARGES_CATEGORY_ID,
+	cardChargesCategory,
 	committedMonths,
 	externalIncomeTransfers,
 	externalTransfersInByMonth,
@@ -22,6 +24,7 @@ import {
 	lastInvestmentIncomeDateByAccount,
 	realizedYield12mCents,
 	savingsRateDropsEnding,
+	separateCardBookkeeping,
 	yield12m,
 } from '../reportSeries';
 
@@ -449,6 +452,90 @@ describe('onde foi o dinheiro', () => {
 		);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({ categoryId: 'gone', name: null, shareBp: 10_000 });
+	});
+
+	// E2E-25 com o encargo do SPD-092: novembro tinha Other Expense R$ 3.334,56 — os ajustes de
+	// fatura (−1.234,56 do cadastro antigo do Nubank e −2.000 do acerto do Inter) e a compra de
+	// R$ 100. Mais um encargo de R$ 38,90, que caía em "Other Expense" junto.
+	describe('ajuste e encargo do cartão nas categorias (SPD-092)', () => {
+		const card = (date: string, amountCents: number, note: string, category: string, isIncome = false): CardEntry => ({
+			id: `${date}-${amountCents}-${note}`,
+			amountCents,
+			isIncome,
+			date,
+			note,
+			category,
+			installmentGroup: null,
+			installmentIndex: null,
+			installmentCount: null,
+		});
+		const november = [
+			{ month: '2026-11', categoryId: 'other_expense', totalCents: 123_456 + 200_000 + 10_000 + 3_890 },
+			{ month: '2026-11', categoryId: 'education', totalCents: R(600) },
+			{ month: '2026-11', categoryId: 'shopping', totalCents: R(200) },
+			{ month: '2026-11', categoryId: 'food', totalCents: R(50) },
+		];
+		const nubank = [
+			card('2026-11-07', 123_456, CARD_ADJUSTMENT_NOTE, 'other_expense'),
+			card('2026-11-07', 10_000, 'Compra', 'other_expense'),
+			card('2026-11-07', 3_890, cardChargeNote('bank'), 'other_expense'),
+		];
+		const inter = [
+			card('2026-11-07', 200_000, CARD_ADJUSTMENT_NOTE, 'other_expense'),
+			// O +1.920 do acerto é receita: não está nas linhas de despesa e não sai delas.
+			card('2026-11-07', 192_000, CARD_ADJUSTMENT_NOTE, 'other_income', true),
+		];
+
+		it('o ajuste sai da categoria; o encargo sai dela e vira a linha "Encargos do cartão"', () => {
+			const rows = separateCardBookkeeping(november, [nubank, inter]);
+			expect(rows).toEqual(
+				expect.arrayContaining([
+					{ month: '2026-11', categoryId: 'other_expense', totalCents: R(100) },
+					{ month: '2026-11', categoryId: CARD_CHARGES_CATEGORY_ID, totalCents: 3_890 },
+					{ month: '2026-11', categoryId: 'education', totalCents: R(600) },
+					{ month: '2026-11', categoryId: 'shopping', totalCents: R(200) },
+					{ month: '2026-11', categoryId: 'food', totalCents: R(50) },
+				])
+			);
+			expect(rows).toHaveLength(5);
+			// Não mexe no que recebeu.
+			expect(november[0].totalCents).toBe(123_456 + 200_000 + 10_000 + 3_890);
+		});
+
+		it('no ranking, o encargo tem nome próprio e o ajuste não domina o mês', () => {
+			const rows = rankCategories(
+				separateCardBookkeeping(november, [nubank, inter]),
+				[],
+				[
+					...categories,
+					category({ id: 'other_expense', name: 'Other Expense' }),
+					category({ id: 'education', name: 'Education' }),
+					category({ id: 'shopping', name: 'Shopping' }),
+					cardChargesCategory('Encargos do cartão'),
+				]
+			);
+			expect(rows.map((row) => [row.name, row.currentCents])).toEqual([
+				['Education', R(600)],
+				['Shopping', R(200)],
+				['Other Expense', R(100)],
+				['Comida', R(50)],
+				['Encargos do cartão', 3_890],
+			]);
+		});
+
+		it('lançamento de fora do período não cria linha negativa; categoria só de ajuste some', () => {
+			const rows = separateCardBookkeeping(
+				[{ month: '2026-11', categoryId: 'other_expense', totalCents: 123_456 }],
+				[[card('2026-11-07', 123_456, CARD_ADJUSTMENT_NOTE, 'other_expense'), card('2026-08-10', 5_000, CARD_ADJUSTMENT_NOTE, 'other_expense')]]
+			);
+			expect(rows).toEqual([]);
+		});
+
+		it('parcela com a nota do ajuste é compra, e fica', () => {
+			const parcel = { ...card('2026-11-07', 30_000, CARD_ADJUSTMENT_NOTE, 'education'), installmentGroup: 'g', installmentIndex: 2, installmentCount: 5 };
+			const rows = separateCardBookkeeping([{ month: '2026-11', categoryId: 'education', totalCents: 30_000 }], [[parcel]]);
+			expect(rows).toEqual([{ month: '2026-11', categoryId: 'education', totalCents: 30_000 }]);
+		});
 	});
 
 	it('origem do gasto: cartão, débito por final, o Pix que sobrou, envelope e sem conta', () => {
