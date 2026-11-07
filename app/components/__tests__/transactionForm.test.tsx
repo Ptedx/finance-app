@@ -504,18 +504,12 @@ describe('TransactionForm — transferência entre contas (E2E-28)', () => {
 		expect(queryTestId(tree, 'transaction-form-amount').length).toBeGreaterThan(0);
 	});
 
-	it('De igual a Para não salva e diz por quê', async () => {
+	it('a conta escolhida em De sai de Para (E2E-42)', async () => {
 		const tree = await render();
 		await pressType(tree, 'transfer');
 		await pressId(tree, 'transfer-from-inter');
-		await pressId(tree, 'transfer-to-inter');
-		await act(async () => {
-			queryTestId(tree, 'transfer-form-amount')[0].props.onChangeText('1000');
-		});
-		await pressId(tree, 'transfer-form-save');
-
-		expect(mockSaveTransfer).not.toHaveBeenCalled();
-		expect(String(queryTestId(tree, 'transfer-form-error-summary')[0].props.children)).toBe('transactionForm.transfer.sameAccount');
+		expect(queryTestId(tree, 'transfer-to-inter')).toHaveLength(0);
+		expect(queryTestId(tree, 'transfer-to-reserva').length).toBeGreaterThan(0);
 	});
 
 	it('R$ 1.000 do Inter para a Reserva em 07/11 é transferência, não lançamento', async () => {

@@ -1057,6 +1057,7 @@ account: {
 			businessConfirmMove: 'I prossimi avvisi di {{label}} entrano in {{name}}, e gli altri avvisi dell app della banca passano a {{other}}. Quello che è già registrato resta dov è.',
 			businessMoved: 'Gli avvisi di {{label}} ora entrano in {{name}}',
 			merged: 'Conti uniti in {{into}}',
+			notFound: 'Conto non trovato.',
 			cancel: 'Annulla',
 			invalidName: 'Dai un nome al conto',
 			invalidDay: 'Usa un giorno tra 1 e 31',

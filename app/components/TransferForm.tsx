@@ -111,6 +111,8 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 	const [showDateModal, setShowDateModal] = useState(false);
 
 	const choices = transferChoices(activeAccounts, accounts ?? [], initialTransfer);
+	// A conta escolhida em De não aparece em Para, na criação e na edição (E2E-42).
+	const toOptions = choices.to.filter((account) => fromAccountId === null || account.id !== fromAccountId);
 	const destination = choices.to.find((account) => account.id === toAccountId) ?? null;
 	// Pagamento de fatura novo: vai por `recordCardPayment`, que não guarda descrição.
 	const isCardPayment = !isEditing && destination?.kind === 'credit_card';
@@ -122,8 +124,11 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 		setErrors((previous) => (previous[field] ? { ...previous, [field]: undefined } : previous));
 
 	const pick = (side: 'from' | 'to', id: string | null) => {
-		if (side === 'from') setFromAccountId(id);
-		else setToAccountId(id);
+		if (side === 'from') {
+			setFromAccountId(id);
+			// A origem sai da lista de Para: se era o destino escolhido, o destino fica por escolher.
+			if (id !== null && id === toAccountId) setToAccountId(null);
+		} else setToAccountId(id);
 		setNotice(null);
 		// Trocar qualquer ponta pode desfazer o "De e Para iguais".
 		setErrors((previous) => (previous.from || previous.to ? { ...previous, from: undefined, to: undefined } : previous));
@@ -263,7 +268,7 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 				{tooFewAccounts ? <Text style={styles.notice}>{t('transactionForm.transfer.noAccounts')}</Text> : null}
 
 				{sideGroup('from', choices.from, outsideFrom)}
-				{sideGroup('to', choices.to, outsideTo)}
+				{sideGroup('to', toOptions, outsideTo)}
 
 				{isCardPayment ? (
 					<Text style={styles.notice} testID="transfer-form-card-payment">

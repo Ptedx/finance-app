@@ -1051,6 +1051,7 @@ const pt = {
 			businessConfirmMove: 'Os próximos avisos da {{label}} entram em {{name}}, e os outros avisos do app do banco passam a entrar em {{other}}. O que já está lançado fica onde está.',
 			businessMoved: 'Os avisos da {{label}} agora entram em {{name}}',
 			merged: 'Contas juntadas em {{into}}',
+			notFound: 'Conta não encontrada.',
 			cancel: 'Cancelar',
 			invalidName: 'Dê um nome à conta',
 			invalidDay: 'Use um dia entre 1 e 31',

@@ -1056,6 +1056,7 @@ account: {
 			businessConfirmMove: 'Upcoming {{label}} notifications go to {{name}}, and the bank app other notifications start going to {{other}}. What is already recorded stays where it is.',
 			businessMoved: '{{label}} notifications now go to {{name}}',
 			merged: 'Accounts merged into {{into}}',
+			notFound: 'Account not found.',
 			cancel: 'Cancel',
 			invalidName: 'Give the account a name',
 			invalidDay: 'Use a day between 1 and 31',

@@ -7,6 +7,7 @@ import { AccessibilityInfo, Alert, KeyboardAvoidingView, Platform, Pressable, Sc
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
+import MergeTargetSheet from '../components/MergeTargetSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { type Account, type AccountDraft, DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
@@ -82,6 +83,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [closedInvoice, setClosedInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A folha de "Juntar com outro cartão" aberta.
+	const [merging, setMerging] = useState(false);
 
 	useEffect(() => {
 		if (!existing) return;
@@ -236,6 +239,20 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const sameBankAccount = bankAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
 	const chosenDebitAccount = bankAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
 
+	/**
+	 * Sai de um cartão que deixou de existir (excluído, juntado, levado para o débito) sem
+	 * deixar a tela dele na pilha (E2E-40): o voltar caía em "Cartão não encontrado". Esta
+	 * edição se abre por cima da tela do cartão; `dismissTo` volta até ela (sem ela embaixo,
+	 * com a edição aberta direto, troca esta por ela). Depois, ao juntar, ela é trocada pela
+	 * do cartão que fica — tela nova, sem o filtro nem a fatura escolhida no que saiu; ao
+	 * excluir, fecha, e o voltar seguinte é o de quem abriu o cartão (lista ou tela inicial).
+	 */
+	const leaveRemovedCard = (removedId: string, into?: string) => {
+		router.dismissTo({ pathname: '/cards/[id]', params: { id: removedId } });
+		if (into) router.replace({ pathname: '/cards/[id]', params: { id: into } });
+		else router.dismiss();
+	};
+
 	const handleConvertToDebit = () => {
 		if (!existing || !chosenDebitAccount) return;
 		Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitConfirm', { account: chosenDebitAccount.name }), [
@@ -245,7 +262,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				onPress: async () => {
 					await convertCardToDebit(existing.id, chosenDebitAccount.id);
 					announce(t('cards.edit.debitDone', { account: chosenDebitAccount.name }));
-					router.replace('/cards');
+					leaveRemovedCard(existing.id);
 				},
 			},
 		]);
@@ -267,7 +284,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				style: 'destructive',
 				onPress: async () => {
 					await removeAccount(existing.id);
-					router.replace('/cards');
+					leaveRemovedCard(existing.id);
 				},
 			},
 		]);
@@ -300,32 +317,32 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		return summarizeCardDuplicates(findCardDuplicates(kept, dismissed).groups).count;
 	};
 
+	// O destino se escolhe numa folha com todos os cartões (E2E-39): o Alert do Android mostra no
+	// máximo três botões. A confirmação, com dois, continua no Alert.
 	const handleMerge = () => {
 		if (!existing || mergeCandidates.length === 0) return;
-		Alert.alert(t('cards.edit.merge'), t('cards.edit.mergePick', { name: existing.name }), [
+		setMerging(true);
+	};
+
+	const confirmMerge = (card: Account) => {
+		setMerging(false);
+		if (!existing) return;
+		Alert.alert(t('cards.edit.merge'), t('cards.edit.mergeConfirm', { from: existing.name, into: card.name }), [
 			{ text: t('cards.cancel'), style: 'cancel' },
-			...mergeCandidates.map((card) => ({
-				text: card.name,
-				onPress: () => {
-					Alert.alert(t('cards.edit.merge'), t('cards.edit.mergeConfirm', { from: existing.name, into: card.name }), [
-						{ text: t('cards.cancel'), style: 'cancel' as const },
-						{
-							text: t('cards.edit.mergeAction'),
-							onPress: async () => {
-								const dismissed = await getDismissedCardDuplicates();
-								const repeated = keptDuplicateCount(existing, card.id, dismissed);
-								await mergeCards(existing.id, card.id);
-								announce(t('cards.edit.merged', { into: card.name }));
-								// Juntar não apaga a cópia da compra que estava nos dois (SPD-098): o dono precisa saber.
-								if (repeated > 0) {
-									Alert.alert(t('cards.edit.merged', { into: card.name }), t('cards.duplicates.afterMerge', { count: repeated, into: card.name }));
-								}
-								router.replace({ pathname: '/cards/[id]', params: { id: card.id } });
-							},
-						},
-					]);
+			{
+				text: t('cards.edit.mergeAction'),
+				onPress: async () => {
+					const dismissed = await getDismissedCardDuplicates();
+					const repeated = keptDuplicateCount(existing, card.id, dismissed);
+					await mergeCards(existing.id, card.id);
+					announce(t('cards.edit.merged', { into: card.name }));
+					// Juntar não apaga a cópia da compra que estava nos dois (SPD-098): o dono precisa saber.
+					if (repeated > 0) {
+						Alert.alert(t('cards.edit.merged', { into: card.name }), t('cards.duplicates.afterMerge', { count: repeated, into: card.name }));
+					}
+					leaveRemovedCard(existing.id, card.id);
 				},
-			})),
+			},
 		]);
 	};
 
@@ -543,6 +560,17 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>
+
+			{existing ? (
+				<MergeTargetSheet
+					visible={merging}
+					title={t('cards.edit.merge')}
+					subtitle={t('cards.edit.mergePick', { name: existing.name })}
+					targets={mergeCandidates}
+					onPick={confirmMerge}
+					onClose={() => setMerging(false)}
+				/>
+			) : null}
 		</SafeAreaView>
 	);
 };

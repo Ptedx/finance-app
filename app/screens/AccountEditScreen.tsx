@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCOUNT_KIND_ICONS } from '../components/AccountPicker';
 import TransactionItem from '../components/TransactionItem';
 import AdjustAccountSheet from '../components/accounts/AdjustAccountSheet';
+import MergeTargetSheet from '../components/MergeTargetSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
@@ -98,6 +99,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [adjusting, setAdjusting] = useState(false);
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string; yieldCdi?: string }>({});
 	const [saving, setSaving] = useState(false);
+	// A folha de "Juntar com outra conta" aberta.
+	const [merging, setMerging] = useState(false);
 
 	// Quando a conta chega depois (a lista ainda carregava), preenche o formulário.
 	useEffect(() => {
@@ -214,31 +217,28 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		? accounts.filter((account) => account.id !== existing.id && !account.deletedAt && !account.archived && (account.kind === 'credit_card') === (existing.kind === 'credit_card'))
 		: [];
 
+	// O destino se escolhe numa folha com todas as contas (E2E-39): o Alert do Android mostra no
+	// máximo três botões. A confirmação, com dois, continua no Alert.
 	const handleMerge = () => {
 		if (!existing || mergeCandidates.length === 0) return;
-		Alert.alert(
-			t('accounts.edit.merge'),
-			t('accounts.edit.mergePick', { name: existing.name }),
-			[
-				{ text: t('accounts.edit.cancel'), style: 'cancel' },
-				...mergeCandidates.map((account) => ({
-					text: account.name,
-					onPress: () => {
-						Alert.alert(t('accounts.edit.merge'), t('accounts.edit.mergeConfirm', { from: existing.name, into: account.name }), [
-							{ text: t('accounts.edit.cancel'), style: 'cancel' as const },
-							{
-								text: t('accounts.edit.mergeAction'),
-								onPress: async () => {
-									await mergeAccounts(existing.id, account.id);
-									announce(t('accounts.edit.merged', { into: account.name }));
-									router.back();
-								},
-							},
-						]);
-					},
-				})),
-			]
-		);
+		setMerging(true);
+	};
+
+	const confirmMerge = (account: Account) => {
+		setMerging(false);
+		if (!existing) return;
+		Alert.alert(t('accounts.edit.merge'), t('accounts.edit.mergeConfirm', { from: existing.name, into: account.name }), [
+			{ text: t('accounts.edit.cancel'), style: 'cancel' },
+			{
+				text: t('accounts.edit.mergeAction'),
+				onPress: async () => {
+					await mergeAccounts(existing.id, account.id);
+					announce(t('accounts.edit.merged', { into: account.name }));
+					// Esta tela é a da conta que saiu, e é a de cima: fechá-la não deixa nada dela na pilha.
+					router.back();
+				},
+			},
+		]);
 	};
 
 	/**
@@ -342,6 +342,31 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			) : null}
 		</View>
 	);
+
+	// Aberta com uma conta que não existe mais (juntada, excluída): dizer isso, com o voltar, em
+	// vez do formulário de conta nova — salvar ali criava outra conta (E2E-40). Aberta direto,
+	// sem tela antes, o voltar leva à lista de contas.
+	if (accountId && !existing) {
+		return (
+			<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+				<Stack.Screen options={{ headerShown: false }} />
+				<View style={styles.header}>
+					<Pressable
+						onPress={() => (router.canGoBack() ? router.back() : router.replace('/accounts'))}
+						accessibilityRole="button"
+						accessibilityLabel={t('accounts.back')}
+						hitSlop={12}
+						style={styles.backButton}
+					>
+						<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+					</Pressable>
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('accounts.edit.notFound')}
+					</Text>
+				</View>
+			</SafeAreaView>
+		);
+	}
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -666,6 +691,16 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						await adjustAccountMonth(existing.id, input);
 						setAdjusting(false);
 					}}
+				/>
+			) : null}
+			{existing ? (
+				<MergeTargetSheet
+					visible={merging}
+					title={t('accounts.edit.merge')}
+					subtitle={t('accounts.edit.mergePick', { name: existing.name })}
+					targets={mergeCandidates}
+					onPick={confirmMerge}
+					onClose={() => setMerging(false)}
 				/>
 			) : null}
 		</SafeAreaView>

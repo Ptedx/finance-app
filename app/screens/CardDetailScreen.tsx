@@ -127,11 +127,25 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		[cardTransactions, dismissedDuplicates]
 	);
 
+	// Cartão juntado ou excluído (E2E-40): o cabeçalho com voltar, como no resto da tela. Aberta
+	// direto, sem tela antes, o voltar leva à lista de cartões.
 	if (!card) {
 		return (
-			<SafeAreaView style={styles.container}>
+			<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 				<Stack.Screen options={{ headerShown: false }} />
-				<Text style={styles.missing}>{t('cards.notFound')}</Text>
+				<View style={styles.header}>
+					<Pressable
+						onPress={() => (router.canGoBack() ? router.back() : router.replace('/cards'))}
+						accessibilityRole="button"
+						accessibilityLabel={t('cards.back')}
+						style={styles.iconButton}
+					>
+						<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+					</Pressable>
+				</View>
+				<Text style={styles.missing} accessibilityRole="header">
+					{t('cards.notFound')}
+				</Text>
 			</SafeAreaView>
 		);
 	}

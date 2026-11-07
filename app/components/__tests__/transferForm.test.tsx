@@ -206,16 +206,25 @@ describe('TransferForm — nova transferência', () => {
 		expect(queryTestId(tree, 'transfer-from-outside')).toHaveLength(0);
 	});
 
-	it('De igual a Para: o erro aparece junto do botão e nada é gravado', async () => {
+	it('escolher a origem a tira de Para: De e Para iguais nem são oferecidos', async () => {
+		const tree = await render();
+		expect(queryTestId(tree, 'transfer-to-corrente').length).toBeGreaterThan(0);
+		await press(tree, 'transfer-from-corrente');
+		expect(queryTestId(tree, 'transfer-to-corrente')).toHaveLength(0);
+		expect(queryTestId(tree, 'transfer-to-reserva').length).toBeGreaterThan(0);
+	});
+
+	it('Para já escolhido e a mesma conta em De: Para fica vazio, pede de novo e nada é gravado', async () => {
 		const onSubmit = jest.fn();
 		const tree = await render({ onSubmit });
-		await press(tree, 'transfer-from-corrente');
-		await press(tree, 'transfer-to-corrente');
+		await press(tree, 'transfer-to-reserva');
+		await press(tree, 'transfer-from-reserva');
+		expect(queryTestId(tree, 'transfer-to-reserva')).toHaveLength(0);
 		await typeAmount(tree, '1000');
 		await press(tree, 'transfer-form-save');
 
-		expect(summary(tree)).toContain('transactionForm.transfer.sameAccount');
-		expect(announce).toHaveBeenCalledWith('transactionForm.transfer.sameAccount');
+		expect(summary(tree)).toBe('transactionForm.transfer.toRequired');
+		expect(announce).toHaveBeenCalledWith('transactionForm.transfer.toRequired');
 		expect(mockSaveTransfer).not.toHaveBeenCalled();
 		expect(onSubmit).not.toHaveBeenCalled();
 	});
@@ -304,6 +313,24 @@ describe('TransferForm — editar e apagar a partir de Lançamentos', () => {
 			note: 'CDB',
 		});
 		expect(onSubmit).toHaveBeenCalledTimes(1);
+	});
+
+	it('E2E-42: a conta de origem não aparece em Para, como na criação', async () => {
+		const tree = await render({ initialTransfer: transfer() });
+		expect(byTestId(tree, 'transfer-from-corrente').props.accessibilityState).toEqual({ selected: true });
+		expect(queryTestId(tree, 'transfer-to-corrente')).toHaveLength(0);
+		expect(byTestId(tree, 'transfer-to-reserva').props.accessibilityState).toEqual({ selected: true });
+		expect(queryTestId(tree, 'transfer-to-nubank').length).toBeGreaterThan(0);
+	});
+
+	it('trocar a origem pela conta de destino esvazia Para, e a origem antiga volta a ser destino', async () => {
+		const tree = await render({ initialTransfer: transfer() });
+		await press(tree, 'transfer-from-reserva');
+		expect(queryTestId(tree, 'transfer-to-reserva')).toHaveLength(0);
+		expect(byTestId(tree, 'transfer-to-corrente').props.accessibilityState).toEqual({ selected: false });
+		await press(tree, 'transfer-form-save');
+		expect(summary(tree)).toBe('transactionForm.transfer.toRequired');
+		expect(mockSaveTransfer).not.toHaveBeenCalled();
 	});
 
 	it('excluir pergunta antes e, confirmado, apaga e fecha', async () => {
