@@ -1,5 +1,7 @@
 import type { Prisma } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import type { Response } from 'express';
+import { deleteAccount } from '../domain/accountDeletion.js';
 import {
 	WIPED_PREFERENCE_KEYS,
 	WIPED_USER_RELATIONS,
@@ -7,8 +9,8 @@ import {
 } from '../domain/dataWipe.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
-import { unauthorized } from '../middleware/error.js';
-import { updateProfileSchema } from '../schemas/auth.js';
+import { forbidden, unauthorized } from '../middleware/error.js';
+import { deleteAccountSchema, updateProfileSchema } from '../schemas/auth.js';
 
 const SELECT_PUBLIC = {
 	id: true,
@@ -132,4 +134,35 @@ export const wipeMyData = async (req: AuthenticatedRequest, res: Response): Prom
 	);
 
 	res.json({ dataWipedAt: dataWipedAt.toISOString() });
+};
+
+/**
+ * Apaga a conta e tudo dela (DEC-35; a Google Play exige que dê para fazer isso no app).
+ *
+ * Pede a senha atual: um aparelho esquecido desbloqueado não pode apagar anos de dados com
+ * um toque. O resto — a cascata, a corrida com outro pedido — está em
+ * `domain/accountDeletion.ts`.
+ *
+ * Senha errada é 403, e não 401: o app trata todo 401 (fora o `token_expired`) como sessão
+ * morta e sairia da conta de quem só digitou errado. A comparação é o `bcrypt.compare` do
+ * login: o custo vem do próprio hash guardado, não há número de rounds a repetir aqui.
+ *
+ * Um push em andamento trava a linha do usuário (FOR SHARE, ver `pushData`); o DELETE
+ * espera ele terminar e apaga o que ele gravou. Um que chega depois leva 401
+ * `account_gone`.
+ */
+export const deleteMe = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+	const { password } = deleteAccountSchema.parse(req.body);
+
+	const outcome = await deleteAccount(prisma, req.userId, password, bcrypt.compare);
+
+	if (outcome === 'wrong_password') {
+		throw forbidden('Senha incorreta.', 'wrong_password');
+	}
+	// Mesmo caso do `getMe`: token válido, conta que não existe mais.
+	if (outcome === 'account_gone') {
+		throw unauthorized('Conta não encontrada.', 'account_gone');
+	}
+
+	res.status(204).send();
 };

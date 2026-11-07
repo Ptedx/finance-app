@@ -16,6 +16,7 @@ import { syncStatusOf } from '../domain/syncStatus.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
+import { unauthorized } from '../middleware/error.js';
 import {
 	accountSchema,
 	billSchema,
@@ -491,7 +492,12 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				where: { id: userId },
 				select: { dataWipedAt: true },
 			});
-			const conflict = pushWipeConflict(user?.dataWipedAt ?? null, knownWipeAt);
+			// A conta foi apagada (`DELETE /me`) depois do `requireAuth`: nada abaixo grava sem
+			// a linha do usuário (FK), e o erro seria um 500 que a fila reenviaria. O mesmo FOR
+			// SHARE faz um apagamento em andamento esperar esta remessa; um que já terminou cai
+			// aqui.
+			if (user === null) throw unauthorized('Conta não encontrada.', 'account_gone');
+			const conflict = pushWipeConflict(user.dataWipedAt, knownWipeAt);
 			if (conflict !== null) return conflict;
 
 			// --- Categorias primeiro ---------------------------------------------
