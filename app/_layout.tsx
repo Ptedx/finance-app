@@ -2,11 +2,12 @@ import './i18n';
 import 'react-native-get-random-values';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFonts } from 'expo-font';
-import { Slot, SplashScreen, useRouter } from 'expo-router';
+import { SplashScreen, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
+import RootStack from './components/RootStack';
 import { AuthProvider } from './contexts/AuthContext';
 import { BillsProvider } from './contexts/BillsContext';
 import { BudgetProvider } from './contexts/BudgetContext';
@@ -218,7 +219,7 @@ export default function RootLayout() {
 								    DebtsProvider dá quando as contas das dívidas mudam. */}
 								<BillsProvider>
 									<StatusBar style="light" />
-									<Slot />
+									<RootStack />
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
 								</BillsProvider>
 								</DebtsProvider>
