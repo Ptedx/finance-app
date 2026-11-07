@@ -159,7 +159,7 @@ const en = {
 			'card-load-heavy': "Your card invoices add up to {{percent}} of a month's income.",
 			'spending-above-pace': 'You are spending {{percent}} above your usual pace for this point of the month.',
 			'income-possibly-duplicated': '{{amount}} came in twice ({{first}} and {{second}}). If it is the same money, delete one.',
-			'expense-possibly-duplicated': '{{amount}} was charged twice for "{{note}}" ({{first}} and {{second}}): the recurring entry and the real charge. If it is the same money, delete one.',
+			'expense-possibly-duplicated': '{{amount}} was charged twice for "{{note}}" ({{first}} and {{second}}): an automatic [Auto] entry from an old recurring rule and the real charge. If it is the same money, delete the [Auto].',
 		},
 	},
 
@@ -352,6 +352,14 @@ const en = {
 			title: 'What the numbers say',
 			empty: 'Nothing worth noting this month.',
 			openHint: "Opens the month's income list",
+			doubleCharge: {
+				deleteAuto: 'Delete the [Auto]',
+				deleteAutoHint: 'Deletes the automatic entry and keeps the real charge',
+				confirmTitle: 'Delete the [Auto]?',
+				confirmMessage: 'The automatic entry "{{note}}" of {{amount}} goes away. The real charge stays.',
+				confirm: 'Delete',
+				cancel: 'Cancel',
+			},
 			severity: {
 				critical: 'Urgent',
 				attention: 'Watch',

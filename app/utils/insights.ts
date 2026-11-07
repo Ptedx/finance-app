@@ -194,6 +194,11 @@ export interface Insight {
 	pct?: number;
 	months?: number;
 	categoryId?: string;
+	/**
+	 * O lançamento que a ação do insight mexe, quando ele tem uma: na cobrança dupla, o
+	 * `[Auto]` que o botão "Apagar o [Auto]" apaga (SPD-113).
+	 */
+	transactionId?: string;
 }
 
 /** A partir daqui a taxa de poupança é digna de comemoração (20%). */
@@ -457,12 +462,14 @@ export const buildGoalInsights = (
 
 	// --- Gasto cobrado duas vezes: a recorrente e a cobrança de verdade ---------------
 	// Vem junto da receita duplicada porque é o mesmo estrago, do outro lado: enquanto os
-	// dois lançamentos existem, o gasto do mês e o "já comprometido" estão inflados.
+	// dois lançamentos existem, o gasto do mês e o "já comprometido" estão inflados. O app
+	// não lança mais `[Auto]` (SPD-113), mas os antigos ficaram: o insight leva o id do
+	// `[Auto]` para a tela oferecer apagá-lo.
 	for (const charge of doubleCharges) {
 		insights.push({
 			id: 'expense-possibly-duplicated',
 			severity: 'critical',
-			title: `${formatCents(charge.amountCents)} was charged twice for "${charge.note}" (${charge.dates[0]} and ${charge.dates[1]}): the recurring entry and the real charge. If it is the same money, delete one.`,
+			title: `${formatCents(charge.amountCents)} was charged twice for "${charge.note}" (${charge.dates[0]} and ${charge.dates[1]}): an automatic [Auto] entry from an old recurring rule and the real charge. If it is the same money, delete the [Auto].`,
 			params: {
 				amount: formatCents(charge.amountCents),
 				note: charge.note,
@@ -470,6 +477,7 @@ export const buildGoalInsights = (
 				second: charge.dates[1],
 			},
 			valueCents: charge.amountCents,
+			transactionId: charge.autoId,
 		});
 	}
 

@@ -752,7 +752,10 @@ export const findDuplicateIncomes = (transactions: Pick<Transaction, 'id' | 'amo
 	return found;
 };
 
-/** Marca que `processRecurringTransactions` põe na nota do que ela mesma lançou. */
+/**
+ * Marca que o lançamento automático das recorrências punha na nota do que ele mesmo lançou.
+ * Desligado no SPD-113, mas os `[Auto]` antigos continuam no banco e no sync.
+ */
 export const AUTO_NOTE_PREFIX = '[Auto] ';
 
 /** Até quantos dias de distância a recorrente e a cobrança de verdade são a mesma coisa. */
@@ -763,6 +766,8 @@ export interface RecurringDoubleCharge {
 	note: string;
 	ids: [string, string];
 	dates: [string, string];
+	/** O lançamento `[Auto]` do par: é o que o botão do insight apaga (SPD-113). */
+	autoId: string;
 }
 
 /**
@@ -775,8 +780,8 @@ export interface RecurringDoubleCharge {
  *
  * O par é preciso porque um dos lados tem de ser lançamento da própria recorrente
  * (`[Auto]`) e o outro não: duas compras iguais na semana não disparam. Isto **avisa**,
- * não apaga: qual dos dois sai é decisão de quem lançou, e o app não tem como saber se a
- * cobrança do mês realmente aconteceu.
+ * não apaga sozinho: o insight oferece apagar o `[Auto]` (`autoId`), com confirmação,
+ * porque o app não tem como saber se a cobrança do mês realmente aconteceu.
  */
 export const findRecurringDoubleCharges = (
 	transactions: Pick<Transaction, 'id' | 'amountCents' | 'isIncome' | 'date' | 'note'>[]
@@ -805,6 +810,7 @@ export const findRecurringDoubleCharges = (
 				note: auto.note.slice(AUTO_NOTE_PREFIX.length),
 				ids: [a.id, b.id],
 				dates: [a.date, b.date],
+				autoId: auto.id,
 			});
 			used.add(a.id);
 			used.add(b.id);

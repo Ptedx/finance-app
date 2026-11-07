@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,7 +12,6 @@ import CardsSection from '../components/cards/CardsSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 
@@ -41,20 +40,14 @@ const HomeScreen = () => {
 	const { refreshData } = useTransactions();
 	const { refresh: refreshAccounts } = useAccounts();
 	const { refresh: refreshBills } = useBills();
-	const { processTransactions } = useRecurringTransactions();
 	const { syncNow } = useSync();
 	const [refreshing, setRefreshing] = useState(false);
 
-	// Recorrências vencidas são lançadas uma vez, ao abrir.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	useEffect(() => {
-		processTransactions().catch((error) => console.error('Failed to process recurring transactions:', error));
-	}, []);
-
+	// Abrir ou puxar a Início não lança mais as recorrências antigas (SPD-113): o `[Auto]`
+	// virava gasto dobrado quando a cobrança de verdade chegava.
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
-			await processTransactions();
 			await refreshData();
 			await refreshAccounts();
 			await refreshBills();
@@ -65,7 +58,7 @@ const HomeScreen = () => {
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, refreshAccounts, refreshBills, processTransactions, syncNow]);
+	}, [refreshData, refreshAccounts, refreshBills, syncNow]);
 
 	return (
 		<View style={styles.container}>

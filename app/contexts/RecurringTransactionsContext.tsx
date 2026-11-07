@@ -6,7 +6,6 @@ import {
 	deleteRecurringTransaction,
 	getRecurringTransactions,
 	initDatabase,
-	processRecurringTransactions,
 	updateRecurringTransaction,
 } from '../database/database';
 import type {
@@ -27,7 +26,6 @@ interface RecurringTransactionsContextType {
 	) => Promise<string>;
 	updateTransaction: (transaction: RecurringTransactionEdit) => Promise<void>;
 	removeTransaction: (id: string) => Promise<void>;
-	processTransactions: () => Promise<void>;
 	refreshTransactions: () => Promise<void>;
 }
 
@@ -35,6 +33,12 @@ const RecurringTransactionsContext = createContext<RecurringTransactionsContextT
 	undefined
 );
 
+/**
+ * As recorrências antigas: a lista segue lida (relatórios e métricas contam as regras como
+ * custo fixo, Ajustes as leva no backup) e sincronizada, mas as regras não lançam mais
+ * nada — o `processTransactions` que a Início chamava ao abrir saiu no SPD-113 (ver o
+ * comentário em `database.ts`, onde ficava `processRecurringTransactions`).
+ */
 export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode }> = ({
 	children,
 }) => {
@@ -149,43 +153,12 @@ export const RecurringTransactionsProvider: React.FC<{ children: React.ReactNode
 		}
 	};
 
-	const processTransactions = async () => {
-		try {
-			await processRecurringTransactions();
-
-			// After processing, get the updated transactions
-			const updatedTransactions = await getRecurringTransactions();
-
-			// Clear notification markers for processed transactions
-			// (we can identify them by having a lastProcessed date that's the current date)
-			const today = todayISO();
-			for (const transaction of updatedTransactions) {
-				if (transaction.lastProcessed === today) {
-					await notificationUtils.cancelTransactionNotification(transaction.id);
-				}
-			}
-
-			// Refresh notifications for all active transactions
-			await notificationUtils.checkAndScheduleNotifications(updatedTransactions);
-
-			await refreshTransactions();
-			// As ocorrências lançadas têm id determinístico, então subir aqui é seguro
-			// mesmo que outro aparelho tenha lançado as mesmas: o upsert as funde.
-			syncQueue.schedule();
-		} catch (error) {
-			console.error('Error processing recurring transactions:', error);
-			Alert.alert('Error', 'Failed to process recurring transactions.');
-			throw error;
-		}
-	};
-
 	const value = {
 		transactions,
 		isLoading,
 		addTransaction,
 		updateTransaction,
 		removeTransaction,
-		processTransactions,
 		refreshTransactions,
 	};
 

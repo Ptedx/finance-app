@@ -6,14 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { addDays, nowTimestamp, todayISO } from '../utils/dateUtils';
-import {
-	firstDueOnOrAfter,
-	nextDueAfter,
-	nextDueAfterEdit,
-	occurrenceId,
-	occurrencesBetween,
-	type RecurrenceRule,
-} from '../utils/recurrence';
+import { firstDueOnOrAfter, nextDueAfterEdit, type RecurrenceRule } from '../utils/recurrence';
 import { STORAGE_KEYS, SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
 import { nextStamp, nextStampSql } from '../utils/syncStamp';
 import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile, stampAfter } from '../sync/preferences';
@@ -2853,84 +2846,14 @@ export const deleteRecurringTransaction = async (id: string): Promise<void> => {
 	}
 };
 
-/**
- * Posts every occurrence that has come due, one transaction per occurrence, each dated
- * on its own due date.
- *
- * Two fixes over the previous behaviour: a three-month absence now produces three
- * months of rent instead of one, and a bill due 30 June opened on 2 July is booked in
- * June where it belongs rather than distorting both months.
+/*
+ * As regras não lançam mais nada (SPD-113). Até aqui havia `processRecurringTransactions`,
+ * que a Início chamava ao abrir e lançava um `[Auto]` a cada vencimento. A tela das
+ * recorrências saiu no SPD-079, mas as regras antigas ficaram no banco e seguiam lançando:
+ * quando a cobrança de verdade chegava (pela captura ou à mão), o mês ficava com o gasto
+ * dobrado. As regras e os `[Auto]` já lançados são dados do usuário e continuam aqui e no
+ * sync; o par que sobrou aparece em Relatórios com o botão de apagar o `[Auto]`.
  */
-export const processRecurringTransactions = async (): Promise<number> => {
-	try {
-		const today = todayISO();
-		const dueTransactions = await db.getAllAsync<RecurringTransactionDB>(
-			`SELECT * FROM recurring_transactions
-       WHERE active = 1 AND nextDue IS NOT NULL AND nextDue <= ? AND deletedAt IS NULL
-       ORDER BY nextDue ASC`,
-			[today]
-		);
-
-		if (dueTransactions.length === 0) return 0;
-
-		let posted = 0;
-
-		await runInTransaction(async () => {
-			for (const dbTransaction of dueTransactions) {
-				const transaction = convertRecurringTransaction(dbTransaction);
-				const rule = toRule(transaction);
-
-				// Resume from the day after the last posting, but never before `nextDue`:
-				// after an edit, `nextDue` already skips the rest of the cycle that was
-				// charged, and re-scanning from `lastProcessed + 1` would post the new day
-				// in that same cycle. A rule that has never run starts at its first occurrence.
-				const resumeFrom = transaction.lastProcessed
-					? addDays(transaction.lastProcessed, 1)
-					: (transaction.nextDue ?? today);
-				const windowStart =
-					transaction.nextDue && transaction.nextDue > resumeFrom ? transaction.nextDue : resumeFrom;
-
-				const dueDates = occurrencesBetween(rule, windowStart, today);
-
-				for (const dueDate of dueDates) {
-					// The id is derived from the rule and the due date, so a second device
-					// posting the same occurrence writes the same row instead of a duplicate.
-					// `addTransaction` inserts with ON CONFLICT DO NOTHING for exactly this.
-					await addTransaction(
-						{
-							amountCents: transaction.amountCents,
-							category: transaction.category,
-							date: dueDate,
-							note: `[Auto] ${transaction.note}`,
-							isIncome: transaction.isIncome,
-						},
-						occurrenceId(transaction.id, dueDate)
-					);
-					posted += 1;
-				}
-
-				const lastPosted = dueDates.length > 0 ? dueDates[dueDates.length - 1] : undefined;
-
-				await db.runAsync(
-					`UPDATE recurring_transactions
-           SET lastProcessed = ?, nextDue = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
-           WHERE id = ?`,
-					[
-						lastPosted ?? transaction.lastProcessed ?? null,
-						lastPosted ? nextDueAfter(rule, lastPosted) : firstDueOnOrAfter(rule, today),
-						nowTimestamp(),
-						transaction.id,
-					]
-				);
-			}
-		});
-
-		return posted;
-	} catch (error) {
-		console.error('Error processing recurring transactions:', error);
-		throw error;
-	}
-};
 
 // ---------------------------------------------------------------------------
 // Currency conversion
@@ -4783,7 +4706,6 @@ export default {
 	getRecurringTransactionById,
 	updateRecurringTransaction,
 	deleteRecurringTransaction,
-	processRecurringTransactions,
 	getBudgets,
 	setBudget,
 	clearBudget,

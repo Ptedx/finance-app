@@ -158,7 +158,7 @@ const it = {
 			'card-load-heavy': 'Le fatture delle carte sommano il {{percent}} di un mese di reddito.',
 			'spending-above-pace': 'Stai spendendo il {{percent}} sopra il tuo ritmo per questo punto del mese.',
 			'income-possibly-duplicated': '{{amount}} è entrato due volte ({{first}} e {{second}}). Se è lo stesso denaro, eliminane uno.',
-			'expense-possibly-duplicated': '{{amount}} è uscito due volte da "{{note}}" ({{first}} e {{second}}): la ricorrenza e l\'addebito reale. Se è lo stesso denaro, cancellane uno.',
+			'expense-possibly-duplicated': '{{amount}} è uscito due volte da "{{note}}" ({{first}} e {{second}}): un movimento automatico [Auto] di una vecchia ricorrenza e l\'addebito reale. Se è lo stesso denaro, cancella l\'[Auto].',
 		},
 	},
 
@@ -351,6 +351,14 @@ const it = {
 			title: 'Cosa dicono i numeri',
 			empty: 'Niente degno di nota questo mese.',
 			openHint: 'Apre la lista delle entrate del mese',
+			doubleCharge: {
+				deleteAuto: "Cancella l'[Auto]",
+				deleteAutoHint: "Cancella il movimento automatico e lascia l'addebito reale",
+				confirmTitle: "Cancellare l'[Auto]?",
+				confirmMessage: 'Il movimento automatico "{{note}}" di {{amount}} viene cancellato. L\'addebito reale resta.',
+				confirm: 'Cancella',
+				cancel: 'Annulla',
+			},
 			severity: {
 				critical: 'Urgente',
 				attention: 'Attenzione',

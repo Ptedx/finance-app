@@ -153,7 +153,7 @@ const pt = {
 			'card-load-heavy': 'Suas faturas somam {{percent}} de um mês de renda.',
 			'spending-above-pace': 'Você está gastando {{percent}} acima do seu ritmo para esta altura do mês.',
 			'income-possibly-duplicated': '{{amount}} entrou duas vezes ({{first}} e {{second}}). Se for o mesmo dinheiro, apague um.',
-			'expense-possibly-duplicated': '{{amount}} saiu duas vezes de "{{note}}" ({{first}} e {{second}}): a recorrente e a cobrança de verdade. Se for o mesmo dinheiro, apague um.',
+			'expense-possibly-duplicated': '{{amount}} saiu duas vezes de "{{note}}" ({{first}} e {{second}}): um lançamento automático [Auto] de uma recorrência antiga e a cobrança de verdade. Se for o mesmo dinheiro, apague o [Auto].',
 		},
 	},
 
@@ -346,6 +346,14 @@ const pt = {
 			title: 'O que os números dizem',
 			empty: 'Nada digno de nota neste mês.',
 			openHint: 'Abre a lista de entradas do mês',
+			doubleCharge: {
+				deleteAuto: 'Apagar o [Auto]',
+				deleteAutoHint: 'Apaga o lançamento automático e deixa a cobrança de verdade',
+				confirmTitle: 'Apagar o [Auto]?',
+				confirmMessage: 'Sai o lançamento automático "{{note}}" de {{amount}}. A cobrança de verdade fica.',
+				confirm: 'Apagar',
+				cancel: 'Cancelar',
+			},
 			severity: {
 				critical: 'Urgente',
 				attention: 'Atenção',
