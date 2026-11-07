@@ -245,6 +245,31 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		expect(decisions()[0].data).toMatchObject({ kind: 'pix_in', direction: 'in', account: 'adopted' });
 	});
 
+	// SPD-112: o banco veio do pacote, porque o nome na tela não é um que o app reconheça.
+	it('app de banco conhecido com outro nome na tela: a conta sai do pacote, e o diário diz isso', async () => {
+		await ingest(raw('com.picpay', 'Carteira digital', 'Pix enviado', 'Você enviou um Pix de R$ 41,70 para JOAO PEREIRA'));
+
+		expect(decisions()[0].data).toMatchObject({ pkg: 'com.picpay', knownBank: true, bankFromPackage: true, account: 'created' });
+		expect(JSON.stringify(decisions()[0].data)).not.toMatch(/Carteira|PicPay|JOAO|41/);
+	});
+
+	it('com o nome de sempre na tela, o diário não marca nada', async () => {
+		await ingest(purchase());
+
+		expect(decisions()[0].data.bankFromPackage).toBeUndefined();
+	});
+
+	// SPD-112 (NOTIF-20): o SMS do banco e, 8 minutos depois, o app do banco são a mesma compra.
+	it('SMS citando o banco + o aviso do banco minutos depois: duplicata, com o par no diário', async () => {
+		manualAccount({ name: 'Conta Nubank', bankName: 'Nubank' });
+		const sms = raw(SMS, 'Mensagens', 'Nubank', 'Compra de R$ 35,90 APROVADA em PADARIA ESTRELA para o cartão com final 9876.');
+		const bank = { ...purchase(), postedAt: new Date(Date.parse(sms.postedAt) + 8 * 60_000).toISOString() };
+		await ingest(sms, bank);
+
+		expect(decisions()[1].data).toMatchObject({ pkg: NUBANK, action: 'duplicate', outcome: 'duplicate', pair: 'third_party' });
+		expect(decisions()[0].data.pair).toBeUndefined();
+	});
+
 	it('regra aprendida: confirmado sozinho', async () => {
 		learnedRule(purchase());
 		await ingest(purchase());

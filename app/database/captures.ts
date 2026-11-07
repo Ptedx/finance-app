@@ -15,7 +15,7 @@
  * vezes: ali a lápide conta como existente, e está dito caso a caso.
  */
 
-import { BLOCKED_PACKAGES, isSmsPackage } from '../utils/captureMatcher';
+import { BLOCKED_PACKAGES, isSmsPackage, STATEMENT_PACKAGE_PREFIX } from '../utils/captureMatcher';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { nowTimestamp } from '../utils/dateUtils';
 import { nextStampSql } from '../utils/syncStamp';
@@ -251,6 +251,21 @@ export const getResolvedCaptures = async (limit: number): Promise<Capture[]> => 
 		[limit]
 	);
 	return rows.map(toCapture);
+};
+
+/**
+ * O instante da notificação mais recente, em qualquer status, ou nulo. Linha de extrato
+ * (`ofx:`) não é notificação e fica de fora. É o relógio do aviso de captura parada
+ * (SPD-112): as 60 resolvidas mais recentes não servem, porque um extrato grande as enche
+ * de linhas `ofx:` e o último aviso de verdade some da lista. O `MAX` anda pelo índice de
+ * `postedAt` (`idx_captures_posted`) do fim para o começo.
+ */
+export const getLastNotificationPostedAt = async (): Promise<string | null> => {
+	const row = await db.getFirstAsync<{ last: string | null }>(
+		'SELECT MAX(postedAt) AS last FROM captures WHERE packageName NOT LIKE ? AND deletedAt IS NULL',
+		[`${STATEMENT_PACKAGE_PREFIX}%`]
+	);
+	return row?.last ?? null;
 };
 
 export type CapturePatch = Partial<
@@ -501,6 +516,7 @@ export default {
 	getPendingCaptures,
 	countPendingCaptures,
 	getResolvedCaptures,
+	getLastNotificationPostedAt,
 	updateCapture,
 	pruneResolvedCaptures,
 	getMerchantRule,

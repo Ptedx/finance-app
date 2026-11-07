@@ -399,6 +399,40 @@ describe('pacotes bloqueados e bancos conhecidos (SPD-069)', () => {
 		expect(isNonBankApp(raw)).toBe(false);
 		expect(isNoBankNotice(raw)).toBe(false);
 	});
+
+	// SPD-112: só o Mercado Pago tinha o banco pelo pacote. O PicPay com outro nome na tela era
+	// tratado como terceiro, e o aviso que não cita o banco ficava "Sem conta".
+	it('o aviso do PicPay com outro nome na tela vira a conta do PicPay, como o do Mercado Pago', async () => {
+		withAccounts([]);
+
+		const resolved = await resolveAccountForNotification(
+			notice('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.'),
+			{ ...parsed, amountCents: 3000, kind: 'pix_out', counterparty: 'FULANO' }
+		);
+
+		expect(resolved).not.toBeNull();
+		expect(mocked.addAccount).toHaveBeenCalledWith(
+			expect.objectContaining({ name: 'PicPay', bankName: 'PicPay', packageName: 'com.picpay', kind: 'checking' })
+		);
+	});
+
+	it('e adota a conta do mesmo banco cadastrada à mão, pelo pacote', async () => {
+		withAccounts([account({ id: 'c6', name: 'Conta C6', bankName: 'C6 Bank' })]);
+
+		const resolved = await resolveAccountForNotification(
+			notice('com.c6bank.app', 'Meu banco', 'Pix enviado', 'Você enviou R$ 30,00 para FULANO.'),
+			{ ...parsed, amountCents: 3000, kind: 'pix_out', counterparty: 'FULANO' }
+		);
+
+		expect(resolved?.id).toBe('c6');
+		expect(mocked.addAccount).not.toHaveBeenCalled();
+	});
+
+	it('com o nome de sempre na tela, nada muda: o nome da tela vale', async () => {
+		withAccounts([account({ id: 'inter', name: 'Inter', bankName: 'Inter' })]);
+
+		expect((await resolveAccountForNotification(debitPurchase, parsed))?.id).toBe('inter');
+	});
 });
 
 describe('aviso da Nu Empresas vai para a conta PJ (SPD-074)', () => {

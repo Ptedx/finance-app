@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isKnownBankPackage, KNOWN_BANK_PACKAGES } from '../knownBanks';
+import { brandFor } from '../../utils/bankBrands';
+import { bankOfPackage, isKnownBankPackage, KNOWN_BANK_APPS, KNOWN_BANK_PACKAGES } from '../knownBanks';
 
 /**
  * Os apps de banco cujo texto cru pode entrar no diário (DEC-11 b). O serviço nativo tem a
@@ -29,5 +30,17 @@ describe('bancos conhecidos', () => {
 		expect(isKnownBankPackage('com.google.android.apps.walletnfcrel')).toBe(false);
 		expect(isKnownBankPackage('com.okazakee.spendr')).toBe(false);
 		expect(isKnownBankPackage(null)).toBe(false);
+	});
+
+	// SPD-112: o pacote diz o banco, para o resolvedor não depender do nome na tela.
+	it('cada app conhecido diz o seu banco, e o app reconhece esse nome como banco', () => {
+		expect([...KNOWN_BANK_APPS.keys()].sort()).toEqual([...KNOWN_BANK_PACKAGES].sort());
+		for (const [pkg, bank] of KNOWN_BANK_APPS) {
+			expect([pkg, bankOfPackage(pkg)]).toEqual([pkg, bank]);
+			expect([pkg, brandFor(bank) !== null]).toEqual([pkg, true]);
+		}
+		expect(bankOfPackage('com.picpay')).toBe('PicPay');
+		expect(bankOfPackage('com.whatsapp')).toBeNull();
+		expect(bankOfPackage(null)).toBeNull();
 	});
 });

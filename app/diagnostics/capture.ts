@@ -9,10 +9,11 @@
  */
 
 import type { AccountResolution, DestinationResolution } from '../utils/accountResolver';
+import { brandFor } from '../utils/bankBrands';
 import type { Decision } from '../utils/captureMatcher';
 import type { ParsedCapture, RawCapture } from '../utils/captureParser';
 import type { DiagnosticValue } from './contract';
-import { isKnownBankPackage } from './knownBanks';
+import { bankOfPackage, isKnownBankPackage } from './knownBanks';
 import { log } from './log';
 
 /** O que a ingestão fez com o aviso, antes ou depois do motor de decisão. */
@@ -49,7 +50,8 @@ export type CaptureStep =
 	  };
 
 export interface CaptureDecisionInput {
-	raw: Pick<RawCapture, 'packageName'>;
+	/** O nome do app só serve para dizer se o banco veio do pacote; ele mesmo não entra. */
+	raw: Pick<RawCapture, 'packageName'> & Partial<Pick<RawCapture, 'appLabel'>>;
 	fingerprint: string;
 	/** `undefined`: o parser nem rodou; `null`: rodou e descartou. */
 	parsed?: ParsedCapture | null;
@@ -100,6 +102,11 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 		knownBank: isKnownBankPackage(raw.packageName),
 		fingerprint,
 	};
+	// O app de banco conhecido com um nome na tela que o app não reconhece: o banco (e a
+	// conta) saiu do pacote (SPD-112). Só a marca, nunca o nome.
+	if (bankOfPackage(raw.packageName) !== null && raw.appLabel !== undefined && brandFor(raw.appLabel) === null) {
+		data.bankFromPackage = true;
+	}
 
 	if (parsed === null) data.parse = 'failed';
 	else if (parsed) {
@@ -145,6 +152,10 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			if (outcome.overridden) data.overridden = outcome.overridden;
 			if (outcome.externalLeg) data.externalLeg = true;
 			if (outcome.destination) data.destination = outcome.destination;
+			// A duplicata (certa ou perguntada) do app que não é banco com o banco (NOTIF-20).
+			if ((outcome.decision.action === 'duplicate' || outcome.decision.action === 'ask_duplicate') && outcome.decision.pair) {
+				data.pair = outcome.decision.pair;
+			}
 			break;
 		}
 	}

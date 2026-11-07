@@ -21,6 +21,8 @@
  * Puro: recebe o candidato e o que já está na caixa de entrada, devolve uma decisão.
  */
 
+import { isKnownBankPackage } from '../diagnostics/knownBanks';
+import { brandFor } from './bankBrands';
 import {
 	type CaptureDirection,
 	type CaptureKind,
@@ -59,6 +61,11 @@ export interface KnownCapture {
 	accountId?: string | null;
 	/** Final do cartão, quando o aviso o trazia. Opcional para quem não precisa. */
 	cardLast4?: string | null;
+	/**
+	 * O nome do app que avisou, como o aparelho o mostrava: diz se um app fora das listas é
+	 * banco (`sourceOf`). Opcional: sem ele, esse app não forma o par de duas fontes.
+	 */
+	appLabel?: string;
 }
 
 export interface Candidate {
@@ -74,6 +81,8 @@ export interface Candidate {
 	cardLast4?: string | null;
 	/** A conta ou cartão que o resolvedor achou para este aviso. Opcional. */
 	accountId?: string | null;
+	/** O nome do app que avisou (ver `KnownCapture.appLabel`). Opcional. */
+	appLabel?: string;
 }
 
 export type MerchantTreatment = 'transaction' | 'transfer' | 'ignore';
@@ -85,11 +94,18 @@ export interface MerchantRule {
 	confirmations: number;
 }
 
+/**
+ * O par de duas fontes que não é carteira + banco: um app que não é banco (SMS, e-mail, app
+ * de corrida) citando o banco, e o aviso do próprio banco (SPD-112). Grava o mesmo motivo
+ * da carteira (`wallet`, "Mesma compra vista pelo…"); a marca é só para o diário.
+ */
+export type DuplicatePair = 'third_party';
+
 export type Decision =
 	/** A mesma movimentação já está na caixa de entrada por outra fonte. Nada a perguntar. */
-	| { action: 'duplicate'; relatedId: string; reason: 'wallet' | 'statement' }
+	| { action: 'duplicate'; relatedId: string; reason: 'wallet' | 'statement'; pair?: DuplicatePair }
 	/** Mesmo valor, mesma direção, dois avisos próximos: provável, então pergunta. */
-	| { action: 'ask_duplicate'; relatedId: string }
+	| { action: 'ask_duplicate'; relatedId: string; pair?: DuplicatePair }
 	/** Transferência entre contas próprias, certa: par encontrado e nome é o seu, ou regra aprendida. */
 	| { action: 'transfer'; relatedId: string | null; reason: string }
 	/** Saída e entrada do mesmo valor em contas diferentes: provável, então pergunta. */
@@ -132,6 +148,8 @@ export interface DecisionContext {
 // bancos atrasam a notificação da compra no cartão em horas — daí quatro horas para a
 // certeza, e doze para a pergunta. Era uma certeza de doze horas, e isso fundia duas
 // compras de R$ 20,00 do mesmo dia (achado 7.4): valor redondo repetido é o caso comum.
+// O app que não é banco citando o banco (o recibo da corrida, o SMS) + o aviso do banco usa
+// as mesmas janelas da carteira: o banco também atrasa minutos depois do recibo (NOTIF-20).
 // Entre dois bancos, avisos a menos de 3 minutos com o mesmo valor são suspeitos.
 // Uma transferência entre contas próprias pode levar até um dia útil (TED).
 export const WALLET_DUPLICATE_WINDOW_MS = 4 * 60 * 60 * 1000;
@@ -251,17 +269,58 @@ const agrees = (a: string | null | undefined, b: string | null | undefined): boo
 const conflicts = (a: string | null | undefined, b: string | null | undefined): boolean =>
 	Boolean(a) && Boolean(b) && a !== b;
 
+/** Quem avisou, para o par de duas fontes. `unknown`: fora das listas e sem o nome do app. */
+type Source = 'wallet' | 'statement' | 'bank' | 'third_party' | 'unknown';
+
 /**
- * O par carteira + banco: um dos dois é carteira, o outro não; mesmo valor, ambos saída,
- * ambos vivos. É a forma do par — quem decide se é a **mesma** compra é a identidade.
+ * O app de banco conhecido pelo pacote é banco, diga o nome na tela o que disser; o SMS
+ * nunca é. Fora das listas decide o nome do app, como no resolvedor (`isNonBankApp`): banco
+ * reconhecido (`brandFor`) é banco, o resto não é. Sem o nome, não se sabe.
  */
-const isWalletPair = (known: KnownCapture, candidate: Candidate): boolean =>
-	isLive(known) &&
-	known.direction === 'out' &&
-	candidate.direction === 'out' &&
-	known.amountCents === candidate.amountCents &&
-	!isStatementPackage(known.packageName) &&
-	isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName);
+const sourceOf = (item: { packageName: string; appLabel?: string }): Source => {
+	if (isWalletPackage(item.packageName)) return 'wallet';
+	if (isStatementPackage(item.packageName)) return 'statement';
+	if (isKnownBankPackage(item.packageName)) return 'bank';
+	if (isSmsPackage(item.packageName)) return 'third_party';
+	if (item.appLabel === undefined) return 'unknown';
+	return brandFor(item.appLabel) ? 'bank' : 'third_party';
+};
+
+/**
+ * O par de duas fontes, `wallet` ou `third_party`, ou nulo: mesmo valor, ambos saída, ambos
+ * vivos. É a forma do par — quem decide se é a **mesma** compra é a identidade.
+ *
+ * - **carteira + banco**: um dos dois é carteira, o outro não.
+ * - **app que não é banco + banco** (NOTIF-20): o recibo da corrida que cita "cartão Nubank
+ *   final 1534" e o aviso do Nubank. Dois bancos nunca: entre eles fica a janela de 3
+ *   minutos (`findSuspectedDuplicate`). Dois apps que não são banco também não.
+ */
+const pairOf = (known: KnownCapture, candidate: Candidate): 'wallet' | DuplicatePair | null => {
+	if (
+		!isLive(known) ||
+		known.direction !== 'out' ||
+		candidate.direction !== 'out' ||
+		known.amountCents !== candidate.amountCents ||
+		isStatementPackage(known.packageName)
+	) {
+		return null;
+	}
+	if (isWalletPackage(known.packageName) !== isWalletPackage(candidate.packageName)) return 'wallet';
+	const sides = [sourceOf(known), sourceOf(candidate)];
+	return sides.includes('bank') && sides.includes('third_party') ? 'third_party' : null;
+};
+
+/**
+ * O aviso que fica é o que já estava (`known`); o que chega vira duplicata dele. Na carteira
+ * a ingestão leva a compra para a conta do banco; no app que não é banco, não. Se o recibo
+ * ficou sem conta e o banco sabe a conta, decidir sozinho esconderia o aviso que diz de
+ * onde saiu o dinheiro, e a compra ficaria em "Sem conta": pergunta.
+ */
+const keepsAccount = (known: KnownCapture, candidate: Candidate): boolean =>
+	pairOf(known, candidate) !== 'third_party' ||
+	sourceOf(known) !== 'third_party' ||
+	Boolean(known.accountId) ||
+	!candidate.accountId;
 
 // ---------------------------------------------------------------------------
 // Nome de loja aproximado (SPD-044)
@@ -358,6 +417,8 @@ const identityAgrees = (known: KnownCapture, candidate: Candidate): boolean =>
  * por valor fundia duas compras numa (achado 7.4), fechando a fatura do app menor que a
  * do banco, sem perguntar nada. Para decidir sozinho é preciso um sinal que confirme —
  * o estabelecimento, o final do cartão ou a conta — e nenhum que desminta.
+ *
+ * Vale também para o app que não é banco citando o banco + o aviso do banco (`pairOf`).
  */
 export const findWalletDuplicate = (
 	candidate: Candidate,
@@ -365,9 +426,10 @@ export const findWalletDuplicate = (
 ): KnownCapture | undefined =>
 	recent.find(
 		(known) =>
-			isWalletPair(known, candidate) &&
+			pairOf(known, candidate) !== null &&
 			identityAgrees(known, candidate) &&
 			!identityConflicts(known, candidate) &&
+			keepsAccount(known, candidate) &&
 			msBetween(known.postedAt, candidate.postedAt) <= WALLET_DUPLICATE_WINDOW_MS
 	);
 
@@ -386,7 +448,7 @@ export const findWalletSuspect = (
 ): KnownCapture | undefined =>
 	recent.find(
 		(known) =>
-			isWalletPair(known, candidate) &&
+			pairOf(known, candidate) !== null &&
 			!identityConflicts(known, candidate) &&
 			msBetween(known.postedAt, candidate.postedAt) <= WALLET_SUSPECT_WINDOW_MS
 	);
@@ -609,9 +671,14 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 		return { action: 'ignore', reason: 'app_rule' };
 	}
 
-	// 1. Carteira digital + banco: a mesma compra, com certeza. Fica a do banco.
+	// O par que não é de carteira leva a marca, para o diário (SPD-112).
+	const pairMark = (known: KnownCapture): { pair?: DuplicatePair } =>
+		pairOf(known, candidate) === 'third_party' ? { pair: 'third_party' } : {};
+
+	// 1. Carteira digital + banco: a mesma compra, com certeza. Fica a do banco. Também o
+	// app que não é banco citando o banco + o aviso do banco (NOTIF-20).
 	const walletTwin = findWalletDuplicate(candidate, context.recent);
-	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id, reason: 'wallet' };
+	if (walletTwin) return { action: 'duplicate', relatedId: walletTwin.id, reason: 'wallet', ...pairMark(walletTwin) };
 
 	// 1b. O extrato já tem esta movimentação: a notificação chegou depois do import.
 	const statementTwin = findStatementTwin(candidate, context.recent);
@@ -622,7 +689,7 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 	// banco com identidade indefinida é exatamente o caso em que registrar as duas
 	// debitaria a conta duas vezes, e perguntar custa um toque.
 	const walletSuspect = findWalletSuspect(candidate, context.recent);
-	if (walletSuspect) return { action: 'ask_duplicate', relatedId: walletSuspect.id };
+	if (walletSuspect) return { action: 'ask_duplicate', relatedId: walletSuspect.id, ...pairMark(walletSuspect) };
 
 	// 2. Movimentos que não são receita nem despesa.
 	if (candidate.neutral) {
@@ -723,6 +790,7 @@ export const candidateFrom = (
 	neutral: parsed.neutral,
 	cardLast4: parsed.cardLast4 ?? null,
 	accountId,
+	appLabel: raw.appLabel,
 });
 
 export default {

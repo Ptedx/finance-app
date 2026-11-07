@@ -139,6 +139,8 @@ export const toKnownCapture = (capture: Capture): KnownCapture => ({
 	accountId: capture.accountId,
 	// Entram na identidade da duplicata de carteira: valor e direção não bastam.
 	cardLast4: capture.cardLast4,
+	// O nome do app separa o recibo de quem não é banco do aviso do banco (NOTIF-20, SPD-112).
+	appLabel: capture.appLabel ?? undefined,
 });
 
 export const toMerchantRule = (

@@ -62,7 +62,16 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	multiRemove: jest.fn(async () => undefined),
 }));
 
-import { countPendingCaptures, deleteMerchantRule, getIgnoredApps, getPendingCaptures, insertCapture, saveMerchantRule } from '../captures';
+import {
+	countPendingCaptures,
+	deleteMerchantRule,
+	getIgnoredApps,
+	getLastNotificationPostedAt,
+	getPendingCaptures,
+	getResolvedCaptures,
+	insertCapture,
+	saveMerchantRule,
+} from '../captures';
 import { db, initDatabase } from '../database';
 import type { Capture } from '../schema';
 
@@ -178,5 +187,63 @@ describeSql('app bloqueado fora da fila, SQL de verdade (SPD-069)', () => {
 
 		expect((await getPendingCaptures()).map((item) => item.packageName)).toEqual([MAIL]);
 		expect(await countPendingCaptures()).toBe(1);
+	});
+});
+
+/**
+ * SPD-112: o aviso de captura parada contava o silêncio a partir das pendentes e das 60
+ * resolvidas mais recentes por `updatedAt`. Um extrato OFX grande enche as 60 com linhas
+ * `ofx:`, o último aviso de verdade sai da lista e o aviso nunca aparece. A consulta nova
+ * olha a tabela inteira.
+ */
+describeSql('último aviso de notificação, SQL de verdade (SPD-112)', () => {
+	beforeAll(async () => {
+		jest.spyOn(console, 'log').mockImplementation(() => undefined);
+		await initDatabase();
+	});
+	beforeEach(async () => {
+		await db.execAsync('DELETE FROM captures; DELETE FROM merchant_rules;');
+	});
+
+	const NUBANK = 'com.nu.production';
+
+	it('70 linhas de extrato recentes não escondem a notificação de 5 dias atrás', async () => {
+		const notice = await insertCapture(
+			capture({ packageName: NUBANK, appLabel: 'Nubank', postedAt: '2026-10-19T12:00:00.000Z', status: 'confirmed' })
+		);
+		// A notificação foi resolvida antes do import: o `updatedAt` dela é o mais antigo.
+		await db.runAsync('UPDATE captures SET updatedAt = ? WHERE id = ?', ['2026-10-19T12:05:00.000Z', notice.id]);
+		for (let line = 0; line < 70; line += 1) {
+			await insertCapture(
+				capture({
+					packageName: 'ofx:260-12345',
+					appLabel: 'Extrato',
+					postedAt: `2026-10-${String(20 + (line % 4)).padStart(2, '0')}T12:00:00.000Z`,
+					status: 'confirmed',
+				})
+			);
+		}
+
+		// O que o aviso via antes: nenhuma notificação entre as 60 mais recentes.
+		const resolved = await getResolvedCaptures(60);
+		expect(resolved.some((item) => !item.packageName.startsWith('ofx:'))).toBe(false);
+		// A consulta nova acha a notificação.
+		expect(await getLastNotificationPostedAt()).toBe('2026-10-19T12:00:00.000Z');
+	});
+
+	it('a mais recente entre as notificações, pendentes ou não; linha apagada (lápide) não conta', async () => {
+		await insertCapture(capture({ packageName: NUBANK, postedAt: '2026-10-18T12:00:00.000Z', status: 'pending', reason: null }));
+		await insertCapture(capture({ postedAt: '2026-10-21T09:30:00.000Z' }));
+		const gone = await insertCapture(capture({ packageName: NUBANK, postedAt: '2026-10-22T12:00:00.000Z' }));
+		await db.runAsync('UPDATE captures SET deletedAt = ? WHERE id = ?', ['2026-10-23T00:00:00.000Z', gone.id]);
+		await insertCapture(capture({ packageName: 'ofx:260-12345', postedAt: '2026-10-23T12:00:00.000Z' }));
+
+		expect(await getLastNotificationPostedAt()).toBe('2026-10-21T09:30:00.000Z');
+	});
+
+	it('só extrato, ou nada: nulo', async () => {
+		expect(await getLastNotificationPostedAt()).toBeNull();
+		await insertCapture(capture({ packageName: 'ofx:260-12345', postedAt: '2026-10-23T12:00:00.000Z' }));
+		expect(await getLastNotificationPostedAt()).toBeNull();
 	});
 });

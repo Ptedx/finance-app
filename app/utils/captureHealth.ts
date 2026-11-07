@@ -47,6 +47,13 @@ export interface CaptureHealthInput {
 	accounts: ReadonlyArray<Pick<Account, 'packageName' | 'archived'>>;
 	/** As capturas que o app tem à mão (pendentes e o histórico recente). */
 	captures: ReadonlyArray<Pick<Capture, 'packageName' | 'postedAt'>>;
+	/**
+	 * A notificação mais recente da tabela inteira (`getLastNotificationPostedAt`), ISO. O
+	 * histórico à mão são só as 60 resolvidas mais recentes por `updatedAt`, e um extrato
+	 * grande as enche de linhas `ofx:`: o último aviso de verdade sai dele e a "parada"
+	 * nunca aparecia (SPD-112). Vale o mais recente dos dois.
+	 */
+	lastNotificationAt?: string | null;
 	now: number;
 }
 
@@ -95,7 +102,9 @@ export const captureWarning = (input: CaptureHealthInput): CaptureWarning => {
 
 	if (!hasLinkedBank(input.accounts)) return null;
 	// Sem nenhum aviso guardado não há de onde contar os dias.
-	const last = lastBankNotificationAt(input.captures);
+	const inMemory = lastBankNotificationAt(input.captures);
+	const stored = input.lastNotificationAt ? new Date(input.lastNotificationAt).getTime() : Number.NaN;
+	const last = Number.isNaN(stored) ? inMemory : Math.max(stored, inMemory ?? stored);
 	if (last === null) return null;
 
 	const days = Math.floor((input.now - last) / DAY_MS);

@@ -62,6 +62,23 @@ describe('captura parada', () => {
 		expect(captureWarning(input({ captures }))).toEqual({ kind: 'stalled', days: 4 });
 	});
 
+	// SPD-112: um extrato grande enche o histórico em memória de linhas `ofx:` e o último aviso
+	// de verdade sai dele. O instante vem do banco de dados (`getLastNotificationPostedAt`).
+	it('o último aviso vindo do banco de dados vale mesmo fora do histórico em memória', () => {
+		const ofxOnly = Array.from({ length: 60 }, () => captureAgo(0, 'ofx:341-1234'));
+		const lastNotificationAt = new Date(NOW - 5 * DAY).toISOString();
+		expect(captureWarning(input({ captures: ofxOnly, lastNotificationAt }))).toEqual({ kind: 'stalled', days: 5 });
+	});
+
+	it('vale o mais recente entre o banco de dados e o que está em memória', () => {
+		const old = new Date(NOW - 5 * DAY).toISOString();
+		// Acabou de chegar e o banco de dados ainda não foi relido: o da memória vale.
+		expect(captureWarning(input({ captures: [captureAgo(0)], lastNotificationAt: old }))).toBeNull();
+		expect(captureWarning(input({ captures: [], lastNotificationAt: new Date(NOW - DAY).toISOString() }))).toBeNull();
+		expect(captureWarning(input({ captures: [], lastNotificationAt: 'lixo' }))).toBeNull();
+		expect(captureWarning(input({ captures: [], lastNotificationAt: null }))).toBeNull();
+	});
+
 	it('sem conta ligada a app de banco: nada', () => {
 		const captures = [captureAgo(10)];
 		expect(captureWarning(input({ accounts: [], captures }))).toBeNull();

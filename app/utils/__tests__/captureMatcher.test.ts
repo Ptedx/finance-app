@@ -2,6 +2,7 @@ import {
 	APP_IGNORE_THRESHOLD,
 	appRuleKeyOf,
 	type Candidate,
+	candidateFrom,
 	type DecisionContext,
 	decide,
 	fingerprintOf,
@@ -288,6 +289,129 @@ describe('duplicata provável entre bancos: pergunta, não decide', () => {
 		expect(decide(candidate({ postedAt: plus(10 * MIN) }), context({ recent: [inter] })).action).toBe(
 			'pending'
 		);
+	});
+});
+
+/**
+ * NOTIF-20 (SPD-112): o recibo do app de corrida cita o banco ("cartão Nubank final 1534") e
+ * o Nubank avisa a mesma compra minutos depois. Eram dois itens: a janela entre dois avisos
+ * que não são carteira é de 3 minutos, e o par de carteira só valia para carteira. O app que
+ * não é banco citando o banco forma o mesmo par, com as mesmas janelas; dois bancos, não.
+ */
+describe('app que não é banco citando o banco + o aviso do banco (NOTIF-20)', () => {
+	const UBER = 'com.ubercab';
+	const SMS = 'com.google.android.apps.messaging';
+	const receipt = (overrides: Partial<KnownCapture> = {}): KnownCapture =>
+		known({
+			id: 'uber',
+			packageName: UBER,
+			appLabel: 'Uber',
+			amountCents: 2345,
+			merchantKey: null,
+			cardLast4: '1534',
+			accountId: 'nu-card',
+			...overrides,
+		});
+	const nubank = (overrides: Partial<Candidate> = {}): Candidate =>
+		candidate({
+			packageName: NUBANK,
+			appLabel: 'Nubank',
+			postedAt: plus(8 * MIN),
+			amountCents: 2345,
+			counterparty: 'UBER TRIP',
+			merchantKey: 'uber trip',
+			cardLast4: '1534',
+			accountId: 'nu-card',
+			...overrides,
+		});
+
+	it('o recibo e, 8 minutos depois, o banco com o mesmo final: um item só, sem pergunta', () => {
+		expect(decide(nubank(), context({ recent: [receipt()] }))).toEqual({
+			action: 'duplicate',
+			relatedId: 'uber',
+			reason: 'wallet',
+			pair: 'third_party',
+		});
+	});
+
+	it('vale nas duas ordens: o banco primeiro e o recibo depois', () => {
+		const bankFirst = known({ id: 'nb', packageName: NUBANK, amountCents: 2345, merchantKey: 'uber trip', cardLast4: '1534', accountId: 'nu-card' });
+		const later = candidate({
+			packageName: UBER,
+			appLabel: 'Uber',
+			postedAt: plus(8 * MIN),
+			amountCents: 2345,
+			counterparty: null,
+			merchantKey: null,
+			cardLast4: '1534',
+			accountId: 'nu-card',
+		});
+		expect(decide(later, context({ recent: [bankFirst] }))).toEqual({
+			action: 'duplicate',
+			relatedId: 'nb',
+			reason: 'wallet',
+			pair: 'third_party',
+		});
+	});
+
+	it('o SMS do banco seguido do app do banco também é o mesmo par', () => {
+		const sms = receipt({ id: 'sms', packageName: SMS, appLabel: undefined });
+		expect(decide(nubank(), context({ recent: [sms] }))).toMatchObject({ action: 'duplicate', relatedId: 'sms' });
+	});
+
+	it('sem nada que confirme a identidade, pergunta, como a carteira', () => {
+		const blind = receipt({ cardLast4: null, accountId: null });
+		const bank = nubank({ cardLast4: null, accountId: null });
+		expect(findWalletDuplicate(bank, [blind])).toBeUndefined();
+		expect(decide(bank, context({ recent: [blind] }))).toEqual({
+			action: 'ask_duplicate',
+			relatedId: 'uber',
+			pair: 'third_party',
+		});
+	});
+
+	it('o recibo ficou sem conta e o banco sabe a conta: pergunta em vez de esconder o aviso do banco', () => {
+		const homeless = receipt({ accountId: null });
+		expect(decide(nubank(), context({ recent: [homeless] }))).toEqual({
+			action: 'ask_duplicate',
+			relatedId: 'uber',
+			pair: 'third_party',
+		});
+	});
+
+	it('finais diferentes são duas compras, e passadas 12 horas também', () => {
+		expect(decide(nubank({ cardLast4: '9999' }), context({ recent: [receipt()] })).action).toBe('pending');
+		expect(decide(nubank({ postedAt: plus(13 * HOUR) }), context({ recent: [receipt()] })).action).toBe('pending');
+	});
+
+	it('dois bancos continuam com a janela de 3 minutos, com ou sem o nome do app', () => {
+		const inter = known({ id: 'in', packageName: INTER, appLabel: 'Inter', amountCents: 2345, merchantKey: 'uber trip', cardLast4: '1534' });
+		expect(decide(nubank({ accountId: null }), context({ recent: [inter] })).action).toBe('pending');
+		// Banco fora da lista de pacotes, reconhecido pelo nome do app: continua banco.
+		const btg = known({ id: 'btg', packageName: 'com.btg.pactual', appLabel: 'BTG Pactual', amountCents: 2345, cardLast4: '1534' });
+		expect(decide(nubank({ accountId: null }), context({ recent: [btg] })).action).toBe('pending');
+		// Sem o nome do app e fora das listas não dá para saber quem é: não forma par.
+		const unnamed = known({ id: 'x', packageName: 'com.btg.pactual', amountCents: 2345, cardLast4: '1534' });
+		expect(decide(nubank({ accountId: null }), context({ recent: [unnamed] })).action).toBe('pending');
+	});
+
+	it('dois apps que não são banco não são par um do outro', () => {
+		const mail = candidate({
+			packageName: 'com.google.android.gm',
+			appLabel: 'Gmail',
+			postedAt: plus(8 * MIN),
+			amountCents: 2345,
+			merchantKey: null,
+			cardLast4: '1534',
+			accountId: 'nu-card',
+		});
+		expect(decide(mail, context({ recent: [receipt()] })).action).toBe('pending');
+	});
+
+	it('o candidato leva o nome do app que avisou', () => {
+		const raw = { packageName: UBER, appLabel: 'Uber', title: 'Recibo', text: 'R$ 23,45', postedAt: T0 };
+		const parsed = { amountCents: 2345, direction: 'out' as const, kind: 'purchase' as const, counterparty: null, neutral: false };
+		expect(candidateFrom(raw, parsed).appLabel).toBe('Uber');
 	});
 });
 

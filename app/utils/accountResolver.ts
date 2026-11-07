@@ -30,7 +30,7 @@ import { provisionalEntries } from './accountMath';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
 import { buildCardSummary, type CardEntry, type CardMovement } from './cardMath';
 import { parseCardNames } from './cardNames';
-import { isKnownBankPackage } from '../diagnostics/knownBanks';
+import { bankOfPackage, isKnownBankPackage, KNOWN_BANK_APPS } from '../diagnostics/knownBanks';
 import { isSmsPackage, isStatementPackage } from './captureMatcher';
 import { isWalletPackage, type ParsedCapture, type RawCapture } from './captureParser';
 import { bankLabelOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
@@ -58,8 +58,12 @@ const yesterday = (): string => addDays(todayISO(), -1);
  * aparelho mostra — que o usuário ou o fabricante podem trocar. O Mercado Pago é a conta
  * do usuário onde fica a reserva financeira (SPD-022): não pode depender do nome na tela
  * para contar como banco, nem nunca cair nas regras de "app que não é banco".
+ *
+ * Era só o Mercado Pago; desde o SPD-112 é a lista dos apps de banco conhecidos
+ * (`KNOWN_BANK_APPS`): o PicPay que aparece como "Carteira digital" caía como terceiro, e o
+ * aviso dele que não cita o banco ficava "Sem conta".
  */
-export const BANK_PACKAGES: ReadonlyMap<string, string> = new Map([['com.mercadopago.wallet', 'Mercado Pago']]);
+export const BANK_PACKAGES: ReadonlyMap<string, string> = KNOWN_BANK_APPS;
 
 /**
  * O aviso como o resto do resolvedor deve vê-lo: o app de banco conhecido pelo pacote
@@ -67,7 +71,7 @@ export const BANK_PACKAGES: ReadonlyMap<string, string> = new Map([['com.mercado
  * captura guarda o nome original.
  */
 const asBankApp = (raw: RawCapture): RawCapture => {
-	const bank = BANK_PACKAGES.get(raw.packageName);
+	const bank = bankOfPackage(raw.packageName);
 	return bank && !brandFor(raw.appLabel) ? { ...raw, appLabel: bank } : raw;
 };
 

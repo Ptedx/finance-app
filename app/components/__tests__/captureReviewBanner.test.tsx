@@ -21,6 +21,7 @@ const mockCaptures = {
 	openSettings: jest.fn(),
 	pending: [] as Array<{ packageName: string; postedAt: string }>,
 	resolved: [] as Array<{ packageName: string; postedAt: string }>,
+	lastNotificationAt: null as string | null,
 };
 const mockAccounts = {
 	activeAccounts: [] as Array<{ packageName: string | null; archived: boolean }>,
@@ -94,6 +95,7 @@ beforeEach(() => {
 	mockCaptures.enabled = false;
 	mockCaptures.pending = [];
 	mockCaptures.resolved = [];
+	mockCaptures.lastNotificationAt = null;
 	mockCaptures.openSettings = jest.fn();
 	mockAccounts.activeAccounts = [];
 	mockRebind.mockClear();
@@ -244,5 +246,17 @@ describe('o aviso de captura parada', () => {
 		});
 
 		expect(stalledText()).toBe('captures.stalled|11');
+	});
+
+	// SPD-112: o import OFX encheu o histórico em memória e o último aviso real saiu dele.
+	it('histórico só com linhas de extrato: conta pelo último aviso que o contexto leu do banco de dados', async () => {
+		mockCaptures.resolved = Array.from({ length: 60 }, () => ({
+			packageName: 'ofx:260-12345',
+			postedAt: new Date(NOW - DAY).toISOString(),
+		}));
+		mockCaptures.lastNotificationAt = new Date(NOW - 5 * DAY).toISOString();
+		await mount();
+
+		expect(stalledText()).toBe('captures.stalled|5');
 	});
 });

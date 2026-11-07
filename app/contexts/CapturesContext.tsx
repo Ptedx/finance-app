@@ -11,6 +11,7 @@ import {
 import {
 	countPendingCaptures,
 	getIgnoredApps,
+	getLastNotificationPostedAt,
 	getPendingCaptures,
 	getResolvedCaptures,
 	type IgnoredApp,
@@ -64,6 +65,11 @@ interface CapturesContextType {
 	pendingCount: number;
 	/** Apps que não são banco e que o usuário ensinou a ignorar, com "desfazer" (SPD-022). */
 	ignoredApps: IgnoredApp[];
+	/**
+	 * A notificação mais recente da tabela inteira (ISO), para o aviso de captura parada.
+	 * `resolved` não serve: um extrato grande o enche de linhas `ofx:` (SPD-112).
+	 */
+	lastNotificationAt: string | null;
 	isLoading: boolean;
 	lastAction: UndoableAction | null;
 
@@ -98,6 +104,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [resolved, setResolved] = useState<Capture[]>([]);
 	const [pendingCount, setPendingCount] = useState(0);
 	const [ignoredApps, setIgnoredApps] = useState<IgnoredApp[]>([]);
+	const [lastNotificationAt, setLastNotificationAt] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [lastAction, setLastAction] = useState<UndoableAction | null>(null);
 
@@ -127,16 +134,18 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	const load = useCallback(async () => {
-		const [nextPending, nextResolved, count, nextIgnored] = await Promise.all([
+		const [nextPending, nextResolved, count, nextIgnored, nextLastNotification] = await Promise.all([
 			getPendingCaptures(),
 			getResolvedCaptures(HISTORY_LIMIT),
 			countPendingCaptures(),
 			getIgnoredApps(APP_IGNORE_THRESHOLD),
+			getLastNotificationPostedAt(),
 		]);
 		setPending(nextPending);
 		setResolved(nextResolved);
 		setPendingCount(count);
 		setIgnoredApps(nextIgnored);
+		setLastNotificationAt(nextLastNotification);
 	}, []);
 
 	/**
@@ -321,6 +330,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			resolved,
 			pendingCount,
 			ignoredApps,
+			lastNotificationAt,
 			isLoading,
 			lastAction,
 			refresh,
@@ -343,6 +353,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			resolved,
 			pendingCount,
 			ignoredApps,
+			lastNotificationAt,
 			isLoading,
 			lastAction,
 			refresh,

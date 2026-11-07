@@ -1329,10 +1329,15 @@ describe('app bloqueado e banco conhecido (SPD-069)', () => {
 	});
 
 	it('o aviso do PicPay com um nome na tela que o app não reconhece vai para a revisão', async () => {
+		// Desde o SPD-112 o banco sai do pacote: o aviso cai na conta PicPay (aqui, a cadastrada
+		// à mão, que ganha o app), em vez de ficar "Sem conta".
+		mockAccounts.set('picpay', account({ id: 'picpay', kind: 'checking', role: 'main', bankName: 'PicPay' }));
 		const summary = await ingest(raw('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.'));
 
 		expect(summary.inserted).toBe(1);
-		expect([...mockCaptures.values()]).toEqual([expect.objectContaining({ packageName: 'com.picpay', status: 'pending' })]);
+		expect([...mockCaptures.values()]).toEqual([
+			expect.objectContaining({ packageName: 'com.picpay', status: 'pending', accountId: 'picpay' }),
+		]);
 	});
 });
 

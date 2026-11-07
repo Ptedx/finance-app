@@ -73,7 +73,7 @@ const WarningBanner: React.FC<{
 const CaptureReviewBanner: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { pendingCount, supported, enabled, openSettings, pending, resolved } = useCaptures();
+	const { pendingCount, supported, enabled, openSettings, pending, resolved, lastNotificationAt } = useCaptures();
 	const { activeAccounts } = useAccounts();
 	// Nulo até a primeira leitura: nenhum aviso pisca antes de saber se foi dispensado.
 	const [dismissals, setDismissals] = useState<Dismissals | null>(null);
@@ -112,6 +112,8 @@ const CaptureReviewBanner: React.FC = () => {
 				stalledDismissedAt: dismissals.stalledAt,
 				accounts: activeAccounts,
 				captures,
+				// O histórico à mão pode ser só extrato; o último aviso real vem do banco (SPD-112).
+				lastNotificationAt,
 				now: Date.now(),
 			})
 		: null;
