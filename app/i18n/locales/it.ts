@@ -1208,6 +1208,13 @@ account: {
 		back: 'Indietro',
 		close: 'Chiudi',
 		cancel: 'Annulla',
+		// Chiudere un pannello con qualcosa digitato e non salvato (E2E-05).
+		discard: {
+			title: 'Scartare quello che hai digitato?',
+			body: 'I valori digitati in questo pannello non sono ancora stati salvati.',
+			keep: 'Continua a modificare',
+			confirm: 'Scarta',
+		},
 		archived: 'Archiviate',
 		notFound: 'Carta non trovata.',
 		editCard: 'Modifica carta',

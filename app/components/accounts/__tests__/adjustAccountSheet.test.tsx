@@ -20,7 +20,7 @@ jest.mock('react-i18next', () => ({
 	}),
 }));
 
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, Alert } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { Account } from '../../../database/schema';
 import { configureMoney, formatCents } from '../../../utils/money';
@@ -58,6 +58,7 @@ jest.setTimeout(20_000);
 
 let renderer: ReactTestRenderer;
 const onConfirm = jest.fn(async (_input: { spentCents: number; balanceCents: number }) => undefined);
+const onClose = jest.fn();
 
 /** O que o app sabia da conta quando a folha abriu. */
 interface Known {
@@ -78,7 +79,7 @@ const sheet = (known: Known, visible = true) => (
 		balanceCents={known.balanceCents}
 		targetCents={known.targetCents}
 		isEnvelope={known.isEnvelope ?? false}
-		onClose={() => undefined}
+		onClose={onClose}
 		onConfirm={onConfirm}
 	/>
 );
@@ -230,5 +231,36 @@ describe('o par continua ligado enquanto só um campo foi digitado', () => {
 		expect(shown('accounts.adjust.balance')).toBe('600,00');
 		expect(sentence('accounts.adjust.previewEnvelope')).toEqual({ spent: formatCents(40_000), target: formatCents(100_000) });
 		expect(sentence('accounts.adjust.previewBefore')).toBeUndefined();
+	});
+});
+
+describe('E2E-05 — fechar a folha com um valor digitado pergunta antes', () => {
+	const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+
+	/** O voltar do Android, já com o teclado fechado: o Modal chama `onRequestClose`. */
+	const back = async () => {
+		const modal = renderer.root.find((node) => typeof node.props.onRequestClose === 'function');
+		await act(async () => {
+			modal.props.onRequestClose();
+		});
+	};
+
+	it('digitado o gasto, o voltar pergunta se descarta e a folha fica aberta', async () => {
+		await open(NEW_ACCOUNT);
+		await typeInto('accounts.adjust.spent', '1200');
+		await back();
+
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect(alert.mock.calls[0][0]).toBe('cards.discard.title');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shown('accounts.adjust.spent')).toBe('1.200,00');
+	});
+
+	it('sem nada digitado, o voltar fecha direto', async () => {
+		await open(NEW_ACCOUNT);
+		await back();
+
+		expect(alert).not.toHaveBeenCalled();
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 });

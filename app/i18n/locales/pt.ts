@@ -1202,6 +1202,13 @@ const pt = {
 		back: 'Voltar',
 		close: 'Fechar',
 		cancel: 'Cancelar',
+		// Fechar uma folha com algo digitado e não salvo (E2E-05).
+		discard: {
+			title: 'Descartar o que você digitou?',
+			body: 'Os valores digitados nesta folha ainda não foram salvos.',
+			keep: 'Continuar editando',
+			confirm: 'Descartar',
+		},
 		archived: 'Arquivados',
 		notFound: 'Cartão não encontrado.',
 		editCard: 'Editar cartão',

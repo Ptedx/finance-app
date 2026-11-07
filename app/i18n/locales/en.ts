@@ -1207,6 +1207,13 @@ account: {
 		back: 'Back',
 		close: 'Close',
 		cancel: 'Cancel',
+		// Closing a sheet with something typed and not saved (E2E-05).
+		discard: {
+			title: 'Discard what you typed?',
+			body: 'The values typed in this sheet have not been saved yet.',
+			keep: 'Keep editing',
+			confirm: 'Discard',
+		},
 		archived: 'Archived',
 		notFound: 'Card not found.',
 		editCard: 'Edit card',

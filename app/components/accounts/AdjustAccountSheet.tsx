@@ -113,6 +113,7 @@ const AdjustAccountSheet: React.FC<{
 		<Sheet
 			visible={visible}
 			onClose={onClose}
+			confirmDiscard={typed.spent || typed.balance}
 			title={t('accounts.adjust.title', { account: account.name })}
 			subtitle={balanceOnly ? t('accounts.adjust.subtitleBalanceOnly') : t('accounts.adjust.subtitle')}
 		>
