@@ -1,3 +1,4 @@
+import i18next from 'i18next';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
@@ -32,6 +33,7 @@ import * as syncQueue from '../sync/queue';
 import type { BillMovement } from '../utils/billMatcher';
 import { resettleBillPayment, settleBillPayment, undoBillPayment } from '../utils/captureActions';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
+import { localizeDefaultCategories } from '../utils/defaultCategoryNames';
 import { usePeriod } from './PeriodContext';
 
 export interface CategoryTotal {
@@ -113,6 +115,9 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		const initialize = async () => {
 			try {
 				await initDatabase();
+				// As padrão no idioma do app antes da primeira leitura (SPD-088): nascem em
+				// inglês, aqui e no servidor. O sync sobe o que trocou quando a fila começar.
+				await localizeDefaultCategories();
 				setIsReady(true);
 				await loadAllData();
 			} catch (error) {
@@ -339,8 +344,28 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		deleteCategory,
 	};
 
-	// O que o sync baixou da conta só aparece se a tela reler o banco.
-	useAfterPull(refreshData);
+	// O que o sync baixou da conta só aparece se a tela reler o banco. Antes, as padrão que
+	// vieram da conta no inglês da semente (o servidor cria as da conta assim) vão para o
+	// idioma do app — a regra que evita dois aparelhos renomeando uma contra o outro está em
+	// `utils/defaultCategoryNames.ts`.
+	useAfterPull(async () => {
+		if ((await localizeDefaultCategories()) > 0) syncQueue.schedule();
+		await refreshData();
+	});
+
+	// Trocar o idioma (em Ajustes, ou chegado pelo sync) leva as padrão junto.
+	useEffect(() => {
+		if (!isReady) return;
+		const onLanguageChanged = () => {
+			void localizeDefaultCategories().then(async (renamed) => {
+				if (renamed === 0) return;
+				syncQueue.schedule();
+				setCategories(await getCategories());
+			});
+		};
+		i18next.on('languageChanged', onLanguageChanged);
+		return () => i18next.off('languageChanged', onLanguageChanged);
+	}, [isReady]);
 
 	return <TransactionsContext.Provider value={value}>{children}</TransactionsContext.Provider>;
 };

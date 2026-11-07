@@ -598,6 +598,42 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
 	});
 };
 
+/**
+ * Troca o nome de categorias padrão para o idioma do app (SPD-088); quem decide quais é
+ * `utils/defaultCategoryNames.ts`. Devolve quantas trocaram.
+ *
+ * O carimbo depende de onde a linha veio. A recém-semeada (1970) troca só o nome e continua
+ * perdendo para a conta: com carimbo novo e suja, o primeiro login de um aparelho novo
+ * desfaria os nomes que o usuário deu na conta (o motivo do `SEED_TIMESTAMP`). A que já veio
+ * da conta ou foi editada troca como uma edição — carimbo de agora e suja, para subir.
+ *
+ * `from` protege uma edição do usuário que tenha chegado entre a leitura e a escrita: a
+ * troca só vale se a linha ainda tiver aquele nome.
+ */
+export const renameDefaultCategories = async (
+	renames: readonly { id: string; from: string; name: string }[]
+): Promise<number> => {
+	if (renames.length === 0) return 0;
+	const timestamp = nowTimestamp();
+	let changed = 0;
+
+	await db.withTransactionAsync(async () => {
+		for (const rename of renames) {
+			const result = await db.runAsync(
+				`UPDATE categories
+         SET name = ?,
+             updatedAt = CASE WHEN updatedAt = ? THEN updatedAt ELSE ? END,
+             dirty = CASE WHEN updatedAt = ? THEN dirty ELSE 1 END
+         WHERE id = ? AND name = ? AND deletedAt IS NULL`,
+				[rename.name, SEED_TIMESTAMP, timestamp, SEED_TIMESTAMP, rename.id, rename.from]
+			);
+			changed += result.changes;
+		}
+	});
+
+	return changed;
+};
+
 /** Um passo da escada: a versão que ele conclui e o que ele faz. */
 export type MigrationStep = [version: number, run: () => Promise<void>];
 
@@ -4486,6 +4522,7 @@ export default {
 	addCategory,
 	restoreCategory,
 	updateCategory,
+	renameDefaultCategories,
 	deleteCategory,
 	addTransaction,
 	getTransactions,

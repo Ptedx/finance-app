@@ -39,6 +39,11 @@ jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
 
 jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: jest.fn() }));
 
+// As categorias padrão no idioma do app (SPD-088) têm teste próprio.
+jest.mock('../../utils/defaultCategoryNames', () => ({
+	localizeDefaultCategories: jest.fn(async () => 0),
+}));
+
 jest.mock('../PeriodContext', () => ({
 	usePeriod: () => ({ startDate: '2026-10-01', endDate: '2026-10-31' }),
 }));

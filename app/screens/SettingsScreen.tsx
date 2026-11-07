@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
 	Alert,
+	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -30,6 +31,12 @@ import { useRecurringTransactions } from '../contexts/RecurringTransactionsConte
 import { useTransactions } from '../contexts/TransactionsContext';
 import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
+import {
+	type BiometricKind,
+	biometricIcon,
+	biometricKindOf,
+	changeBiometricLock,
+} from '../utils/biometricLock';
 import * as biometricUtils from '../utils/biometricUtils';
 import { eraseAllData } from '../utils/dataWipe';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
@@ -108,7 +115,9 @@ const SettingsScreen = () => {
 
 	const [biometricAvailable, setBiometricAvailable] = useState(false);
 	const [biometricEnabled, setBiometricEnabled] = useState(false);
-	const [biometricType, setBiometricType] = useState('Biometric');
+	const [biometricKind, setBiometricKind] = useState<BiometricKind>('biometric');
+	// O nome do método no meio da frase ("Autentique com biometria..."), no idioma do app.
+	const biometricType = t(`settings.biometricMethod.${biometricKind}`);
 
 	useEffect(() => {
 		const checkBiometrics = async () => {
@@ -116,8 +125,8 @@ const SettingsScreen = () => {
 				const available = await biometricUtils.isBiometricAvailable();
 				setBiometricAvailable(available);
 				if (available) {
-					const type = await biometricUtils.getBiometricType();
-					setBiometricType(type);
+					const types = await biometricUtils.getSupportedAuthTypes();
+					setBiometricKind(biometricKindOf(types, Platform.OS));
 					const enabled = await biometricUtils.isBiometricEnabled();
 					setBiometricEnabled(enabled);
 				}
@@ -349,21 +358,16 @@ const SettingsScreen = () => {
 		router.push('/screens/PrivacyPolicyScreen');
 	};
 
+	// Ligar e desligar passam pela biometria (E2E-19): desligar era um toque, e quem pegasse
+	// o celular com o app aberto tirava a trava. Falhou ou cancelou, fica como estava.
 	const toggleBiometricAuth = async (value: boolean) => {
-		if (value && biometricAvailable) {
-			const success = await biometricUtils.authenticateWithBiometrics(
-				`Authenticate to ${value ? 'enable' : 'disable'} ${biometricType} authentication`
-			);
-			if (success) {
-				await biometricUtils.setBiometricEnabled(value);
-				setBiometricEnabled(value);
-			} else {
-				setBiometricEnabled(!value);
-			}
-		} else {
-			await biometricUtils.setBiometricEnabled(value);
-			setBiometricEnabled(value);
-		}
+		const next = await changeBiometricLock(value, biometricEnabled, {
+			authenticate: biometricUtils.authenticateWithBiometrics,
+			save: biometricUtils.setBiometricEnabled,
+			reason: (enabling) =>
+				t(enabling ? 'settings.biometricEnablePrompt' : 'settings.biometricDisablePrompt'),
+		});
+		setBiometricEnabled(next);
 	};
 
 	const renderSettingsItem = (
@@ -476,8 +480,8 @@ const SettingsScreen = () => {
 					<Text style={styles.sectionTitle}>{t('settings.security')}</Text>
 					{biometricAvailable
 						? renderSettingsItem(
-								biometricType === 'Face ID' ? 'scan-face' : 'finger-print',
-								t('settings.biometricAuth', { biometricType }),
+								biometricIcon(biometricKind),
+								t(`settings.biometricLock.${biometricKind}`),
 								() => toggleBiometricAuth(!biometricEnabled),
 								<Switch
 									value={biometricEnabled}
