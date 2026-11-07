@@ -82,9 +82,26 @@ export const logout = async (): Promise<void> => {
 };
 
 /**
+ * Apaga a conta e tudo o que ela tem no servidor, sessões incluídas (SPD-081). A senha vai
+ * no corpo: 204 apagou; 403 `wrong_password` e nada aconteceu; 401 `account_gone` a conta
+ * já não existia (apagada em outro aparelho). Um servidor sem a rota responde 404.
+ *
+ * O 401 não derruba a sessão pelo cliente HTTP (`callerEndsSession`): quem apaga o
+ * aparelho e encerra a sessão é `utils/accountDeletion.ts`.
+ */
+export const deleteAccount = async (password: string): Promise<void> => {
+	await apiRequest<void>('/api/me', {
+		method: 'DELETE',
+		body: { password },
+		authenticated: true,
+		callerEndsSession: true,
+	});
+};
+
+/**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
  * default e um modulo quebrado do ponto de vista dele. Este export existe so para
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { register, login, logout, fetchProfile, updateProfile };
+export default { register, login, logout, fetchProfile, updateProfile, deleteAccount };

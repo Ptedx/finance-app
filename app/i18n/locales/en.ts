@@ -680,6 +680,29 @@ account: {
 		signOutConfirm:
 			'Your data stays on this device and the app keeps working offline. You can sign back in at any time.',
 		signOutHint: 'Signing out keeps everything on this device.',
+		deleteAccount: 'Delete account',
+		deleteAccountHint:
+			'Deletes the account and all its data, on the server and on this device. This cannot be undone.',
+		deleteTitle: 'Delete your account?',
+		deleteConfirm:
+			'The account and all its data on the server are deleted for good. Its data is also deleted from this device and from every other device connected to it, which are signed out.\n\nYour categories, what the app learned about each merchant and your settings stay on this device, as with "Reset All Data". This cannot be undone.',
+		deleteContinue: 'Continue',
+		deleteAuthMsg: 'Authenticate to delete your account',
+		deleteAuthFailed: 'For your security, deleting your account requires authentication.',
+		deletePasswordTitle: 'Confirm with your password',
+		deletePasswordMsg: 'Enter the password for {{email}} to delete the account.',
+		deletePasswordLabel: 'Account password',
+		deleteAction: 'Delete account for good',
+		deleteWrongPassword: 'Wrong password. Nothing was deleted.',
+		deleteUnavailable:
+			"The account couldn't be deleted right now, and nothing was deleted. Check your internet connection and try again.",
+		deleteSessionLost:
+			'Your session expired, and nothing was deleted. Sign in again to delete the account.',
+		deleteSuccessTitle: 'Account deleted',
+		deleteSuccessMsg:
+			'The account and all its data were deleted from the server and from this device; your other devices connected to it are signed out and delete its data the next time they reach the server. Your categories, what the app learned and your settings are kept.',
+		deleteSuccessPartial:
+			'The account and all its data were deleted from the server, but some of the data on this device could not be deleted. Use Settings → "Reset All Data" to finish.',
 		syncNow: 'Sync now',
 		statusSynced: 'Everything saved',
 		statusPending_one: '{{count}} change waiting to upload',
@@ -1415,6 +1438,9 @@ account: {
 		wipedElsewhereTitle: 'Your data was deleted',
 		wipedElsewhereMessage:
 			"This account's data was deleted on another device, so it was deleted from this one too. Your categories, what the app learned and your settings are still here.",
+		accountGoneTitle: 'Your account was deleted',
+		accountGoneMessage:
+			'Your account was deleted, and its data was removed from this device. Your categories, what the app learned and your settings are still here.',
 	},
 } as const;
 

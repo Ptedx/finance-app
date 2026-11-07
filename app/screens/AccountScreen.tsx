@@ -7,6 +7,7 @@ import {
 	ActivityIndicator,
 	Alert,
 	KeyboardAvoidingView,
+	Modal,
 	Platform,
 	ScrollView,
 	StyleSheet,
@@ -23,25 +24,43 @@ import { ApiError } from '../api/client';
 import { countUnsyncedRows } from '../database/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';
+import { usePeriod } from '../contexts/PeriodContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import { claimSummaryParams } from '../sync/claim';
 import { formatInstantDate } from '../utils/dateUtils';
 
 type Mode = 'signIn' | 'signUp';
 
+/** O que o modal da senha diz quando o servidor não apagou. */
+type DeleteError = 'wrong_password' | 'unavailable';
+
 /**
  * Entrar, criar conta e ver o estado da sincronização.
  *
  * A tela é opcional por definição: o app funciona inteiro sem passar por aqui, e sair
- * da conta devolve o usuário ao modo anônimo com os dados intactos.
+ * da conta devolve o usuário ao modo anônimo com os dados intactos. Apagar a conta
+ * (SPD-084) também devolve, mas sem eles: a conta some do servidor e os dados, daqui.
  */
 const AccountScreen: React.FC = () => {
 	const { t } = useTranslation();
-	const { account, isAvailable, signIn, signUp, signOut, pendingClaim, claimCounts, resolveClaim } = useAuth();
+	const {
+		account,
+		isAvailable,
+		signIn,
+		signUp,
+		signOut,
+		deleteAccount,
+		pendingClaim,
+		claimCounts,
+		resolveClaim,
+	} = useAuth();
 	const { status, pending, lastSyncedAt, syncNow } = useSync();
 	const { refreshData } = useTransactions();
 	const { currentCurrency } = useCurrency();
+	const { resetToCurrentMonth } = usePeriod();
+	const { authenticate } = useBiometricAuth();
 
 	/**
 	 * Quantas linhas vivas ainda não subiram.
@@ -58,6 +77,12 @@ const AccountScreen: React.FC = () => {
 	const [password, setPassword] = useState('');
 	const [name, setName] = useState('');
 	const [isSubmitting, setIsSubmitting] = useState(false);
+
+	// "Apagar a conta": o modal da senha, a senha digitada nele e o que deu errado.
+	const [deleteVisible, setDeleteVisible] = useState(false);
+	const [deletePassword, setDeletePassword] = useState('');
+	const [deleteError, setDeleteError] = useState<DeleteError | null>(null);
+	const [isDeleting, setIsDeleting] = useState(false);
 
 	const showError = (error: unknown) => {
 		const message =
@@ -146,6 +171,90 @@ const AccountScreen: React.FC = () => {
 				},
 			},
 		]);
+	};
+
+	/**
+	 * "Apagar a conta" (SPD-084, DEC-35): a confirmação que diz o que some, a biometria
+	 * como no "Apagar todos os dados" das Configurações e então a senha, num modal — o
+	 * `Alert.prompt` só existe no iOS. O que acontece depois está em
+	 * `utils/accountDeletion.ts`.
+	 */
+	const handleDeleteAccount = () => {
+		Alert.alert(t('account.deleteTitle'), t('account.deleteConfirm'), [
+			{ text: t('account.cancel'), style: 'cancel' },
+			{
+				text: t('account.deleteContinue'),
+				style: 'destructive',
+				onPress: async () => {
+					await authenticate(
+						t('account.deleteAuthMsg'),
+						() => {
+							setDeletePassword('');
+							setDeleteError(null);
+							setDeleteVisible(true);
+						},
+						() => {
+							Alert.alert(t('settings.authFailed'), t('account.deleteAuthFailed'));
+						}
+					);
+				},
+			},
+		]);
+	};
+
+	const closeDeleteModal = () => {
+		if (isDeleting) return;
+		setDeleteVisible(false);
+		setDeletePassword('');
+		setDeleteError(null);
+	};
+
+	/**
+	 * Senha errada e "não deu agora" ficam no modal, para tentar de novo sem refazer a
+	 * confirmação. Apagada, a tela da conta já não tem o que mostrar: vai para a inicial,
+	 * e o aviso diz o que aconteceu.
+	 */
+	const confirmDeleteAccount = async () => {
+		if (!deletePassword || isDeleting) return;
+
+		setIsDeleting(true);
+		setDeleteError(null);
+		let result: Awaited<ReturnType<typeof deleteAccount>>;
+		try {
+			result = await deleteAccount(deletePassword);
+		} catch (error) {
+			// O `deleteAccountAndData` não deixa nada subir depois de o servidor apagar: um
+			// erro aqui é de antes, e nada foi apagado.
+			console.error('Error deleting account:', error);
+			result = { ok: false, reason: 'unavailable' };
+		}
+		setIsDeleting(false);
+
+		if (!result.ok && result.reason !== 'session_lost') {
+			// A senha errada sai do campo, para ser digitada de novo; a do "não deu agora"
+			// fica, para tentar de novo quando a internet voltar.
+			if (result.reason === 'wrong_password') setDeletePassword('');
+			setDeleteError(result.reason);
+			return;
+		}
+
+		setDeleteVisible(false);
+		setDeletePassword('');
+
+		if (!result.ok) {
+			// A sessão caiu no meio: a tela já voltou ao modo anônimo e a conta continua lá.
+			Alert.alert(t('account.errorTitle'), t('account.deleteSessionLost'));
+			return;
+		}
+
+		// As telas releem pelo aviso do `wipeDevice`; o mês volta para o atual, como no
+		// "Apagar todos os dados".
+		resetToCurrentMonth();
+		router.dismissTo('/(tabs)');
+		Alert.alert(
+			t('account.deleteSuccessTitle'),
+			t(result.deviceWiped ? 'account.deleteSuccessMsg' : 'account.deleteSuccessPartial')
+		);
 	};
 
 	const statusLabel = () => {
@@ -319,7 +428,102 @@ const AccountScreen: React.FC = () => {
 						<Text style={styles.dangerButtonText}>{t('account.signOut')}</Text>
 					</TouchableOpacity>
 					<Text style={styles.hint}>{t('account.signOutHint')}</Text>
+
+					{/*
+					 * Longe do "Sair" e com outra cara: sair guarda tudo, apagar não deixa nada
+					 * na conta. Um toque errado entre os dois não pode ser fácil.
+					 */}
+					<View style={styles.divider} />
+					<TouchableOpacity
+						style={styles.deleteAccountButton}
+						onPress={handleDeleteAccount}
+						accessibilityRole="button"
+						accessibilityHint={t('account.deleteAccountHint')}
+					>
+						<Ionicons name="trash-outline" size={16} color="#FFFFFF" />
+						<Text style={styles.deleteAccountButtonText}>{t('account.deleteAccount')}</Text>
+					</TouchableOpacity>
+					<Text style={styles.hint}>{t('account.deleteAccountHint')}</Text>
 				</ScrollView>
+
+				<Modal
+					visible={deleteVisible}
+					transparent
+					animationType="fade"
+					onRequestClose={closeDeleteModal}
+					statusBarTranslucent
+				>
+					<KeyboardAvoidingView
+						style={styles.modalOverlay}
+						behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+					>
+						<View style={styles.modalCard} accessibilityViewIsModal>
+							<Text style={styles.modalTitle} accessibilityRole="header">
+								{t('account.deletePasswordTitle')}
+							</Text>
+							<Text style={styles.paragraph}>
+								{t('account.deletePasswordMsg', { email: account.email })}
+							</Text>
+
+							<TextInput
+								style={styles.input}
+								placeholder={t('account.passwordPlaceholder')}
+								placeholderTextColor="#6B7280"
+								value={deletePassword}
+								onChangeText={(value) => {
+									setDeletePassword(value);
+									setDeleteError(null);
+								}}
+								secureTextEntry
+								autoCapitalize="none"
+								autoCorrect={false}
+								autoFocus
+								textContentType="password"
+								editable={!isDeleting}
+								accessibilityLabel={t('account.deletePasswordLabel')}
+								onSubmitEditing={confirmDeleteAccount}
+								returnKeyType="done"
+							/>
+
+							{deleteError ? (
+								<Text
+									style={styles.modalError}
+									accessibilityLiveRegion="polite"
+									accessibilityRole="alert"
+								>
+									{t(
+										deleteError === 'wrong_password'
+											? 'account.deleteWrongPassword'
+											: 'account.deleteUnavailable'
+									)}
+								</Text>
+							) : null}
+
+							<TouchableOpacity
+								style={[
+									styles.deleteAccountButton,
+									(isDeleting || !deletePassword) && styles.buttonDisabled,
+								]}
+								onPress={confirmDeleteAccount}
+								disabled={isDeleting || !deletePassword}
+								accessibilityRole="button"
+								accessibilityState={{ disabled: isDeleting || !deletePassword, busy: isDeleting }}
+							>
+								{isDeleting ? <ActivityIndicator color="#FFFFFF" /> : null}
+								<Text style={styles.deleteAccountButtonText}>{t('account.deleteAction')}</Text>
+							</TouchableOpacity>
+
+							<TouchableOpacity
+								style={styles.switchMode}
+								onPress={closeDeleteModal}
+								disabled={isDeleting}
+								accessibilityRole="button"
+							>
+								<Text style={styles.switchModeText}>{t('account.cancel')}</Text>
+							</TouchableOpacity>
+						</View>
+					</KeyboardAvoidingView>
+				</Modal>
 			</SafeAreaView>
 		);
 	}
@@ -455,6 +659,28 @@ const styles = StyleSheet.create({
 		marginTop: 20,
 	},
 	dangerButtonText: { color: '#FF6B6B', fontSize: 15, fontWeight: '600' },
+	divider: { height: 1, backgroundColor: '#2C2C2E', marginTop: 40 },
+	// Cheio, não contornado como o "Sair": é o único botão da tela que não tem volta.
+	deleteAccountButton: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: 8,
+		backgroundColor: '#D64545',
+		borderRadius: 10,
+		paddingVertical: 14,
+		marginTop: 20,
+	},
+	deleteAccountButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+	modalOverlay: {
+		flex: 1,
+		backgroundColor: 'rgba(0, 0, 0, 0.7)',
+		justifyContent: 'center',
+		padding: 24,
+	},
+	modalCard: { backgroundColor: '#1C1C1E', borderRadius: 12, padding: 20 },
+	modalTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '700', marginBottom: 8 },
+	modalError: { color: '#FF6B6B', fontSize: 14, lineHeight: 20, marginBottom: 4 },
 	switchMode: { marginTop: 20, alignItems: 'center' },
 	switchModeText: { color: '#15E8FE', fontSize: 14 },
 	hint: { color: '#6B7280', fontSize: 12, lineHeight: 16, marginTop: 8, textAlign: 'center' },

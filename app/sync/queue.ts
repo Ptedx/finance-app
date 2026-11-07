@@ -44,6 +44,8 @@ let retryDelay = RETRY_BASE_MS;
 let currentRound: Promise<void> | null = null;
 /** Quantos trabalhos exclusivos estão rodando; com algum, nenhuma rodada começa. */
 let exclusiveHolds = 0;
+/** O fim do último trabalho exclusivo pedido: o próximo começa depois dele. */
+let exclusiveTail: Promise<void> = Promise.resolve();
 
 let state: QueueState = { status: 'idle', lastError: null, pending: 0, pulledVersion: 0 };
 const listeners = new Set<Listener>();
@@ -204,14 +206,28 @@ export const syncImmediately = (): void => {
  * meio subiria o que estava sujo. Não liga nem desliga a fila — o login e o sair
  * continuam mandando nela.
  *
- * Não chamar de dentro de uma rodada (o motor do sync): ela esperaria a si mesma.
+ * Dois trabalhos exclusivos também não correm juntos: o segundo espera o primeiro, na
+ * ordem em que foram pedidos. É o "Apagar a conta" e o 401 `account_gone` de um pedido
+ * que saiu antes dele (SPD-084, `utils/accountDeletion.ts`): os dois apagam o aparelho e
+ * encerram a sessão, e o segundo precisa encontrar o que o primeiro deixou.
+ *
+ * Não chamar de dentro de uma rodada (o motor do sync) nem esperar de dentro de outro
+ * trabalho exclusivo: os dois esperariam a si mesmos. Pedir sem esperar pode — é o que o
+ * aviso de conta apagada faz quando chega de dentro de uma rodada.
  */
 export const runExclusive = async <T>(work: () => Promise<T>): Promise<T> => {
 	exclusiveHolds += 1;
+	const previous = exclusiveTail;
+	let release: () => void = () => {};
+	exclusiveTail = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	try {
+		await previous;
 		while (running && currentRound) await currentRound;
 		return await work();
 	} finally {
+		release();
 		exclusiveHolds -= 1;
 		if (exclusiveHolds === 0) void run();
 	}

@@ -210,8 +210,11 @@ class AccountWipedMidway extends Error {
  *
  * Com a escolha de dados pendente, não: o que está aqui é o que o usuário trouxe de antes
  * do login e ainda não decidiu o que fazer — o apagar da conta não é sobre isso.
+ *
+ * A mesma pergunta decide o que faz a conta que deixou de existir (401 `account_gone`,
+ * `leaveDeletedAccount` em `utils/accountDeletion.ts`): apagar aqui ou só sair.
  */
-const hasSyncedWithAccount = async (): Promise<boolean> => {
+export const hasSyncedWithAccount = async (): Promise<boolean> => {
 	if (await readPendingClaim()) return false;
 	for (const key of [LAST_SYNCED_KEY, CURSOR_KEY, LEGACY_CURSOR_KEY]) {
 		if (await getSyncState(key)) return true;
@@ -722,4 +725,5 @@ export default {
 	getKnownWipeAt,
 	learnAccountWipe,
 	setAccountWipedHandler,
+	hasSyncedWithAccount,
 };

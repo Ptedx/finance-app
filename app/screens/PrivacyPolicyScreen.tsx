@@ -118,11 +118,11 @@ const SECTIONS: PolicySection[] = [
 			['Sair da conta', 'encerra a sessão no servidor e mantém tudo neste aparelho.'],
 			[
 				'Apagar todos os dados',
-				'em Ajustes, apaga lançamentos, contas, cartões, contas a pagar, orçamentos, dívidas, metas e avisos capturados; as categorias e o que o app aprendeu de cada loja ficam. Com conta, os itens apagados ficam marcados como apagados no servidor, para que os outros aparelhos saibam.',
+				'em Ajustes, apaga lançamentos, contas, cartões, contas a pagar, orçamentos, dívidas, metas e avisos capturados; ficam as categorias, o que o app aprendeu de cada loja e as configurações. Com conta, apaga de verdade também no servidor, e os outros aparelhos conectados a ela apagam na próxima sincronização. De cada aviso apagado fica neste aparelho só uma marca, sem texto nem valor, para que a mesma notificação não entre de novo.',
 			],
 			[
 				'Apagar a conta',
-				'para apagar a conta e todos os dados dela no servidor, escreva para vinicosta37@gmail.com.',
+				'em Ajustes, na seção Conta, apaga a conta e todos os dados dela no servidor e em todos os aparelhos conectados a ela — neste na hora; os outros saem da conta e apagam os dados na próxima vez que falarem com o servidor. Em cada aparelho ficam as categorias, o que o app aprendeu de cada loja e as configurações. Quem não tem mais o app pode pedir a exclusão da conta por e-mail: vinicosta37@gmail.com.',
 			],
 		],
 		after: [

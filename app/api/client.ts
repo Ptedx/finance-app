@@ -57,6 +57,15 @@ export class ApiError extends Error {
 	get isAuthExpired(): boolean {
 		return this.status === 401 && this.code !== 'token_expired';
 	}
+
+	/**
+	 * A sessão morreu porque a conta não existe mais (SPD-081): apagada noutro aparelho, ou
+	 * neste com o app fechado antes de terminar. Além de sair, este aparelho apaga os dados
+	 * dela (`leaveDeletedAccount` em `utils/accountDeletion.ts`).
+	 */
+	get isAccountGone(): boolean {
+		return this.status === 401 && this.code === 'account_gone';
+	}
 }
 
 export const isApiConfigured = (): boolean => BASE_URL.length > 0;
@@ -66,6 +75,16 @@ interface RequestOptions {
 	body?: unknown;
 	/** Anexa o access token e renova uma vez se ele tiver expirado. */
 	authenticated?: boolean;
+	/**
+	 * O 401 deste pedido não derruba a sessão: sobe como erro, e quem chamou decide. É o
+	 * "Apagar a conta" (`utils/accountDeletion.ts`): o 401 `account_gone` ali é o fim
+	 * esperado, e quem apaga o aparelho e encerra a sessão, na ordem certa, é ele — o aviso
+	 * daqui faria a tela voltar ao modo anônimo no meio do apagar.
+	 *
+	 * Não vale para a renovação recusada: ela é compartilhada com os outros pedidos, e a
+	 * sessão cai do mesmo jeito.
+	 */
+	callerEndsSession?: boolean;
 }
 
 /**
@@ -78,10 +97,29 @@ interface RequestOptions {
  */
 let refreshInFlight: Promise<StoredTokens | null> | null = null;
 
-/** Chamado quando a sessão cai de vez, para o AuthContext limpar o estado da UI. */
-let onSessionLost: (() => void) | null = null;
+/**
+ * Por que a sessão caiu. `account_gone`: a conta foi apagada, e quem trata apaga também os
+ * dados deste aparelho; o `accessToken` é o do pedido recusado, para quem trata saber que
+ * a sessão daqui ainda é aquela (nunca vai para o diário). Qualquer outro 401 — token
+ * inválido, renovação recusada — é `session_lost`: só sai, e os dados ficam.
+ */
+export type SessionLoss =
+	| { reason: 'session_lost' }
+	| { reason: 'account_gone'; accessToken: string };
 
-export const setSessionLostHandler = (handler: (() => void) | null): void => {
+/**
+ * Chamado quando a sessão cai de vez, para o AuthContext limpar o estado da UI.
+ *
+ * Sem `await`, de propósito: o pedido que recebeu o 401 pode ser de uma rodada da fila de
+ * sync, e quem trata a conta apagada espera a fila parar (`runExclusive`) — que espera a
+ * rodada terminar. Esperar aqui seria a rodada esperar a si mesma.
+ *
+ * Entra por registro, e não por import: o AuthContext importa quase tudo que importa este
+ * cliente.
+ */
+let onSessionLost: ((loss: SessionLoss) => void) | null = null;
+
+export const setSessionLostHandler = (handler: ((loss: SessionLoss) => void) | null): void => {
 	onSessionLost = handler;
 };
 
@@ -172,7 +210,7 @@ const refreshSession = async (): Promise<StoredTokens | null> => {
 			data: { status: response.status, offline: false, loggedOut: true },
 		});
 		await clearTokens();
-		onSessionLost?.();
+		onSessionLost?.({ reason: 'session_lost' });
 		return null;
 	}
 
@@ -210,16 +248,21 @@ export const apiRequest = async <T>(path: string, options: RequestOptions = {}):
 			const renewed = await refreshInFlight;
 			if (!renewed) throw new ApiError(401, 'Sessão expirada.', 'session_lost');
 
-			response = await rawFetch(path, options, renewed.accessToken);
+			token = renewed.accessToken;
+			response = await rawFetch(path, options, token);
 		}
 	}
 
 	if (!response.ok) {
 		const error = await parseError(response);
-		if (error.isAuthExpired) {
+		if (error.isAuthExpired && !options.callerEndsSession) {
 			// O 401 que desloga: o status e o código, nunca o pedido nem o token.
 			log('session', 'session_lost', { level: 'warn', data: { status: error.status, code: error.code } });
-			onSessionLost?.();
+			onSessionLost?.(
+				error.isAccountGone && token
+					? { reason: 'account_gone', accessToken: token }
+					: { reason: 'session_lost' }
+			);
 		}
 		throw error;
 	}

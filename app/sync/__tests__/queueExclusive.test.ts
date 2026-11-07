@@ -92,3 +92,40 @@ describe('runExclusive', () => {
 		expect(syncNow).not.toHaveBeenCalled();
 	});
 });
+
+describe('dois trabalhos exclusivos', () => {
+	// O "Apagar a conta" e o 401 `account_gone` de um pedido que saiu no meio dele (SPD-084):
+	// os dois apagam o aparelho e encerram a sessão. Um espera o outro — o segundo já
+	// encontra a sessão encerrada e não apaga de novo.
+	it('não correm juntos: o segundo começa quando o primeiro acaba', async () => {
+		const order: string[] = [];
+		let finishFirst: () => void = () => {};
+
+		const first = runExclusive(async () => {
+			order.push('primeiro:começa');
+			await new Promise<void>((resolve) => {
+				finishFirst = resolve;
+			});
+			order.push('primeiro:acaba');
+		});
+		const second = runExclusive(async () => {
+			order.push('segundo');
+		});
+		await flush();
+		expect(order).toEqual(['primeiro:começa']);
+
+		finishFirst();
+		await Promise.all([first, second]);
+		expect(order).toEqual(['primeiro:começa', 'primeiro:acaba', 'segundo']);
+	});
+
+	it('o primeiro falhar não prende o segundo', async () => {
+		const first = runExclusive(async () => {
+			throw new Error('falhou');
+		});
+		const second = runExclusive(async () => 'ok');
+
+		await expect(first).rejects.toThrow('falhou');
+		await expect(second).resolves.toBe('ok');
+	});
+});

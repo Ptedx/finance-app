@@ -1,10 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import i18next from 'i18next';
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
+import { Alert, AppState, type AppStateStatus } from 'react-native';
 import { isCaptureEnabled, isCaptureSupported } from '../../modules/spendr-captures';
 import * as authApi from '../api/auth';
-import { ApiError, isApiConfigured, setSessionLostHandler } from '../api/client';
+import { ApiError, isApiConfigured, type SessionLoss, setSessionLostHandler } from '../api/client';
 import { fetchSyncStatus } from '../api/sync';
 import { loadTokens } from '../api/tokens';
 import { clearSyncedData, countLocalData, markEverythingDirty } from '../database/database';
@@ -20,6 +21,11 @@ import {
 } from '../sync/claim';
 import { learnAccountWipe, pullAll, replaceAccountWithDevice, resetCursor } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
+import {
+	type AccountDeletionResult,
+	deleteAccountAndData,
+	leaveDeletedAccount,
+} from '../utils/accountDeletion';
 import { STORAGE_KEYS } from '../utils/storageUtils';
 
 /**
@@ -72,6 +78,11 @@ interface AuthContextType {
 	signIn: (params: { email: string; password: string }) => Promise<void>;
 	signUp: (params: { email: string; password: string; name: string }) => Promise<void>;
 	signOut: () => Promise<void>;
+	/**
+	 * Apaga a conta no servidor e os dados deste aparelho, e sai (SPD-084). O que cada
+	 * resultado quer dizer está em `utils/accountDeletion.ts`.
+	 */
+	deleteAccount: (password: string) => Promise<AccountDeletionResult>;
 
 	/**
 	 * Se a conta recém-conectada já tinha dados. Enquanto for `true`, a UI precisa
@@ -130,6 +141,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		});
 	}, []);
 
+	/**
+	 * A conta não existe mais (401 `account_gone`, SPD-084): apagada noutro aparelho, ou
+	 * neste com o app fechado antes de terminar. O disco — os dados, se este aparelho já
+	 * sincronizava com ela, os tokens e o estado de sync — é de `leaveDeletedAccount`; aqui
+	 * só a tela volta ao modo anônimo, sem o `authApi.logout`, e o aviso aparece.
+	 *
+	 * Um aviso só: o segundo 401 da mesma conta, ou o que chega depois do "Apagar a conta"
+	 * daqui (que tem o aviso dele), volta `already_ended`, e nada muda na tela. Não segura
+	 * nada — é um `Alert` comum, e o apagar já aconteceu.
+	 *
+	 * Sem `await`, como o `endSession`: quem chama é o cliente HTTP, às vezes de dentro de
+	 * uma rodada da fila, que só para depois de a rodada terminar.
+	 */
+	const leaveGoneAccount = useCallback(
+		(accessToken: string) => {
+			leaveDeletedAccount(accessToken)
+				.then((outcome) => {
+					if (outcome === 'already_ended') return;
+					endSession();
+					if (outcome === 'signed_out') return;
+					Alert.alert(
+						i18next.t('dataWipe.accountGoneTitle'),
+						i18next.t(
+							outcome === 'wiped' ? 'dataWipe.accountGoneMessage' : 'account.deleteSuccessPartial'
+						)
+					);
+				})
+				.catch((error) => {
+					// Nem deu para saber se apagava: sai como qualquer outro 401, com os dados aqui.
+					console.warn('Não foi possível encerrar a conta apagada:', error);
+					endSession();
+				});
+		},
+		[endSession]
+	);
+
 	// Restaura a sessão guardada na abertura. Uma falha aqui abre o app no modo anônimo
 	// em vez de travar — ver o comentário em `api/tokens.ts` sobre backup restaurado.
 	useEffect(() => {
@@ -178,7 +225,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 					level: 'warn',
 					data: { outcome: 'failed', ...errorData(error) },
 				});
-				endSession();
+				// A conta não existe mais — inclusive a que este aparelho apagou e foi fechado
+				// antes de terminar (SPD-084). Quem encerra é `leaveGoneAccount`, avisado pelo
+				// cliente HTTP: ele precisa do estado de sync, que o `endSession` daqui apagaria,
+				// para saber se os dados deste aparelho saem junto.
+				if (!(error instanceof ApiError && error.isAccountGone)) endSession();
 			} finally {
 				setIsLoading(false);
 			}
@@ -187,11 +238,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		restore();
 	}, [endSession, resumeClaim]);
 
-	// O cliente HTTP avisa quando a sessão morre de vez (refresh recusado).
+	// O cliente HTTP avisa quando a sessão morre de vez (refresh recusado, token inválido,
+	// conta apagada), e por quê.
 	useEffect(() => {
-		setSessionLostHandler(endSession);
+		setSessionLostHandler((loss: SessionLoss) => {
+			if (loss.reason === 'account_gone') leaveGoneAccount(loss.accessToken);
+			else endSession();
+		});
 		return () => setSessionLostHandler(null);
-	}, [endSession]);
+	}, [endSession, leaveGoneAccount]);
 
 	// Voltar ao foreground é o gatilho natural: é quando o usuário vai olhar os números,
 	// e portanto quando eles precisam estar certos.
@@ -370,6 +425,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		endSession();
 	}, [endSession]);
 
+	/**
+	 * "Apagar a conta" (SPD-084). O disco — servidor, aparelho, tokens, estado de sync — é
+	 * de `deleteAccountAndData`; aqui só a tela volta ao modo anônimo, sem o
+	 * `authApi.logout`: a sessão no servidor foi apagada junto com a conta.
+	 *
+	 * O `endSession` limpa de novo o estado de sync que o apagar já limpou: repetir não faz
+	 * mal, e é o mesmo caminho do "sair". A sessão que caiu no meio (`session_lost`) sai
+	 * igual, como qualquer outro 401 faria — o pedido de apagar não deixa o cliente HTTP
+	 * avisar por conta própria (`callerEndsSession`).
+	 */
+	const deleteAccount = useCallback(
+		async (password: string): Promise<AccountDeletionResult> => {
+			const result = await deleteAccountAndData(password);
+			if (result.ok || result.reason === 'session_lost') endSession();
+			return result;
+		},
+		[endSession]
+	);
+
 	const syncProfilePreferences = useCallback(
 		(changes: { baseCurrency?: string; language?: string }) => {
 			if (!account) return;
@@ -392,6 +466,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		signIn,
 		signUp,
 		signOut,
+		deleteAccount,
 		pendingClaim,
 		claimCounts,
 		resolveClaim,

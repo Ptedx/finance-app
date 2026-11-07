@@ -10,7 +10,12 @@
  * A regra é pura e mora em `sync/accountWipe.ts`; quem a aplica é o motor do sync.
  */
 
-import { dataWipedRefusal, decideAccountWipe, isNewerWipe } from '../accountWipe';
+import {
+	dataWipedRefusal,
+	decideAccountGone,
+	decideAccountWipe,
+	isNewerWipe,
+} from '../accountWipe';
 
 const WIPED_AT = '2026-10-27T10:00:00.000Z';
 const EARLIER = '2026-10-20T08:00:00.000Z';
@@ -112,5 +117,17 @@ describe('o push recusado porque a conta foi apagada', () => {
 		expect(dataWipedRefusal(apiError(0, 'offline'))).toBeNull();
 		expect(dataWipedRefusal(new Error('qualquer'))).toBeNull();
 		expect(dataWipedRefusal(null)).toBeNull();
+	});
+});
+
+describe('a conta não existe mais (401 `account_gone`, SPD-084)', () => {
+	// A conta foi apagada noutro aparelho — ou neste, com o app fechado antes de ele
+	// terminar. A mesma regra do apagar de outro aparelho: quem já sincronizava apaga.
+	it('o aparelho que já sincronizava com ela apaga os dados e sai', () => {
+		expect(decideAccountGone({ syncedBefore: true })).toBe('wipe');
+	});
+
+	it('o que estava entrando nela (a escolha de dados no meio) só sai: o que tem aqui nunca esteve na conta', () => {
+		expect(decideAccountGone({ syncedBefore: false })).toBe('sign_out');
 	});
 });

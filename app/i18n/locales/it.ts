@@ -680,6 +680,30 @@ account: {
 		signOutConfirm:
 			"I tuoi dati restano su questo dispositivo e l'app continua a funzionare offline. Puoi rientrare quando vuoi.",
 		signOutHint: 'Uscendo, tutto resta su questo dispositivo.',
+		deleteAccount: "Elimina l'account",
+		deleteAccountHint:
+			"Elimina l'account e tutti i suoi dati, sul server e su questo dispositivo. L'azione non può essere annullata.",
+		deleteTitle: "Eliminare l'account?",
+		deleteConfirm:
+			'L’account e tutti i suoi dati sul server vengono eliminati per sempre. I suoi dati vengono eliminati anche da questo dispositivo e da tutti gli altri collegati, che vengono disconnessi.\n\nRestano qui le categorie, ciò che l’app ha imparato su ogni esercente e le impostazioni, come con "Reimposta Tutti i Dati". L’azione non può essere annullata.',
+		deleteContinue: 'Continua',
+		deleteAuthMsg: "Autenticati per eliminare l'account",
+		deleteAuthFailed:
+			"Per la tua sicurezza, l'eliminazione dell'account richiede l'autenticazione.",
+		deletePasswordTitle: 'Conferma con la password',
+		deletePasswordMsg: "Inserisci la password di {{email}} per eliminare l'account.",
+		deletePasswordLabel: "Password dell'account",
+		deleteAction: "Elimina l'account per sempre",
+		deleteWrongPassword: 'Password errata. Non è stato eliminato nulla.',
+		deleteUnavailable:
+			"Non è stato possibile eliminare l'account ora, e non è stato eliminato nulla. Controlla la connessione a internet e riprova.",
+		deleteSessionLost:
+			"La sessione è scaduta, e non è stato eliminato nulla. Accedi di nuovo per eliminare l'account.",
+		deleteSuccessTitle: 'Account eliminato',
+		deleteSuccessMsg:
+			"L'account e tutti i suoi dati sono stati eliminati dal server e da questo dispositivo; gli altri dispositivi collegati vengono disconnessi ed eliminano i suoi dati la prossima volta che contattano il server. Le categorie, ciò che l’app ha imparato e le impostazioni restano.",
+		deleteSuccessPartial:
+			'L’account e tutti i suoi dati sono stati eliminati dal server, ma una parte dei dati di questo dispositivo non è stata eliminata. Usa Impostazioni → "Reimposta Tutti i Dati" per completare.',
 		syncNow: 'Sincronizza ora',
 		statusSynced: 'Tutto salvato',
 		statusPending_one: '{{count}} modifica in attesa di caricamento',
@@ -1415,6 +1439,9 @@ account: {
 		wipedElsewhereTitle: 'I dati sono stati eliminati',
 		wipedElsewhereMessage:
 			'I dati di questo account sono stati eliminati su un altro dispositivo, quindi anche da questo. Le categorie, ciò che l’app ha imparato e le impostazioni restano.',
+		accountGoneTitle: "L'account è stato eliminato",
+		accountGoneMessage:
+			"L'account è stato eliminato, e i suoi dati sono stati rimossi da questo dispositivo. Le categorie, ciò che l’app ha imparato e le impostazioni restano.",
 	},
 } as const;
 

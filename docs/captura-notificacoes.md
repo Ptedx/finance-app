@@ -163,6 +163,51 @@ o aparelho não tem como saber, com o relógio dele, o que veio antes ou depois.
 Código: `app/sync/accountWipe.ts` (a regra), `applyWipeMark` em `app/sync/engine.ts` (onde
 pull, push e login a aplicam) e `app/sync/remoteWipe.ts` (o apagar e o aviso).
 
+## Apagar a conta
+
+Ajustes → Conta → "Apagar a conta" (SPD-084, DEC-35; exigência da Google Play). Uma
+confirmação que diz o que some, a biometria (como no "Apagar todos os dados", quando
+ligada) e a senha da conta, num modal.
+
+- O servidor apaga primeiro (`DELETE /api/me` com `{ password }`, SPD-081): a conta e
+  tudo o que ela tem, sessões incluídas. **204**, ou **401 `account_gone`** (a conta já
+  tinha sido apagada em outro aparelho): este aparelho apaga os dados como no "Apagar
+  todos os dados" sem conta — ficam as categorias, as regras aprendidas e as configurações
+  — e a sessão termina aqui sem o `/auth/logout`, que não tem mais sessão para revogar:
+  tokens, `sync_state` inteiro (cursor, claim, conta dona, `knownWipeAt`) e a conta na
+  tela. Depois, a tela inicial e o aviso de conta apagada.
+- **403 `wrong_password`**: nada acontece; o modal diz que a senha está errada e fica
+  aberto. **Sem rede, 404 (servidor sem a rota), 429, 5xx**: nada é apagado, nem lá nem
+  aqui, e o modal pede para tentar de novo com internet.
+- Tudo com a fila de sync parada (`runExclusive`), e a fila é desligada antes de ser
+  solta: nenhuma rodada sai com o token de uma conta que não existe mais. O 401 desse
+  pedido não derruba a sessão pelo cliente HTTP (`callerEndsSession`), para a tela não
+  voltar ao modo anônimo no meio do apagar; a renovação recusada derruba como sempre, e
+  aí nada foi apagado.
+- Os outros aparelhos ficam sabendo no próximo pedido que fizerem — o sync, o perfil na
+  abertura, o envio do diário —, que volta 401 `account_gone`. O que já sincronizava com a
+  conta apaga os dados como aqui (ficam as categorias, as regras aprendidas e as
+  configurações), sai sem o `/auth/logout` e mostra uma vez "A conta foi apagada, e os
+  dados dela saíram deste aparelho". O que estava entrando nela (a escolha de dados no
+  meio) só sai: o que ele tem nunca esteve na conta. "Já sincronizava" é o mesmo do
+  apagar de outro aparelho (`hasSyncedWithAccount`). Qualquer outro 401 (token inválido,
+  renovação recusada) continua só saindo, com os dados no aparelho.
+- O mesmo caminho termina o serviço no aparelho que apagou a conta e foi fechado entre o
+  204 e o apagar daqui: na abertura seguinte, o perfil volta `account_gone`, e o aparelho
+  apaga e sai.
+- O 401 `account_gone` é tratado com a fila parada (`runExclusive`), que também não deixa
+  dois trabalhos exclusivos correrem juntos: o pedido que saiu antes do "Apagar a conta" e
+  voltou com o 401 no meio dele espera o fim, encontra a sessão encerrada e não apaga nem
+  avisa de novo. Quando o 401 chega de dentro de uma rodada da fila, o cliente HTTP avisa
+  sem esperar: a rodada termina com o erro, e só então o aparelho é apagado.
+- Se o aparelho falhar ao apagar depois de o servidor ter apagado, a sessão sai do mesmo
+  jeito e o aviso manda terminar por "Apagar todos os dados".
+- Código: `app/utils/accountDeletion.ts` (a ordem; `leaveDeletedAccount` para o 401
+  `account_gone`), `decideAccountGone` em `app/sync/accountWipe.ts`, o motivo do 401 em
+  `app/api/client.ts` (`SessionLoss`), `deleteAccount` em `app/api/auth.ts` e em
+  `app/contexts/AuthContext.tsx` (com `leaveGoneAccount`, a tela e o aviso), a tela em
+  `app/screens/AccountScreen.tsx`.
+
 ## Ligar
 
 Configurações → Captura automática → "Ler notificações do banco" abre a tela do

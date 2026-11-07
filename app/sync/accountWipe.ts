@@ -68,6 +68,21 @@ export const decideAccountWipe = ({
 	return syncedBefore ? 'wipe' : 'adopt';
 };
 
+export type AccountGoneDecision = 'wipe' | 'sign_out';
+
+/**
+ * A conta não existe mais (401 `account_gone`, SPD-084): foi apagada noutro aparelho, ou
+ * neste com o app fechado antes de ele terminar. A mesma regra do apagar de outro aparelho,
+ * pelo mesmo motivo: o aparelho que já sincronizava com ela apaga os dados — o que ele tem
+ * veio da conta ou foi para ela —; o que estava entrando nela só sai, porque o que tem aqui
+ * nunca esteve na conta. Quem aplica é `leaveDeletedAccount` (`utils/accountDeletion.ts`).
+ */
+export const decideAccountGone = ({
+	syncedBefore,
+}: {
+	syncedBefore: boolean;
+}): AccountGoneDecision => (syncedBefore ? 'wipe' : 'sign_out');
+
 /**
  * O push recusado porque a conta foi apagada (409 `data_wiped`): devolve o instante que o
  * servidor mandou junto (`null` se não veio), ou `null` se a falha é outra.
@@ -88,4 +103,4 @@ export const dataWipedRefusal = (error: unknown): { dataWipedAt: string | null }
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { isNewerWipe, decideAccountWipe, dataWipedRefusal };
+export default { isNewerWipe, decideAccountWipe, decideAccountGone, dataWipedRefusal };

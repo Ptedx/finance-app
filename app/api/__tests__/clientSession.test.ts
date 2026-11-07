@@ -151,3 +151,122 @@ describe('o corpo da resposta de erro (SPD-083)', () => {
 		});
 	});
 });
+
+describe('quem chama encerra a sessão (o "Apagar a conta", SPD-084)', () => {
+	const deleteMe = () =>
+		client.apiRequest('/api/me', {
+			method: 'DELETE',
+			authenticated: true,
+			callerEndsSession: true,
+		});
+
+	it('o 401 sobe com o código, sem derrubar a sessão por conta própria', async () => {
+		fetchMock.mockResolvedValueOnce(response(401, { error: 'não existe', code: 'account_gone' }));
+
+		await expect(deleteMe()).rejects.toMatchObject({ status: 401, code: 'account_gone' });
+
+		expect(sessionLost).not.toHaveBeenCalled();
+		expect(events()).toEqual([]);
+	});
+
+	it('a renovação recusada continua derrubando: ela é de todos os pedidos, não deste', async () => {
+		fetchMock
+			.mockResolvedValueOnce(expired())
+			.mockResolvedValueOnce(response(401, { error: 'não', code: 'invalid' }));
+
+		await expect(deleteMe()).rejects.toMatchObject({ status: 401, code: 'session_lost' });
+
+		expect(sessionLost).toHaveBeenCalledTimes(1);
+	});
+
+	it('o 204 volta sem corpo', async () => {
+		fetchMock.mockResolvedValueOnce(response(204, null));
+
+		await expect(deleteMe()).resolves.toBeUndefined();
+	});
+});
+
+describe('a conta que não existe mais (401 `account_gone`)', () => {
+	// O aviso diz o motivo: a conta apagada (noutro aparelho, ou aqui com o app fechado no
+	// meio) apaga os dados deste aparelho além de sair; qualquer outro 401 só sai, como
+	// sempre. O token vai junto para quem trata saber que é desta sessão — e só para isso.
+	const gone = () => response(401, { error: 'Conta não encontrada.', code: 'account_gone' });
+
+	it('avisa que a conta foi apagada, com o token que o pedido usou', async () => {
+		fetchMock.mockResolvedValueOnce(gone());
+
+		await expect(
+			client.apiRequest('/api/sync/push', { authenticated: true })
+		).rejects.toMatchObject({
+			status: 401,
+			code: 'account_gone',
+			isAccountGone: true,
+		});
+
+		expect(sessionLost).toHaveBeenCalledTimes(1);
+		expect(sessionLost).toHaveBeenCalledWith({
+			reason: 'account_gone',
+			accessToken: 'access-secreto',
+		});
+		expect(events()).toEqual([
+			{ area: 'session', event: 'session_lost', data: { status: 401, code: 'account_gone' } },
+		]);
+	});
+
+	it('depois de renovar: o token é o novo, o que o servidor recusou', async () => {
+		fetchMock
+			.mockResolvedValueOnce(expired())
+			.mockResolvedValueOnce(
+				response(200, { accessToken: 'novo-access', refreshToken: 'novo-refresh' })
+			)
+			.mockResolvedValueOnce(gone());
+
+		await expect(client.apiRequest('/api/me', { authenticated: true })).rejects.toMatchObject({
+			code: 'account_gone',
+		});
+
+		expect(sessionLost).toHaveBeenCalledTimes(1);
+		expect(sessionLost).toHaveBeenCalledWith({
+			reason: 'account_gone',
+			accessToken: 'novo-access',
+		});
+		expect(JSON.stringify(logMock.mock.calls)).not.toMatch(/secreto|novo-/);
+	});
+
+	it('outro 401 continua sendo só a sessão que caiu', async () => {
+		fetchMock.mockResolvedValueOnce(response(401, { error: 'não', code: 'invalid_token' }));
+
+		await expect(
+			client.apiRequest('/api/sync/push', { authenticated: true })
+		).rejects.toMatchObject({
+			isAccountGone: false,
+		});
+
+		expect(sessionLost).toHaveBeenCalledWith({ reason: 'session_lost' });
+	});
+
+	it('a renovação recusada também', async () => {
+		fetchMock
+			.mockResolvedValueOnce(expired())
+			.mockResolvedValueOnce(response(401, { error: 'não', code: 'invalid' }));
+
+		await expect(client.apiRequest('/api/sync/pull', { authenticated: true })).rejects.toBeTruthy();
+
+		expect(sessionLost).toHaveBeenCalledTimes(1);
+		expect(sessionLost).toHaveBeenCalledWith({ reason: 'session_lost' });
+	});
+
+	it('no "Apagar a conta" quem trata é quem pediu: nenhum aviso', async () => {
+		fetchMock.mockResolvedValueOnce(gone());
+
+		await expect(
+			client.apiRequest('/api/me', {
+				method: 'DELETE',
+				authenticated: true,
+				callerEndsSession: true,
+			})
+		).rejects.toMatchObject({ code: 'account_gone' });
+
+		expect(sessionLost).not.toHaveBeenCalled();
+	});
+});

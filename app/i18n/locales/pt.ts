@@ -675,6 +675,29 @@ const pt = {
 		signOutConfirm:
 			'Seus dados ficam neste aparelho e o app continua funcionando offline. Você pode entrar de novo quando quiser.',
 		signOutHint: 'Sair mantém tudo neste aparelho.',
+		deleteAccount: 'Apagar a conta',
+		deleteAccountHint:
+			'Apaga a conta e todos os dados dela, no servidor e neste aparelho. Não dá para desfazer.',
+		deleteTitle: 'Apagar a conta?',
+		deleteConfirm:
+			'A conta e todos os dados dela no servidor são apagados para sempre. Os dados dela também são apagados deste aparelho e de todos os outros conectados a ela, que saem da conta.\n\nFicam aqui as categorias, o que o app aprendeu sobre cada estabelecimento e as configurações, como em "Apagar todos os dados". Não dá para desfazer.',
+		deleteContinue: 'Continuar',
+		deleteAuthMsg: 'Autentique para apagar a conta',
+		deleteAuthFailed: 'Por segurança, apagar a conta exige autenticação.',
+		deletePasswordTitle: 'Confirme com a senha',
+		deletePasswordMsg: 'Digite a senha de {{email}} para apagar a conta.',
+		deletePasswordLabel: 'Senha da conta',
+		deleteAction: 'Apagar a conta para sempre',
+		deleteWrongPassword: 'Senha incorreta. Nada foi apagado.',
+		deleteUnavailable:
+			'Não foi possível apagar a conta agora, e nada foi apagado. Confira a conexão com a internet e tente de novo.',
+		deleteSessionLost:
+			'Sua sessão expirou, e nada foi apagado. Entre de novo na conta para apagá-la.',
+		deleteSuccessTitle: 'Conta apagada',
+		deleteSuccessMsg:
+			'A conta e todos os dados dela foram apagados do servidor e deste aparelho; os outros aparelhos conectados a ela saem da conta e apagam os dados dela na próxima vez que falarem com o servidor. As categorias, o que o app aprendeu e as configurações continuam.',
+		deleteSuccessPartial:
+			'A conta e todos os dados dela foram apagados do servidor, mas parte dos dados deste aparelho não pôde ser apagada. Use Ajustes → "Apagar todos os dados" para terminar.',
 		syncNow: 'Sincronizar agora',
 		statusSynced: 'Tudo salvo',
 		statusPending_one: '{{count}} alteração aguardando envio',
@@ -1410,6 +1433,9 @@ const pt = {
 		wipedElsewhereTitle: 'Os dados foram apagados',
 		wipedElsewhereMessage:
 			'Os dados desta conta foram apagados em outro aparelho, e saíram deste também. As categorias, o que o app aprendeu e as configurações continuam aqui.',
+		accountGoneTitle: 'A conta foi apagada',
+		accountGoneMessage:
+			'A conta foi apagada, e os dados dela saíram deste aparelho. As categorias, o que o app aprendeu e as configurações continuam aqui.',
 	},
 } as const;
 
