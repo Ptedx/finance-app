@@ -2,6 +2,8 @@ import {
 	categoryDeltas,
 	consecutiveSavingsRateDrops,
 	fixedCostShare,
+	monthlyBillsCents,
+	monthlyFixedCommitmentsCents,
 	monthlyFixedCostCents,
 	monthlyRecurringIncomeCents,
 	needsWantsSavingsSplit,
@@ -148,6 +150,34 @@ describe('fixedCostShare', () => {
 
 	it('has no share to report without income', () => {
 		expect(fixedCostShare({ monthlyFixedCents: 2_000_00, incomeCents: 0 })).toBeNull();
+	});
+});
+
+describe('E2E-24 — o custo fixo conta as contas a pagar', () => {
+	const bill = (overrides: Partial<{ amountCents: number | null; active: boolean; debtId: string | null }> = {}) => ({
+		amountCents: 120_00,
+		active: true,
+		debtId: null,
+		...overrides,
+	});
+
+	it('conta a pagar de R$ 120 por mês contra R$ 8.000 de receita: 1,5%', () => {
+		const monthlyFixedCents = monthlyFixedCommitmentsCents({ recurring: [], bills: [bill()], debtInstallmentsCents: 0 });
+		expect(monthlyFixedCents).toBe(120_00);
+		expect(fixedCostShare({ monthlyFixedCents, incomeCents: 8_000_00 })).toBe(150);
+	});
+
+	it('só as ativas, com valor; a de dívida entra pela parcela da dívida, não pela conta', () => {
+		expect(monthlyBillsCents([bill(), bill({ active: false }), bill({ amountCents: null }), bill({ amountCents: 0 }), bill({ debtId: 'car', amountCents: 1_500_00 })])).toBe(120_00);
+		expect(monthlyFixedCommitmentsCents({ recurring: [], bills: [bill(), bill({ debtId: 'car', amountCents: 1_500_00 })], debtInstallmentsCents: 1_497_72 })).toBe(120_00 + 1_497_72);
+	});
+
+	it('a recorrência antiga de mesmo valor já conta a conta a pagar: não soma duas vezes', () => {
+		const recurring = [commitment({ amountCents: 120_00 })];
+		expect(monthlyBillsCents([bill()], recurring)).toBe(0);
+		expect(monthlyFixedCommitmentsCents({ recurring, bills: [bill()], debtInstallmentsCents: 0 })).toBe(120_00);
+		// Valor diferente é outro compromisso.
+		expect(monthlyFixedCommitmentsCents({ recurring: [commitment({ amountCents: 300_00 })], bills: [bill()], debtInstallmentsCents: 0 })).toBe(420_00);
 	});
 });
 

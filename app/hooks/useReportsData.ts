@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccounts } from '../contexts/AccountsContext';
+import { useBills } from '../contexts/BillsContext';
 import { useBudget } from '../contexts/BudgetContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
@@ -21,7 +22,17 @@ import type { Transfer } from '../database/schema';
 import { provisionalEntriesByAccount } from '../utils/accountMath';
 import type { CardEntry } from '../utils/cardMath';
 import { monthKeyOf, monthsBetweenKeys, shiftMonthKey, todayISO } from '../utils/dateUtils';
-import { type DebtsSummary, type DebtVerdict, debtMonthLines, debtStateOn, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
+import {
+	comparisonYield,
+	type DebtsSummary,
+	type DebtVerdict,
+	debtInstallmentsMonthlyCents,
+	debtMonthLines,
+	debtStateOn,
+	effectiveRateBp,
+	termsOf,
+	worthPayingOff,
+} from '../utils/debt';
 import { buildHealthIndicators, type HealthIndicator, type PaceWindow, spendingPaceWindows } from '../utils/healthScore';
 import {
 	buildDebtInsights,
@@ -34,7 +45,7 @@ import {
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthMetrics,
 } from '../utils/insights';
-import { fixedCostShare, FULL_BASIS_POINTS } from '../utils/metrics';
+import { fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents, monthlyFixedCommitmentsCents, monthlyFixedCostCents } from '../utils/metrics';
 import {
 	averageClosedMonths,
 	averageReserveCapitalCents,
@@ -208,13 +219,14 @@ export interface ReportsData {
 
 export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, anchor: ReportsAnchor = 'selected'): ReportsData => {
 	const { selectedMonth, selectedYear } = usePeriod();
-	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, accruedYield12m, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+	const { accounts, balances, overview, cardSummaries, cardsTotals, debitCards, creditCards, accruedYield12m, cdi, isLoading: accountsLoading, refresh: refreshAccounts } = useAccounts();
 	const { currentBudgetCents } = useBudget();
 	const { goal: reserveGoal } = useReserveGoal();
 	const { categories, currentPeriodTransactions, refreshData } = useTransactions();
 	const { metrics, insights: wealthInsights } = useWealthMetrics();
 	const { activeDebts, summary: debtsSummary } = useDebts();
 	const { transactions: recurring } = useRecurringTransactions();
+	const { bills } = useBills();
 
 	const todayKey = monthKeyOf(todayISO());
 	// Ancorado em hoje, o mês escolhido na Home não mexe aqui (ver `ReportsAnchor`).
@@ -429,7 +441,25 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// que a PJ transferiu para a principal, e o indicador acusava "custo fixo acima de 50% da
 	// renda" num mês de R$ 12.000 de pró-labore. Um número só, lido pela grade de saúde e pelo
 	// insight "fixed-cost-heavy" — antes o insight dizia 300% onde a grade dizia 23%.
-	const fixedCostBp = selected ? fixedCostShare({ monthlyFixedCents: metrics.monthlyFixedCents, incomeCents: selected.overview.incomeCents }) : metrics.fixedCostBasisPoints;
+	//
+	// O custo fixo em si soma as recorrências, as contas a pagar e as parcelas das dívidas
+	// (`monthlyFixedCommitmentsCents`): a tela de recorrências saiu (SPD-079), o que vence todo
+	// mês mora nas contas a pagar, e só com as recorrências a internet de R$ 120 contra R$ 8.000
+	// de receita dava "Custo fixo: 0%".
+	const monthlyFixedCents = useMemo(
+		() =>
+			monthlyFixedCommitmentsCents({
+				recurring,
+				bills,
+				debtInstallmentsCents: debtInstallmentsMonthlyCents(
+					activeDebts.map((debt) => ({ terms: termsOf(debt) })),
+					todayISO(),
+					recurring
+				),
+			}),
+		[recurring, bills, activeDebts]
+	);
+	const fixedCostBp = fixedCostShare({ monthlyFixedCents, incomeCents: selected ? selected.overview.incomeCents : metrics.savingsRate.incomeCents });
 
 	const health = useMemo<HealthIndicator[]>(() => {
 		let neededSavingsRateBp: number | null = null;
@@ -511,15 +541,17 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 				const summary = cardSummaries.get(card.id);
 				return summary ? [{ id: card.id, name: card.name, summary }] : [];
 			}),
-			metrics.monthlyFixedCents,
+			// Os fixos sem as parcelas: elas vêm linha a linha logo abaixo.
+			monthlyFixedCostCents(recurring) + monthlyBillsCents(bills, recurring),
 			todayKey,
 			3,
 			debtMonthLines(debtInputs, months, todayISO(), recurring)
 		);
-	}, [creditCards, cardSummaries, metrics.monthlyFixedCents, todayKey, debtInputs, recurring]);
+	}, [creditCards, cardSummaries, bills, todayKey, debtInputs, recurring]);
 
-	// O rendimento contra o qual a dívida é comparada: o da meta, ou 10% ao ano sem meta.
-	const investmentYieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
+	// O rendimento contra o qual a dívida é comparada: o da meta; sem meta, o CDI em uso; sem
+	// CDI, 10% ao ano — o mesmo da tela da dívida.
+	const investmentYieldBp = comparisonYield({ goalYieldBp: goal?.expectedYieldBp, cdiAnnualBp: cdi?.annualBp }).yieldBp;
 
 	const debtItems = useMemo<DebtReportItem[]>(
 		() =>
@@ -607,8 +639,8 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 
 	// O custo fixo na mesma base da grade de saúde (`fixedCostBp`, receita do quadro do mês).
 	const fixedCostInsights = useMemo(
-		() => buildFixedCostInsights({ monthlyFixedCents: metrics.monthlyFixedCents, basisPoints: fixedCostBp }),
-		[metrics.monthlyFixedCents, fixedCostBp]
+		() => buildFixedCostInsights({ monthlyFixedCents, basisPoints: fixedCostBp }),
+		[monthlyFixedCents, fixedCostBp]
 	);
 
 	const insights = useMemo(

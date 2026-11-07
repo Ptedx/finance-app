@@ -13,6 +13,7 @@ import {
 	type WealthSnapshot,
 } from '../insights';
 import { fixedCostShare } from '../metrics';
+import { configureMoney } from '../money';
 import { buildMonthOverview } from '../monthOverview';
 import { buildRetirementReadModel, type RetirementInput } from '../retirement';
 
@@ -64,6 +65,22 @@ describe('computeWealthMetrics', () => {
 		expect(metrics.monthlyFixedCents).toBe(0);
 		expect(metrics.runwayMonths).toBeNull();
 		expect(metrics.fixedCostBasisPoints).toBe(0);
+	});
+
+	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
+	// nas parcelas, e o fôlego que só olhava as recorrências dizia que não havia custo fixo.
+	it('E2E-24 — o custo fixo e o fôlego contam as contas a pagar e as parcelas das dívidas', () => {
+		const metrics = computeWealthMetrics(
+			snapshotOf({ recurring: [], bills: [{ amountCents: 1_000_00, active: true, debtId: null }], debtInstallmentsCents: 1_500_00, liquidCents: 30_000_00 })
+		);
+
+		expect(metrics.monthlyFixedCents).toBe(2_500_00);
+		expect(metrics.runwayMonths).toBe(12);
+		expect(metrics.fixedCostBasisPoints).toBe(2_500);
+		// A conta ligada à dívida entra pela parcela, não duas vezes.
+		expect(
+			computeWealthMetrics(snapshotOf({ recurring: [], bills: [{ amountCents: 1_500_00, active: true, debtId: 'car' }], debtInstallmentsCents: 1_500_00 })).monthlyFixedCents
+		).toBe(1_500_00);
 	});
 });
 
@@ -297,6 +314,17 @@ describe('buildInsights', () => {
 	it('treats a thin runway as critical and a solid one as good news', () => {
 		expect(idsOf(insightsOf({ liquidCents: 5_000_00 }))).toContain('runway-thin');
 		expect(idsOf(insightsOf({ liquidCents: 100_000_00 }))).toContain('runway-solid');
+	});
+
+	it('E2E-29 — os meses de fôlego saem no separador do idioma: 1,7 em português', () => {
+		try {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+			expect(insightsOf({ liquidCents: 5_000_00 }).find((i) => i.id === 'runway-thin')?.params.months).toBe('1,7');
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+			expect(insightsOf({ liquidCents: 5_000_00 }).find((i) => i.id === 'runway-thin')?.params.months).toBe('1.7');
+		} finally {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		}
 	});
 
 	// Enquanto nada está classificado tudo cai em "desejos", e comparar isso com a

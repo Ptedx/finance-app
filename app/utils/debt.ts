@@ -23,6 +23,7 @@ import type { AmortizationSystem, Debt } from '../database/schema';
 import { buildClampedDate, monthKeyOf, parseISODate } from './dateUtils';
 import { FULL_BASIS_POINTS } from './metrics';
 import type { Cents } from './money';
+import { DEFAULT_EXPECTED_YIELD_BP } from './retirement';
 
 export type { AmortizationSystem, DebtKind } from '../database/schema';
 
@@ -84,10 +85,24 @@ export interface DebtSchedule {
 
 const safe = (value: number): number => (Number.isFinite(value) ? value : 0);
 
-/** Taxa mensal equivalente composta: (1 + anual)^(1/12) − 1. */
+/**
+ * Taxa mensal equivalente composta: (1 + anual)^(1/12) − 1.
+ *
+ * A taxa é guardada ao ano em pontos-base inteiros, e quem digita "1,5% ao mês" grava
+ * 1.956 (19,56%). A volta exata dá 1,49985% ao mês, e os juros de R$ 30.000 saíam
+ * R$ 449,96 em vez de R$ 450,00. O campo ao mês aceita até centésimos (um ponto-base
+ * mensal), e cada ponto-base mensal cai num ponto-base anual diferente (a anual anda pelo
+ * menos 12 vezes mais rápido); então, quando a anual guardada é exatamente a de uma mensal
+ * redonda, é essa mensal que vale. Uma taxa digitada ao ano só coincide com isso por acaso,
+ * e a diferença fica abaixo de meio ponto-base ao ano — dentro do arredondamento que já
+ * existe. A ida e volta (`annualRateBpOf(monthlyRateOf(bp)) === bp`) continua fechando.
+ */
 export const monthlyRateOf = (rateBp: number): number => {
 	const annual = Math.max(0, safe(rateBp)) / FULL_BASIS_POINTS;
-	return annual === 0 ? 0 : (1 + annual) ** (1 / 12) - 1;
+	if (annual === 0) return 0;
+	const exact = (1 + annual) ** (1 / 12) - 1;
+	const typed = Math.round(exact * FULL_BASIS_POINTS) / FULL_BASIS_POINTS;
+	return annualRateBpOf(typed) === rateBp ? typed : exact;
 };
 
 /** O inverso: a taxa anual, em pontos-base, de uma taxa mensal. */
@@ -444,6 +459,22 @@ export const worthPayingOff = ({ debtRateBp, investmentYieldBp, investmentTaxBp 
 	};
 };
 
+/** De onde veio o rendimento comparado: a meta, o CDI do Banco Central ou o padrão. */
+export type ComparisonYieldSource = 'goal' | 'cdi' | 'default';
+
+/**
+ * O rendimento contra o qual a dívida é comparada, nesta ordem: o da meta de aposentadoria
+ * (o número que o usuário escolheu); sem meta, o CDI em uso — o mesmo que a tela de contas
+ * mostra; sem CDI nenhum ainda, os 10% de `DEFAULT_EXPECTED_YIELD_BP`. Antes eram sempre
+ * 10% "perto do CDI" com o CDI a 13,65%, e numa dívida entre os dois a recomendação saía
+ * "amortizar rende mais" quando investir rendia o mesmo.
+ */
+export const comparisonYield = ({ goalYieldBp, cdiAnnualBp }: { goalYieldBp: number | null | undefined; cdiAnnualBp: number | null | undefined }): { yieldBp: number; source: ComparisonYieldSource } => {
+	if (goalYieldBp !== null && goalYieldBp !== undefined) return { yieldBp: goalYieldBp, source: 'goal' };
+	if (cdiAnnualBp !== null && cdiAnnualBp !== undefined && Number.isFinite(cdiAnnualBp) && cdiAnnualBp > 0) return { yieldBp: cdiAnnualBp, source: 'cdi' };
+	return { yieldBp: DEFAULT_EXPECTED_YIELD_BP, source: 'default' };
+};
+
 // ---------------------------------------------------------------------------
 // Efeito no mês e no futuro
 // ---------------------------------------------------------------------------
@@ -497,6 +528,23 @@ export const debtMonthLines = (
 		for (const [month, cents] of byMonth) lines.push({ debtId: debt.id, name: debt.name, month, cents, inFixedCost });
 	}
 	return lines;
+};
+
+/**
+ * As parcelas do mês que entram no custo fixo: a próxima de cada dívida que ainda está
+ * sendo paga (a quitada não compromete nada), menos as que uma recorrência do mesmo valor
+ * já conta (`installmentInRecurring`). A parcela, e não o valor da conta a pagar ligada à
+ * dívida: a conta segue a parcela da âncora, e esta é a de hoje.
+ */
+export const debtInstallmentsMonthlyCents = (debts: Array<{ terms: DebtTerms }>, today: string, recurring: RecurringLike[]): Cents => {
+	let total = 0;
+	for (const debt of debts) {
+		const state = debtStateOn(debt.terms, today);
+		if (state.settled || state.balanceCents <= 0 || !state.next) continue;
+		if (installmentInRecurring(state.next.installmentCents, recurring)) continue;
+		total += state.next.installmentCents;
+	}
+	return total;
 };
 
 export interface DebtsSummary {

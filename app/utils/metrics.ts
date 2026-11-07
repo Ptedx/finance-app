@@ -134,6 +134,52 @@ export const monthlyFixedCostCents = (recurring: RecurringCommitment[]): Cents =
 			.map((rule) => safeCents(monthlyEquivalentCents(rule, safeCents(rule.amountCents))))
 	);
 
+/**
+ * Uma conta a pagar, na forma mínima que o custo fixo precisa. `Bill` do banco satisfaz.
+ * `debtId` diz que ela é a parcela de uma dívida.
+ */
+export interface BillCommitment {
+	amountCents: Cents | null;
+	active: boolean;
+	debtId: string | null;
+}
+
+/** A recorrência mensal de despesa com o mesmo valor (1% ou R$ 1 de folga) já conta este compromisso. */
+const inRecurring = (cents: Cents, recurring: RecurringCommitment[]): boolean => {
+	const tolerance = Math.max(100, Math.round(cents * 0.01));
+	return recurring.some((rule) => rule.active && !rule.isIncome && rule.recurrenceType === 'monthly' && Math.abs(safeCents(rule.amountCents) - cents) <= tolerance);
+};
+
+/**
+ * As contas a pagar cadastradas à mão, por mês: as ativas com valor. A conta que "varia"
+ * (sem valor) fica de fora — não há número para somar. A ligada a uma dívida também: a
+ * parcela entra pela dívida (`debtInstallmentsMonthlyCents`), com o valor de hoje. E a que
+ * uma recorrência antiga do mesmo valor já conta não soma de novo, como a parcela de dívida.
+ */
+export const monthlyBillsCents = (bills: BillCommitment[], recurring: RecurringCommitment[] = []): Cents =>
+	sumCents(
+		bills
+			.filter((bill) => bill.active && bill.debtId === null && bill.amountCents !== null && bill.amountCents > 0)
+			.map((bill) => safeCents(bill.amountCents ?? 0))
+			.filter((cents) => !inRecurring(cents, recurring))
+	);
+
+/**
+ * O custo fixo do mês: as recorrências de despesa, as contas a pagar e as parcelas das
+ * dívidas. A tela de recorrências saiu (SPD-079) e o que vence todo mês mora nas contas a
+ * pagar — com só as recorrências, R$ 120 de internet contra R$ 8.000 de receita dava 0%.
+ */
+export const monthlyFixedCommitmentsCents = ({
+	recurring,
+	bills,
+	debtInstallmentsCents,
+}: {
+	recurring: RecurringCommitment[];
+	bills: BillCommitment[];
+	/** `debtInstallmentsMonthlyCents`, de `utils/debt.ts`. */
+	debtInstallmentsCents: Cents;
+}): Cents => monthlyFixedCostCents(recurring) + monthlyBillsCents(bills, recurring) + safeCents(debtInstallmentsCents);
+
 /** Renda recorrente mensal, mesma normalização — o outro lado do mesmo cálculo. */
 export const monthlyRecurringIncomeCents = (recurring: RecurringCommitment[]): Cents =>
 	sumCents(
@@ -408,6 +454,8 @@ export default {
 	savingsRate,
 	savingsRateDelta,
 	monthlyFixedCostCents,
+	monthlyBillsCents,
+	monthlyFixedCommitmentsCents,
 	monthlyRecurringIncomeCents,
 	runwayMonths,
 	fixedCostShare,

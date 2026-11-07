@@ -3,7 +3,7 @@ import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatMonthYear, monthKeyOf, shiftMonthKey, todayISO } from '../../utils/dateUtils';
-import type { ReserveReadModel } from '../../utils/emergencyReserve';
+import { formatMonthsCovered, type ReserveReadModel } from '../../utils/emergencyReserve';
 import { formatCents } from '../../utils/money';
 import { ACCENT } from '../cards/formParts';
 
@@ -63,7 +63,7 @@ const ReserveCard: React.FC<{ reserve: ReserveReadModel; onEdit: () => void }> =
 				accessibilityLabel={t('reserve.a11ySummary', {
 					reserve: formatCents(split.reserveCents),
 					target: formatCents(reserve.targetCents),
-					months: reserve.monthsCovered ?? 0,
+					months: formatMonthsCovered(reserve.monthsCovered ?? 0),
 					targetMonths: reserve.targetMonths,
 				})}
 			>
@@ -75,7 +75,7 @@ const ReserveCard: React.FC<{ reserve: ReserveReadModel; onEdit: () => void }> =
 				</View>
 				<Text style={styles.body}>
 					{t('reserve.covers', {
-						months: (reserve.monthsCovered ?? 0).toFixed(1),
+						months: formatMonthsCovered(reserve.monthsCovered ?? 0),
 						targetMonths: reserve.targetMonths,
 						cost: formatCents(reserve.monthlyCostCents),
 					})}

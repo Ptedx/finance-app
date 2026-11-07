@@ -4,10 +4,12 @@ import {
 	contributionDelayMonths,
 	essentialMonthlyCostCents,
 	essentialShareBp,
+	formatMonthsCovered,
 	type ReserveInput,
 	resolveMonthlyCost,
 	splitSavings,
 } from '../emergencyReserve';
+import { configureMoney } from '../money';
 import type { MonthPoint } from '../reportSeries';
 
 const R = (reais: number) => reais * 100;
@@ -176,6 +178,34 @@ describe('o quadro da reserva', () => {
 		// uma data que ninguém está perseguindo.
 		expect(buildReserveReadModel(input({ monthlyContributionCents: -R(300), monthlyRate: 0.01 })).monthsToFill).toBeNull();
 		expect(contributionDelayMonths(buildReserveReadModel(input({ monthlyContributionCents: -R(300), monthlyRate: 0.01 })))).toBeNull();
+	});
+
+	it('E2E-30 — nada guardado: só o rendimento não é ritmo, e a reserva não enche (nada de "383 meses")', () => {
+		// R$ 1.000 a 100% do CDI (13,65% ao ano), custo de R$ 4.000, meta de 6 meses.
+		const cdiMonthly = 1.1365 ** (1 / 12) - 1;
+		const model = buildReserveReadModel(
+			input({ accounts: [{ balanceCents: R(1_000), purpose: null }], targetMonths: 6, monthlyContributionCents: 0, monthlyRate: cdiMonthly })
+		);
+		expect(model).toMatchObject({ status: 'thin', targetCents: R(24_000), gapCents: R(23_000), minimumGapCents: R(11_000) });
+		expect(model.monthsToFill).toBeNull();
+		expect(contributionDelayMonths(model)).toBeNull();
+	});
+
+	it('E2E-29 — os meses cobertos saem no separador do idioma: 0,3 em português', () => {
+		const model = buildReserveReadModel(input({ accounts: [{ balanceCents: R(1_000), purpose: null }], targetMonths: 6 }));
+		expect(model.monthsCovered).toBe(0.3);
+		try {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+			expect(formatMonthsCovered(model.monthsCovered ?? 0)).toBe('0,3');
+			expect(formatMonthsCovered(2.6)).toBe('2,6');
+			expect(formatMonthsCovered(6)).toBe('6,0');
+			configureMoney({ locale: 'it-IT', currencyCode: 'EUR', currencySymbol: '€' });
+			expect(formatMonthsCovered(0.3)).toBe('0,3');
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+			expect(formatMonthsCovered(0.3)).toBe('0.3');
+		} finally {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		}
 	});
 
 	it('o rendimento ajuda a encher', () => {

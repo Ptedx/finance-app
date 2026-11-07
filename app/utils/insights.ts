@@ -18,7 +18,9 @@
  * de ficarem enterrados em `if`s.
  */
 
+import { formatMonthsCovered } from './emergencyReserve';
 import {
+	type BillCommitment,
 	type CategoryDelta,
 	categoryDeltas,
 	consecutiveSavingsRateDrops,
@@ -26,7 +28,7 @@ import {
 	fixedCostShare,
 	type MonthlySavingsRate,
 	type MonthlyTotal,
-	monthlyFixedCostCents,
+	monthlyFixedCommitmentsCents,
 	monthlyRecurringIncomeCents,
 	NEEDS_WANTS_SAVINGS_TARGET,
 	type NeedsWantsSavings,
@@ -70,6 +72,13 @@ export interface WealthSnapshot {
 	liquidCents: Cents;
 	/** Recorrências vivas, ativas ou não — o filtro é feito por `metrics.ts`. */
 	recurring: RecurringCommitment[];
+	/**
+	 * As contas a pagar, ativas ou não, e as parcelas do mês das dívidas
+	 * (`debtInstallmentsMonthlyCents`). Entram no custo fixo e no fôlego junto com as
+	 * recorrências (`monthlyFixedCommitmentsCents`); ausentes, contam como nada.
+	 */
+	bills?: BillCommitment[];
+	debtInstallmentsCents?: Cents;
 	/** Despesas do período separadas pela natureza da categoria. */
 	expenseTotalsByNature: ExpenseTotalsByNature;
 	/** Totais por categoria do período e do período anterior. */
@@ -106,7 +115,13 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		? savingsRate(snapshot.previousPeriodTotals)
 		: null;
 
-	const monthlyFixedCents = monthlyFixedCostCents(snapshot.recurring);
+	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
+	// nas parcelas, e só com as recorrências o fôlego dizia que não havia custo fixo.
+	const monthlyFixedCents = monthlyFixedCommitmentsCents({
+		recurring: snapshot.recurring,
+		bills: snapshot.bills ?? [],
+		debtInstallmentsCents: snapshot.debtInstallmentsCents ?? 0,
+	});
 	const trend = savingsRateTrend(snapshot.monthlyIncome, snapshot.monthlyExpense);
 
 	return {
@@ -213,8 +228,8 @@ const SEVERITY_ORDER: Record<InsightSeverity, number> = {
 /** Pontos-base como texto de porcentagem, sem casas decimais falsas. */
 const percentText = (basisPoints: number): string => `${Math.round(basisPoints / 100)}%`;
 
-/** Meses com uma casa, que é toda a precisão que "meses de fôlego" comporta. */
-const monthsText = (months: number): string => months.toFixed(1);
+/** Meses com uma casa, que é toda a precisão que "meses de fôlego" comporta, no separador do idioma. */
+const monthsText = (months: number): string => formatMonthsCovered(months);
 
 /**
  * As frases que falam da taxa de poupança, e só elas.

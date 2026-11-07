@@ -1,7 +1,9 @@
 import {
 	annualRateBpOf,
 	buildSchedule,
+	comparisonYield,
 	type DebtTerms,
+	debtInstallmentsMonthlyCents,
 	debtMonthLines,
 	debtStateOn,
 	dueDatesAfter,
@@ -44,6 +46,23 @@ describe('taxas', () => {
 		expect(monthlyRateOf(0)).toBe(0);
 		expect(monthlyRateOf(1_200)).toBeCloseTo(0.009489, 5);
 		expect(annualRateBpOf(monthlyRateOf(2_200))).toBe(2_200);
+	});
+
+	it('E2E-26 — 1,5% digitado ao mês volta exato: juros de R$ 450,00 sobre R$ 30.000', () => {
+		// A taxa é guardada ao ano em pontos-base: 1,5% ao mês vira 1.956 (19,56%), e a volta
+		// dava 1,49985% ao mês — juros de R$ 449,96.
+		const rateBp = annualRateBpOf(0.015);
+		expect(rateBp).toBe(1_956);
+		expect(monthlyRateOf(rateBp)).toBe(0.015);
+		const schedule = buildSchedule({ system: 'price', balanceCents: R(30_000), balanceDate: '2026-10-20', installmentCents: R(1_500), remaining: 24, dueDay: 10, rateBp });
+		expect(schedule.entries[0].interestCents).toBe(R(450));
+		// Outras mensais redondas também, e a ida e volta continua fechando.
+		expect(monthlyRateOf(annualRateBpOf(0.018))).toBe(0.018);
+		expect(monthlyRateOf(annualRateBpOf(0.0099))).toBe(0.0099);
+		for (const bp of [1_200, 1_956, 2_200, 2_387, 3_000]) expect(annualRateBpOf(monthlyRateOf(bp))).toBe(bp);
+		// A taxa digitada ao ano continua a equivalente composta.
+		expect(monthlyRateOf(1_200)).toBeCloseTo(0.009489, 5);
+		expect(monthlyRateOf(1_200)).not.toBe(0.0095);
 	});
 
 	it('parcela Price confere com a fórmula; sem juros é a divisão', () => {
@@ -242,6 +261,23 @@ describe('o veredito', () => {
 	it('perto demais é empate', () => {
 		expect(worthPayingOff({ debtRateBp: 870, investmentYieldBp: 1_000 }).verdict).toBe('tie');
 	});
+
+	it('E2E-27 — sem meta, compara com o CDI em uso; sem CDI, com os 10% de sempre; com meta, com a da meta', () => {
+		expect(comparisonYield({ goalYieldBp: null, cdiAnnualBp: 1_365 })).toEqual({ yieldBp: 1_365, source: 'cdi' });
+		expect(comparisonYield({ goalYieldBp: undefined, cdiAnnualBp: null })).toEqual({ yieldBp: 1_000, source: 'default' });
+		expect(comparisonYield({ goalYieldBp: 900, cdiAnnualBp: 1_365 })).toEqual({ yieldBp: 900, source: 'goal' });
+		// Um CDI que não faz sentido não vale.
+		expect(comparisonYield({ goalYieldBp: null, cdiAnnualBp: 0 })).toEqual({ yieldBp: 1_000, source: 'default' });
+	});
+
+	it('E2E-27 — dívida a 12% com o CDI a 13,65%: não recomenda amortizar; a 19,6%, recomenda', () => {
+		const { yieldBp } = comparisonYield({ goalYieldBp: null, cdiAnnualBp: 1_365 });
+		// 13,65% − 15% de IR = 11,60% líquido: a dívida a 12% fica no empate, não no "amortize".
+		expect(worthPayingOff({ debtRateBp: 1_200, investmentYieldBp: yieldBp })).toMatchObject({ verdict: 'tie', netYieldBp: 1_160 });
+		expect(worthPayingOff({ debtRateBp: 1_960, investmentYieldBp: yieldBp }).verdict).toBe('pay');
+		// Com os 10% fixos de antes, a de 12% saía "amortizar rende mais".
+		expect(worthPayingOff({ debtRateBp: 1_200, investmentYieldBp: 1_000 }).verdict).toBe('pay');
+	});
 });
 
 describe('efeito no mês e no futuro', () => {
@@ -277,6 +313,17 @@ describe('efeito no mês e no futuro', () => {
 			['cons', '2031-09'],
 		]);
 		expect(summary.lastPayoffDate).toBe('2031-08-20');
+	});
+
+	it('E2E-24 — as parcelas do mês no custo fixo: a próxima de cada dívida viva, sem a que a recorrência já conta', () => {
+		const debts = [
+			{ id: 'car', name: 'Carro', terms: car() },
+			{ id: 'cons', name: 'Consórcio', terms: consortium() },
+			{ id: 'paid', name: 'Quitada', terms: car({ balanceCents: 0 }) },
+		];
+		expect(debtInstallmentsMonthlyCents(debts, '2026-09-05', [])).toBe(car().installmentCents + R(800));
+		// A do consórcio já está numa recorrência de R$ 800: não soma de novo.
+		expect(debtInstallmentsMonthlyCents(debts, '2026-09-05', [{ amountCents: R(800), isIncome: false, active: true, recurrenceType: 'monthly' }])).toBe(car().installmentCents);
 	});
 
 	it('dívida quitada não entra no resumo', () => {

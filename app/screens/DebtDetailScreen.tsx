@@ -7,10 +7,11 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCENT, Button } from '../components/cards/formParts';
 import AmortizeSheet from '../components/debts/AmortizeSheet';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
-import { formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
-import { debtStateOn, effectiveRateBp, monthlyRateOf, termsOf, worthPayingOff } from '../utils/debt';
+import { formatDate, formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
+import { comparisonYield, debtStateOn, effectiveRateBp, monthlyRateOf, termsOf, worthPayingOff } from '../utils/debt';
 import { formatCents } from '../utils/money';
 import { formatPercentBp } from '../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
@@ -23,21 +24,25 @@ const VERDICT_ICON = { pay: 'trending-down', invest: 'trending-up', tie: 'swap-h
 /**
  * Uma dívida por inteiro: quanto se deve hoje, a próxima parcela, quando quita e quanto
  * ainda vai de juros; o veredito "amortizar ou investir" com os números por trás; e o
- * cronograma daqui até o fim. O rendimento comparado é o da meta de aposentadoria (ou 10%
- * ao ano sem meta), já descontado o IR.
+ * cronograma daqui até o fim. O rendimento comparado é o da meta de aposentadoria; sem meta,
+ * o CDI em uso (o da tela de contas); sem CDI, 10% ao ano — já descontado o IR.
  */
 const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { debts, recordExtraPayment } = useDebts();
 	const { goal } = useRetirementGoal();
+	const { cdi } = useAccounts();
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [expanded, setExpanded] = useState(false);
 	const debt = debts.find((item) => item.id === debtId);
 	const today = todayISO();
 
 	const state = useMemo(() => (debt ? debtStateOn(termsOf(debt), today) : null), [debt, today]);
-	const investmentYieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
+	const comparison = comparisonYield({ goalYieldBp: goal?.expectedYieldBp, cdiAnnualBp: cdi?.annualBp });
+	const investmentYieldBp = comparison.yieldBp;
+	// O CDI tem duas casas (13,65%): com uma, a frase dizia um número que a tela de contas não mostra.
+	const grossText = formatPercentBp(investmentYieldBp, investmentYieldBp % 10 === 0 ? 1 : 2);
 
 	if (!debt || !state) {
 		return (
@@ -122,14 +127,14 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('debts.verdict.title')}
 						</Text>
-						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(costBp), gross: formatPercentBp(investmentYieldBp), net: formatPercentBp(verdict.netYieldBp) })}`}>
+						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(costBp), gross: grossText, net: formatPercentBp(verdict.netYieldBp) })}`}>
 							<Ionicons name={VERDICT_ICON[verdict.verdict]} size={22} color={VERDICT_COLOR[verdict.verdict]} />
 							<Text style={[styles.verdict, { color: VERDICT_COLOR[verdict.verdict] }]}>{t(`debts.verdict.${verdict.verdict}`)}</Text>
 						</View>
 						<Text style={styles.body}>
 							{t(isConsortium ? 'debts.verdict.whyConsortium' : 'debts.verdict.why', {
 								debt: formatPercentBp(costBp),
-								gross: formatPercentBp(investmentYieldBp),
+								gross: grossText,
 								net: formatPercentBp(verdict.netYieldBp),
 							})}
 						</Text>
@@ -140,7 +145,13 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 								})}
 							</Text>
 						) : null}
-						<Text style={styles.muted}>{goal ? t('debts.verdict.yieldFromGoal') : t('debts.verdict.yieldDefault')}</Text>
+						<Text style={styles.muted}>
+							{comparison.source === 'goal'
+								? t('debts.verdict.yieldFromGoal')
+								: comparison.source === 'cdi' && cdi
+									? t('debts.verdict.yieldCdi', { rate: formatPercentBp(cdi.annualBp, 2), date: formatDate(cdi.date) })
+									: t('debts.verdict.yieldDefault', { rate: formatPercentBp(DEFAULT_EXPECTED_YIELD_BP, 0) })}
+						</Text>
 						<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(true)} />
 					</View>
 				) : null}

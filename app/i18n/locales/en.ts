@@ -179,10 +179,10 @@ const en = {
 			},
 			'fixed-cost': {
 				label: 'Fixed costs',
-				good: '{{percent}} of income goes to recurring bills. Below {{target}} leaves room to choose.',
-				warn: '{{percent}} of income goes to recurring bills. Above 40% the month starts tight.',
-				bad: '{{percent}} of income goes to recurring bills. More than half is committed before any choice.',
-				unknown: 'No recurring bills (or no income), so there is no fixed cost to measure.',
+				good: '{{percent}} of income goes to fixed bills (bills and loan installments). Below {{target}} leaves room to choose.',
+				warn: '{{percent}} of income goes to fixed bills (bills and loan installments). Above 40% the month starts tight.',
+				bad: '{{percent}} of income goes to fixed bills (bills and loan installments). More than half is committed before any choice.',
+				unknown: 'No bills or loan installments set up (or no income), so there is no fixed cost to measure.',
 			},
 			'card-load': {
 				label: 'Card load',
@@ -496,7 +496,8 @@ const en = {
 			perThousandPay: 'Each R$ 1,000 paid early is worth {{amount}} a year more than invested.',
 			perThousandInvest: 'Each R$ 1,000 invested yields {{amount}} a year more than paid early.',
 			yieldFromGoal: 'Compared yield: your retirement goal, with 15% tax.',
-			yieldDefault: 'Compared yield: 10% a year (close to the Brazilian base rate), with 15% tax. Set your goal in Reports to use yours.',
+			yieldCdi: 'Compared yield: the CDI in use, {{rate}} a year (Central Bank of Brazil, {{date}}), with 15% tax. Set your goal in Reports to use yours.',
+			yieldDefault: 'Compared yield: {{rate}} a year, with 15% tax, until the app gets the CDI from the Central Bank of Brazil. Set your goal in Reports to use yours.',
 		},
 		amortize: {
 			title: 'Simulate paying early',

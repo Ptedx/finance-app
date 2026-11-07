@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useAccounts } from '../contexts/AccountsContext';
+import { useBills } from '../contexts/BillsContext';
+import { useDebts } from '../contexts/DebtsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
 	getPeriodSummary,
@@ -9,7 +11,8 @@ import {
 	initDatabase,
 	type PeriodSummary,
 } from '../database/database';
-import { getCurrentYear, getMonthRange } from '../utils/dateUtils';
+import { getCurrentYear, getMonthRange, todayISO } from '../utils/dateUtils';
+import { debtInstallmentsMonthlyCents, termsOf } from '../utils/debt';
 import {
 	buildInsights,
 	computeWealthMetrics,
@@ -57,6 +60,14 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 	// mês, mas é exatamente o dinheiro que sustentaria os custos fixos se a renda parasse.
 	const liquidCents = activeAccounts.length > 0 ? overview.cashCents + overview.savedCents : balanceCents;
 	const { transactions: recurring } = useRecurringTransactions();
+	// O custo fixo (e o fôlego) também conta as contas a pagar e as parcelas das dívidas: a
+	// tela de recorrências saiu (SPD-079) e o que vence todo mês mora lá.
+	const { bills } = useBills();
+	const { activeDebts } = useDebts();
+	const debtInstallmentsCents = useMemo(
+		() => debtInstallmentsMonthlyCents(activeDebts.map((debt) => ({ terms: termsOf(debt) })), todayISO(), recurring),
+		[activeDebts, recurring]
+	);
 	const { selectedMonth, selectedYear } = usePeriod();
 
 	const [previous, setPrevious] = useState<PreviousPeriod | null>(null);
@@ -134,6 +145,8 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			previousPeriodTotals: previous?.totals ?? null,
 			liquidCents,
 			recurring,
+			bills,
+			debtInstallmentsCents,
 			expenseTotalsByNature,
 			categoryTotals: categoryTotals.expenses,
 			previousCategoryTotals: previous?.categoryTotals ?? [],
@@ -148,6 +161,8 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			previous,
 			liquidCents,
 			recurring,
+			bills,
+			debtInstallmentsCents,
 			expenseTotalsByNature,
 			categoryTotals.expenses,
 			monthlyData.incomes,

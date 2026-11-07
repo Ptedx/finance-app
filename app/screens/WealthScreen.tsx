@@ -14,9 +14,8 @@ import { useReportsData } from '../hooks/useReportsData';
 import { useReserveGoal } from '../hooks/useReserveGoal';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { netWorth } from '../utils/accountMath';
-import { effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
+import { comparisonYield, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
 import { todayISO } from '../utils/dateUtils';
-import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
 
 /**
  * Patrimônio: o que você tem e o que você deve.
@@ -33,7 +32,7 @@ import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
 const WealthScreen = () => {
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
-	const { overview, cardSummaries, refresh: refreshAccounts } = useAccounts();
+	const { overview, cardSummaries, cdi, refresh: refreshAccounts } = useAccounts();
 	const { debts, summary, refresh: refreshDebts } = useDebts();
 	const { goal } = useRetirementGoal();
 	const { goal: reserveGoal, save: saveReserveGoal } = useReserveGoal();
@@ -61,8 +60,9 @@ const WealthScreen = () => {
 	};
 	const worth = netWorth({ ...parts, savedCents: overview.savedCents });
 
-	// O rendimento contra o qual cada dívida é comparada: o da meta, ou 10% sem meta.
-	const yieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
+	// O rendimento contra o qual cada dívida é comparada: o da meta, o CDI em uso ou 10% —
+	// o mesmo da tela da dívida, para o chip e o veredito de lá não discordarem.
+	const yieldBp = comparisonYield({ goalYieldBp: goal?.expectedYieldBp, cdiAnnualBp: cdi?.annualBp }).yieldBp;
 	const verdictOf = useCallback(
 		(debt: Debt) => worthPayingOff({ debtRateBp: effectiveRateBp(termsOf(debt), todayISO()), investmentYieldBp: yieldBp }).verdict,
 		[yieldBp]

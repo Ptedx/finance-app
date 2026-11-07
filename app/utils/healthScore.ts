@@ -14,6 +14,7 @@
  */
 
 import { lastDayOfMonth, monthKeyOf, shiftMonthKey } from './dateUtils';
+import { formatMonthsCovered } from './emergencyReserve';
 import {
 	HEALTHY_SAVINGS_RATE_BASIS_POINTS,
 	HEAVY_FIXED_COST_BASIS_POINTS,
@@ -23,6 +24,7 @@ import {
 } from './insights';
 import { FULL_BASIS_POINTS } from './metrics';
 import type { Cents } from './money';
+import { formatPercentBp } from './percent';
 
 export type HealthStatus = 'good' | 'warn' | 'bad' | 'unknown';
 
@@ -110,7 +112,8 @@ export const HEALTH_THRESHOLDS = {
 
 const percentText = (basisPoints: number): string => `${Math.round(basisPoints / 100)}%`;
 
-const monthsText = (months: number): string => months.toFixed(1);
+/** Uma casa, no separador do idioma: "0,3" em português (antes saía "0.3" em qualquer idioma). */
+const monthsText = (months: number): string => formatMonthsCovered(months);
 
 /** Bom acima de `good`, atenção acima de `warn`, ruim abaixo. */
 const atLeast = (value: number, good: number, warn: number): HealthStatus => (value >= good ? 'good' : value >= warn ? 'warn' : 'bad');
@@ -168,6 +171,12 @@ const emergencyReserveIndicator = (input: HealthInput): HealthIndicator => {
 	};
 };
 
+/**
+ * A fatia do custo fixo, com uma casa abaixo de 10% e no separador do idioma: R$ 120 contra
+ * R$ 8.000 é 1,5%, e o inteiro arredondado mostrava 2%. Daí para cima, o inteiro de sempre.
+ */
+const fixedCostText = (basisPoints: number): string => formatPercentBp(basisPoints, basisPoints < 1_000 && basisPoints % 100 !== 0 ? 1 : 0);
+
 const fixedCostIndicator = (input: HealthInput): HealthIndicator => {
 	const { good, warn } = HEALTH_THRESHOLDS.fixedCost;
 	const value = input.fixedCostBp;
@@ -178,7 +187,7 @@ const fixedCostIndicator = (input: HealthInput): HealthIndicator => {
 		value,
 		target: good,
 		direction: 'atMost',
-		params: { percent: value === null ? '—' : percentText(value), target: percentText(good) },
+		params: { percent: value === null ? '—' : fixedCostText(value), target: percentText(good) },
 	};
 };
 

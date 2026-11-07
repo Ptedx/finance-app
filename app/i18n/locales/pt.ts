@@ -173,10 +173,10 @@ const pt = {
 			},
 			'fixed-cost': {
 				label: 'Custo fixo',
-				good: '{{percent}} da renda vai para recorrências. Abaixo de {{target}} sobra espaço para escolher.',
-				warn: '{{percent}} da renda vai para recorrências. Acima de 40% o mês começa apertado.',
-				bad: '{{percent}} da renda vai para recorrências. Mais da metade já está comprometida antes de qualquer escolha.',
-				unknown: 'Sem recorrências cadastradas (ou sem renda), não há custo fixo para medir.',
+				good: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Abaixo de {{target}} sobra espaço para escolher.',
+				warn: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Acima de 40% o mês começa apertado.',
+				bad: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Mais da metade já está comprometida antes de qualquer escolha.',
+				unknown: 'Sem contas a pagar nem parcelas cadastradas (ou sem renda), não há custo fixo para medir.',
 			},
 			'card-load': {
 				label: 'Peso do cartão',
@@ -490,7 +490,8 @@ const pt = {
 			perThousandPay: 'Cada R$ 1.000 antecipados valem {{amount}} por ano a mais do que investidos.',
 			perThousandInvest: 'Cada R$ 1.000 investidos rendem {{amount}} por ano a mais do que antecipados.',
 			yieldFromGoal: 'Rendimento comparado: o da sua meta de aposentadoria, com IR de 15%.',
-			yieldDefault: 'Rendimento comparado: 10% ao ano (perto do CDI), com IR de 15%. Defina a meta em Relatórios para usar o seu.',
+			yieldCdi: 'Rendimento comparado: o CDI em uso, {{rate}} ao ano (Banco Central, {{date}}), com IR de 15%. Defina a meta em Relatórios para usar o seu.',
+			yieldDefault: 'Rendimento comparado: {{rate}} ao ano, com IR de 15%, até o app obter o CDI do Banco Central. Defina a meta em Relatórios para usar o seu.',
 		},
 		amortize: {
 			title: 'Simular amortização',

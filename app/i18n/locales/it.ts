@@ -178,10 +178,10 @@ const it = {
 			},
 			'fixed-cost': {
 				label: 'Costi fissi',
-				good: 'Il {{percent}} del reddito va in spese ricorrenti. Sotto il {{target}} resta spazio per scegliere.',
-				warn: 'Il {{percent}} del reddito va in spese ricorrenti. Sopra il 40% il mese parte stretto.',
-				bad: 'Il {{percent}} del reddito va in spese ricorrenti. Più della metà è impegnata prima di qualsiasi scelta.',
-				unknown: 'Nessuna spesa ricorrente (o nessun reddito), quindi nessun costo fisso da misurare.',
+				good: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Sotto il {{target}} resta spazio per scegliere.',
+				warn: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Sopra il 40% il mese parte stretto.',
+				bad: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Più della metà è impegnata prima di qualsiasi scelta.',
+				unknown: 'Nessun conto da pagare né rata registrati (o nessun reddito), quindi nessun costo fisso da misurare.',
 			},
 			'card-load': {
 				label: 'Peso delle carte',
@@ -495,7 +495,8 @@ const it = {
 			perThousandPay: "Ogni R$ 1.000 anticipati valgono {{amount}} all'anno in più che investiti.",
 			perThousandInvest: "Ogni R$ 1.000 investiti rendono {{amount}} all'anno in più che anticipati.",
 			yieldFromGoal: 'Rendimento confrontato: quello del tuo obiettivo di pensione, con il 15% di tasse.',
-			yieldDefault: "Rendimento confrontato: 10% all'anno (vicino al tasso base brasiliano), con il 15% di tasse. Imposta l'obiettivo nei Report per usare il tuo.",
+			yieldCdi: "Rendimento confrontato: il CDI in uso, {{rate}} all'anno (Banca Centrale del Brasile, {{date}}), con il 15% di tasse. Imposta l'obiettivo nei Report per usare il tuo.",
+			yieldDefault: "Rendimento confrontato: {{rate}} all'anno, con il 15% di tasse, finché l'app non ottiene il CDI dalla Banca Centrale del Brasile. Imposta l'obiettivo nei Report per usare il tuo.",
 		},
 		amortize: {
 			title: 'Simula un anticipo',

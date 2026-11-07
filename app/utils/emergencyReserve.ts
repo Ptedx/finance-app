@@ -16,8 +16,9 @@
  */
 
 import type { CategoryNature } from '../database/schema';
+import { languageOf, SEPARATORS } from './locale';
 import { FULL_BASIS_POINTS } from './metrics';
-import type { Cents } from './money';
+import { type Cents, getMoneyConfig } from './money';
 import type { MonthPoint } from './reportSeries';
 
 /** Abaixo disto a reserva é fina: é o primeiro degrau da ordem de prioridade. */
@@ -160,7 +161,7 @@ export interface ReserveReadModel {
 	monthsCovered: number | null;
 	/** Quanto falta para a meta. */
 	gapCents: Cents;
-	/** Em quantos meses enche no ritmo de hoje; 0 cheia; nulo sem aporte (ou além de 50 anos). */
+	/** Em quantos meses enche no ritmo de hoje; 0 cheia; nulo sem aporte — só o rendimento não conta — ou além de 50 anos. */
 	monthsToFill: number | null;
 	/** O que falta para o mínimo de três meses. */
 	minimumGapCents: Cents;
@@ -172,7 +173,10 @@ const monthsUntil = (from: Cents, target: Cents, contribution: Cents, rate: numb
 	// Aporte médio negativo é resgate: no ritmo de hoje a reserva não enche. Grampear o
 	// negativo em zero fazia a tela prometer uma data de um ritmo que ninguém está fazendo.
 	if (contribution < 0) return null;
-	if (contribution === 0 && !(rate > 0 && from > 0)) return null;
+	// Nada guardado também não é ritmo: só o rendimento de R$ 1.000 enchia R$ 24.000 em
+	// "383 meses (out/2058)", uma data que ninguém está perseguindo. O rendimento continua
+	// ajudando quem guarda alguma coisa.
+	if (contribution === 0) return null;
 	let value = from;
 	for (let month = 1; month <= MAX_FILL_MONTHS; month += 1) {
 		value = value * (1 + Math.max(0, rate)) + Math.max(0, contribution);
@@ -223,6 +227,13 @@ export const buildReserveReadModel = (input: ReserveInput): ReserveReadModel => 
 };
 
 /**
+ * Os meses cobertos para a tela, com uma casa e o separador do idioma: "0,3" em português
+ * e italiano, "0.3" em inglês. Direto na frase, o número saía "0.3" em qualquer idioma.
+ */
+export const formatMonthsCovered = (months: number): string =>
+	(Number.isFinite(months) ? months : 0).toFixed(1).replace('.', SEPARATORS[languageOf(getMoneyConfig().locale)].decimal);
+
+/**
  * Por quantos meses o aporte vai para a reserva antes de ir para a aposentadoria. É o
  * atraso da projeção da meta: "reserva primeiro". Zero com a reserva cheia ou sem meta de
  * reserva; nulo se ela nunca enche no ritmo de hoje (então a aposentadoria não recebe aporte).
@@ -237,4 +248,4 @@ export const contributionDelayMonths = (reserve: ReserveReadModel): number | nul
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { essentialShareBp, essentialMonthlyCostCents, resolveMonthlyCost, splitSavings, buildReserveReadModel, contributionDelayMonths };
+export default { essentialShareBp, essentialMonthlyCostCents, resolveMonthlyCost, splitSavings, buildReserveReadModel, formatMonthsCovered, contributionDelayMonths };
