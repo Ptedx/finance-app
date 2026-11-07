@@ -9,6 +9,7 @@ import {
 	merchantRuleColumns,
 	merchantRuleToWire,
 } from '../domain/captureWire.js';
+import { pushWipeConflict, type WipeConflict, wipeMarkToWire } from '../domain/dataWipe.js';
 import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
 import { preferenceColumns, preferenceToWire } from '../domain/preferenceWire.js';
 import { syncStatusOf } from '../domain/syncStatus.js';
@@ -139,6 +140,15 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.bill.findMany(page(cursor.bills)),
 		prisma.preference.findMany(page(cursor.preferences)),
 	]);
+
+	// A marca do "apagar meus dados" (DEC-35), lida depois das linhas de propósito: se o
+	// apagamento acontecer entre as duas leituras, a marca já sai nesta resposta, junto com
+	// linhas que podem ser de antes dele — e o app sabe que elas não valem mais. Na ordem
+	// inversa, uma página já vazia podia sair sem a marca.
+	const wipe = await prisma.user.findUnique({
+		where: { id: userId },
+		select: { dataWipedAt: true },
+	});
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
 	// Cabe num `number` sem perda: o teto de MAX_AMOUNT_CENTS fica bem abaixo de 2^53.
@@ -331,6 +341,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			bills,
 			preferences,
 		].some((rows) => rows.length === env.syncPageSize),
+		/** Quando os dados foram apagados pela última vez; nulo se nunca. Ver `domain/dataWipe.ts`. */
+		dataWipedAt: wipeMarkToWire(wipe?.dataWipedAt ?? null),
 		changes,
 	});
 };
@@ -432,7 +444,7 @@ const writeRowIsolated = async (
 };
 
 export const pushData = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-	const { changes } = pushBodySchema.parse(req.body);
+	const { changes, knownWipeAt } = pushBodySchema.parse(req.body);
 	const userId = req.userId;
 
 	const rejected: RejectedRow[] = [];
@@ -463,8 +475,25 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 	let applied = 0;
 
-	await prisma.$transaction(
-		async (tx) => {
+	const wipeConflict = await prisma.$transaction(
+		async (tx): Promise<WipeConflict | null> => {
+			// --- Apagamento (DEC-35) ------------------------------------------------
+			// Depois de "apagar todos os dados", um aparelho que ainda não sabe disso
+			// subiria tudo de novo. A remessa inteira volta com 409, sem gravar nada.
+			//
+			// O FOR SHARE na linha do usuário é o que fecha a corrida com o `/me/wipe`, que
+			// grava a marca antes de apagar: um apagamento que começou espera esta remessa
+			// terminar (e apaga o que ela gravou), e uma remessa que chega durante um
+			// apagamento espera ele terminar e enxerga a marca. Dois pushes do mesmo usuário
+			// não se bloqueiam — FOR SHARE não conflita com FOR SHARE.
+			await tx.$queryRaw`SELECT 1 FROM "users" WHERE "id" = ${userId} FOR SHARE`;
+			const user = await tx.user.findUnique({
+				where: { id: userId },
+				select: { dataWipedAt: true },
+			});
+			const conflict = pushWipeConflict(user?.dataWipedAt ?? null, knownWipeAt);
+			if (conflict !== null) return conflict;
+
 			// --- Categorias primeiro ---------------------------------------------
 			// Um lançamento pode vir na mesma remessa que a categoria que ele usa; a
 			// verificação logo abaixo precisa enxergar essa categoria já gravada.
@@ -1005,11 +1034,20 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 				applied += 1;
 			}
+
+			return null;
 		},
 		// Uma remessa cheia são milhares de idas ao banco; o padrão de 5s do Prisma
 		// estoura num primeiro sync grande.
 		{ timeout: 30_000 }
 	);
+
+	if (wipeConflict !== null) {
+		// Direto, e não pelo `HttpError`: o corpo leva `dataWipedAt`, que o app precisa para
+		// saber de qual apagamento se trata.
+		res.status(409).json(wipeConflict);
+		return;
+	}
 
 	res.json({ serverTime: new Date().toISOString(), applied, rejected });
 };
@@ -1038,6 +1076,7 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 		captures,
 		merchantRules,
 		bills,
+		wipe,
 	] = await Promise.all([
 		prisma.transaction.count(live),
 		prisma.recurringTransaction.count(live),
@@ -1053,10 +1092,11 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 		prisma.capture.count(live),
 		prisma.merchantRule.count(live),
 		prisma.bill.count(live),
+		prisma.user.findUnique({ where: { id: userId }, select: { dataWipedAt: true } }),
 	]);
 
-	res.json(
-		syncStatusOf({
+	res.json({
+		...syncStatusOf({
 			transactions,
 			recurringTransactions,
 			budgets,
@@ -1069,6 +1109,8 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 			captures,
 			merchantRules,
 			bills,
-		})
-	);
+		}),
+		/** Quando os dados foram apagados pela última vez; nulo se nunca. Ver `domain/dataWipe.ts`. */
+		dataWipedAt: wipeMarkToWire(wipe?.dataWipedAt ?? null),
+	});
 };

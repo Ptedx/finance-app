@@ -46,6 +46,10 @@ model User {
   language     String   @default("pt-BR")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  /// Quando o usuário apagou os dados pela última vez ("Apagar todos os dados", DEC-35),
+  /// pelo relógio do servidor. Nulo para quem nunca apagou. O pull e o status a devolvem,
+  /// e o push de um aparelho que não a conhece volta com 409 — ver `domain/dataWipe.ts`.
+  dataWipedAt  DateTime?
 
   refreshTokens         RefreshToken[]
   categories            Category[]

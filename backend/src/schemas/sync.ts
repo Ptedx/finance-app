@@ -351,6 +351,14 @@ export const pushBodySchema = z.object({
 			bills: [],
 			preferences: [],
 		}),
+	/**
+	 * O último `dataWipedAt` que o aparelho viu e aplicou ("Apagar todos os dados", DEC-35).
+	 *
+	 * Opcional: um app anterior ao campo não o manda e, enquanto a conta nunca foi apagada,
+	 * sincroniza como sempre. Depois de um apagamento, a ausência vale como "não sei" e o
+	 * push volta com 409 — ver `pushWipeConflict` em `domain/dataWipe.ts`.
+	 */
+	knownWipeAt: timestamp.nullish(),
 });
 
 /**

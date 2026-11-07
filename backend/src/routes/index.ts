@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { login, logout, refresh, register } from '../controllers/auth.controller.js';
 import { postDiagnostics } from '../controllers/diagnostics.controller.js';
 import { getSyncStatus, pullData, pushData } from '../controllers/sync.controller.js';
-import { getMe, updateMe } from '../controllers/user.controller.js';
+import { getMe, updateMe, wipeMyData } from '../controllers/user.controller.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 
@@ -45,6 +45,22 @@ const diagnosticsLimiter = rateLimit({
 	message: { error: 'Envios de diagnóstico demais. Aguarde um instante.', code: 'rate_limited' },
 });
 
+/**
+ * "Apagar todos os dados" é um toque raro e pesado (uma transação que apaga todas as
+ * tabelas do usuário). Ninguém apaga cinco vezes em quinze minutos de propósito; o teto só
+ * impede que um laço do app martele o banco.
+ */
+const wipeLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	limit: 5,
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
+	message: {
+		error: 'Pedidos de apagar dados demais. Tente novamente em alguns minutos.',
+		code: 'rate_limited',
+	},
+});
+
 router.post('/auth/register', authLimiter, asyncHandler(register));
 router.post('/auth/login', authLimiter, asyncHandler(login));
 router.post('/auth/refresh', authLimiter, asyncHandler(refresh));
@@ -52,6 +68,7 @@ router.post('/auth/logout', asyncHandler(logout));
 
 router.get('/me', requireAuth, asyncHandler(getMe));
 router.patch('/me', requireAuth, asyncHandler(updateMe));
+router.post('/me/wipe', requireAuth, wipeLimiter, asyncHandler(wipeMyData));
 
 router.get('/sync/status', requireAuth, syncLimiter, asyncHandler(getSyncStatus));
 router.get('/sync/pull', requireAuth, syncLimiter, asyncHandler(pullData));

@@ -58,7 +58,8 @@ trigger `BEFORE UPDATE` a avança também nas edições — `@default(autoincrem
 só dispara no INSERT, e uma linha editada sumiria do pull.
 
 Apagar é lápide (`deletedAt`), nunca `DELETE`: a linha precisa sobreviver para que um
-aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova.
+aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova. A única
+exceção é o "apagar meus dados", mais abaixo.
 
 ### Endpoints
 
@@ -69,6 +70,7 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
 | `POST` | `/api/auth/refresh` | rotaciona o refresh token |
 | `POST` | `/api/auth/logout` | revoga o refresh token |
 | `GET`/`PATCH` | `/api/me` | perfil, moeda e idioma |
+| `POST` | `/api/me/wipe` | apaga os dados do usuário em todos os aparelhos (ver abaixo) |
 | `GET` | `/api/sync/status` | se a conta já tem dados (decide o fluxo do primeiro login) |
 | `GET` | `/api/sync/pull?cursor=...` | delta desde o cursor |
 | `POST` | `/api/sync/push` | envia as linhas pendentes |
@@ -81,6 +83,39 @@ Toda coleção é opcional nas duas direções: um app anterior a uma delas não
 lê, e o push sem ela é aceito. As chaves do cursor devolvido no pull são também o anúncio
 de quais coleções este servidor conhece — o app segura o que não aparece ali em vez de
 marcá-lo como enviado.
+
+### Apagar meus dados (`POST /api/me/wipe`)
+
+A única exceção à regra da lápide (DEC-35). "Apagar todos os dados" faz `DELETE` de
+verdade, numa transação só, de toda linha do usuário em lançamentos, recorrências,
+orçamentos, transferências, contas, metas, dívidas, contas a pagar, capturas, diário de
+diagnóstico e nas tabelas antigas do roadmap. A lápide guardaria o conteúdo inteiro, e
+quem pede para apagar não quer o dado guardado em lugar nenhum.
+
+Ficam a conta, as sessões (`refresh_tokens`), as categorias, as regras aprendidas
+(`merchant_rules`) e as preferências de configuração. Das preferências saem só as que
+apontam para contas: `@spendr_distinct_account_pairs` e `@spendr_business_feeds`. O
+destino de cada tabela está em `src/domain/dataWipe.ts`, e um teste falha se uma relação
+nova do `User` não estiver lá.
+
+Responde `200 { "dataWipedAt": "<ISO>" }`, a marca gravada em `users.dataWipedAt` pelo
+relógio do servidor. Limite: 5 pedidos a cada 15 minutos.
+
+O que avisa os outros aparelhos é essa marca:
+
+- `GET /api/sync/status` e `GET /api/sync/pull` devolvem `dataWipedAt` (`null` para quem
+  nunca apagou);
+- `POST /api/sync/push` aceita `knownWipeAt`, o último `dataWipedAt` que o aparelho já
+  aplicou. Se a conta foi apagada e o push não traz `knownWipeAt`, traz `null` ou um
+  instante anterior à marca, a resposta é
+  `409 { "error": "...", "code": "data_wiped", "dataWipedAt": "<ISO>" }` e **nada** da
+  remessa é gravado — senão o aparelho que ainda tinha os dados os subiria de novo. Um app
+  anterior ao campo leva 409 depois de um apagamento; enquanto a conta nunca foi apagada,
+  o push funciona como sempre, com ou sem o campo.
+
+A corrida entre um push e um apagamento é fechada pela linha do usuário: o apagamento
+grava a marca antes de apagar (o UPDATE trava a linha), e o push trava a mesma linha com
+`FOR SHARE` antes de olhar a marca.
 
 ### Decisões que não são óbvias
 
