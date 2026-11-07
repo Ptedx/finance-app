@@ -13,6 +13,7 @@ import {
 	View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AccountPicker from '../components/AccountPicker';
 import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
@@ -207,7 +208,8 @@ interface CaptureCardProps {
 	categories: Category[];
 	/** Os lançamentos, para o "Parece repetido" da linha de extrato dizer qual. */
 	transactions: Transaction[];
-	onConfirm: (capture: Capture, categoryId: string) => void;
+	/** `accountId`: a conta escolhida no cartão; `undefined` quando o usuário não mexeu nela. */
+	onConfirm: (capture: Capture, categoryId: string, accountId?: string | null) => void;
 	onDismiss: (capture: Capture) => void;
 	onTransfer: (capture: Capture) => void;
 	onAnswerDuplicate: (capture: Capture, same: boolean) => void;
@@ -227,18 +229,25 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 }) => {
 	const { t } = useTranslation();
 	const ledgerSuspect = isLedgerSuspect(capture);
-	const { accounts } = useAccounts();
+	const { accounts, activeAccounts } = useAccounts();
 	const isIncome = capture.direction === 'in';
 	const [categoryId, setCategoryId] = useState(() =>
 		resolveCategoryId(capture.suggestedCategory, capture.direction, categories)
 	);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [rawOpen, setRawOpen] = useState(false);
+	// A conta escolhida aqui (SPD-111). `undefined` enquanto o usuário não mexe: vale a do
+	// aviso, inclusive se ela mudar por fora (o pull trouxe a decisão de outro aparelho).
+	const [chosenAccountId, setChosenAccountId] = useState<string | null | undefined>(undefined);
+	const accountId = chosenAccountId === undefined ? capture.accountId : chosenAccountId;
+	// "Sem conta" já abre o seletor: era a única saída, e ficava para depois da confirmação.
+	const [accountPickerOpen, setAccountPickerOpen] = useState(() => !capture.accountId);
+	const canPickAccount = activeAccounts.length > 0;
 
 	const category = categories.find((c) => c.id === categoryId) ?? fallbackCategory(t);
 	const amount = formatCents(capture.amountCents);
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
-	const destination = destinationLabel(capture, accounts, t);
+	const destination = destinationLabel({ accountId }, accounts, t);
 	const installments = installmentsLabel(capture, t);
 	const warning = currencyWarning(capture, t);
 	const summary = `${isIncome ? t('captures.income') : t('captures.expense')}, ${amount}, ${
@@ -264,19 +273,6 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					{kindLabel}
 					{capture.cardLast4 ? ` · ${t('captures.cardEnding', { last4: capture.cardLast4 })}` : ''}
 				</Text>
-				{/* Nada depende só de cor: o ícone acompanha o texto, e o texto diz "Sem conta"
-				    com todas as letras quando o app não soube de onde saiu o dinheiro. */}
-				<View style={styles.destinationRow}>
-					<Ionicons
-						name={capture.accountId ? 'wallet-outline' : 'help-circle-outline'}
-						size={15}
-						color="rgba(255,255,255,0.7)"
-					/>
-					<Text style={[styles.destination, !capture.accountId && styles.destinationMissing]}>
-						{t('captures.inAccount', { account: destination })}
-					</Text>
-					{installments && <Text style={styles.installments}>{installments}</Text>}
-				</View>
 				{/* Junto do valor, dentro do resumo que o leitor de tela lê: é o valor que está
 				    em dúvida. Ícone e texto, não só cor. */}
 				{warning && (
@@ -286,6 +282,46 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					</View>
 				)}
 			</View>
+
+			{/* Nada depende só de cor: o ícone acompanha o texto, e o texto diz "Sem conta"
+			    com todas as letras quando o app não soube de onde saiu o dinheiro. Fora do
+			    resumo (que já diz a conta) porque é um controle: abre o seletor (SPD-111). */}
+			<Pressable
+				onPress={() => setAccountPickerOpen((open) => !open)}
+				disabled={!canPickAccount}
+				accessibilityRole="button"
+				accessibilityLabel={t('captures.inAccount', { account: destination })}
+				accessibilityHint={canPickAccount ? t('captures.changeAccountHint') : undefined}
+				accessibilityState={{ expanded: accountPickerOpen && canPickAccount, disabled: !canPickAccount }}
+				style={({ pressed }) => [styles.destinationRow, pressed && styles.buttonPressed]}
+			>
+				<Ionicons name={accountId ? 'wallet-outline' : 'help-circle-outline'} size={15} color="rgba(255,255,255,0.7)" />
+				<Text style={[styles.destination, !accountId && styles.destinationMissing]}>
+					{t('captures.inAccount', { account: destination })}
+				</Text>
+				{installments && <Text style={styles.installments}>{installments}</Text>}
+				{canPickAccount && (
+					<Ionicons
+						name={accountPickerOpen ? 'chevron-up' : 'chevron-down'}
+						size={18}
+						color="rgba(255,255,255,0.7)"
+					/>
+				)}
+			</Pressable>
+
+			{/* O mesmo seletor do formulário de lançamento. Num cartão, a confirmação segue as
+			    regras do cartão (parcelas no ciclo dele); o final do cartão é o que o aviso disse. */}
+			{accountPickerOpen && canPickAccount && (
+				<View style={styles.pickerWrap}>
+					<AccountPicker
+						selectedAccountId={accountId}
+						onSelect={(id) => {
+							setChosenAccountId(id);
+							if (id !== null) setAccountPickerOpen(false);
+						}}
+					/>
+				</View>
+			)}
 
 			{capture.question === 'duplicate' && (
 				<View style={styles.question} accessibilityLiveRegion="polite">
@@ -378,7 +414,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					label={t('captures.confirm')}
 					hint={t('captures.confirmHint', { category: category.name })}
 					icon="checkmark"
-					onPress={() => onConfirm(capture, categoryId)}
+					onPress={() => onConfirm(capture, categoryId, chosenAccountId)}
 					primary
 				/>
 				<ActionButton
@@ -552,8 +588,8 @@ const CaptureInboxScreen = () => {
 	}, [refresh]);
 
 	const handleConfirm = useCallback(
-		async (capture: Capture, categoryId: string) => {
-			await confirm(capture.id, categoryId);
+		async (capture: Capture, categoryId: string, accountId?: string | null) => {
+			await confirm(capture.id, categoryId, accountId);
 			const category = categories.find((c) => c.id === categoryId);
 			announce(
 				t('captures.announceConfirmed', {
@@ -911,8 +947,9 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		flexWrap: 'wrap',
 		gap: 6,
-		marginTop: 6,
-		marginBottom: 12,
+		minHeight: 48,
+		marginTop: 2,
+		marginBottom: 8,
 	},
 	destination: {
 		fontSize: 14,

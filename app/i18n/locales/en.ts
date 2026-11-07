@@ -1482,6 +1482,7 @@ account: {
 		installmentsSplit: '{{times}}× of {{amount}}',
 		categoryLabel: 'Category: {{category}}',
 		changeCategoryHint: 'Opens the category list',
+		changeAccountHint: 'Opens the list of accounts and cards to choose where the entry goes',
 		confirm: 'Confirm',
 		confirmHint: 'Adds this entry as {{category}}',
 		transfer: 'Transfer between my accounts',

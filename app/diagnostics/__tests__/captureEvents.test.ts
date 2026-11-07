@@ -398,9 +398,24 @@ describe('as respostas do usuário na caixa de revisão', () => {
 					categoryChanged: true,
 					categoryFallback: false,
 					learned: true,
+					accountChoice: 'kept',
 				}),
 			}),
 		]);
+	});
+
+	it('confirmar escolhendo a conta (SPD-111): se trocou e se havia conta, nunca qual', async () => {
+		const capture = await ingestOne(purchase());
+		await confirmCapture(capture.id, 'food', categories, 'conta-escolhida');
+
+		const [entry] = logged();
+		expect(entry).toEqual(
+			expect.objectContaining({
+				event: 'capture_confirmed',
+				data: expect.objectContaining({ accountChoice: 'chosen', hadAccount: capture.accountId !== null }),
+			})
+		);
+		expect(JSON.stringify(entry.data)).not.toContain('conta-escolhida');
 	});
 
 	it('confirmar o que já saiu da fila não faz nada, e o diário diz', async () => {

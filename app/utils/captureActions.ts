@@ -981,17 +981,27 @@ const removePostedTransactions = async (capture: Capture): Promise<void> => {
 	await undoBillPayment(capture.transactionId, localDateOf(capture.postedAt));
 };
 
-/** Vira transação (ou parcelas) com a categoria escolhida, e o app aprende o estabelecimento. */
+/**
+ * Vira transação (ou parcelas) com a categoria escolhida, e o app aprende o estabelecimento.
+ *
+ * `accountId` é a conta escolhida na revisão (SPD-111): sem ela (`undefined`), fica a do
+ * aviso; `null` é "Sem conta". O lançamento nasce nela e a captura passa a apontar para ela,
+ * então o "Desfazer" devolve o item à revisão já com a conta escolhida. Num cartão, as
+ * parcelas seguem o ciclo dele (`postTransaction`), como qualquer compra do cartão.
+ */
 export const confirmCapture = async (
 	id: string,
 	categoryId: string,
-	categories: Category[]
+	categories: Category[],
+	accountId?: string | null
 ): Promise<Capture | null> => {
-	const capture = await getCapture(id);
-	if (!capture || capture.status !== 'pending') {
-		logReviewSkipped('confirm', id, capture);
+	const found = await getCapture(id);
+	if (!found || found.status !== 'pending') {
+		logReviewSkipped('confirm', id, found);
 		return null;
 	}
+	const accountChanged = accountId !== undefined && accountId !== found.accountId;
+	const capture = accountChanged ? { ...found, accountId } : found;
 
 	const resolved = resolveCategoryId(categoryId, capture.direction, categories);
 	const transactionId = await postTransaction(capture, resolved, capture.id);
@@ -1001,6 +1011,7 @@ export const confirmCapture = async (
 		suggestedCategory: resolved,
 		transactionId,
 		reason: null,
+		accountId: accountChanged ? accountId : undefined,
 	});
 	await learnCategory(capture, resolved);
 
@@ -1022,6 +1033,9 @@ export const confirmCapture = async (
 		installments: capture.installments,
 		learned: capture.merchantKey !== null,
 		externalLeg,
+		// Se o usuário trocou a conta do aviso, e se o app tinha achado uma. Nunca qual.
+		accountChoice: !accountChanged ? 'kept' : accountId === null ? 'cleared' : 'chosen',
+		hadAccount: found.accountId !== null,
 	});
 
 	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };

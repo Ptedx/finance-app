@@ -1434,3 +1434,108 @@ describe('estorno usa a chave da compra, nunca a categoria dela (SPD-043, NOTIF-
 		expect(purchase).toMatchObject({ status: 'confirmed', suggestedCategory: 'health' });
 	});
 });
+
+/**
+ * SPD-111 (AUTO-11): a captura que caiu em "Sem conta" só mostrava o texto na revisão, e
+ * a única saída era confirmar e depois mover tudo de uma vez em "Lançamentos sem conta".
+ * Agora a conta é escolhida ali mesmo e o lançamento confirmado já nasce nela; num cartão,
+ * as parcelas seguem o ciclo dele, como em qualquer compra do cartão.
+ */
+describe('escolher a conta na revisão (SPD-111, AUTO-11)', () => {
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	/** Fecha no dia 31: em fevereiro, o fechamento cai no último dia do mês. */
+	const CARD_31 = account({ id: 'card31', name: 'Cartão B', kind: 'credit_card', role: 'card', closingDay: 31 });
+
+	/** Seis da manhã UTC: dia 29 em São Paulo, em UTC e em Auckland. */
+	const orphan = (overrides: Partial<Capture> = {}): Capture =>
+		seedCapture({
+			accountId: null,
+			kind: 'purchase',
+			counterparty: 'PADARIA',
+			merchantKey: 'padaria',
+			postedAt: '2027-01-29T06:00:00.000Z',
+			amountCents: 30_000,
+			...overrides,
+		});
+
+	const live = () => [...mockTransactions.values()].filter((row) => !row.deleted);
+
+	it('a captura sem conta confirmada com a conta escolhida grava o lançamento nela', async () => {
+		const capture = orphan();
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		expect(live()).toEqual([
+			expect.objectContaining({ accountId: CHECKING.id, amountCents: 30_000, date: '2027-01-29', isIncome: false }),
+		]);
+		expect(result).toMatchObject({ status: 'confirmed', accountId: CHECKING.id });
+		expect(mockCaptures.get(capture.id)).toMatchObject({ status: 'confirmed', accountId: CHECKING.id });
+	});
+
+	it('trocar a conta que o app sugeriu também vale', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CARD.id);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: CARD.id })]);
+		expect(mockCaptures.get(capture.id)?.accountId).toBe(CARD.id);
+	});
+
+	it('sem escolha, fica a conta do aviso', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: CHECKING.id })]);
+	});
+
+	it('escolher "Sem conta" tira a conta sugerida', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories, null);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: null })]);
+		expect(mockCaptures.get(capture.id)?.accountId).toBeNull();
+	});
+
+	it('num cartão, a compra em 3x segue o ciclo do cartão escolhido: uma parcela por fatura', async () => {
+		mockAccounts.set(CARD_31.id, CARD_31);
+		const capture = orphan({ installments: 3 });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CARD_31.id);
+
+		// 29/01 fecha em 31/01; somar um mês daria 28/02, que já é a fatura de março (o
+		// fechamento de fevereiro é o dia 28). A segunda parcela vai para o começo da de fevereiro.
+		expect(live().map((row) => [row.accountId, row.date, row.amountCents])).toEqual([
+			[CARD_31.id, '2027-01-29', 10_000],
+			[CARD_31.id, '2027-01-31', 10_000],
+			[CARD_31.id, '2027-03-29', 10_000],
+		]);
+	});
+
+	it('a mesma compra numa conta corrente vai de mês em mês', async () => {
+		const capture = orphan({ installments: 3 });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		expect(live().map((row) => [row.accountId, row.date])).toEqual([
+			[CHECKING.id, '2027-01-29'],
+			[CHECKING.id, '2027-02-28'],
+			[CHECKING.id, '2027-03-29'],
+		]);
+	});
+
+	it('reverter tira o lançamento da conta escolhida, e a captura volta para a revisão com ela', async () => {
+		const capture = orphan();
+		await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		await revertCapture(capture.id);
+
+		expect(live()).toEqual([]);
+		expect(mockCaptures.get(capture.id)).toMatchObject({ status: 'pending', accountId: CHECKING.id });
+	});
+});

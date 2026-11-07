@@ -1483,6 +1483,7 @@ account: {
 		installmentsSplit: '{{times}}× da {{amount}}',
 		categoryLabel: 'Categoria: {{category}}',
 		changeCategoryHint: "Apre l'elenco delle categorie",
+		changeAccountHint: "Apre l'elenco di conti e carte per scegliere dove va il movimento",
 		confirm: 'Conferma',
 		confirmHint: 'Aggiunge questa voce come {{category}}',
 		transfer: 'Trasferimento tra i miei conti',

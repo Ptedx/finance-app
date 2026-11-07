@@ -1477,6 +1477,7 @@ const pt = {
 		installmentsSplit: '{{times}}x de {{amount}}',
 		categoryLabel: 'Categoria: {{category}}',
 		changeCategoryHint: 'Abre a lista de categorias',
+		changeAccountHint: 'Abre a lista de contas e cartões para escolher onde o lançamento entra',
 		confirm: 'Confirmar',
 		confirmHint: 'Adiciona este lançamento como {{category}}',
 		transfer: 'Transferência entre minhas contas',

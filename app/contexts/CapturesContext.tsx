@@ -69,7 +69,8 @@ interface CapturesContextType {
 
 	refresh: () => Promise<void>;
 	openSettings: () => void;
-	confirm: (id: string, categoryId: string) => Promise<void>;
+	/** `accountId`: a conta escolhida na revisão (SPD-111); sem ela, fica a do aviso. */
+	confirm: (id: string, categoryId: string, accountId?: string | null) => Promise<void>;
 	dismiss: (id: string) => Promise<void>;
 	markTransfer: (id: string) => Promise<void>;
 	answerDuplicate: (id: string, same: boolean) => Promise<void>;
@@ -226,8 +227,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	const confirm = useCallback(
-		async (id: string, categoryId: string) => {
-			const result = await confirmCapture(id, categoryId, categoriesRef.current);
+		async (id: string, categoryId: string, accountId?: string | null) => {
+			const result = await confirmCapture(id, categoryId, categoriesRef.current, accountId);
 			if (result) remember('confirm', [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
