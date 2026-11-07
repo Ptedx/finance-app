@@ -101,6 +101,11 @@ jest.mock('../../utils/exportUtils', () => ({
 jest.mock('../../utils/notificationUtils', () => ({
 	areNotificationsEnabled: jest.fn(async () => false),
 }));
+// O nome no banco (SPD-115) tem o teste dele (`settingsOwnName.test.tsx`).
+jest.mock('../../utils/ownNamePreference', () => ({
+	getOwnBankName: jest.fn(async () => null),
+	setOwnBankName: jest.fn(),
+}));
 jest.mock('../../utils/statementImport', () => ({
 	StatementImportError: class StatementImportError extends Error {},
 }));

@@ -31,6 +31,8 @@ import {
 	stopIgnoringApp,
 } from '../utils/captureActions';
 import { APP_IGNORE_THRESHOLD } from '../utils/captureMatcher';
+import { ownNamesOf } from '../utils/ownName';
+import { getOwnBankName } from '../utils/ownNamePreference';
 import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
 import { useAccounts } from './AccountsContext';
 import { useAuth } from './AuthContext';
@@ -118,8 +120,12 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	// caixa de entrada em laço.
 	const categoriesRef = useRef(categories);
 	categoriesRef.current = categories;
-	const ownNamesRef = useRef<string[]>([]);
-	ownNamesRef.current = account?.name ? [account.name] : [];
+	const accountNameRef = useRef<string | null>(null);
+	accountNameRef.current = account?.name ?? null;
+	// Os nomes do usuário: o da conta logada e o "seu nome como aparece no banco" de Ajustes
+	// (SPD-115). Sem login, só o segundo existe. Lido a cada lote: o nome pode ter acabado de
+	// mudar em Ajustes, ou chegado pelo sync. A captura recebe o de Ajustes à parte, para o
+	// diário dizer qual dos dois conferiu; o import de extrato, os dois juntos.
 	const refreshDataRef = useRef(refreshData);
 	refreshDataRef.current = refreshData;
 	// Transferências e âncoras de saldo não passam por `transactions`, então os saldos
@@ -167,7 +173,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				const raws = drainCaptures();
 				if (raws.length > 0) {
 					const summary = await ingestRawCaptures(raws, {
-						ownNames: ownNamesRef.current,
+						ownNames: ownNamesOf([accountNameRef.current]),
+						bankName: await getOwnBankName(),
 						categories: categoriesRef.current,
 						// Lida a cada lote: a escolha pode ter mudado agora, ou chegado pelo sync.
 						businessFeeds: await getBusinessFeeds(),
@@ -312,7 +319,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const importStatement = useCallback(async () => {
 		const result = await pickAndImportOfx({
-			ownNames: ownNamesRef.current,
+			ownNames: ownNamesOf([accountNameRef.current, await getOwnBankName()]),
 			categories: categoriesRef.current,
 		});
 		if (result) {

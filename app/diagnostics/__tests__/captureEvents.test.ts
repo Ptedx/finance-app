@@ -348,6 +348,27 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 	});
 });
 
+describe('capture_decision: o nome salvo em Ajustes (SPD-115)', () => {
+	// Nome inventado. O da conta logada é curto ("Maria") e não basta sozinho.
+	const pixFromSelf = () => raw(ITAU, 'Itaú', 'Pix recebido', 'Você recebeu um Pix de R$ 230,00 de MARIA S OLIVEIRA');
+
+	it('o Pix com o nome salvo vira transferência, e o diário diz só que foi esse nome', async () => {
+		await ingestRawCaptures([pixFromSelf()], { ownNames: ['Maria'], bankName: 'Maria Souza Oliveira', categories });
+
+		const [entry] = decisions();
+		expect(entry.data).toMatchObject({ action: 'transfer', outcome: 'transfer', reason: 'own_bank_name' });
+		expect(JSON.stringify(entry.data).toLowerCase()).not.toMatch(/maria|souza|oliveira|230/);
+	});
+
+	it('sem nome salvo, o mesmo Pix fica para a revisão, sem o motivo do nome', async () => {
+		await ingestRawCaptures([pixFromSelf()], { ownNames: ['Maria'], categories });
+
+		const [entry] = decisions();
+		expect(entry.data.outcome).toBe('pending');
+		expect(entry.data.reason).not.toBe('own_bank_name');
+	});
+});
+
 describe('DEC-11 (b): texto cru só de banco conhecido que o parser não entendeu', () => {
 	it('banco conhecido, aviso descartado pelo parser: leva o texto, em warn', async () => {
 		const notice = bankPromo();

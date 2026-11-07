@@ -460,7 +460,9 @@ describe('transferência entre contas próprias', () => {
 
 	it('o nome do usuário bate por palavras, sem acento e sem caixa', () => {
 		expect(matchesOwnName('VINICIUS COSTA', ['Vinícius Costa'])).toBe(true);
-		expect(matchesOwnName('Vinicius A Costa', ['Vinicius Costa'])).toBe(true);
+		expect(matchesOwnName('Vinicius C Costa', ['Vinicius Carlos Costa'])).toBe(true);
+		// Um nome do meio a mais ou a menos pode ser outra pessoa: pergunta (SPD-115).
+		expect(matchesOwnName('Vinicius A Costa', ['Vinicius Costa'])).toBe(false);
 		expect(matchesOwnName('Vinicius Silva', ['Vinicius Costa'])).toBe(false);
 		expect(matchesOwnName('Maria Costa', ['Vinicius Costa'])).toBe(false);
 		expect(matchesOwnName(null, ['Vinicius Costa'])).toBe(false);
@@ -603,6 +605,73 @@ describe('transferência entre contas próprias', () => {
 	it('mais de um dia de diferença não é transferência', () => {
 		const received = known({ id: 'rcv', packageName: INTER, direction: 'in', kind: 'pix_in', amountCents: 50_000, postedAt: T0 });
 		expect(findTransferCounterpart(pixOut({ postedAt: plus(25 * HOUR) }), [received])).toBeUndefined();
+	});
+});
+
+describe('seu nome como aparece no banco (SPD-115)', () => {
+	// Pix do Inter para a própria conta no Nubank; a entrada no Nubank já chegou. Nomes
+	// inventados. A captura recebe o nome da conta logada em `ownNames` ("Maria", curto) e o
+	// que o usuário escreveu em Ajustes em `bankName`.
+	const nubankIn = known({
+		id: 'nu-in',
+		packageName: NUBANK,
+		direction: 'in',
+		kind: 'pix_in',
+		amountCents: 80_000,
+		merchantKey: 'maria souza oliveira',
+	});
+	const interOut = (counterparty: string) =>
+		candidate({
+			packageName: INTER,
+			kind: 'pix_out',
+			direction: 'out',
+			amountCents: 80_000,
+			counterparty,
+			merchantKey: merchantKeyOf(counterparty),
+			postedAt: plus(MIN),
+		});
+
+	it('Pix Inter → Nubank com o nome configurado no aviso: transferência, sem perguntar', () => {
+		const decision = decide(
+			interOut('MARIA S OLIVEIRA'),
+			context({ ownNames: ['Maria'], bankName: 'Maria Souza Oliveira', recent: [nubankIn] })
+		);
+		expect(decision).toEqual({ action: 'transfer', relatedId: 'nu-in', reason: 'own_bank_name' });
+	});
+
+	it('sem login, só o nome configurado basta', () => {
+		const decision = decide(interOut('MARIA S OLIVEIRA'), context({ bankName: 'Maria Souza Oliveira', recent: [nubankIn] }));
+		expect(decision).toEqual({ action: 'transfer', relatedId: 'nu-in', reason: 'own_bank_name' });
+	});
+
+	it('quando o nome da conta já confere, o motivo continua sendo ele', () => {
+		const decision = decide(
+			interOut('MARIA S OLIVEIRA'),
+			context({ ownNames: ['Maria Souza Oliveira'], bankName: 'MARIA S OLIVEIRA', recent: [nubankIn] })
+		);
+		expect(decision).toEqual({ action: 'transfer', relatedId: 'nu-in', reason: 'own_name' });
+	});
+
+	it('sem nome configurado (só o da conta, curto): continua perguntando', () => {
+		expect(decide(interOut('MARIA S OLIVEIRA'), context({ ownNames: ['Maria'], recent: [nubankIn] }))).toEqual({
+			action: 'ask_transfer',
+			relatedId: 'nu-in',
+		});
+		expect(decide(interOut('MARIA S OLIVEIRA'), context({ bankName: null, recent: [nubankIn] }))).toEqual({
+			action: 'ask_transfer',
+			relatedId: 'nu-in',
+		});
+	});
+
+	it.each([
+		['MARIA OLIVEIRA'],
+		['JOANA SOUZA OLIVEIRA'],
+		['MARIA T OLIVEIRA'],
+		['MARIA SOUZA OLIVEIRA SANTOS'],
+	])('nome parecido mas não igual pela regra ("%s"): pergunta', (seen) => {
+		const expected = { action: 'ask_transfer', relatedId: 'nu-in' };
+		expect(decide(interOut(seen), context({ bankName: 'Maria Souza Oliveira', recent: [nubankIn] }))).toEqual(expected);
+		expect(decide(interOut(seen), context({ ownNames: ['Maria Souza Oliveira'], recent: [nubankIn] }))).toEqual(expected);
 	});
 });
 

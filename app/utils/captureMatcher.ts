@@ -32,6 +32,7 @@ import {
 	type RawCapture,
 } from './captureParser';
 import { addDays, getISODate } from './dateUtils';
+import { isSameName } from './ownName';
 
 export type CaptureStatus =
 	| 'pending'
@@ -125,6 +126,11 @@ export interface DecisionContext {
 	rule: MerchantRule | undefined;
 	/** Nomes do próprio usuário: um Pix "para VINICIUS COSTA" é troca de bolso. */
 	ownNames: string[];
+	/**
+	 * O "seu nome como aparece no banco" de Ajustes (SPD-115). Confere pela mesma regra de
+	 * `ownNames`, mas à parte: a decisão diz `own_bank_name`, e o diário sabe que foi ele.
+	 */
+	bankName?: string | null;
 	/** Quantas confirmações iguais até o app lançar sozinho. */
 	autoConfirmThreshold: number;
 	/** Palpite de categoria quando não há regra. */
@@ -568,22 +574,14 @@ export const findSameBankTransferLeg = (candidate: Candidate, recent: KnownCaptu
 /**
  * Se a contraparte é o próprio usuário.
  *
- * Compara nome a nome, sem acento e sem caixa, e exige ao menos duas palavras iguais
- * (ou uma, quando o nome só tem uma): "VINICIUS COSTA" bate com "Vinicius A Costa",
- * mas "Vinicius" sozinho não bate com "Vinicius Silva".
+ * Pela regra de `isSameName` (`ownName.ts`, SPD-115): sem acento e sem caixa, o mesmo
+ * número de palavras, primeiro nome e último sobrenome iguais, e o nome do meio igual ou
+ * pela inicial — "VINICIUS C COSTA" bate com "Vinicius Carlos Costa". Na dúvida não bate,
+ * e o app pergunta: bastavam duas palavras iguais, e "MARIA COSTA SILVA" (a mãe) batia
+ * com "Vinicius Costa Silva"; "VINICIUS SILVA" também, e pode ser outra pessoa.
  */
-export const matchesOwnName = (counterparty: string | null, ownNames: string[]): boolean => {
-	if (!counterparty) return false;
-	const target = new Set(normalizeText(counterparty).split(' ').filter((w) => w.length > 1));
-	if (target.size === 0) return false;
-
-	return ownNames.some((own) => {
-		const words = normalizeText(own).split(' ').filter((w) => w.length > 1);
-		if (words.length === 0) return false;
-		const hits = words.filter((word) => target.has(word)).length;
-		return words.length === 1 ? hits === 1 && target.size === 1 : hits >= 2;
-	});
-};
+export const matchesOwnName = (counterparty: string | null, ownNames: string[]): boolean =>
+	counterparty !== null && ownNames.some((own) => isSameName(counterparty, own));
 
 // ---------------------------------------------------------------------------
 // Apps que não são banco (SPD-022)
@@ -707,10 +705,18 @@ export const decide = (candidate: Candidate, context: DecisionContext): Decision
 		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'rule' };
 	}
 
-	// 4. Transferência para si mesmo: o nome na notificação é o seu.
-	if (matchesOwnName(candidate.counterparty, context.ownNames)) {
+	// 4. Transferência para si mesmo: o nome na notificação é o seu — o da conta, ou o que o
+	//    usuário escreveu em Ajustes como o banco o mostra (SPD-115). Vale entre bancos
+	//    diferentes, onde o 5b não alcança. O da conta vem primeiro: quando os dois
+	//    conferem, o motivo continua o de antes.
+	const ownName = matchesOwnName(candidate.counterparty, context.ownNames)
+		? 'own_name'
+		: context.bankName && matchesOwnName(candidate.counterparty, [context.bankName])
+			? 'own_bank_name'
+			: null;
+	if (ownName) {
 		const twin = findTransferCounterpart(candidate, context.recent, true);
-		return { action: 'transfer', relatedId: twin?.id ?? null, reason: 'own_name' };
+		return { action: 'transfer', relatedId: twin?.id ?? null, reason: ownName };
 	}
 
 	// Receita de fonte externa (a PJ do usuário mandando o pró-labore): é receita, e

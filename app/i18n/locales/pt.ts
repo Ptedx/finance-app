@@ -1552,6 +1552,7 @@ const pt = {
 			manual: 'Sua escolha',
 			rule: 'Aprendido com suas escolhas anteriores',
 			own_name: 'O nome na notificação é o seu',
+			own_bank_name: 'O nome na notificação é o que você salvou em Configurações',
 			same_bank_accounts: 'Saiu de uma conta sua e entrou noutra do mesmo banco, com o mesmo valor',
 			counterpart: 'Outra ponta de uma transferência já reconhecida',
 			external_leg: 'Enviado por uma conta que o app não acompanha; o recebimento entrou como receita',
@@ -1760,6 +1761,21 @@ const pt = {
 		accountGoneTitle: 'A conta foi apagada',
 		accountGoneMessage:
 			'A conta foi apagada, e os dados dela saíram deste aparelho. As categorias, o que o app aprendeu e as configurações continuam aqui.',
+	},
+
+	// "Seu nome como aparece no banco", em Ajustes (SPD-115).
+	ownName: {
+		settingsItem: 'Seu nome no banco',
+		notSet: 'Não informado',
+		title: 'Seu nome como aparece no banco',
+		subtitle:
+			'Escreva seu nome como o banco mostra nos avisos de Pix. Quando um Pix tiver este nome do outro lado, o app entende que o dinheiro foi de uma conta sua para outra e registra uma transferência, sem perguntar.',
+		field: 'Nome',
+		hint: 'Maiúsculas e acentos não importam, e uma inicial vale pelo nome do meio ("MARIA S OLIVEIRA" confere com "Maria Souza Oliveira"). Com um nome a mais ou a menos, o app continua perguntando.',
+		placeholder: 'Ex.: MARIA S OLIVEIRA',
+		withAccount: 'Com conta, o nome vai junto para os seus outros aparelhos; ele também entra no backup. Para tirar, apague o campo e salve.',
+		save: 'Salvar',
+		saveError: 'Não deu para salvar o nome. Tente de novo.',
 	},
 
 	// O formulário de lançamento (novo e edição) e o seletor de data dele (SPD-086).

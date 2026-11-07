@@ -46,6 +46,12 @@ export const STORAGE_KEYS = {
 	 * antes de viajar (SPD-098): o que já foi dispensado neste aparelho continua valendo.
 	 */
 	cardDuplicateDismissed: '@spendr_card_duplicate_dismissed',
+	/**
+	 * O "seu nome como aparece no banco" de Ajustes (`utils/ownNamePreference.ts`, SPD-115), que
+	 * a captura confere nos avisos de Pix para reconhecer a transferência entre contas suas.
+	 * Viaja com a conta e no backup; o "Apagar todos os dados" o mantém, como o nome da conta.
+	 */
+	ownBankName: '@spendr_own_bank_name',
 } as const;
 
 /**
@@ -73,6 +79,7 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
 	STORAGE_KEYS.cardDuplicateDismissed,
+	STORAGE_KEYS.ownBankName,
 ];
 
 /**
@@ -95,6 +102,7 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
 	STORAGE_KEYS.cardDuplicateDismissed,
+	STORAGE_KEYS.ownBankName,
 ];
 
 /**

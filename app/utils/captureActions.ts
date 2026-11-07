@@ -112,6 +112,8 @@ const SAME_MOVEMENT_DAYS = 1;
 export interface IngestOptions {
 	/** Nomes do usuário: um Pix para si mesmo é troca de bolso. */
 	ownNames: string[];
+	/** O "seu nome como aparece no banco" de Ajustes, à parte para o diário (SPD-115). */
+	bankName?: string | null;
 	categories: Category[];
 	autoConfirmThreshold?: number;
 	/** Qual conta recebe os avisos da PJ de cada app ("da conta Nu Empresas", SPD-074). */
@@ -827,6 +829,7 @@ export const ingestRawCaptures = async (
 			recent,
 			rule,
 			ownNames: options.ownNames,
+			bankName: options.bankName,
 			autoConfirmThreshold: threshold,
 			fallbackCategoryId,
 			externalIncome,

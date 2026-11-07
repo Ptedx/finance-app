@@ -1558,6 +1558,7 @@ account: {
 			manual: 'Tua scelta',
 			rule: 'Imparato dalle tue scelte precedenti',
 			own_name: 'Il nome nella notifica è il tuo',
+			own_bank_name: 'Il nome nella notifica è quello salvato nelle Impostazioni',
 			same_bank_accounts: 'Uscito da un tuo conto ed entrato in un altro della stessa banca, stesso importo',
 			counterpart: "L'altra metà di un trasferimento già riconosciuto",
 			external_leg: "Inviato da un conto che l'app non segue; la ricezione è stata registrata come entrata",
@@ -1766,6 +1767,21 @@ account: {
 		accountGoneTitle: "L'account è stato eliminato",
 		accountGoneMessage:
 			"L'account è stato eliminato, e i suoi dati sono stati rimossi da questo dispositivo. Le categorie, ciò che l’app ha imparato e le impostazioni restano.",
+	},
+
+	// "Il tuo nome come appare in banca", nelle Impostazioni (SPD-115).
+	ownName: {
+		settingsItem: 'Il tuo nome in banca',
+		notSet: 'Non indicato',
+		title: 'Il tuo nome come appare in banca',
+		subtitle:
+			"Scrivi il tuo nome come la banca lo mostra negli avvisi Pix. Quando un Pix ha questo nome dall'altra parte, l'app capisce che il denaro è passato da un tuo conto a un altro e registra un trasferimento, senza chiedere.",
+		field: 'Nome',
+		hint: "Maiuscole e accenti non contano, e un'iniziale vale per il secondo nome (\"MARIA S OLIVEIRA\" corrisponde a \"Maria Souza Oliveira\"). Con un nome in più o in meno, l'app continua a chiedere.",
+		placeholder: 'Es.: MARIA S OLIVEIRA',
+		withAccount: 'Con un account, il nome ti segue sugli altri dispositivi; entra anche nel backup. Per toglierlo, svuota il campo e salva.',
+		save: 'Salva',
+		saveError: 'Non è stato possibile salvare il nome. Riprova.',
 	},
 
 	// Il modulo del movimento (nuovo e modifica) e il suo selettore di data (SPD-086).

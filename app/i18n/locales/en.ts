@@ -1557,6 +1557,7 @@ account: {
 			manual: 'Your choice',
 			rule: 'Learned from your previous choices',
 			own_name: 'The name on the notification is yours',
+			own_bank_name: 'The name on the notification is the one you saved in Settings',
 			same_bank_accounts: 'Left one of your accounts and reached another at the same bank, same amount',
 			counterpart: 'Other half of a transfer already recognized',
 			external_leg: 'Sent by an account the app does not track; the receipt was recorded as income',
@@ -1765,6 +1766,21 @@ account: {
 		accountGoneTitle: 'Your account was deleted',
 		accountGoneMessage:
 			'Your account was deleted, and its data was removed from this device. Your categories, what the app learned and your settings are still here.',
+	},
+
+	// "Your name as your bank shows it", in Settings (SPD-115).
+	ownName: {
+		settingsItem: 'Your name at the bank',
+		notSet: 'Not set',
+		title: 'Your name as your bank shows it',
+		subtitle:
+			'Type your name the way your bank shows it in Pix notifications. When a Pix has this name on the other side, the app understands the money went from one of your accounts to another and records a transfer, without asking.',
+		field: 'Name',
+		hint: 'Upper case and accents do not matter, and an initial counts for a middle name ("MARIA S OLIVEIRA" matches "Maria Souza Oliveira"). With one name more or less, the app keeps asking.',
+		placeholder: 'e.g. MARIA S OLIVEIRA',
+		withAccount: 'With an account, the name goes along to your other devices; it is also included in backups. To remove it, clear the field and save.',
+		save: 'Save',
+		saveError: 'Could not save the name. Please try again.',
 	},
 
 	// The transaction form (new and edit) and its date picker (SPD-086).

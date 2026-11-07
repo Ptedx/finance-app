@@ -21,6 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
+import OwnNameSheet from '../components/OwnNameSheet';
 import { useAuth } from '../contexts/AuthContext';
 import { useBills } from '../contexts/BillsContext';
 import { useCaptures } from '../contexts/CapturesContext';
@@ -45,6 +46,7 @@ import { formatMonthYear } from '../utils/dateUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import { formatCents } from '../utils/money';
 import * as notificationUtils from '../utils/notificationUtils';
+import { getOwnBankName, setOwnBankName } from '../utils/ownNamePreference';
 import {
 	createStatementInstallments,
 	type StatementChoiceAnswer,
@@ -239,6 +241,26 @@ const SettingsScreen = () => {
 		};
 		checkNotificationSettings();
 	}, []);
+
+	// "Seu nome como aparece no banco" (SPD-115): a captura confere o nome dos avisos de Pix
+	// com ele para juntar sem perguntar a transferência entre contas suas, inclusive de bancos
+	// diferentes. Só aparece com a captura (a linha mora na seção dela).
+	const [ownBankName, setOwnBankNameState] = useState<string | null>(null);
+	const [showOwnNameSheet, setShowOwnNameSheet] = useState(false);
+
+	useEffect(() => {
+		getOwnBankName().then(setOwnBankNameState);
+	}, []);
+
+	const saveOwnBankName = async (name: string) => {
+		try {
+			setOwnBankNameState(await setOwnBankName(name));
+			setShowOwnNameSheet(false);
+		} catch (error) {
+			console.error('Error saving own bank name:', error);
+			Alert.alert(t('settings.error'), t('ownName.saveError'));
+		}
+	};
 
 	const refreshAppData = async () => {
 		try {
@@ -631,6 +653,17 @@ const SettingsScreen = () => {
 								<Text style={styles.accountStatus}>{capturePending}</Text>
 							) : undefined
 						)}
+						{renderSettingsItem(
+							'person-circle-outline',
+							t('ownName.settingsItem'),
+							() => setShowOwnNameSheet(true),
+							<Text
+								style={[ownBankName ? styles.accountStatus : styles.settingUnavailableText, styles.ownNameValue]}
+								numberOfLines={1}
+							>
+								{ownBankName ?? t('ownName.notSet')}
+							</Text>
+						)}
 					</View>
 				)}
 
@@ -659,6 +692,14 @@ const SettingsScreen = () => {
 				isVisible={showLanguageSelector}
 				onClose={() => setShowLanguageSelector(false)}
 			/>
+			{captureSupported && (
+				<OwnNameSheet
+					visible={showOwnNameSheet}
+					value={ownBankName}
+					onClose={() => setShowOwnNameSheet(false)}
+					onSave={saveOwnBankName}
+				/>
+			)}
 		</SafeAreaView>
 	);
 };
@@ -749,6 +790,13 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		color: 'rgba(255, 255, 255, 0.4)',
 		fontStyle: 'italic',
+	},
+	// O nome salvo à direita da linha: um nome comprido não empurra o título para fora.
+	ownNameValue: {
+		flexShrink: 1,
+		maxWidth: '45%',
+		marginLeft: 12,
+		textAlign: 'right',
 	},
 });
 
