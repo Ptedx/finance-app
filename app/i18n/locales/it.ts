@@ -1407,6 +1407,18 @@ account: {
 		undoPaidHint: 'Riporta {{name}} a non pagato questo mese',
 		markedPaid: '{{name}} segnato come pagato',
 		unmarkedPaid: '{{name}} è di nuovo da pagare',
+		pay: {
+			title: 'Registrare il pagamento?',
+			body: "Registrare un'uscita di {{amount}} dal conto {{account}}, con la data di oggi? Il saldo del conto e la spesa del mese la conteranno.",
+			bodyNoAccount: "Registrare un'uscita di {{amount}}, con la data di oggi? Questo conto da pagare non dice da quale conto si paga: il movimento resterà senza conto.",
+			post: 'Registra e segna pagato',
+			onlyMark: 'Segna solo come pagato',
+			cancel: 'Annulla',
+			posted: '{{name}} pagato, uscita di {{amount}} registrata',
+			inboxTitle: 'Segnato come pagato',
+			inboxBody: 'La notifica della banca per questo pagamento è nella posta in arrivo: confermala lì e il movimento arriverà con essa.',
+			undonePosted: "{{name}} è di nuovo da pagare, e l'uscita registrata è stata rimossa",
+		},
 		toPay: 'Da pagare questo mese',
 		variableNote_one: '+ {{count}} conto con importo variabile, escluso dal totale',
 		variableNote_other: '+ {{count}} conti con importo variabile, esclusi dal totale',
@@ -1462,7 +1474,7 @@ account: {
 
 	reminders: {
 		channelName: 'Conti da pagare',
-		channelDescription: 'Promemoria delle scadenze dei conti da pagare',
+		channelDescription: 'Promemoria delle scadenze dei conti da pagare e degli estratti conto delle carte',
 		bill: {
 			soonTitle: 'Scade tra 3 giorni',
 			soonBody: '{{name}} — {{amount}} il giorno {{day}}',
@@ -1472,6 +1484,12 @@ account: {
 			todayBodyNoAmount: '{{name}} scade oggi',
 			lateTitle: 'Pagamento in ritardo',
 			lateBody: "{{name}} scadeva il giorno {{day}}. Già pagato? Segnalalo nell'app.",
+		},
+		card: {
+			soonTitle: 'Estratto conto in scadenza tra 3 giorni',
+			soonBody: '{{name}} — estratto conto di {{amount}} il giorno {{day}}',
+			todayTitle: 'Estratto conto in scadenza oggi',
+			todayBody: '{{name}} — estratto conto di {{amount}}',
 		},
 		recurring: {
 			expenseTitle: 'Scade domani',

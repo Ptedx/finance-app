@@ -6,11 +6,15 @@
  * vencimento segue a regra da conta: dia 31 em mês de 30, e 29/30/31 em fevereiro, caem no
  * último dia do mês.
  *
- * O agendamento no aparelho fica em `notificationUtils.scheduleBillReminders`; aqui é só a
- * conta, para dar para testar em qualquer fuso.
+ * A fatura do cartão avisa igual, só 3 dias antes e no dia, com o valor que falta pagar
+ * dela (`cardReminders`, mais abaixo).
+ *
+ * O agendamento no aparelho fica em `notificationUtils.scheduleBillReminders` (e
+ * `scheduleCardReminders`); aqui é só a conta, para dar para testar em qualquer fuso.
  */
 
 import type { Bill } from '../database/schema';
+import type { CardSummary } from './cardMath';
 import {
 	addDays,
 	buildClampedDate,
@@ -124,4 +128,99 @@ export const billStatus = (bill: Bill, month: string, today: string): BillStatus
 	if (day < dueDate) return 'upcoming';
 	if (day === dueDate) return 'due_today';
 	return 'late';
+};
+
+// ---------------------------------------------------------------------------
+// Fatura do cartão
+// ---------------------------------------------------------------------------
+
+/**
+ * Lembrete da fatura do cartão: 3 dias antes do vencimento ('soon') e no dia ('today'),
+ * às 09:00, como as contas a pagar. Sem os de atraso: a fatura vencida já aparece na tela
+ * do cartão, e o banco cobra encargo, não o app.
+ */
+export type CardReminderKind = 'soon' | 'today';
+
+/** O cartão com o resumo que o app já calcula para ele (`buildCardSummary`). */
+export interface CardReminderSource {
+	cardId: string;
+	name: string;
+	summary: Pick<CardSummary, 'configured' | 'openCycle' | 'closedCycle' | 'toPayCents' | 'invoices'>;
+}
+
+export interface CardReminder {
+	cardId: string;
+	kind: CardReminderKind;
+	/** Instante do aviso: 09:00 locais do dia do aviso. */
+	at: Date;
+	/** A fatura, `YYYY-MM` do mês em que fecha (o nome dela). */
+	invoice: string;
+	/** Vencimento, `YYYY-MM-DD`, já empurrado para dia útil. */
+	dueDate: string;
+	/** Dias até o vencimento: 3 no 'soon', 0 no 'today'. */
+	n: number;
+	/** O que falta pagar da fatura no momento da conta. */
+	amountCents: number;
+}
+
+const CARD_OFFSETS: { kind: CardReminderKind; offset: number }[] = [
+	{ kind: 'soon', offset: -3 },
+	{ kind: 'today', offset: 0 },
+];
+
+/**
+ * As faturas de um cartão que ainda vão vencer com algo a pagar, com o valor que a tela do
+ * cartão mostra:
+ *
+ * - a **fechada**: o "a pagar" (`toPayCents`) — o devido menos o que já caiu na aberta, já
+ *   descontados os pagamentos; pagamento parcial deixa o resto;
+ * - a **aberta** (a fechar): o valor dela menos o crédito que chegou de faturas anteriores
+ *   e o que sobrou de pagamento antecipado (`paidCents`). Até fechar, o valor pode crescer:
+ *   a agenda é refeita a cada recarga das faturas.
+ */
+export const cardInvoicesDue = (
+	summary: CardReminderSource['summary']
+): { invoice: string; dueDate: string; amountCents: number }[] => {
+	if (!summary.configured) return [];
+	const due: { invoice: string; dueDate: string; amountCents: number }[] = [];
+
+	if (summary.closedCycle && summary.toPayCents > 0) {
+		due.push({
+			invoice: summary.closedCycle.key,
+			dueDate: summary.closedCycle.dueDate,
+			amountCents: summary.toPayCents,
+		});
+	}
+
+	const open = summary.invoices.find((invoice) => invoice.offset === 0);
+	if (summary.openCycle && open) {
+		const charged = open.amountCents - open.creditAppliedCents - open.paidCents;
+		if (charged > 0) {
+			due.push({ invoice: summary.openCycle.key, dueDate: summary.openCycle.dueDate, amountCents: charged });
+		}
+	}
+
+	return due;
+};
+
+/**
+ * Lembretes das faturas dos próximos 45 dias, em ordem de horário. Só entram horários
+ * depois de `now`; fatura paga (ou coberta por pagamento) não gera nada.
+ */
+export const cardReminders = (cards: CardReminderSource[], now: Date): CardReminder[] => {
+	const horizon = new Date(now);
+	horizon.setDate(horizon.getDate() + BILL_REMINDER_HORIZON_DAYS);
+
+	const reminders: CardReminder[] = [];
+	for (const card of cards) {
+		for (const { invoice, dueDate, amountCents } of cardInvoicesDue(card.summary)) {
+			for (const { kind, offset } of CARD_OFFSETS) {
+				const at = atReminderHour(addDays(dueDate, offset));
+				if (at <= now || at > horizon) continue;
+				reminders.push({ cardId: card.cardId, kind, at, invoice, dueDate, n: Math.abs(offset), amountCents });
+			}
+		}
+	}
+
+	return reminders.sort((a, b) => a.at.getTime() - b.at.getTime());
 };

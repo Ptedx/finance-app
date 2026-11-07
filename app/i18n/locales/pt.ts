@@ -1401,6 +1401,18 @@ const pt = {
 		undoPaidHint: 'Volta {{name}} para em aberto neste mês',
 		markedPaid: '{{name}} marcada como paga',
 		unmarkedPaid: '{{name}} voltou para em aberto',
+		pay: {
+			title: 'Lançar o pagamento?',
+			body: 'Lançar a saída de {{amount}} da conta {{account}}, com a data de hoje? O saldo da conta e o gasto do mês passam a contar o pagamento.',
+			bodyNoAccount: 'Lançar a saída de {{amount}}, com a data de hoje? Esta conta a pagar não diz de qual conta sai o pagamento, e o lançamento fica sem conta.',
+			post: 'Lançar e marcar paga',
+			onlyMark: 'Só marcar como paga',
+			cancel: 'Cancelar',
+			posted: '{{name}} paga, saída de {{amount}} lançada',
+			inboxTitle: 'Marcada como paga',
+			inboxBody: 'O aviso do banco deste pagamento está na caixa de entrada: confirme-o por lá, e o lançamento entra com ele.',
+			undonePosted: '{{name}} voltou para em aberto, e a saída lançada saiu',
+		},
 		toPay: 'Falta pagar este mês',
 		variableNote_one: '+ {{count}} conta de valor variável, fora do total',
 		variableNote_other: '+ {{count}} contas de valor variável, fora do total',
@@ -1456,7 +1468,7 @@ const pt = {
 
 	reminders: {
 		channelName: 'Contas a pagar',
-		channelDescription: 'Lembretes de vencimento das contas a pagar',
+		channelDescription: 'Lembretes de vencimento das contas a pagar e das faturas dos cartões',
 		bill: {
 			soonTitle: 'Vence em 3 dias',
 			soonBody: '{{name}} — {{amount}} no dia {{day}}',
@@ -1466,6 +1478,12 @@ const pt = {
 			todayBodyNoAmount: '{{name}} vence hoje',
 			lateTitle: 'Conta atrasada',
 			lateBody: '{{name}} venceu dia {{day}}. Já pagou? Marque no app.',
+		},
+		card: {
+			soonTitle: 'Fatura vence em 3 dias',
+			soonBody: '{{name}} — fatura de {{amount}} no dia {{day}}',
+			todayTitle: 'Fatura vence hoje',
+			todayBody: '{{name}} — fatura de {{amount}}',
 		},
 		recurring: {
 			expenseTitle: 'Vence amanhã',

@@ -6,7 +6,8 @@
  */
 
 import type { Bill } from '../../database/schema';
-import { billReminders, billStatus } from '../billReminders';
+import { billReminders, billStatus, type CardReminderSource, cardReminders } from '../billReminders';
+import { buildCardSummary, type CardEntry, type CardMovement, type CardSettings } from '../cardMath';
 import { getISODate } from '../dateUtils';
 
 const bill = (overrides: Partial<Bill> = {}): Bill => ({
@@ -217,5 +218,142 @@ describe('billStatus', () => {
 
 	it('mês futuro é upcoming', () => {
 		expect(billStatus(bill({ dueDay: 1 }), '2026-12', '2026-11-30')).toBe('upcoming');
+	});
+});
+
+/**
+ * Lembrete da fatura do cartão (E2E-22): com o Nubank (vence 17/11) e o Inter (vence 12/11 e
+ * 14/12) cadastrados, o aparelho só tinha os avisos da conta a pagar. A fatura avisa como a
+ * conta: 3 dias antes do vencimento e no dia, às 09:00, com o que falta pagar dela.
+ */
+describe('cardReminders', () => {
+	const NUBANK: CardSettings = {
+		closingDay: 10,
+		closingDaysBefore: 7,
+		creditLimitCents: 500_000,
+		openingBalanceCents: 0,
+		openingBalanceDate: '2026-11-06',
+	};
+
+	const entry = (id: string, amountCents: number, date: string): CardEntry => ({
+		id,
+		amountCents,
+		isIncome: false,
+		date,
+		note: id,
+		category: 'shopping',
+		installmentGroup: null,
+		installmentIndex: null,
+		installmentCount: null,
+	});
+
+	/** A fatura do achado: R$ 1.234,56 informados, R$ 100 de compra e a parcela 2/5 de R$ 300. */
+	const NUBANK_ENTRIES = [
+		entry('ajuste', 123_456, '2026-11-07'),
+		entry('compra', 10_000, '2026-11-07'),
+		entry('parcela', 30_000, '2026-11-07'),
+	];
+
+	const payment = (amountCents: number, date: string): CardMovement => ({ amountCents, date, inbound: true });
+
+	const source = (
+		settings: CardSettings,
+		entries: CardEntry[],
+		movements: CardMovement[],
+		now: Date,
+		cardId = 'nubank'
+	): CardReminderSource => ({
+		cardId,
+		name: cardId,
+		summary: buildCardSummary(settings, entries, movements, getISODate(now)),
+	});
+
+	/** "soon 2026-11-14 09:00 [2026-11] 163456", lido em hora local. */
+	const lines = (sources: CardReminderSource[], now: Date): string[] =>
+		cardReminders(sources, now).map(
+			(reminder) =>
+				`${reminder.cardId} ${reminder.kind} ${getISODate(reminder.at)} ${two(reminder.at.getHours())}:${two(reminder.at.getMinutes())} [${reminder.invoice}] ${reminder.amountCents}`
+		);
+
+	it('fatura a fechar: fecha 10/11, vence 17/11 — avisa em 14/11 e 17/11 às 09:00 com R$ 1.634,56', () => {
+		const now = new Date(2026, 10, 7, 10, 0); // 07/11, dia do cadastro
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [], now)], now)).toEqual([
+			'nubank soon 2026-11-14 09:00 [2026-11] 163456',
+			'nubank today 2026-11-17 09:00 [2026-11] 163456',
+		]);
+	});
+
+	it('fatura fechada: depois do fechamento continua avisando o vencimento', () => {
+		const now = new Date(2026, 10, 12, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [], now)], now)).toEqual([
+			'nubank soon 2026-11-14 09:00 [2026-11] 163456',
+			'nubank today 2026-11-17 09:00 [2026-11] 163456',
+		]);
+	});
+
+	it('paga a fatura inteira (R$ 1.634,56), nenhum aviso — antes ou depois do fechamento', () => {
+		const before = new Date(2026, 10, 7, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [payment(163_456, '2026-11-07')], before)], before)).toEqual([]);
+
+		const after = new Date(2026, 10, 12, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [payment(163_456, '2026-11-12')], after)], after)).toEqual([]);
+	});
+
+	it('pagamento parcial: avisa o que falta', () => {
+		const now = new Date(2026, 10, 12, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [payment(100_000, '2026-11-11')], now)], now)).toEqual([
+			'nubank soon 2026-11-14 09:00 [2026-11] 63456',
+			'nubank today 2026-11-17 09:00 [2026-11] 63456',
+		]);
+	});
+
+	it('só os horários depois de agora: no dia 15 resta o do vencimento; depois dele, nada', () => {
+		const on15 = new Date(2026, 10, 15, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [], on15)], on15)).toEqual([
+			'nubank today 2026-11-17 09:00 [2026-11] 163456',
+		]);
+		const on18 = new Date(2026, 10, 18, 10, 0);
+		expect(lines([source(NUBANK, NUBANK_ENTRIES, [], on18)], on18)).toEqual([]);
+	});
+
+	it('fechada a pagar e aberta a fechar, cada uma no seu vencimento (Inter: 12/11 e 14/12)', () => {
+		const inter: CardSettings = { ...NUBANK, closingDay: 5, openingBalanceDate: '2026-10-31' };
+		const entries = [entry('fechada', 200_000, '2026-11-01'), entry('aberta', 8_000, '2026-11-06')];
+		const now = new Date(2026, 10, 7, 10, 0);
+		expect(lines([source(inter, entries, [], now, 'inter')], now)).toEqual([
+			'inter soon 2026-11-09 09:00 [2026-11] 200000',
+			'inter today 2026-11-12 09:00 [2026-11] 200000',
+			// Vence 12/12, um sábado: vai para segunda, 14/12; o aviso de 3 dias antes é 11/12.
+			'inter soon 2026-12-11 09:00 [2026-12] 8000',
+			'inter today 2026-12-14 09:00 [2026-12] 8000',
+		]);
+	});
+
+	it('vários cartões, em ordem de horário', () => {
+		const inter: CardSettings = { ...NUBANK, closingDay: 5, openingBalanceDate: '2026-10-31' };
+		const now = new Date(2026, 10, 7, 10, 0);
+		const sources = [
+			source(NUBANK, NUBANK_ENTRIES, [], now),
+			source(inter, [entry('fechada', 200_000, '2026-11-01')], [], now, 'inter'),
+		];
+		expect(lines(sources, now)).toEqual([
+			'inter soon 2026-11-09 09:00 [2026-11] 200000',
+			'inter today 2026-11-12 09:00 [2026-11] 200000',
+			'nubank soon 2026-11-14 09:00 [2026-11] 163456',
+			'nubank today 2026-11-17 09:00 [2026-11] 163456',
+		]);
+	});
+
+	it('sem dia de fechamento o app não sabe o vencimento: não avisa', () => {
+		const now = new Date(2026, 10, 7, 10, 0);
+		const loose: CardSettings = { ...NUBANK, closingDay: null };
+		expect(lines([source(loose, NUBANK_ENTRIES, [], now)], now)).toEqual([]);
+	});
+
+	it('fatura zerada ou de crédito não avisa', () => {
+		const now = new Date(2026, 10, 7, 10, 0);
+		expect(lines([source(NUBANK, [], [], now)], now)).toEqual([]);
+		const refund = { ...entry('estorno', 5_000, '2026-11-07'), isIncome: true };
+		expect(lines([source(NUBANK, [refund], [], now)], now)).toEqual([]);
 	});
 });

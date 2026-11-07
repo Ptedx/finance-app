@@ -4,7 +4,13 @@ import i18next from 'i18next';
 import { Platform } from 'react-native';
 import type { Bill, RecurringTransaction } from '../database/schema';
 import { errorData, log } from '../diagnostics/log';
-import { type BillReminder, billReminders } from './billReminders';
+import {
+	type BillReminder,
+	billReminders,
+	type CardReminder,
+	type CardReminderSource,
+	cardReminders,
+} from './billReminders';
 import { getISODate, parseISODate } from './dateUtils';
 import { formatCents } from './money';
 import { STORAGE_KEYS } from './storageUtils';
@@ -15,11 +21,22 @@ const NOTIFICATIONS_ENABLED_KEY = STORAGE_KEYS.notificationsEnabled;
 const PUSH_TOKEN_KEY = '@spendr_push_token';
 const SCHEDULED_NOTIFICATIONS_KEY = '@spendr_scheduled_notifications';
 
-/** Canal Android dos lembretes de contas a pagar. */
+/** Canal Android dos lembretes de contas a pagar (e das faturas dos cartões). */
 const BILLS_CHANNEL_ID = 'bills';
 
 /** Prefixo dos identificadores dos lembretes de conta: `bill:<billId>:<mês>:<kind>:<n>`. */
 const BILL_IDENTIFIER_PREFIX = 'bill:';
+
+/** Prefixo dos lembretes de fatura do cartão: `card:<cardId>:<fatura>:<kind>:<n>`. */
+const CARD_IDENTIFIER_PREFIX = 'card:';
+
+/**
+ * O que foi agendado na última remarcação das faturas (avisos, textos, horários e o
+ * liga/desliga). As faturas são recalculadas a cada recarga das contas — a cada lançamento,
+ * a cada troca de mês na tela —, e remarcar o mesmo conjunto toda vez só enche o diário.
+ * Nulo: nada conhecido, a próxima remarca de qualquer jeito (`cancelAllNotifications` zera).
+ */
+let cardSignature: string | null = null;
 
 // Lazy-load expo-notifications to avoid crashing in Expo Go (SDK 53+
 // removed remote notifications from Expo Go on Android).
@@ -263,6 +280,9 @@ export const cancelAllNotifications = async (): Promise<void> => {
 		await Notifications.cancelAllScheduledNotificationsAsync();
 	} catch (error) {
 		console.error('Error canceling all notifications:', error);
+	} finally {
+		// Os de fatura saíram junto: a próxima remarcação deles agenda do zero.
+		cardSignature = null;
 	}
 };
 
@@ -440,6 +460,94 @@ const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number
 	}
 };
 
+/** `card:<cardId>:<fatura>:<kind>:<n>` — o mesmo aviso tem sempre o mesmo identificador. */
+const cardReminderIdentifier = (reminder: CardReminder): string =>
+	`${CARD_IDENTIFIER_PREFIX}${reminder.cardId}:${reminder.invoice}:${reminder.kind}:${reminder.n}`;
+
+const cardReminderContent = (name: string, reminder: CardReminder): { title: string; body: string } => {
+	const values = {
+		name,
+		amount: formatCents(reminder.amountCents),
+		day: Number(reminder.dueDate.slice(8, 10)),
+	};
+	return reminder.kind === 'soon'
+		? { title: i18next.t('reminders.card.soonTitle'), body: i18next.t('reminders.card.soonBody', values) }
+		: { title: i18next.t('reminders.card.todayTitle'), body: i18next.t('reminders.card.todayBody', values) };
+};
+
+/**
+ * Remarca os lembretes das faturas dos cartões (`cardReminders`): cancela os `card:` e
+ * agenda os dos próximos 45 dias, no mesmo canal e na mesma fila das contas a pagar. Os
+ * `bill:` não são tocados, nem o contrário: cada lado remarca o seu.
+ *
+ * Chamar sempre que as faturas mudarem (o `BillsContext` chama a cada recarga dos cartões).
+ * Com as notificações desligadas, só cancela. No Expo Go não faz nada. Devolve quantos
+ * lembretes ficaram agendados.
+ */
+export const scheduleCardReminders = (cards: CardReminderSource[], now: Date = new Date()): Promise<number> => {
+	const run = billScheduling.then(() => rescheduleCardReminders(cards, now));
+	billScheduling = run.catch(() => undefined);
+	return run;
+};
+
+const rescheduleCardReminders = async (cards: CardReminderSource[], now: Date): Promise<number> => {
+	const Notifications = getNotifications();
+	if (!Notifications) return 0;
+
+	try {
+		const enabled = await areNotificationsEnabled();
+		const names = new Map(cards.map((card) => [card.cardId, card.name]));
+		const planned = (enabled ? cardReminders(cards, now) : []).map((reminder) => ({
+			reminder,
+			identifier: cardReminderIdentifier(reminder),
+			content: cardReminderContent(names.get(reminder.cardId) ?? '', reminder),
+		}));
+
+		const signature = JSON.stringify([
+			enabled,
+			planned.map(({ identifier, content, reminder }) => [identifier, content.title, content.body, reminder.at.getTime()]),
+		]);
+		if (signature === cardSignature) return planned.length;
+		cardSignature = null;
+
+		const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+		for (const request of scheduled) {
+			if (request.identifier.startsWith(CARD_IDENTIFIER_PREFIX)) {
+				await Notifications.cancelScheduledNotificationAsync(request.identifier);
+			}
+		}
+
+		if (planned.length > 0) await ensureBillsChannel(Notifications);
+		for (const { reminder, identifier, content } of planned) {
+			await Notifications.scheduleNotificationAsync({
+				identifier,
+				content: {
+					...content,
+					data: { cardId: reminder.cardId, invoice: reminder.invoice, kind: reminder.kind },
+					sound: true,
+				},
+				trigger: {
+					type: Notifications.SchedulableTriggerInputTypes.DATE,
+					date: reminder.at,
+					channelId: Platform.OS === 'android' ? BILLS_CHANNEL_ID : undefined,
+				},
+			});
+		}
+
+		cardSignature = signature;
+		const permission = await permissionStatus(Notifications);
+		log('reminders', 'card_reminders_rescheduled', {
+			level: enabled && permission === 'denied' && planned.length > 0 ? 'warn' : 'info',
+			data: { cards: cards.length, scheduled: planned.length, enabled, permission },
+		});
+		return planned.length;
+	} catch (error) {
+		console.error('Error scheduling card reminders:', error);
+		log('reminders', 'card_reminders_failed', { level: 'error', data: { cards: cards.length, ...errorData(error) } });
+		return 0;
+	}
+};
+
 const getScheduledNotifications = async (): Promise<Record<string, boolean>> => {
 	try {
 		const value = await AsyncStorage.getItem(SCHEDULED_NOTIFICATIONS_KEY);
@@ -486,4 +594,5 @@ export default {
 	cancelAllNotifications,
 	clearScheduledNotifications,
 	scheduleBillReminders,
+	scheduleCardReminders,
 };

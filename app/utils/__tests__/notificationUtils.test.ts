@@ -61,6 +61,8 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import type { Bill, RecurringTransaction } from '../../database/schema';
 import i18n from '../../i18n';
+import type { CardReminderSource } from '../billReminders';
+import { buildCardSummary, type CardEntry, type CardSettings } from '../cardMath';
 import { getISODate } from '../dateUtils';
 import { formatCents } from '../money';
 import {
@@ -68,6 +70,7 @@ import {
 	clearScheduledNotifications,
 	registerForPushNotificationsAsync,
 	scheduleBillReminders,
+	scheduleCardReminders,
 	scheduleTransactionNotification,
 	setNotificationsEnabled,
 } from '../notificationUtils';
@@ -341,6 +344,133 @@ describe('scheduleBillReminders', () => {
 		expect(mockScheduled.get('bill:consorcio:2026-11:soon:3')?.content.title).toBe(
 			'Scade tra 3 giorni'
 		);
+
+		await i18n.changeLanguage('pt');
+	});
+});
+
+/**
+ * Fatura do cartão (E2E-22): o `dumpsys alarm` do app só tinha os avisos da conta a pagar.
+ * Nubank fecha dia 10 e vence 7 dias depois (17/11/2026), fatura de R$ 1.634,56.
+ */
+describe('scheduleCardReminders', () => {
+	const now = new Date(2026, 10, 7, 10, 0);
+	const NUBANK: CardSettings = {
+		closingDay: 10,
+		closingDaysBefore: 7,
+		creditLimitCents: 500_000,
+		openingBalanceCents: 0,
+		openingBalanceDate: '2026-11-06',
+	};
+	const purchase = (id: string, amountCents: number): CardEntry => ({
+		id,
+		amountCents,
+		isIncome: false,
+		date: '2026-11-07',
+		note: id,
+		category: 'shopping',
+		installmentGroup: null,
+		installmentIndex: null,
+		installmentCount: null,
+	});
+	const ENTRIES = [purchase('ajuste', 123_456), purchase('compra', 10_000), purchase('parcela', 30_000)];
+
+	const nubank = (paidCents = 0): CardReminderSource => ({
+		cardId: 'nubank',
+		name: 'Nubank Teste',
+		summary: buildCardSummary(
+			NUBANK,
+			ENTRIES,
+			paidCents > 0 ? [{ amountCents: paidCents, date: '2026-11-07', inbound: true }] : [],
+			'2026-11-07'
+		),
+	});
+
+	const cardIds = (): string[] => Array.from(mockScheduled.keys()).filter((id) => id.startsWith('card:'));
+
+	// A agenda de mentira é zerada a cada teste; o que o módulo lembra do último agendamento
+	// também tem de ser — é o que "Apagar todos os dados" faz.
+	beforeEach(async () => {
+		await clearScheduledNotifications();
+		jest.clearAllMocks();
+	});
+
+	it('agenda 14/11 e 17/11 às 09:00, com o valor da fatura', async () => {
+		expect(await scheduleCardReminders([nubank()], now)).toBe(2);
+		expect(cardIds()).toEqual(['card:nubank:2026-11:soon:3', 'card:nubank:2026-11:today:0']);
+
+		const amount = formatCents(163_456);
+		const soon = mockScheduled.get('card:nubank:2026-11:soon:3');
+		expect(soon?.content).toMatchObject({
+			title: 'Fatura vence em 3 dias',
+			body: `Nubank Teste — fatura de ${amount} no dia 17`,
+			data: { cardId: 'nubank', invoice: '2026-11', kind: 'soon' },
+		});
+		const soonAt = soon?.trigger.date as Date;
+		expect([soonAt.getFullYear(), soonAt.getMonth(), soonAt.getDate(), soonAt.getHours()]).toEqual([2026, 10, 14, 9]);
+
+		const today = mockScheduled.get('card:nubank:2026-11:today:0');
+		expect(today?.content).toMatchObject({ title: 'Fatura vence hoje', body: `Nubank Teste — fatura de ${amount}` });
+		const todayAt = today?.trigger.date as Date;
+		expect([todayAt.getFullYear(), todayAt.getMonth(), todayAt.getDate(), todayAt.getHours()]).toEqual([2026, 10, 17, 9]);
+	});
+
+	it('paga a fatura (R$ 1.634,56), os avisos saem', async () => {
+		await scheduleCardReminders([nubank()], now);
+		expect(await scheduleCardReminders([nubank(163_456)], now)).toBe(0);
+		expect(cardIds()).toEqual([]);
+	});
+
+	it('pagamento parcial: o aviso diz o que falta', async () => {
+		await scheduleCardReminders([nubank(100_000)], now);
+		expect(mockScheduled.get('card:nubank:2026-11:today:0')?.content.body).toBe(
+			`Nubank Teste — fatura de ${formatCents(63_456)}`
+		);
+	});
+
+	it('cartões e contas a pagar não apagam os avisos um do outro', async () => {
+		await scheduleBillReminders([bill({ dueDay: 10 })], new Date(2026, 9, 24, 12, 0));
+		await scheduleCardReminders([nubank()], now);
+		expect(Array.from(mockScheduled.keys()).some((id) => id.startsWith('bill:'))).toBe(true);
+
+		await scheduleBillReminders([], new Date(2026, 9, 24, 12, 0));
+		expect(cardIds()).toHaveLength(2);
+		await scheduleCardReminders([], now);
+		expect(cardIds()).toEqual([]);
+	});
+
+	it('as mesmas faturas de novo não remarcam (a recarga das contas acontece a toda hora)', async () => {
+		await scheduleCardReminders([nubank()], now);
+		await scheduleCardReminders([nubank()], now);
+		expect(scheduleMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('com as notificações desligadas não agenda, e tira as que havia', async () => {
+		await scheduleCardReminders([nubank()], now);
+		await setNotificationsEnabled(false);
+		expect(await scheduleCardReminders([nubank()], now)).toBe(0);
+		expect(cardIds()).toEqual([]);
+
+		await setNotificationsEnabled(true);
+		expect(await scheduleCardReminders([nubank()], now)).toBe(2);
+	});
+
+	it('"Apagar todos os dados" esquece o que estava agendado: a próxima remarcação agenda de novo', async () => {
+		await scheduleCardReminders([nubank()], now);
+		await clearScheduledNotifications();
+		expect(cardIds()).toEqual([]);
+		expect(await scheduleCardReminders([nubank()], now)).toBe(2);
+		expect(cardIds()).toHaveLength(2);
+	});
+
+	it('textos existem em inglês e italiano', async () => {
+		await i18n.changeLanguage('en');
+		await scheduleCardReminders([nubank()], now);
+		expect(mockScheduled.get('card:nubank:2026-11:today:0')?.content.title).toBe('Card bill due today');
+
+		await i18n.changeLanguage('it');
+		await scheduleCardReminders([nubank()], now);
+		expect(mockScheduled.get('card:nubank:2026-11:soon:3')?.content.title).toBe('Estratto conto in scadenza tra 3 giorni');
 
 		await i18n.changeLanguage('pt');
 	});

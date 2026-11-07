@@ -1406,6 +1406,18 @@ account: {
 		undoPaidHint: 'Sets {{name}} back to unpaid this month',
 		markedPaid: '{{name}} marked as paid',
 		unmarkedPaid: '{{name}} is unpaid again',
+		pay: {
+			title: 'Record the payment?',
+			body: "Record an expense of {{amount}} from {{account}}, dated today? The account balance and the month's spending will include it.",
+			bodyNoAccount: "Record an expense of {{amount}}, dated today? This bill doesn't say which account pays it, so the expense will have no account.",
+			post: 'Record and mark paid',
+			onlyMark: 'Just mark as paid',
+			cancel: 'Cancel',
+			posted: '{{name}} paid, {{amount}} expense recorded',
+			inboxTitle: 'Marked as paid',
+			inboxBody: 'The bank notification for this payment is in your inbox: confirm it there and the expense comes with it.',
+			undonePosted: '{{name}} is unpaid again, and the recorded expense was removed',
+		},
 		toPay: 'Left to pay this month',
 		variableNote_one: '+ {{count}} bill with a varying amount, not in the total',
 		variableNote_other: '+ {{count}} bills with varying amounts, not in the total',
@@ -1461,7 +1473,7 @@ account: {
 
 	reminders: {
 		channelName: 'Bills',
-		channelDescription: 'Due date reminders for your bills',
+		channelDescription: 'Due date reminders for your bills and card statements',
 		bill: {
 			soonTitle: 'Due in 3 days',
 			soonBody: '{{name}} — {{amount}} on day {{day}}',
@@ -1471,6 +1483,12 @@ account: {
 			todayBodyNoAmount: '{{name}} is due today',
 			lateTitle: 'Overdue bill',
 			lateBody: '{{name}} was due on day {{day}}. Already paid? Mark it in the app.',
+		},
+		card: {
+			soonTitle: 'Card bill due in 3 days',
+			soonBody: '{{name}} — {{amount}} bill on day {{day}}',
+			todayTitle: 'Card bill due today',
+			todayBody: '{{name}} — {{amount}} bill',
 		},
 		recurring: {
 			expenseTitle: 'Due tomorrow',

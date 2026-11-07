@@ -3,10 +3,11 @@ import { Stack, useRouter } from 'expo-router';
 import type React from 'react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BillStatusPill from '../components/bills/BillStatusPill';
-import { useBills } from '../contexts/BillsContext';
+import { useAccounts } from '../contexts/AccountsContext';
+import { type BillPaymentPlan, markPaidTransactionId, useBills } from '../contexts/BillsContext';
 import type { Bill } from '../database/schema';
 import type { MonthBillRow } from '../utils/billRules';
 import { formatCents } from '../utils/money';
@@ -17,7 +18,15 @@ import { formatCents } from '../utils/money';
  * Em cima, quanto ainda falta pagar no mês (as de valor variável ficam fora do total, e a
  * tela diz quantas). Cada conta tem "Já paguei" — é o que cala os lembretes do mês — e,
  * paga, "Desfazer". Tocar na conta abre a edição. As desativadas ficam no fim.
+ *
+ * "Já paguei" lança a saída (E2E-23): antes de lançar, a tela pergunta, com o valor e a
+ * conta que paga, e deixa só marcar. Quando já há lançamento que casa, marca sem perguntar;
+ * quando o aviso do banco está na caixa de entrada, marca e diz que o lançamento vem de lá.
+ * "Desfazer" tira o lançamento que o "Já paguei" criou.
  */
+
+/** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
+type PostChoice = 'post' | 'onlyMark' | 'cancel';
 
 const ACCENT = '#15E8FE';
 
@@ -38,24 +47,66 @@ const subtitleOf = (
 const BillsScreen: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { bills, month, isLoading, markPaid, undoPaid } = useBills();
+	const { bills, month, isLoading, planPayment, markPaid, undoPaid } = useBills();
+	const { accounts } = useAccounts();
 	const [busyId, setBusyId] = useState<string | null>(null);
 
 	const inactive = bills.filter((bill) => !bill.active);
 	const openBill = (bill: Bill) =>
 		router.push({ pathname: '/bills/edit/[id]', params: { id: bill.id } });
 
+	/** "Lançar a saída de R$ 120,00 da conta Corrente Teste, com a data de hoje?" */
+	const askToPost = (plan: Extract<BillPaymentPlan, { kind: 'post' }>): Promise<PostChoice> =>
+		new Promise((resolve) => {
+			const amount = formatCents(plan.draft.amountCents);
+			const account = accounts.find((item) => item.id === plan.draft.accountId)?.name;
+			Alert.alert(
+				t('bills.pay.title'),
+				account ? t('bills.pay.body', { amount, account }) : t('bills.pay.bodyNoAccount', { amount }),
+				[
+					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve('cancel') },
+					{ text: t('bills.pay.onlyMark'), onPress: () => resolve('onlyMark') },
+					{ text: t('bills.pay.post'), onPress: () => resolve('post') },
+				],
+				{ cancelable: true, onDismiss: () => resolve('cancel') }
+			);
+		});
+
+	const pay = async (bill: Bill) => {
+		const plan = await planPayment(bill.id);
+		if (!plan) return;
+
+		let options: { post: boolean } | undefined;
+		if (plan.kind === 'post') {
+			const choice = await askToPost(plan);
+			if (choice === 'cancel') return;
+			options = { post: choice === 'post' };
+		}
+
+		const result = await markPaid(bill.id, options);
+		if (!result) return;
+		if (result.posted && result.kind === 'post') {
+			AccessibilityInfo.announceForAccessibility(
+				t('bills.pay.posted', { name: bill.name, amount: formatCents(result.draft.amountCents) })
+			);
+		} else {
+			AccessibilityInfo.announceForAccessibility(t('bills.markedPaid', { name: bill.name }));
+		}
+		if (result.kind === 'inbox') Alert.alert(t('bills.pay.inboxTitle'), t('bills.pay.inboxBody'));
+	};
+
 	const toggle = async (row: MonthBillRow) => {
 		setBusyId(row.bill.id);
 		try {
 			if (row.status === 'paid') {
+				// Desfazer tira o lançamento quando foi o "Já paguei" que o criou (o id diz).
+				const removesPayment = row.bill.paidByRef === markPaidTransactionId(row.bill.id, month.month);
 				await undoPaid(row.bill.id);
 				AccessibilityInfo.announceForAccessibility(
-					t('bills.unmarkedPaid', { name: row.bill.name })
+					t(removesPayment ? 'bills.pay.undonePosted' : 'bills.unmarkedPaid', { name: row.bill.name })
 				);
 			} else {
-				await markPaid(row.bill.id);
-				AccessibilityInfo.announceForAccessibility(t('bills.markedPaid', { name: row.bill.name }));
+				await pay(row.bill);
 			}
 		} finally {
 			setBusyId(null);

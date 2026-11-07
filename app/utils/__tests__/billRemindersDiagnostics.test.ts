@@ -40,7 +40,9 @@ jest.mock('expo-notifications', () => ({
 import * as Notifications from 'expo-notifications';
 import type { Bill } from '../../database/schema';
 import { log } from '../../diagnostics/log';
-import { scheduleBillReminders, setNotificationsEnabled } from '../notificationUtils';
+import type { CardReminderSource } from '../billReminders';
+import { buildCardSummary } from '../cardMath';
+import { scheduleBillReminders, scheduleCardReminders, setNotificationsEnabled } from '../notificationUtils';
 
 const logMock = log as jest.Mock;
 
@@ -132,5 +134,43 @@ describe('bill_reminders_rescheduled', () => {
 				data: { bills: 1, error: 'TypeError' },
 			},
 		]);
+	});
+});
+
+describe('card_reminders_rescheduled', () => {
+	const card = (): CardReminderSource => ({
+		cardId: 'cartao-secreto',
+		name: 'Cartão do Fulano',
+		summary: buildCardSummary(
+			{ closingDay: 10, closingDaysBefore: 7, creditLimitCents: null, openingBalanceCents: 0, openingBalanceDate: '2026-11-06' },
+			[
+				{
+					id: 'compra',
+					amountCents: 163_456,
+					isIncome: false,
+					date: '2026-11-07',
+					note: 'Loja do Fulano',
+					category: 'shopping',
+					installmentGroup: null,
+					installmentIndex: null,
+					installmentCount: null,
+				},
+			],
+			[],
+			'2026-11-07'
+		),
+	});
+
+	it('quantos cartões e quantos avisos, sem nome nem valor', async () => {
+		expect(await scheduleCardReminders([card()], new Date(2026, 10, 7, 10, 0))).toBe(2);
+		expect(events()).toEqual([
+			{
+				area: 'reminders',
+				event: 'card_reminders_rescheduled',
+				level: 'info',
+				data: { cards: 1, scheduled: 2, enabled: true, permission: 'granted' },
+			},
+		]);
+		expect(JSON.stringify(logMock.mock.calls)).not.toMatch(/Fulano|secreto|163456|1634/);
 	});
 });

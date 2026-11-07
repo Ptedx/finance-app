@@ -5,14 +5,40 @@
  * O caso real: o usuário nunca recebeu aviso de vencimento. `scheduleBillReminders`
  * existe desde a onda 1, mas ninguém o chamava — a abertura do app, a baixa e o sync não
  * remarcavam nada. Aqui o banco é um array em memória, a agenda é mock e o resto
- * (`billRules`, `billEvents`) roda de verdade.
+ * (`billRules`, `billEvents`, `billMatcher`) roda de verdade.
+ *
+ * E2E-23: "Já paguei" só gravava `paidThrough` — quem lança à mão ficava com o saldo da
+ * conta e o gasto do mês errados. Os lançamentos e a caixa de entrada também são arrays em
+ * memória. E2E-22: os cartões (`useAccounts`) entram na agenda dos lembretes de fatura.
  */
 
-import type { Bill, BillDraft } from '../../database/schema';
+import type {
+	Bill,
+	BillDraft,
+	Capture,
+	Category,
+	Transaction,
+	TransactionDraft,
+} from '../../database/schema';
+import type { CardSummary } from '../../utils/cardMath';
 
 let mockStore: Bill[] = [];
 let mockNextId = 1;
 let mockLastSyncedAt: string | null = null;
+/** Os lançamentos vivos. */
+let mockLedger: Transaction[] = [];
+/** A caixa de entrada: avisos do banco ainda não confirmados. */
+let mockInbox: Capture[] = [];
+const mockRefreshData = jest.fn(async () => undefined);
+let mockAccounts: {
+	creditCards: { id: string; name: string }[];
+	cardSummaries: Map<string, CardSummary>;
+	isLoading: boolean;
+} = { creditCards: [], cardSummaries: new Map(), isLoading: false };
+const mockCategories = [
+	{ id: 'utilities', name: 'Utilities', type: 'expense' },
+	{ id: 'other_expense', name: 'Other Expense', type: 'expense' },
+] as unknown as Category[];
 
 const toBill = (id: string, draft: BillDraft): Bill => ({
 	id,
@@ -34,10 +60,45 @@ jest.mock('../../database/database', () => ({
 	deleteBill: jest.fn(async (id: string) => {
 		mockStore = mockStore.filter((bill) => bill.id !== id);
 	}),
+	getTransactionsByDateRange: jest.fn(async (start: string, end: string, type?: string) =>
+		mockLedger.filter(
+			(tx) => tx.date >= start && tx.date <= end && (type !== 'expense' || !tx.isIncome)
+		)
+	),
+	// Como o de verdade: tira a lápide do mesmo id, se houver, e grava de novo.
+	restoreTransaction: jest.fn(async (draft: TransactionDraft, id: string) => {
+		mockLedger = mockLedger.filter((tx) => tx.id !== id);
+		mockLedger.push({
+			installmentGroup: null,
+			installmentIndex: null,
+			installmentCount: null,
+			cardLast4: null,
+			...draft,
+			accountId: draft.accountId ?? null,
+			id,
+			updatedAt: '2026-10-24T12:00:00.000Z',
+		} as Transaction);
+	}),
+	deleteTransaction: jest.fn(async (id: string) => {
+		mockLedger = mockLedger.filter((tx) => tx.id !== id);
+	}),
+}));
+
+jest.mock('../../database/captures', () => ({
+	getPendingCaptures: jest.fn(async () => mockInbox),
 }));
 
 jest.mock('../../utils/notificationUtils', () => ({
 	scheduleBillReminders: jest.fn(async () => 0),
+	scheduleCardReminders: jest.fn(async () => 0),
+}));
+
+jest.mock('../AccountsContext', () => ({
+	useAccounts: () => mockAccounts,
+}));
+
+jest.mock('../TransactionsContext', () => ({
+	useTransactions: () => ({ categories: mockCategories, refreshData: mockRefreshData }),
 }));
 
 // O aviso de "o banco mudou por fora" (`hooks/useAfterPull.ts`) de verdade, numa fila de mentira.
@@ -71,13 +132,22 @@ jest.mock('../../utils/dateUtils', () => ({
 
 import { AppState, type AppStateStatus } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { addBill, deleteBill, getBills, updateBill } from '../../database/database';
+import {
+	addBill,
+	deleteBill,
+	deleteTransaction,
+	getBills,
+	restoreTransaction,
+	updateBill,
+} from '../../database/database';
 import * as syncQueue from '../../sync/queue';
 import { emitBillsChanged, onBillsChanged } from '../../utils/billEvents';
-import { scheduleBillReminders } from '../../utils/notificationUtils';
-import { BillsProvider, useBills } from '../BillsContext';
+import { buildCardSummary } from '../../utils/cardMath';
+import { scheduleBillReminders, scheduleCardReminders } from '../../utils/notificationUtils';
+import { BillsProvider, markPaidTransactionId, useBills } from '../BillsContext';
 
 const schedule = scheduleBillReminders as jest.Mock;
+const scheduleCards = scheduleCardReminders as jest.Mock;
 const loads = getBills as jest.Mock;
 
 const bill = (overrides: Partial<Bill> = {}): Bill => ({
@@ -149,6 +219,9 @@ beforeEach(() => {
 	mockStore = [bill(), { ...FINANCING }];
 	mockNextId = 1;
 	mockLastSyncedAt = null;
+	mockLedger = [];
+	mockInbox = [];
+	mockAccounts = { creditCards: [], cardSummaries: new Map(), isLoading: false };
 	jest.clearAllMocks();
 	appStateHandler = null;
 	jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, handler) => {
@@ -383,5 +456,304 @@ describe('as contas do mês', () => {
 		expect(api().month.dueCents).toBe(50_000);
 		expect(api().month.variableCount).toBe(1);
 		expect(api().activeBills.map((item) => item.id)).toEqual(['plano', 'tim']);
+	});
+});
+
+describe('"Já paguei" lança o pagamento (E2E-23)', () => {
+	/** A conta do achado: R$ 120, paga com a Corrente Teste, categoria Utilities. */
+	const INTERNET = bill({
+		id: 'internet',
+		name: 'Internet teste',
+		dueDay: 20,
+		amountCents: 12_000,
+		accountId: 'corrente',
+		category: 'utilities',
+	});
+	const ours = (): string => markPaidTransactionId('internet', '2026-10');
+
+	const expense = (overrides: Partial<Transaction> = {}): Transaction => ({
+		id: 'pix',
+		amountCents: 12_000,
+		category: 'utilities',
+		date: '2026-10-20',
+		note: 'Internet teste',
+		isIncome: false,
+		accountId: 'corrente',
+		installmentGroup: null,
+		installmentIndex: null,
+		installmentCount: null,
+		cardLast4: null,
+		updatedAt: '2026-10-20T12:00:00.000Z',
+		...overrides,
+	});
+
+	const stored = (id: string): Bill | undefined => mockStore.find((item) => item.id === id);
+
+	beforeEach(() => {
+		mockStore = [{ ...INTERNET }];
+	});
+
+	it('lança a saída de R$ 120,00 da Corrente Teste, na categoria da conta e com a data de hoje', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).toHaveBeenCalledTimes(1);
+		expect(restoreTransaction).toHaveBeenCalledWith(
+			expect.objectContaining({
+				amountCents: 12_000,
+				category: 'utilities',
+				date: '2026-10-24',
+				note: 'Internet teste',
+				isIncome: false,
+				accountId: 'corrente',
+			}),
+			ours()
+		);
+		expect(mockLedger.map((tx) => tx.id)).toEqual([ours()]);
+		// A baixa aponta para o lançamento: apagá-lo em Lançamentos reabre a conta, como na captura.
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: ours() });
+		// Saldo da conta e gasto do mês recalculam.
+		expect(mockRefreshData).toHaveBeenCalled();
+		expect(api().month.rows[0].status).toBe('paid');
+	});
+
+	it('o lançamento tem sempre o mesmo id para a conta e o mês (dois aparelhos não duplicam)', () => {
+		expect(markPaidTransactionId('internet', '2026-10')).toBe(ours());
+		expect(markPaidTransactionId('internet', '2026-11')).not.toBe(ours());
+		expect(markPaidTransactionId('outra', '2026-10')).not.toBe(ours());
+		expect(ours()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+	});
+
+	it('já há um lançamento que casa com a conta no período: não lança de novo, e a baixa é dele', async () => {
+		mockLedger = [expense()];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(mockLedger.map((tx) => tx.id)).toEqual(['pix']);
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'pix' });
+	});
+
+	it('o lançamento que já deu baixa em outra conta não conta como este pagamento', async () => {
+		mockStore = [{ ...INTERNET }, bill({ id: 'outra', name: 'Outra', paidByRef: 'pix' })];
+		mockLedger = [expense()];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).toHaveBeenCalledTimes(1);
+		expect(stored('internet')?.paidByRef).toBe(ours());
+	});
+
+	it('de outra conta, de outro valor ou fora do período não casa: lança', async () => {
+		mockLedger = [
+			expense({ id: 'outra-conta', accountId: 'inter' }),
+			expense({ id: 'outro-valor', amountCents: 9_000 }),
+			expense({ id: 'mes-passado', date: '2026-09-20' }),
+		];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).toHaveBeenCalledTimes(1);
+		expect(stored('internet')?.paidByRef).toBe(ours());
+	});
+
+	it('o aviso do banco ainda está na caixa de entrada: só marca, o lançamento vem dele', async () => {
+		mockInbox = [
+			{
+				id: 'aviso',
+				postedAt: '2026-10-20T15:00:00.000Z',
+				amountCents: 12_000,
+				direction: 'out',
+				counterparty: 'Internet teste',
+				appLabel: 'Banco',
+				accountId: 'corrente',
+				installments: null,
+				status: 'pending',
+			} as unknown as Capture,
+		];
+		const api = await mount();
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('internet');
+		});
+
+		expect(result).toMatchObject({ kind: 'inbox', posted: false });
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: null });
+	});
+
+	it('valor que varia: não há o que lançar, só marca', async () => {
+		mockStore = [{ ...INTERNET, amountCents: null }];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(stored('internet')?.paidThrough).toBe('2026-10');
+	});
+
+	it('"Só marcar como paga" (post: false) não lança', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet', { post: false });
+		});
+
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: null });
+	});
+
+	it('conta sem categoria: o lançamento vai para Other Expense', async () => {
+		mockStore = [{ ...INTERNET, category: null }];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect((restoreTransaction as jest.Mock).mock.calls[0][0].category).toBe('other_expense');
+	});
+
+	it('planPayment diz à tela o que o "Já paguei" vai fazer, sem gravar nada', async () => {
+		const api = await mount();
+		let plan: Awaited<ReturnType<Api['planPayment']>> = null;
+		await act(async () => {
+			plan = await api().planPayment('internet');
+		});
+
+		expect(plan).toMatchObject({ kind: 'post', id: ours(), draft: { amountCents: 12_000, accountId: 'corrente' } });
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(restoreTransaction).not.toHaveBeenCalled();
+	});
+
+	it('desfazer tira o lançamento que o "Já paguei" criou', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+		mockRefreshData.mockClear();
+		await act(async () => {
+			await api().undoPaid('internet');
+		});
+
+		expect(deleteTransaction).toHaveBeenCalledWith(ours());
+		expect(mockLedger).toEqual([]);
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+		expect(mockRefreshData).toHaveBeenCalled();
+	});
+
+	it('desfazer depois de reabrir o app também tira (o id diz que foi o "Já paguei")', async () => {
+		let api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+		await act(async () => {
+			renderer?.unmount();
+		});
+		api = await mount();
+		await act(async () => {
+			await api().undoPaid('internet');
+		});
+
+		expect(deleteTransaction).toHaveBeenCalledWith(ours());
+		expect(mockLedger).toEqual([]);
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+	});
+
+	it('desfazer a baixa que veio de um lançamento que já existia não apaga lançamento nenhum', async () => {
+		mockLedger = [expense()];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+		await act(async () => {
+			await api().undoPaid('internet');
+		});
+
+		expect(deleteTransaction).not.toHaveBeenCalled();
+		expect(mockLedger.map((tx) => tx.id)).toEqual(['pix']);
+		expect(stored('internet')?.paidThrough).toBe('2026-09');
+	});
+
+	it('marcar, desfazer e marcar de novo lança outra vez (a lápide do mesmo id sai)', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+		await act(async () => {
+			await api().undoPaid('internet');
+		});
+		await act(async () => {
+			await api().markPaid('internet');
+		});
+
+		expect(restoreTransaction).toHaveBeenCalledTimes(2);
+		expect(mockLedger.map((tx) => tx.id)).toEqual([ours()]);
+		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: ours() });
+	});
+});
+
+describe('lembretes da fatura do cartão (E2E-22)', () => {
+	const summary = (): CardSummary =>
+		buildCardSummary(
+			{ closingDay: 10, closingDaysBefore: 7, creditLimitCents: null, openingBalanceCents: 0, openingBalanceDate: '2026-10-01' },
+			[],
+			[],
+			'2026-10-24'
+		);
+
+	it('agenda os cartões com o resumo que as contas já calculam', async () => {
+		const nubank = summary();
+		mockAccounts = {
+			creditCards: [{ id: 'nubank', name: 'Nubank Teste' }],
+			cardSummaries: new Map([['nubank', nubank]]),
+			isLoading: false,
+		};
+		await mount();
+
+		expect(scheduleCards).toHaveBeenCalled();
+		expect(scheduleCards.mock.calls.at(-1)?.[0]).toEqual([{ cardId: 'nubank', name: 'Nubank Teste', summary: nubank }]);
+	});
+
+	it('enquanto as contas carregam, não mexe nos avisos (a lista vazia apagaria todos)', async () => {
+		mockAccounts = { creditCards: [], cardSummaries: new Map(), isLoading: true };
+		await mount();
+		expect(scheduleCards).not.toHaveBeenCalled();
+	});
+
+	it('as faturas mudaram (um lançamento, um pagamento): remarca', async () => {
+		mockAccounts = {
+			creditCards: [{ id: 'nubank', name: 'Nubank Teste' }],
+			cardSummaries: new Map([['nubank', summary()]]),
+			isLoading: false,
+		};
+		await mount();
+		const before = scheduleCards.mock.calls.length;
+
+		mockAccounts = { ...mockAccounts, cardSummaries: new Map([['nubank', summary()]]) };
+		await rerender();
+		expect(scheduleCards.mock.calls.length).toBe(before + 1);
+	});
+
+	it('o liga/desliga dos Ajustes remarca as contas e as faturas', async () => {
+		mockAccounts = {
+			creditCards: [{ id: 'nubank', name: 'Nubank Teste' }],
+			cardSummaries: new Map([['nubank', summary()]]),
+			isLoading: false,
+		};
+		const api = await mount();
+		scheduleCards.mockClear();
+		await act(async () => {
+			await api().rescheduleReminders();
+		});
+		expect(scheduleCards).toHaveBeenCalledTimes(1);
+		expect(scheduleCards.mock.calls[0][0]).toHaveLength(1);
 	});
 });
