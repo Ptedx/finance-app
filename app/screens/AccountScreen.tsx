@@ -552,9 +552,10 @@ const AccountScreen: React.FC = () => {
 		<SafeAreaView style={styles.container}>
 			{header}
 			{topBar}
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria "Criar conta"/"Entrar" (SPD-121): o `height` encolhe a área, como no modal da senha. */}
 			<KeyboardAvoidingView
 				style={styles.flex}
-				behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+				behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 			>
 				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					<Text style={styles.title}>

@@ -9,6 +9,7 @@
 let mockLanguage = 'pt';
 
 jest.mock('expo-router', () => ({
+	useRouter: () => ({ back: jest.fn() }),
 	Stack: { Screen: () => null },
 }));
 

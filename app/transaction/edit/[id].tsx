@@ -2,7 +2,8 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import ScreenTopBar from '../../components/ScreenTopBar';
 import TransactionForm from '../../components/TransactionForm';
 import TransferForm from '../../components/TransferForm';
 import { useTransactions } from '../../contexts/TransactionsContext';
@@ -12,6 +13,7 @@ import type { Transaction, Transfer } from '../../database/schema';
 export default function EditTransactionScreen() {
 	const { t } = useTranslation();
 	const router = useRouter();
+	const insets = useSafeAreaInsets();
 	// `kind=transfer`: a linha de transferência de Lançamentos (E2E-28). Transferência não é
 	// lançamento — mora em outra tabela e não está em `transactions`.
 	const { id, kind } = useLocalSearchParams();
@@ -60,8 +62,12 @@ export default function EditTransactionScreen() {
 			? t('transactionForm.titleEditIncome')
 			: t('transactionForm.titleEditExpense');
 
+	// A pilha da raiz não desenha cabeçalho: a tela desenha o seu, como o detalhe de onde se
+	// chega aqui. No lugar dos 60 fixos em cima e embaixo, a área segura cuida do topo e o fim
+	// do formulário para acima da barra de gestos (`insets.bottom`; o respiro de 16 é o do
+	// próprio formulário).
 	return (
-		<SafeAreaView style={styles.container}>
+		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen
 				options={{
 					title,
@@ -72,7 +78,8 @@ export default function EditTransactionScreen() {
 					headerShadowVisible: false,
 				}}
 			/>
-			<View style={styles.content}>
+			<ScreenTopBar title={title} backLabel={t('transactionForm.back')} onBack={() => router.back()} />
+			<View style={[styles.content, { paddingBottom: insets.bottom }]}>
 				{initialTransaction && (
 					<TransactionForm
 						initialTransaction={initialTransaction}
@@ -92,8 +99,6 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingTop: 60,
-		paddingBottom: 60,
 	},
 	content: {
 		flex: 1,

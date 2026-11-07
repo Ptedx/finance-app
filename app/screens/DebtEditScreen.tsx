@@ -258,7 +258,8 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
-			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
+			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 				<View style={styles.header}>
 					<Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel={t('debts.back')} style={styles.iconButton}>
 						<Ionicons name="arrow-back" size={24} color="#FFFFFF" />

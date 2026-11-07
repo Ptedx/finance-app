@@ -185,9 +185,10 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
 			<KeyboardAvoidingView
 				style={styles.flex}
-				behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+				behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 			>
 				<View style={styles.header}>
 					<Pressable

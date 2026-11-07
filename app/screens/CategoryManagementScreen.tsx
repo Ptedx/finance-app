@@ -1,19 +1,22 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	Alert,
 	FlatList,
-	SafeAreaView,
 	StyleSheet,
 	Text,
 	TouchableOpacity,
 	View,
 } from 'react-native';
+// O `SafeAreaView` do react-native é só do iOS: no Android a tela ia para baixo da barra de
+// status e o "Adicionar categoria", para baixo da barra de gestos.
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import CategoryEditorModal from '../components/CategoryEditorModal';
 import { Button, ChipGroup } from '../components/cards/formParts';
 import Sheet from '../components/cards/Sheet';
+import ScreenTopBar from '../components/ScreenTopBar';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { CATEGORY_NATURES, type Category, type CategoryDraft } from '../database/schema';
 
@@ -22,6 +25,8 @@ const UNCATEGORIZED_ID = 'uncategorized';
 
 const CategoryManagementScreen = () => {
 	const { t } = useTranslation();
+	const router = useRouter();
+	const insets = useSafeAreaInsets();
 	const { categories, transactions, addCategory, updateCategory, deleteCategory } = useTransactions();
 	const [isEditorVisible, setIsEditorVisible] = useState(false);
 	const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -200,7 +205,7 @@ const CategoryManagementScreen = () => {
 	);
 
 	return (
-		<SafeAreaView style={styles.container}>
+		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen
 				options={{
 					title: t('categoryManagement.screenTitle'),
@@ -212,18 +217,22 @@ const CategoryManagementScreen = () => {
 				}}
 			/>
 
+			{/* A pilha da raiz não desenha cabeçalho: sem este, a tela não tinha voltar. */}
+			<ScreenTopBar
+				title={t('categoryManagement.title')}
+				backLabel={t('categoryManagement.back')}
+				onBack={() => router.back()}
+			/>
 			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle} accessibilityRole="header">
-					{t('categoryManagement.title')}
-				</Text>
 				<Text style={styles.headerSubtitle}>{t('categoryManagement.subtitle')}</Text>
 			</View>
 
+			{/* O botão fica preso no pé, acima da barra de gestos; a lista rola até passar dele. */}
 			<FlatList
 				data={categories}
 				renderItem={renderCategoryItem}
 				keyExtractor={(item) => item.id}
-				contentContainerStyle={styles.categoryList}
+				contentContainerStyle={[styles.categoryList, { paddingBottom: insets.bottom + 80 }]}
 				ListEmptyComponent={
 					<View style={styles.emptyContainer}>
 						<Text style={styles.emptyText}>{t('categoryManagement.empty')}</Text>
@@ -231,7 +240,7 @@ const CategoryManagementScreen = () => {
 				}
 			/>
 
-			<View style={styles.addButtonContainer}>
+			<View style={[styles.addButtonContainer, { paddingBottom: insets.bottom + 16 }]}>
 				<TouchableOpacity style={styles.addButton} onPress={handleAddCategory} accessibilityRole="button">
 					<Ionicons name="add" size={24} color="#000000" />
 					<Text style={styles.addButtonText}>{t('categoryManagement.add')}</Text>
@@ -347,17 +356,10 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingTop: 60,
 	},
 	headerContainer: {
 		paddingHorizontal: 16,
-		paddingVertical: 12,
-	},
-	headerTitle: {
-		fontSize: 24,
-		fontWeight: '700',
-		color: '#FFFFFF',
-		marginBottom: 4,
+		paddingBottom: 12,
 	},
 	headerSubtitle: {
 		fontSize: 14,
@@ -365,7 +367,6 @@ const styles = StyleSheet.create({
 	},
 	categoryList: {
 		padding: 16,
-		paddingBottom: 80,
 	},
 	categoryItem: {
 		flexDirection: 'row',

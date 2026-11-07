@@ -1,8 +1,9 @@
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useTranslation } from 'react-i18next';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import ScreenTopBar from '../components/ScreenTopBar';
 import { type PolicySection, privacyPolicyFor } from '../utils/privacyPolicy';
 
 /**
@@ -15,6 +16,7 @@ export default function PrivacyPolicyScreen() {
 	// O idioma do i18next, o mesmo dos textos do resto do app: trocar o idioma em Ajustes
 	// redesenha a tela já na versão nova.
 	const { t, i18n } = useTranslation();
+	const router = useRouter();
 	const policy = privacyPolicyFor(i18n.language);
 
 	return (
@@ -27,6 +29,12 @@ export default function PrivacyPolicyScreen() {
 					headerTintColor: '#FFFFFF',
 					headerShadowVisible: false,
 				}}
+			/>
+			{/* A pilha da raiz não desenha cabeçalho: sem este, a tela abria sem título nem voltar. */}
+			<ScreenTopBar
+				title={t('settings.privacyPolicy')}
+				backLabel={t('settings.privacyPolicyBack')}
+				onBack={() => router.back()}
 			/>
 
 			<ScrollView style={styles.scroll} contentContainerStyle={styles.content}>

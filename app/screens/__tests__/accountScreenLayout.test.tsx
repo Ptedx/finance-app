@@ -206,3 +206,24 @@ describe('modal da senha no Android (E2E-47)', () => {
 		expect(passwordField().props.autoFocus).toBeFalsy();
 	});
 });
+
+describe('entrar ou criar conta no Android (SPD-121)', () => {
+	beforeEach(() => {
+		setOS('android');
+		mockAuthState = { account: null, isAvailable: true, pendingClaim: false };
+	});
+
+	it('o botão de criar a conta fica dentro de algo que encolhe com o teclado, junto com os campos', async () => {
+		await render();
+
+		const button = renderer.root.find((node) => isHostText(node) && node.props.children === 'account.signUp');
+		const avoider = ancestor(button, (candidate) => (candidate.type as unknown) === KeyboardAvoidingView);
+		expect(avoider?.props.behavior).toBe('height');
+		const fields = renderer.root.findAll(
+			(node) => typeof node.type === 'string' && node.props.placeholder === 'account.passwordPlaceholder'
+		);
+		expect(fields.length).toBeGreaterThan(0);
+		for (const field of fields) expect(ancestor(field, (candidate) => candidate === avoider)).toBe(avoider);
+		expect(ancestor(button, (candidate) => (candidate.type as unknown) === ScrollView)?.props.keyboardShouldPersistTaps).toBe('handled');
+	});
+});

@@ -22,7 +22,7 @@ jest.mock('expo-router', () => ({
 
 jest.mock('react-native-safe-area-context', () => {
 	const { View } = require('react-native');
-	return { SafeAreaView: View };
+	return { SafeAreaView: View, useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) };
 });
 
 jest.mock('react-i18next', () => ({

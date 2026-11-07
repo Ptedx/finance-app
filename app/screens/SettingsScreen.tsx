@@ -160,13 +160,15 @@ const SettingsScreen = () => {
 
 			const s = result.summary;
 			const toReview = s.pending + s.questions;
-			const body = t('captures.import.summary', {
-				total: s.total,
-				known: s.skippedExisting + s.matchedCaptures + s.matchedTransactions,
-				review: toReview,
-				auto: s.autoConfirmed,
-				ignored: s.ignored + s.transfers,
-			});
+			// Uma linha por número, cada uma no singular ou no plural dele: com uma chave só para
+			// o resumo inteiro, um arquivo de uma linha dizia "1 linhas no arquivo" (E2E-51).
+			const body = [
+				t('captures.import.summaryTotal', { count: s.total }),
+				t('captures.import.summaryKnown', { count: s.skippedExisting + s.matchedCaptures + s.matchedTransactions }),
+				t('captures.import.summaryReview', { count: toReview }),
+				t('captures.import.summaryAuto', { count: s.autoConfirmed }),
+				t('captures.import.summaryIgnored', { count: s.ignored + s.transfers }),
+			].join('\n');
 			// O resumo primeiro; as ofertas de parcelas depois dele, e só então a revisão.
 			const review = await new Promise<boolean>((resolve) =>
 				Alert.alert(
@@ -720,8 +722,9 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		gap: 4,
 		paddingHorizontal: 16,
+		// Só o respiro do cabeçalho: a área segura já põe a tela abaixo da barra de status, e
+		// os 60 que estavam aqui dobravam o vão no topo (SPD-121).
 		paddingVertical: 12,
-		paddingTop: 60,
 	},
 	headerTitle: {
 		fontSize: 24,

@@ -55,6 +55,8 @@ const POPULAR_BANKS = ['nubank', 'inter', 'mercadopago', 'itau', 'bradesco', 'sa
 const OTHER = 'other';
 /** O maior prazo entre fechamento e vencimento que o formulário aceita. */
 const MAX_DUE_GAP = 20;
+/** Prazo fora de 1 a 20 dias: a mesma regra no salvar e no aviso enquanto se digita. */
+const dueGapInvalid = (gap: number | null): boolean => gap !== null && (gap < 1 || gap > MAX_DUE_GAP);
 
 type CardType = 'credit' | 'debit';
 
@@ -201,7 +203,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const typedDue = parseDay(dueDay);
 	const typedGap = gapOf(typedClosing, typedDue);
 	const typedRule =
-		typedClosing && typedDue && typedGap !== null && typedGap >= 1 && typedGap <= MAX_DUE_GAP
+		typedClosing && typedDue && typedGap !== null && !dueGapInvalid(typedGap)
 			? cycleRuleOf({ closingDay: typedClosing, closingDaysBefore: typedGap, dueDay: typedDue })
 			: null;
 	const cyclePreview = typedRule ? cycleFor(todayISO(), typedRule) : null;
@@ -224,7 +226,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		else if (closing === null && due) next.closing = t('cards.edit.closingNeeded');
 		if (due === false) next.due = t('cards.edit.invalidDay');
 		else if (closing && due === null) next.due = t('cards.edit.dueNeeded');
-		else if (gap !== null && (gap < 1 || gap > MAX_DUE_GAP)) next.due = t('cards.edit.invalidDueGap');
+		else if (dueGapInvalid(gap)) next.due = t('cards.edit.invalidDueGap');
 		if (last4 && !/^\d{4}$/.test(last4)) next.last4 = t('cards.edit.invalidLast4');
 
 		let limitCents: number | null = null;
@@ -406,7 +408,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
-			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
+			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 				<View style={styles.header}>
 					<Pressable
 						onPress={() => router.back()}
@@ -555,6 +558,13 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								due: formatDayMonth(cyclePreview.dueDate),
 							})}
 						</Text>
+					) : dueGapInvalid(typedGap) && !errors.due ? (
+						// Os dois dias digitados dão um prazo fora de 1 a 20: no lugar da linha das datas,
+						// o porquê, já enquanto se digita — antes ela sumia calada e o aviso só vinha no
+						// salvar (E2E-50). Depois do salvar, o aviso fica no campo, uma vez só.
+						<Text style={styles.cycleInvalid} accessibilityLiveRegion="polite">
+							{t('cards.edit.invalidDueGap')}
+						</Text>
 					) : null}
 
 					{!existing && asked?.closed ? (
@@ -690,6 +700,14 @@ const styles = StyleSheet.create({
 		lineHeight: 22,
 		color: '#FFFFFF',
 		backgroundColor: 'rgba(21,232,254,0.1)',
+		borderRadius: 12,
+		padding: 12,
+	},
+	cycleInvalid: {
+		fontSize: 15,
+		lineHeight: 22,
+		color: '#FF8A80',
+		backgroundColor: 'rgba(255,138,128,0.1)',
 		borderRadius: 12,
 		padding: 12,
 	},
