@@ -1438,6 +1438,7 @@ account: {
 
 	month: {
 		title: 'This month',
+		otherTitle: 'Month summary',
 		income: 'Income',
 		spending: 'Spending',
 		cardInvoiceLine: '{{month}} bill · purchases made this month: {{amount}}',

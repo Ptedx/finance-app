@@ -433,7 +433,12 @@ export const GOAL_ON_TRACK_YEARS = 20;
 /** Rendimento observado abaixo da metade do esperado merece uma frase. */
 export const LOW_REALIZED_YIELD_RATIO = 0.5;
 
-const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : years.toFixed(1));
+/**
+ * Anos com uma casa e o separador do idioma: "12,5" em português, "12.5" em inglês (E2E-45).
+ * A casa decimal é a mesma dos meses de reserva (`formatMonthsCovered`). O cartão do
+ * objetivo (`FreedomHero`) usa esta mesma função.
+ */
+export const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : formatMonthsCovered(years));
 
 const monthText = (key: string): string => `${monthKeyName(key)} ${key.slice(0, 4)}`;
 

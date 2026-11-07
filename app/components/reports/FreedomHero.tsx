@@ -3,6 +3,7 @@ import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { monthKeyName } from '../../utils/dateUtils';
+import { yearsText } from '../../utils/insights';
 import { formatCents } from '../../utils/money';
 import type { IncomeComposition } from '../../utils/reportSeries';
 import type { RetirementGoal, RetirementReadModel } from '../../utils/retirement';
@@ -10,8 +11,6 @@ import { Button } from '../cards/formParts';
 import { ACCENT, INCOME_COLOR, reportStyles } from './reportStyles';
 
 const percent = (bp: number): string => `${Math.round(bp / 100)}%`;
-
-const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : years.toFixed(1));
 
 /**
  * O objetivo em um cartão: quão perto o capital está do necessário, quanto ele já rende

@@ -180,3 +180,71 @@ describe('com algo digitado e não salvo, fechar pergunta antes', () => {
 		expect(onClose).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe('E2E-44 — campo da tela de trás com o foco não conta como teclado aberto', () => {
+	// Caminho do achado: novo lançamento com o teclado no Valor → Editar categorias → lixeira.
+	// O Valor segue focado atrás da folha, sem teclado na tela, e o 1º voltar era engolido.
+	const valorDaTelaDeTras = { campo: 'Valor' };
+
+	it('teclado fechado e o foco num campo de trás: o 1º voltar fecha a folha', async () => {
+		focused = valorDaTelaDeTras;
+		await open();
+		await back();
+
+		expect(dismiss).not.toHaveBeenCalled();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('com algo digitado, o 1º voltar pergunta antes de descartar', async () => {
+		focused = valorDaTelaDeTras;
+		await open(true);
+		await back();
+
+		expect(dismiss).not.toHaveBeenCalled();
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('o foco passa para um campo da folha e o teclado se fecha com o mesmo voltar: só tira o foco', async () => {
+		focused = valorDaTelaDeTras;
+		await open();
+		focused = { campo: 'da folha' };
+		await back();
+
+		expect(dismiss).toHaveBeenCalledTimes(1);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('com o teclado visível, o voltar fecha o teclado mesmo com o foco atrás', async () => {
+		focused = valorDaTelaDeTras;
+		await open();
+		await keyboard('keyboardDidShow');
+		await back();
+
+		expect(dismiss).toHaveBeenCalledTimes(1);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('a folha reaberta olha de novo o que tinha o foco ao abrir', async () => {
+		await open();
+		focused = valorDaTelaDeTras;
+		await act(async () => {
+			renderer.update(
+				<Sheet visible={false} title="Acertar" onClose={onClose}>
+					<Text>campos</Text>
+				</Sheet>
+			);
+		});
+		await act(async () => {
+			renderer.update(
+				<Sheet visible title="Acertar" onClose={onClose}>
+					<Text>campos</Text>
+				</Sheet>
+			);
+		});
+		await back();
+
+		expect(dismiss).not.toHaveBeenCalled();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+});

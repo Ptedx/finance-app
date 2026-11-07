@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
+import { formatMonthsCovered } from '../../utils/emergencyReserve';
 import type { HealthIndicator, HealthStatus } from '../../utils/healthScore';
 import { reportStyles, STATUS_COLOR } from './reportStyles';
 
@@ -14,7 +15,8 @@ const STATUS_ICON: Record<HealthStatus, React.ComponentProps<typeof Ionicons>['n
 
 const valueText = (indicator: HealthIndicator): string => {
 	if (indicator.value === null) return '—';
-	if (indicator.unit === 'months') return indicator.value.toFixed(1);
+	// Com o separador do idioma, como no Patrimônio: "0,3" em português (E2E-45).
+	if (indicator.unit === 'months') return formatMonthsCovered(indicator.value);
 	const percent = Math.round(indicator.value / 100);
 	return indicator.id === 'spending-trend' && percent > 0 ? `+${percent}%` : `${percent}%`;
 };

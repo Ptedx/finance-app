@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
+import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	Alert,
@@ -29,6 +30,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
  * campo tem o foco: no Android o teclado pode se fechar com o mesmo voltar antes de ele
  * chegar aqui, e o campo continua focado. Tirar o foco deixa o próximo voltar fechar.
  *
+ * O foco só conta se mudou depois que a folha abriu (E2E-44). Um campo da tela de trás (o
+ * Valor do novo lançamento) pode seguir focado sem teclado na tela, e o `Keyboard.dismiss()`
+ * não tira esse foco: o 1º voltar era engolido. A folha guarda o campo que tinha o foco ao
+ * abrir e não conta esse; um campo da própria folha é outro. Não há jeito público de saber
+ * se um campo está dentro da folha, e olhar só os eventos do teclado perderia o caso de cima
+ * (o teclado já se fechou quando o voltar chega). O campo é guardado no render que abre a
+ * folha, antes de um campo dela pegar o foco sozinho (`autoFocus`).
+ *
  * Com `confirmDiscard`, fechar (voltar, X ou toque fora) pergunta antes de descartar o que
  * foi digitado.
  *
@@ -47,14 +56,27 @@ interface SheetProps {
 	children: React.ReactNode;
 }
 
-/** O teclado está aberto, ou acabou de se fechar e o campo segue com o foco. */
-const keyboardOpen = (): boolean =>
-	// `State?.`: no jest o TextInput é um mock sem `State`.
-	Keyboard.isVisible() || TextInput.State?.currentlyFocusedInput() != null;
+// `State?.`: no jest o TextInput é um mock sem `State`.
+const focusedInput = (): unknown => TextInput.State?.currentlyFocusedInput() ?? null;
+
+/**
+ * O teclado está aberto, ou acabou de se fechar e o campo segue com o foco. Não conta o
+ * campo que já tinha o foco quando a folha abriu (`focusedAtOpen`, o da tela de trás).
+ */
+const keyboardOpen = (focusedAtOpen: unknown): boolean => {
+	if (Keyboard.isVisible()) return true;
+	const focused = focusedInput();
+	return focused != null && focused !== focusedAtOpen;
+};
 
 const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confirmDiscard = false, children }) => {
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
+	// O campo com o foco quando a folha abre, olhado de novo a cada abertura.
+	const wasVisible = useRef(false);
+	const focusedAtOpen = useRef<unknown>(null);
+	if (visible && !wasVisible.current) focusedAtOpen.current = focusedInput();
+	wasVisible.current = visible;
 
 	const requestClose = () => {
 		if (!confirmDiscard) {
@@ -73,7 +95,7 @@ const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confir
 	};
 
 	const onBack = () => {
-		if (keyboardOpen()) {
+		if (keyboardOpen(focusedAtOpen.current)) {
 			Keyboard.dismiss();
 			return;
 		}

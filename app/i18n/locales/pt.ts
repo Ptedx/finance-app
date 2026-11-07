@@ -1433,6 +1433,7 @@ const pt = {
 
 	month: {
 		title: 'Este mês',
+		otherTitle: 'Resumo do mês',
 		income: 'Receitas',
 		spending: 'Gastos',
 		cardInvoiceLine: 'Fatura de {{month}} · compras feitas no mês: {{amount}}',

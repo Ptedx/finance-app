@@ -43,10 +43,15 @@ const MonthOverviewCard: React.FC = () => {
 	const { t } = useTranslation();
 	const { month, provisionalMonth } = useAccounts();
 	const { currentBudgetCents } = useBudget();
-	const { selectedMonth } = usePeriod();
+	const { selectedMonth, selectedYear } = usePeriod();
 	const [showBudgetEditor, setShowBudgetEditor] = useState(false);
 
 	if (!month) return null;
+
+	// "Este mês" só para o mês corrente (E2E-43); nos outros, um título que não repete o nome
+	// do mês, que o seletor ao lado já mostra.
+	const today = new Date();
+	const isCurrentMonth = selectedMonth === today.getMonth() + 1 && selectedYear === today.getFullYear();
 
 	const budgetSet = currentBudgetCents !== null && currentBudgetCents > 0;
 	const budgetPercent = budgetSet ? Math.round((month.totalSpendCents / (currentBudgetCents as number)) * 100) : 0;
@@ -62,7 +67,7 @@ const MonthOverviewCard: React.FC = () => {
 		<View style={styles.container}>
 			<View style={styles.header}>
 				<Text style={styles.title} accessibilityRole="header">
-					{t('month.title')}
+					{isCurrentMonth ? t('month.title') : t('month.otherTitle')}
 				</Text>
 				{/* Trocar de mês continua a um toque: o resumo antigo tinha o seletor, e o
 				    quadro do mês é quem mais precisa dele. */}

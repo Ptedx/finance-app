@@ -1439,6 +1439,7 @@ account: {
 
 	month: {
 		title: 'Questo mese',
+		otherTitle: 'Riepilogo del mese',
 		income: 'Entrate',
 		spending: 'Spese',
 		cardInvoiceLine: 'Estratto di {{month}} · acquisti fatti nel mese: {{amount}}',
