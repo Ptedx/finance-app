@@ -1715,9 +1715,12 @@ export const deleteAccount = async (id: string): Promise<void> => {
 };
 
 /**
- * Leva os lançamentos e capturas de uma conta para outra. Serve para desfazer um
- * cartão de débito cadastrado como cartão: débito sai direto da conta, então o que foi
- * lançado nele pertence à conta.
+ * Leva os lançamentos, capturas, contas a pagar e dívidas de uma conta para outra. Serve
+ * para desfazer um cartão de débito cadastrado como cartão: débito sai direto da conta,
+ * então o que foi lançado nele pertence à conta. E para juntar duas contas.
+ *
+ * Os dois chamadores apagam a origem logo depois: a conta a pagar e a dívida que ficassem
+ * nela apontariam para uma lápide (SPD-099).
  */
 export const moveAccountLedger = async (fromId: string, toId: string, cardLast4: string | null = null): Promise<void> => {
 	const timestamp = nowTimestamp();
@@ -1731,6 +1734,18 @@ export const moveAccountLedger = async (fromId: string, toId: string, cardLast4:
 		// A captura também sincroniza desde o v19: mover a conta dela é uma edição, e sem
 		// `dirty` o outro aparelho continuaria mostrando a compra no cartão que não existe.
 		await db.runAsync('UPDATE captures SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ?', [
+			toId,
+			timestamp,
+			fromId,
+		]);
+		// Como em `mergeCardInto`. A da dívida e a dívida vão juntas: `ensureDebtBills` põe na
+		// conta a pagar a conta da dívida, e uma sem a outra seria desfeita na próxima carga.
+		await db.runAsync('UPDATE bills SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+			toId,
+			timestamp,
+			fromId,
+		]);
+		await db.runAsync('UPDATE debts SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
 			toId,
 			timestamp,
 			fromId,

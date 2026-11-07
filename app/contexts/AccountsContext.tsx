@@ -50,6 +50,7 @@ import {
 	summarizeAccounts,
 	withProvisionalBalances,
 } from '../utils/accountMath';
+import { emitBillsChanged } from '../utils/billEvents';
 import {
 	buildCardSummary,
 	CARD_ADJUSTMENT_NOTE,
@@ -964,6 +965,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			});
 			await deleteAccount(fromId);
 			syncQueue.schedule();
+			// As contas a pagar e as dívidas da que saiu vieram junto (SPD-099); as listas delas
+			// estão em providers abaixo deste, e só o aviso as faz reler.
+			emitBillsChanged();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[accounts, refresh, refreshData]
@@ -979,6 +983,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (fromId: string, intoId: string) => {
 			await mergeCardInto(fromId, intoId);
 			syncQueue.schedule();
+			// Como em `mergeAccounts`: contas a pagar e dívidas mudaram de cartão.
+			emitBillsChanged();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[refresh, refreshData]
@@ -1042,6 +1048,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await deleteTransfersOf(cardId);
 			await deleteAccount(cardId);
 			syncQueue.schedule();
+			// Como em `mergeAccounts`: contas a pagar e dívidas do cartão foram para a conta.
+			emitBillsChanged();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[accounts, refresh, refreshData]

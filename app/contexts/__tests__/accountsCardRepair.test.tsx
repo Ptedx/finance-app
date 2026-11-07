@@ -44,6 +44,9 @@ jest.mock('../../database/database', () => ({
 		for (const tx of mockStore.transactions) if (tx.accountId === fromId) tx.accountId = toId;
 	}),
 	repointTransfers: jest.fn(async () => undefined),
+	mergeCardInto: jest.fn(async () => undefined),
+	setAccountCardNames: jest.fn(async () => undefined),
+	deleteTransfersOf: jest.fn(async () => undefined),
 	deleteAccount: jest.fn(async (id: string) => {
 		mockStore.accounts = mockStore.accounts.filter((account) => account.id !== id);
 	}),
@@ -123,7 +126,14 @@ jest.mock('../PeriodContext', () => ({ usePeriod: () => mockPeriod }));
 
 import { act, create } from 'react-test-renderer';
 import { getAllCaptures } from '../../database/captures';
-import { foldAccountBalance, moveAccountLedger, reassignCaptureLedger } from '../../database/database';
+import {
+	deleteAccount,
+	foldAccountBalance,
+	mergeCardInto,
+	moveAccountLedger,
+	reassignCaptureLedger,
+} from '../../database/database';
+import { onBillsChanged } from '../../utils/billEvents';
 import { AccountsProvider, useAccounts } from '../AccountsContext';
 
 const NUBANK = 'com.nu.production';
@@ -386,5 +396,68 @@ describe('AccountsContext — juntar contas (SPD-073)', () => {
 		expect(kept?.openingBalanceDate).toBe('2026-09-01');
 		expect(mockStore.accounts.some((item) => item.id === 'inter-pf')).toBe(false);
 		expect(txById('tx-inter')?.accountId).toBe('inter');
+	});
+});
+
+/*
+ * Juntar leva as contas a pagar e as dívidas da conta que sai (SPD-099). As listas delas
+ * moram em outros providers, abaixo deste: sem o aviso, a conta a pagar e a dívida em
+ * memória continuavam na conta apagada, e a próxima gravação a partir delas a devolvia.
+ */
+describe('AccountsContext — juntar avisa contas a pagar e dívidas (SPD-099)', () => {
+	let changed: jest.Mock;
+	let unsubscribe: () => void;
+
+	beforeEach(() => {
+		changed = jest.fn();
+		unsubscribe = onBillsChanged(changed);
+		mockStore.accounts.push(
+			account({ id: 'inter', name: 'Inter', bankName: 'Inter' }),
+			account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter' }),
+			account({ id: 'cartao', name: 'Inter débito', bankName: 'Inter', kind: 'credit_card', role: 'card', last4: '4321' })
+		);
+	});
+
+	afterEach(() => unsubscribe());
+
+	/** O aviso tem que vir depois da gravação: antes, quem recarrega leria o banco de antes. */
+	const expectNoticeAfter = (write: jest.Mock) => {
+		expect(changed).toHaveBeenCalledTimes(1);
+		const writes = write.mock.invocationCallOrder;
+		expect(changed.mock.invocationCallOrder[0]).toBeGreaterThan(writes[writes.length - 1]);
+	};
+
+	it('juntar contas avisa depois de mover e apagar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().mergeAccounts('inter-pf', 'inter');
+		});
+		expect(moveAccountLedger).toHaveBeenCalledWith('inter-pf', 'inter', null);
+		expectNoticeAfter(deleteAccount as jest.Mock);
+	});
+
+	it('juntar cartões avisa depois de juntar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().mergeCards('cartao', 'inter');
+		});
+		expectNoticeAfter(mergeCardInto as jest.Mock);
+	});
+
+	it('o cartão de débito que vira a conta avisa depois de mover e apagar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().convertCardToDebit('cartao', 'inter');
+		});
+		expect(moveAccountLedger).toHaveBeenCalledWith('cartao', 'inter', '4321');
+		expectNoticeAfter(deleteAccount as jest.Mock);
+	});
+
+	it('só juntar avisa: criar uma conta não', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().createAccount(cardDraft({ kind: 'checking', role: 'main', last4: null }));
+		});
+		expect(changed).not.toHaveBeenCalled();
 	});
 });

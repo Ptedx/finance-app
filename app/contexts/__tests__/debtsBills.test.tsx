@@ -57,9 +57,9 @@ jest.mock('../../utils/dateUtils', () => ({
 }));
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { ensureDebtBills, updateBill } from '../../database/database';
+import { ensureDebtBills, getDebts, updateBill } from '../../database/database';
 import * as syncQueue from '../../sync/queue';
-import { onBillsChanged } from '../../utils/billEvents';
+import { emitBillsChanged, onBillsChanged } from '../../utils/billEvents';
 import { DebtsProvider, draftOf, useDebts } from '../DebtsContext';
 
 const ensure = ensureDebtBills as jest.Mock;
@@ -227,5 +227,53 @@ describe('as contas a pagar das dívidas', () => {
 		const api = await mount();
 		expect(api().debts.map((item) => item.id)).toEqual(['fin']);
 		spy.mockRestore();
+	});
+});
+
+/** Deixa as recargas disparadas pelo aviso (`void refresh()`) terminarem. */
+const settle = async () => {
+	for (let i = 0; i < 6; i++) {
+		await act(async () => {
+			await new Promise((resolve) => setImmediate(resolve));
+		});
+	}
+};
+
+/*
+ * Juntar contas leva a dívida da conta que sai para a que fica (SPD-099) e avisa com
+ * `emitBillsChanged`. A lista em memória tem que reler: `recordExtraPayment` regrava a dívida
+ * a partir dela, e a cópia velha devolvia a dívida à conta apagada.
+ */
+describe('o aviso de contas a pagar recarrega as dívidas', () => {
+	it('juntar contas avisou: a dívida passa a mostrar a conta que ficou', async () => {
+		mockDebts = [debt({ accountId: 'inter-pf' })];
+		const api = await mount();
+		mockDebts = [debt({ accountId: 'inter' })];
+		await act(async () => {
+			emitBillsChanged();
+		});
+		await settle();
+		expect(api().debts.map((item) => item.accountId)).toEqual(['inter']);
+	});
+
+	it('o próprio aviso não recarrega de novo: o laço para depois de uma volta', async () => {
+		// Pior caso: `ensureDebtBills` sempre diz que gravou. Se a recarga dependesse de ele
+		// parar de gravar, isto rodaria sem fim.
+		mockEnsureWrites = 1;
+		await mount();
+		await settle();
+		expect(getDebts).toHaveBeenCalledTimes(1);
+		expect(ensure).toHaveBeenCalledTimes(1);
+		expect(changed).toHaveBeenCalledTimes(1);
+
+		// Um aviso de fora (juntar contas): uma volta só — relê, garante, avisa, e para.
+		await act(async () => {
+			emitBillsChanged();
+		});
+		await settle();
+		expect(getDebts).toHaveBeenCalledTimes(2);
+		expect(ensure).toHaveBeenCalledTimes(2);
+		// O de fora e o da segunda volta.
+		expect(changed).toHaveBeenCalledTimes(3);
 	});
 });
