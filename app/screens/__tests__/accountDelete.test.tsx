@@ -49,7 +49,13 @@ jest.mock('../../contexts/AuthContext', () => ({
 }));
 
 jest.mock('../../contexts/SyncContext', () => ({
-	useSync: () => ({ status: 'idle', pending: 0, lastSyncedAt: null, syncNow: jest.fn() }),
+	// O estado "tudo salvo" (`describeSync` está testado em `syncContext.test.tsx`).
+	describeSync: () => ({
+		tone: 'ok',
+		label: { key: 'account.statusSynced', count: 0 },
+		short: { key: 'account.statusSynced', count: 0 },
+	}),
+	useSync: () => ({ status: 'idle', pending: 0, unsynced: 0, lastSyncedAt: null, syncNow: jest.fn() }),
 }));
 
 jest.mock('../../contexts/TransactionsContext', () => ({

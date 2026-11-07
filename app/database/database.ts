@@ -3173,6 +3173,15 @@ export const setBudget = async (
  * **um só orçamento vivo** por mês. Dois aparelhos que importassem o mesmo arquivo com
  * ids diferentes criariam dois orçamentos do mesmo mês e derrubariam o push — o achado
  * 6.1. Com o id do arquivo, os dois aparelhos convergem na mesma linha.
+ *
+ * **Sem transação própria**, como os outros `restore*`. Ela abria uma, e a importação do
+ * E2E-35 corria junto de outra — a da rodada de sync que a volta do seletor de arquivo
+ * dispara —: o `BEGIN` dentro da transação aberta falhava ("cannot start a transaction
+ * within a transaction") e só o orçamento ficava de fora. A importação agora roda com a
+ * fila parada (`importDatabaseData`), mas um contexto que grava ao voltar ao primeiro
+ * plano ainda pode estar com a dele aberta. Cada comando abaixo deixa o banco coerente
+ * sozinho: interrompido no meio, o mês fica sem orçamento até a próxima importação — o
+ * mesmo que os outros `restore*` arriscam.
  */
 export const restoreBudget = async (
 	year: number,
@@ -3180,24 +3189,22 @@ export const restoreBudget = async (
 	amountCents: number,
 	id: string
 ): Promise<void> => {
-	await db.withTransactionAsync(async () => {
-		await db.runAsync('DELETE FROM budgets WHERE id = ? AND deletedAt IS NOT NULL', [id]);
-		// O índice único cobre só as linhas vivas: se o mês já tem outra linha viva (uma
-		// que a importação não apagou), ela perde a vez para a do arquivo.
-		await db.runAsync(
-			`UPDATE budgets SET deletedAt = ?, updatedAt = ?, dirty = 1
-       WHERE year = ? AND month = ? AND id != ? AND deletedAt IS NULL`,
-			[nowTimestamp(), nowTimestamp(), year, month, id]
-		);
-		await db.runAsync(
-			`INSERT INTO budgets (id, year, month, amountCents, updatedAt, deletedAt, dirty)
-       VALUES (?, ?, ?, ?, ?, NULL, 1)
-       ON CONFLICT (id) DO UPDATE SET
-         year = excluded.year, month = excluded.month, amountCents = excluded.amountCents,
-         updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
-			[id, year, month, amountCents, nowTimestamp()]
-		);
-	});
+	await db.runAsync('DELETE FROM budgets WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	// O índice único cobre só as linhas vivas: se o mês já tem outra linha viva (uma
+	// que a importação não apagou), ela perde a vez para a do arquivo.
+	await db.runAsync(
+		`UPDATE budgets SET deletedAt = ?, updatedAt = ?, dirty = 1
+     WHERE year = ? AND month = ? AND id != ? AND deletedAt IS NULL`,
+		[nowTimestamp(), nowTimestamp(), year, month, id]
+	);
+	await db.runAsync(
+		`INSERT INTO budgets (id, year, month, amountCents, updatedAt, deletedAt, dirty)
+     VALUES (?, ?, ?, ?, ?, NULL, 1)
+     ON CONFLICT (id) DO UPDATE SET
+       year = excluded.year, month = excluded.month, amountCents = excluded.amountCents,
+       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+		[id, year, month, amountCents, nowTimestamp()]
+	);
 };
 
 export const clearBudget = async (year: number, month: number): Promise<void> => {

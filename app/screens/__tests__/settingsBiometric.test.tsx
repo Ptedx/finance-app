@@ -69,6 +69,15 @@ jest.mock('../../contexts/PeriodContext', () => ({
 jest.mock('../../contexts/RecurringTransactionsContext', () => ({
 	useRecurringTransactions: () => ({ transactions: [], refreshTransactions: jest.fn() }),
 }));
+jest.mock('../../contexts/SyncContext', () => ({
+	// O estado "tudo salvo" (`describeSync` está testado em `syncContext.test.tsx`).
+	describeSync: () => ({
+		tone: 'ok',
+		label: { key: 'account.statusSynced', count: 0 },
+		short: { key: 'account.statusSynced', count: 0 },
+	}),
+	useSync: () => ({ status: 'idle', pending: 0, unsynced: 0, lastSyncedAt: null, syncNow: jest.fn() }),
+}));
 jest.mock('../../contexts/TransactionsContext', () => ({
 	useTransactions: () => ({ refreshData: jest.fn() }),
 }));

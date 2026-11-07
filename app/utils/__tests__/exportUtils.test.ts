@@ -76,7 +76,12 @@ jest.mock('../../database/captures', () => ({
 	restoreMerchantRule: jest.fn(async () => undefined),
 }));
 
-jest.mock('../../sync/queue', () => ({ notifyDataChanged: jest.fn(), schedule: jest.fn() }));
+// A importação roda com a fila parada (`runExclusive`): aqui, sem fila, o trabalho só roda.
+jest.mock('../../sync/queue', () => ({
+	notifyDataChanged: jest.fn(),
+	schedule: jest.fn(),
+	runExclusive: (work: () => Promise<unknown>) => work(),
+}));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
 	getItem: jest.fn(async () => null),
@@ -111,7 +116,7 @@ jest.mock('expo-file-system', () => ({
 jest.mock('expo-sharing', () => ({ shareAsync: jest.fn() }));
 
 import * as Sharing from 'expo-sharing';
-import { Alert } from 'react-native';
+import { Alert, type AlertButton } from 'react-native';
 import { getAllCaptures } from '../../database/captures';
 import { getBills, getDebts, getTransactions, restoreBill } from '../../database/database';
 import type { Category, Transaction } from '../../database/schema';
@@ -183,6 +188,14 @@ const parseCsvLine = (line: string): string[] => {
 	}
 	fields.push(current);
 	return fields;
+};
+
+/**
+ * O "usuário" do aviso que pergunta para onde vai o backup: toca em compartilhar. Os
+ * outros avisos não têm botão a tocar.
+ */
+const pressShare = (_title: string, _message?: string, buttons?: AlertButton[]) => {
+	buttons?.find((button) => button.text === 'settings.exportShareAction')?.onPress?.();
 };
 
 const CATEGORIES = [
@@ -349,7 +362,7 @@ describe('exportDatabaseData', () => {
 		jest.clearAllMocks();
 		mockFile.written = '';
 		mockFile.truncateTo = null;
-		alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+		alert = jest.spyOn(Alert, 'alert').mockImplementation(pressShare);
 	});
 
 	afterEach(() => alert.mockRestore());
@@ -378,14 +391,14 @@ describe('exportDatabaseData', () => {
 		expect(written().categories.map((c) => c.id)).toEqual(['food', 'uncategorized']);
 	});
 
-	it('o aviso de sucesso diz quantas linhas entraram', async () => {
+	it('o aviso diz quantas linhas entraram, antes de perguntar onde guardar', async () => {
 		await exportDatabaseData();
 
 		const [title, body] = alert.mock.calls[0] as [string, string];
-		expect(title).toBe('settings.exportSuccess');
-		expect(body).toContain('transactions=1');
-		expect(body).toContain('captures=1');
-		expect(body).toContain('rules=1');
+		expect(title).toBe('settings.exportChooseTitle');
+		expect(body).toContain('settings.backupItem.transactions count=1');
+		expect(body).toContain('settings.backupItem.captures count=1');
+		expect(body).toContain('settings.backupItem.rules count=1');
 	});
 
 	it('uma coleção que não abre é nomeada no arquivo e no aviso', async () => {
@@ -445,7 +458,7 @@ describe('contas a pagar no backup', () => {
 		jest.clearAllMocks();
 		mockFile.written = '';
 		mockFile.truncateTo = null;
-		alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+		alert = jest.spyOn(Alert, 'alert').mockImplementation(pressShare);
 	});
 
 	afterEach(() => alert.mockRestore());

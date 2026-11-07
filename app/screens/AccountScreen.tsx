@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, Stack } from 'expo-router';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
@@ -21,11 +21,10 @@ import {
 // deste app já usam o do safe-area-context, que respeita os insets nas duas plataformas.
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '../api/client';
-import { countUnsyncedRows } from '../database/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { usePeriod } from '../contexts/PeriodContext';
-import { useSync } from '../contexts/SyncContext';
+import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import { claimSummaryParams } from '../sync/claim';
@@ -56,21 +55,22 @@ const AccountScreen: React.FC = () => {
 		claimCounts,
 		resolveClaim,
 	} = useAuth();
-	const { status, pending, lastSyncedAt, syncNow } = useSync();
+	/**
+	 * `unsynced`: quantas linhas vivas ainda não subiram. Responde a pergunta que custou
+	 * duas semanas de lançamentos ao dono: "o que existe aqui que não existe na minha
+	 * conta?". É o que ele precisava ver antes de desinstalar o app.
+	 *
+	 * Vem do `SyncContext`, lido do banco na mesma leitura de `pending` (E2E-36): esta tela
+	 * lia por conta própria, em outro momento, e mostrava "4 itens só existem neste
+	 * aparelho" ao lado de "3 alterações aguardando envio". Lidos juntos, `unsynced` nunca
+	 * passa de `pending`; a diferença são remoções esperando para subir.
+	 */
+	const { status, pending, unsynced: syncUnsynced, lastSyncedAt, syncNow } = useSync();
+	const unsynced = account ? (syncUnsynced ?? null) : null;
 	const { refreshData } = useTransactions();
 	const { currentCurrency } = useCurrency();
 	const { resetToCurrentMonth } = usePeriod();
 	const { authenticate } = useBiometricAuth();
-
-	/**
-	 * Quantas linhas vivas ainda não subiram.
-	 *
-	 * O `pending` da fila conta operações, não dados: ele zera assim que a fila esvazia,
-	 * mesmo que a remessa tenha sido recusada. Este número vem do banco e responde a
-	 * pergunta que custou duas semanas de lançamentos ao dono: "o que existe aqui que não
-	 * existe na minha conta?". É o que ele precisava ver antes de desinstalar o app.
-	 */
-	const [unsynced, setUnsynced] = useState<number | null>(null);
 
 	const [mode, setMode] = useState<Mode>('signUp');
 	const [email, setEmail] = useState('');
@@ -257,37 +257,15 @@ const AccountScreen: React.FC = () => {
 		);
 	};
 
-	const statusLabel = () => {
-		if (status === 'syncing') return t('account.statusSyncing');
-		if (status === 'offline') return t('account.statusOffline', { count: pending });
-		if (status === 'error') return t('account.statusError');
-		return pending > 0 ? t('account.statusPending', { count: pending }) : t('account.statusSynced');
-	};
+	// O mesmo texto que a linha da conta em Ajustes usa, na versão longa (`describeSync`).
+	const summary = describeSync(status, pending);
+	const statusLabel = () => t(summary.label.key, { count: summary.label.count });
 
 	const statusColor = () => {
-		if (status === 'error') return '#FF6B6B';
-		if (status === 'offline') return '#FFCC5C';
+		if (summary.tone === 'error') return '#FF6B6B';
+		if (summary.tone === 'offline') return '#FFCC5C';
 		return pending > 0 ? '#FFCC5C' : '#4CAF50';
 	};
-
-	useEffect(() => {
-		let alive = true;
-		if (!account) {
-			setUnsynced(null);
-			return;
-		}
-		countUnsyncedRows()
-			.then((count) => {
-				if (alive) setUnsynced(count);
-			})
-			.catch(() => {
-				// Na dúvida não afirma nada: um número errado aqui é pior que nenhum.
-				if (alive) setUnsynced(null);
-			});
-		return () => {
-			alive = false;
-		};
-	}, [account, status, lastSyncedAt]);
 
 	const header = (
 		<Stack.Screen

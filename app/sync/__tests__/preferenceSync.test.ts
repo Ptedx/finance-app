@@ -177,14 +177,14 @@ describe('o push de preferências', () => {
 		expect(sent.preferences).toEqual([preference(CURRENCY)]);
 	});
 
-	it('o aceito fica limpo; o recusado continua', async () => {
+	it('o aceito fica limpo; o recusado por inválido continua (o `stale` sai limpo: ver staleSql.test.ts)', async () => {
 		(getDirtyChanges as jest.Mock)
 			.mockResolvedValueOnce(emptyChanges({ preferences: [preference(CURRENCY), preference(STORAGE_KEYS.language)] }))
 			.mockResolvedValue(emptyChanges());
 		(api.push as jest.Mock).mockResolvedValue({
 			serverTime: '2026-10-24T00:00:00.000Z',
 			applied: 1,
-			rejected: [{ collection: 'preferences', id: STORAGE_KEYS.language, reason: 'stale' }],
+			rejected: [{ collection: 'preferences', id: STORAGE_KEYS.language, reason: 'invalid', message: 'valor longo demais' }],
 		});
 
 		await pushAll();

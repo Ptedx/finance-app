@@ -1,6 +1,6 @@
 import i18next from 'i18next';
 import * as DocumentPicker from 'expo-document-picker';
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 import {
@@ -267,26 +267,38 @@ export const generateFinancialReport = async (
 // File output
 // ---------------------------------------------------------------------------
 
-const shareFile = async (fileName: string, content: string, mimeType: string, title: string) => {
-	const file = new File(Paths.document, fileName);
+/**
+ * Escreve e lê de volta. Uma escrita truncada (disco cheio, processo morto no meio)
+ * produz um arquivo que abre, tem JSON válido até onde foi e parece um backup — e o
+ * usuário só descobre o que falta depois de reinstalar o app. Vale a releitura: um
+ * backup de anos de uso tem alguns megabytes.
+ */
+const writeVerified = async (file: File, content: string): Promise<void> => {
 	file.write(content);
-
-	// Lê de volta antes de compartilhar. Uma escrita truncada (disco cheio, processo
-	// morto no meio) produz um arquivo que abre, tem JSON válido até onde foi e parece
-	// um backup — e o usuário só descobre o que falta depois de reinstalar o app. Vale
-	// a releitura: um backup de anos de uso tem alguns megabytes.
 	const written = await file.text();
 	if (written.length !== content.length) {
 		throw new Error(
 			`O arquivo saiu incompleto: ${written.length} de ${content.length} caracteres gravados.`
 		);
 	}
+};
 
-	await Sharing.shareAsync(file.uri, {
+/** Grava dentro do app (`files/`), confere e devolve o arquivo. */
+const writeAppFile = async (fileName: string, content: string): Promise<File> => {
+	const file = new File(Paths.document, fileName);
+	await writeVerified(file, content);
+	return file;
+};
+
+const shareAppFile = (file: File, mimeType: string, title: string): Promise<void> =>
+	Sharing.shareAsync(file.uri, {
 		mimeType,
 		dialogTitle: title,
 		UTI: mimeType === 'application/json' ? 'public.json' : 'public.comma-separated-values-text',
 	});
+
+const shareFile = async (fileName: string, content: string, mimeType: string, title: string) => {
+	await shareAppFile(await writeAppFile(fileName, content), mimeType, title);
 };
 
 const timestamp = (): string => todayISO().replace(/-/g, '');
@@ -356,6 +368,88 @@ export const exportFinancialReport = async (
 // ---------------------------------------------------------------------------
 // Backup and restore
 // ---------------------------------------------------------------------------
+
+/** O que um resumo de backup conta, na ordem em que aparece (`settings.backupItem`). */
+type BackupItem =
+	| 'transactions'
+	| 'categories'
+	| 'accounts'
+	| 'cards'
+	| 'transfers'
+	| 'debts'
+	| 'bills'
+	| 'budgets'
+	| 'captures'
+	| 'rules'
+	| 'recurring';
+
+/**
+ * "1 lançamento, 5 contas, 1 cartão, 1 orçamento": o que entrou ou voltou, com o plural de
+ * cada idioma (`_one`/`_other`). O que tem zero fica de fora — "0 recorrências" falava de
+ * uma tela que nem existe mais (SPD-079), e "1 orçamentos" era o plural de antes.
+ */
+const backupSummary = (counts: Partial<Record<BackupItem, number>>): string => {
+	const parts = (Object.entries(counts) as Array<[BackupItem, number]>)
+		.filter(([, count]) => count > 0)
+		.map(([item, count]) => i18next.t(`settings.backupItem.${item}`, { count }));
+	return parts.length > 0 ? parts.join(', ') : i18next.t('settings.backupItemNone');
+};
+
+/** Contas e cartões contados à parte, como o app os mostra. */
+const isCard = (account: Pick<Account, 'kind'>): boolean => account.kind === 'credit_card';
+
+/**
+ * O nome de uma coleção que não foi lida inteira (`incomplete`), na língua do usuário. Um
+ * arquivo de outra versão pode trazer um nome que esta não conhece: aí vai como veio.
+ */
+const backupPartNames = (names: string[]): string =>
+	names.map((name) => i18next.t(`settings.backupPart.${name}`, { defaultValue: name })).join(', ');
+
+type BackupDestination = 'files' | 'share' | 'cancel';
+
+/**
+ * Pergunta para onde vai o backup (E2E-35).
+ *
+ * Só compartilhar não basta: no Android o `shareAsync` resolve igual quando o usuário
+ * escolhe um destino e quando fecha a folha sem escolher (o `expo-sharing` devolve `null`
+ * no `onActivityResult`, sem olhar o resultado). O app dizia "Backup salvo" nos dois
+ * casos, e no segundo o arquivo só existia dentro do app — some com ele. "Salvar em
+ * Arquivos" usa o seletor de pasta do sistema (`Directory.pickDirectoryAsync`, do
+ * `expo-file-system` que o app já tem), que diz quando o usuário desistiu.
+ */
+const askBackupDestination = (title: string, message: string): Promise<BackupDestination> =>
+	new Promise((resolve) => {
+		Alert.alert(
+			title,
+			message,
+			[
+				{ text: i18next.t('settings.cancel'), style: 'cancel', onPress: () => resolve('cancel') },
+				{ text: i18next.t('settings.exportShareAction'), onPress: () => resolve('share') },
+				{ text: i18next.t('settings.exportSaveToFiles'), onPress: () => resolve('files') },
+			],
+			{ cancelable: true, onDismiss: () => resolve('cancel') }
+		);
+	});
+
+/**
+ * Grava o backup numa pasta que o usuário escolhe, conferindo como o arquivo de dentro do
+ * app. Devolve o nome gravado, ou `null` se ele fechou o seletor sem escolher — o sistema
+ * recusa a promessa nesse caso, e qualquer recusa do seletor quer dizer o mesmo para o
+ * usuário: nada foi guardado fora do app. Já uma falha ao gravar na pasta escolhida sobe,
+ * e vira "falha ao exportar".
+ */
+const saveToPickedFolder = async (fileName: string, content: string, mimeType: string): Promise<string | null> => {
+	let folder: Directory;
+	try {
+		folder = await Directory.pickDirectoryAsync();
+	} catch (error) {
+		console.warn('Backup: nenhuma pasta escolhida:', error);
+		return null;
+	}
+	const file = folder.createFile(fileName, mimeType);
+	await writeVerified(file, content);
+	return file.name || fileName;
+};
 
 /**
  * Writes a complete backup.
@@ -445,36 +539,53 @@ export const exportDatabaseData = async (): Promise<void> => {
 		};
 
 		const fileName = `spendr_backup_${timestamp()}.json`;
-		await shareFile(
-			fileName,
-			JSON.stringify(exportData, null, 2),
-			'application/json',
-			'Share app data backup'
-		);
+		const content = JSON.stringify(exportData, null, 2);
+		// Primeiro dentro do app, conferido: é dele que sai o compartilhar, e um arquivo
+		// truncado não chega a ser oferecido.
+		const appFile = await writeAppFile(fileName, content);
 
 		// O aviso diz o que entrou, linha por linha. É a única chance do usuário de
 		// perceber que o arquivo está menor do que a vida dele antes de desinstalar o app.
-		const summary = i18next.t('settings.exportSummary', {
+		const summary = backupSummary({
 			transactions: transactions.length,
 			categories: categories.length,
-			accounts: accounts.length,
+			accounts: accounts.filter((account) => !isCard(account)).length,
+			cards: accounts.filter(isCard).length,
 			transfers: transfers.length,
-			recurring: recurringTransactions.length,
-			budgets: budgets.length,
 			debts: debts.length,
+			bills: bills.length,
+			budgets: budgets.length,
 			captures: captures.length,
 			rules: merchantRules.length,
 		});
 
-		if (incomplete.length > 0) {
-			Alert.alert(
-				i18next.t('settings.exportIncompleteTitle'),
-				i18next.t('settings.exportIncompleteMsg', { missing: incomplete.join(', '), summary })
-			);
+		// Nada aqui diz "salvo" antes de ser verdade: o arquivo dentro do app some com ele.
+		const destination =
+			incomplete.length > 0
+				? await askBackupDestination(
+						i18next.t('settings.exportIncompleteTitle'),
+						i18next.t('settings.exportIncompleteMsg', { missing: backupPartNames(incomplete), summary })
+					)
+				: await askBackupDestination(
+						i18next.t('settings.exportChooseTitle'),
+						i18next.t('settings.exportChooseMsg', { summary })
+					);
+
+		if (destination === 'cancel') return;
+
+		if (destination === 'share') {
+			await shareAppFile(appFile, 'application/json', i18next.t('settings.exportChooseTitle'));
+			// O Android não diz se o usuário escolheu um destino ou fechou a folha.
+			Alert.alert(i18next.t('settings.exportSharedTitle'), i18next.t('settings.exportSharedMsg'));
 			return;
 		}
 
-		Alert.alert(i18next.t('settings.exportSuccess'), i18next.t('settings.exportSuccessMsg', { summary }));
+		const savedAs = await saveToPickedFolder(fileName, content, 'application/json');
+		if (savedAs === null) {
+			Alert.alert(i18next.t('settings.exportNotSavedTitle'), i18next.t('settings.exportNotSavedMsg'));
+			return;
+		}
+		Alert.alert(i18next.t('settings.exportSuccess'), i18next.t('settings.exportSavedMsg', { name: savedAs, summary }));
 	} catch (error) {
 		console.error('Error exporting database data:', error);
 		Alert.alert(
@@ -492,6 +603,246 @@ const readAmountCents = (entry: { amountCents?: number; amount?: number }): numb
 	if (typeof entry.amountCents === 'number') return entry.amountCents;
 	if (typeof entry.amount === 'number') return majorUnitsToCents(entry.amount);
 	return 0;
+};
+
+/** O que a restauração deixou para a tela dizer. */
+interface RestoreOutcome {
+	/** O que voltou, por item do resumo. */
+	restored: Partial<Record<BackupItem, number>>;
+	/** Linhas que não entraram, por item do resumo. */
+	failed: Partial<Record<BackupItem, number>>;
+	preferencesFailed: boolean;
+	stats: { transactions: number; categories: number; recurringTransactions: number; captures: number };
+}
+
+/**
+ * Apaga o livro (lápides) e regrava o backup, coleção por coleção.
+ *
+ * Roda com a fila de sync parada (`importDatabaseData`): ver lá.
+ */
+const restoreBackup = async (importData: DatabaseExportData): Promise<RestoreOutcome> => {
+	await resetDatabase();
+
+	/**
+	 * O que não entrou. A importação começa apagando o banco, então desistir na
+	 * primeira linha problemática deixaria o usuário sem o backup **e** sem o que
+	 * ele tinha. Cada linha que falha é contada e nomeada no fim; o resto entra.
+	 */
+	const failed: Partial<Record<BackupItem, number>> = {};
+	let preferencesFailed = false;
+	const restoreEach = async <T>(
+		label: string,
+		item: BackupItem,
+		rows: T[],
+		write: (row: T) => Promise<unknown>
+	): Promise<number> => {
+		let failedHere = 0;
+		for (const row of rows) {
+			try {
+				await write(row);
+			} catch (error) {
+				failedHere += 1;
+				console.error(`Error importing ${label}:`, error);
+			}
+		}
+		if (failedHere > 0) failed[item] = (failed[item] ?? 0) + failedHere;
+		return rows.length - failedHere;
+	};
+
+	const asArray = <T>(value: T[] | undefined): T[] => (Array.isArray(value) ? value : []);
+
+	// Categories first: transactions reference them, and a restore that skipped them
+	// left every imported transaction pointing at an id that no longer existed. A
+	// leitura é a do backup (`getCategoriesForBackup`) e não a da tela: a lista da
+	// tela esconde a `uncategorized`, que é justamente o destino de todo lançamento
+	// cuja categoria não veio no arquivo — e a lápide também conta como linha
+	// existente, porque é dela que a chave estrangeira depende.
+	const existingIds = new Set((await getCategoriesForBackup()).map((c) => c.id));
+
+	// Uma categoria que já existe aqui (as padrão, num app novo) recebe o que o backup
+	// diz: nome, cor e, principalmente, a natureza que o usuário ajustou. Antes ela era
+	// pulada, e o essencial/repasse de uma categoria padrão se perdia na restauração.
+	//
+	// Backups escritos antes da tag necessidade/desejo não trazem `nature`, e a coluna
+	// é NOT NULL. O padrão é o mesmo da migração: supérfluo até que o usuário diga o
+	// contrário.
+	//
+	// O id original é preservado de propósito: os lançamentos e recorrências do backup
+	// referenciam esse id. Antes, `addCategory` gerava um id novo e toda transação numa
+	// categoria criada pelo usuário ficava apontando para o vazio — aparecia como
+	// "Unknown" nos relatórios e sumia dos totais por categoria.
+	const importedCategories = await restoreEach(
+		'categories',
+		'categories',
+		importData.categories,
+		async (category) => {
+			const { id, updatedAt: _updatedAt, deletedAt, ...draft } = category;
+			await restoreCategory(
+				{ ...draft, nature: category.nature ?? 'discretionary', deletedAt },
+				id
+			);
+			existingIds.add(id);
+		}
+	);
+
+	// Contas antes dos lançamentos, com o id original: é por ele que `accountId` e as
+	// transferências do backup as encontram. Backups anteriores ao v7 não as trazem.
+	const accountIds = new Set<string>();
+	let importedCards = 0;
+	const importedAccounts = await restoreEach('accounts', 'accounts', asArray(importData.accounts), async (account) => {
+		const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = account;
+		await restoreAccount(draft, id);
+		accountIds.add(id);
+		if (isCard(account)) importedCards += 1;
+	});
+
+	// Com o id do arquivo, e não um novo. Importar o mesmo backup em dois aparelhos
+	// deixava duas gerações do mesmo lançamento vivas na mesma conta — o livro-caixa
+	// dobrava, e nada no sync tinha como perceber que era a mesma compra. `cardLast4`
+	// vai junto: sem ele, a importação perdia de qual cartão saiu cada compra.
+	const importedTransactions = await restoreEach(
+		'transactions',
+		'transactions',
+		importData.transactions,
+		(transaction) =>
+			restoreTransaction(
+				{
+					amountCents: readAmountCents(transaction),
+					category: existingIds.has(transaction.category) ? transaction.category : 'uncategorized',
+					date: transaction.date,
+					note: transaction.note,
+					isIncome: transaction.isIncome,
+					accountId: transaction.accountId && accountIds.has(transaction.accountId) ? transaction.accountId : null,
+					installmentGroup: transaction.installmentGroup ?? null,
+					installmentIndex: transaction.installmentIndex ?? null,
+					installmentCount: transaction.installmentCount ?? null,
+					cardLast4: transaction.cardLast4 ?? null,
+				},
+				transaction.id
+			)
+	);
+
+	const importedTransfers = await restoreEach('transfers', 'transfers', asArray(importData.transfers), (transfer) => {
+		const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = transfer;
+		return restoreTransfer(
+			{
+				...draft,
+				fromAccountId: draft.fromAccountId && accountIds.has(draft.fromAccountId) ? draft.fromAccountId : null,
+				toAccountId: draft.toAccountId && accountIds.has(draft.toAccountId) ? draft.toAccountId : null,
+			},
+			id
+		);
+	});
+
+	// Id, `lastProcessed` e `nextDue` do arquivo. Sem eles a regra renascia como nova:
+	// id diferente em cada aparelho, e o relógio recomeçando — a assinatura que já
+	// tinha sido lançada no mês vinha outra vez.
+	const importedRecurring = await restoreEach(
+		'recurringTransactions',
+		'recurring',
+		importData.recurringTransactions,
+		(recurring) =>
+			restoreRecurringTransaction(
+				{
+					...recurring,
+					amountCents: readAmountCents(recurring),
+					category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
+				},
+				recurring.id
+			)
+	);
+
+	// Dívidas e metas: backups anteriores à 1.1 não as trazem. O id também é o do
+	// arquivo. A conta de onde a parcela sai só vale se veio no mesmo backup.
+	const debtIds = new Set<string>();
+	const importedDebts = await restoreEach('debts', 'debts', asArray(importData.debts), async (debt) => {
+		const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
+		await restoreDebt(
+			{
+				...draft,
+				feeCents: draft.feeCents ?? 0,
+				accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
+			},
+			id
+		);
+		debtIds.add(id);
+	});
+
+	// Contas a pagar depois das dívidas, com o id do arquivo e o mês pago intacto.
+	// Backups anteriores ao v5 não as trazem. A conta de onde sai e a dívida de origem,
+	// como nas dívidas, só valem se vieram no mesmo arquivo.
+	const importedBills = await restoreEach('bills', 'bills', asArray(importData.bills), (bill) => {
+		const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = bill;
+		return restoreBill(
+			{
+				...draft,
+				amountCents: typeof draft.amountCents === 'number' ? draft.amountCents : null,
+				accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
+				debtId: draft.debtId && debtIds.has(draft.debtId) ? draft.debtId : null,
+			},
+			id
+		);
+	});
+	if (importData.retirementGoal) await setRetirementGoal(importData.retirementGoal);
+	if (importData.reserveGoal) await setReserveGoal(importData.reserveGoal);
+
+	// Um orçamento sem ano ou mês não tem onde entrar: fica de fora, e fora da contagem.
+	const budgets = asArray(importData.budgets).filter(
+		(budget) => Number.isFinite(budget?.year) && Number.isFinite(budget?.month)
+	);
+	const importedBudgets = await restoreEach('budgets', 'budgets', budgets, async (budget) => {
+		// Backup anterior à 1.2.7 não trazia o id; aí o mês recebe uma linha nova,
+		// como antes.
+		if (typeof budget.id === 'string' && budget.id.length > 0) {
+			await restoreBudget(budget.year, budget.month, readAmountCents(budget), budget.id);
+		} else {
+			await setBudget(budget.year, budget.month, readAmountCents(budget));
+		}
+	});
+
+	// A caixa de entrada depois do livro: uma captura confirmada guarda o
+	// `transactionId` que ela criou, e a de troca de bolso o `transferId` — os dois
+	// voltaram acima com o id do arquivo, então os ponteiros continuam válidos.
+	// Backups anteriores ao v4 não trazem nada disto.
+	const importedCaptures = await restoreEach(
+		'captures',
+		'captures',
+		asArray(importData.captures),
+		restoreCapture
+	);
+	await restoreEach('merchantRules', 'rules', asArray(importData.merchantRules), restoreMerchantRule);
+
+	// Moeda, idioma, taxa do CDI, avisos dispensados. Só as chaves conhecidas entram
+	// (ver `importPreferences`).
+	try {
+		await importPreferences(importData.preferences);
+	} catch (error) {
+		console.error('Error importing preferences:', error);
+		preferencesFailed = true;
+	}
+
+	// As telas releem o banco: contas, orçamento e metas também mudaram.
+	syncQueue.notifyDataChanged();
+
+	return {
+		restored: {
+			transactions: importedTransactions,
+			accounts: importedAccounts - importedCards,
+			cards: importedCards,
+			transfers: importedTransfers,
+			debts: importedDebts,
+			bills: importedBills,
+			budgets: importedBudgets,
+		},
+		failed,
+		preferencesFailed,
+		stats: {
+			transactions: importedTransactions,
+			categories: importedCategories,
+			recurringTransactions: importedRecurring,
+			captures: importedCaptures,
+		},
+	};
 };
 
 export const importDatabaseData = async (): Promise<{
@@ -517,12 +868,12 @@ export const importDatabaseData = async (): Promise<{
 		});
 
 		if (result.canceled) {
-			return { success: false, message: 'Import canceled.' };
+			return { success: false, message: i18next.t('settings.importCanceled') };
 		}
 
 		const fileUri = result.assets?.[0]?.uri;
 		if (!fileUri) {
-			return { success: false, message: 'Could not access the selected file.' };
+			return { success: false, message: i18next.t('settings.importNoAccess') };
 		}
 
 		const importData = JSON.parse(await new File(fileUri).text()) as DatabaseExportData;
@@ -530,231 +881,47 @@ export const importDatabaseData = async (): Promise<{
 		if (!validateImportData(importData)) {
 			return {
 				success: false,
-				message: 'The selected file does not contain valid Spendr backup data.',
+				message: i18next.t('settings.importInvalid'),
 			};
 		}
 
-		await resetDatabase();
-
-		/**
-		 * O que não entrou. A importação começa apagando o banco, então desistir na
-		 * primeira linha problemática deixaria o usuário sem o backup **e** sem o que
-		 * ele tinha. Cada linha que falha é contada e nomeada no fim; o resto entra.
-		 */
-		const failures: string[] = [];
-		const restoreEach = async <T>(
-			label: string,
-			rows: T[],
-			write: (row: T) => Promise<unknown>
-		): Promise<number> => {
-			let failed = 0;
-			for (const row of rows) {
-				try {
-					await write(row);
-				} catch (error) {
-					failed += 1;
-					console.error(`Error importing ${label}:`, error);
-				}
-			}
-			if (failed > 0) failures.push(`${failed} ${label}`);
-			return rows.length - failed;
-		};
-
-		const asArray = <T>(value: T[] | undefined): T[] => (Array.isArray(value) ? value : []);
-
-		// Categories first: transactions reference them, and a restore that skipped them
-		// left every imported transaction pointing at an id that no longer existed. A
-		// leitura é a do backup (`getCategoriesForBackup`) e não a da tela: a lista da
-		// tela esconde a `uncategorized`, que é justamente o destino de todo lançamento
-		// cuja categoria não veio no arquivo — e a lápide também conta como linha
-		// existente, porque é dela que a chave estrangeira depende.
-		const existingIds = new Set((await getCategoriesForBackup()).map((c) => c.id));
-
-		// Uma categoria que já existe aqui (as padrão, num app novo) recebe o que o backup
-		// diz: nome, cor e, principalmente, a natureza que o usuário ajustou. Antes ela era
-		// pulada, e o essencial/repasse de uma categoria padrão se perdia na restauração.
-		//
-		// Backups escritos antes da tag necessidade/desejo não trazem `nature`, e a coluna
-		// é NOT NULL. O padrão é o mesmo da migração: supérfluo até que o usuário diga o
-		// contrário.
-		//
-		// O id original é preservado de propósito: os lançamentos e recorrências do backup
-		// referenciam esse id. Antes, `addCategory` gerava um id novo e toda transação numa
-		// categoria criada pelo usuário ficava apontando para o vazio — aparecia como
-		// "Unknown" nos relatórios e sumia dos totais por categoria.
-		const importedCategories = await restoreEach(
-			'categories',
-			importData.categories,
-			async (category) => {
-				const { id, updatedAt: _updatedAt, deletedAt, ...draft } = category;
-				await restoreCategory(
-					{ ...draft, nature: category.nature ?? 'discretionary', deletedAt },
-					id
-				);
-				existingIds.add(id);
-			}
-		);
-
-		// Contas antes dos lançamentos, com o id original: é por ele que `accountId` e as
-		// transferências do backup as encontram. Backups anteriores ao v7 não as trazem.
-		const accountIds = new Set<string>();
-		await restoreEach('accounts', asArray(importData.accounts), async (account) => {
-			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = account;
-			await restoreAccount(draft, id);
-			accountIds.add(id);
-		});
-
-		// Com o id do arquivo, e não um novo. Importar o mesmo backup em dois aparelhos
-		// deixava duas gerações do mesmo lançamento vivas na mesma conta — o livro-caixa
-		// dobrava, e nada no sync tinha como perceber que era a mesma compra. `cardLast4`
-		// vai junto: sem ele, a importação perdia de qual cartão saiu cada compra.
-		const importedTransactions = await restoreEach(
-			'transactions',
-			importData.transactions,
-			(transaction) =>
-				restoreTransaction(
-					{
-						amountCents: readAmountCents(transaction),
-						category: existingIds.has(transaction.category) ? transaction.category : 'uncategorized',
-						date: transaction.date,
-						note: transaction.note,
-						isIncome: transaction.isIncome,
-						accountId: transaction.accountId && accountIds.has(transaction.accountId) ? transaction.accountId : null,
-						installmentGroup: transaction.installmentGroup ?? null,
-						installmentIndex: transaction.installmentIndex ?? null,
-						installmentCount: transaction.installmentCount ?? null,
-						cardLast4: transaction.cardLast4 ?? null,
-					},
-					transaction.id
-				)
-		);
-
-		await restoreEach('transfers', asArray(importData.transfers), (transfer) => {
-			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = transfer;
-			return restoreTransfer(
-				{
-					...draft,
-					fromAccountId: draft.fromAccountId && accountIds.has(draft.fromAccountId) ? draft.fromAccountId : null,
-					toAccountId: draft.toAccountId && accountIds.has(draft.toAccountId) ? draft.toAccountId : null,
-				},
-				id
-			);
-		});
-
-		// Id, `lastProcessed` e `nextDue` do arquivo. Sem eles a regra renascia como nova:
-		// id diferente em cada aparelho, e o relógio recomeçando — a assinatura que já
-		// tinha sido lançada no mês vinha outra vez.
-		const importedRecurring = await restoreEach(
-			'recurringTransactions',
-			importData.recurringTransactions,
-			(recurring) =>
-				restoreRecurringTransaction(
-					{
-						...recurring,
-						amountCents: readAmountCents(recurring),
-						category: existingIds.has(recurring.category) ? recurring.category : 'uncategorized',
-					},
-					recurring.id
-				)
-		);
-
-		// Dívidas e metas: backups anteriores à 1.1 não as trazem. O id também é o do
-		// arquivo. A conta de onde a parcela sai só vale se veio no mesmo backup.
-		const debtIds = new Set<string>();
-		await restoreEach('debts', asArray(importData.debts), async (debt) => {
-			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = debt;
-			await restoreDebt(
-				{
-					...draft,
-					feeCents: draft.feeCents ?? 0,
-					accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
-				},
-				id
-			);
-			debtIds.add(id);
-		});
-
-		// Contas a pagar depois das dívidas, com o id do arquivo e o mês pago intacto.
-		// Backups anteriores ao v5 não as trazem. A conta de onde sai e a dívida de origem,
-		// como nas dívidas, só valem se vieram no mesmo arquivo.
-		await restoreEach('bills', asArray(importData.bills), (bill) => {
-			const { id, updatedAt: _updatedAt, deletedAt: _deletedAt, ...draft } = bill;
-			return restoreBill(
-				{
-					...draft,
-					amountCents: typeof draft.amountCents === 'number' ? draft.amountCents : null,
-					accountId: draft.accountId && accountIds.has(draft.accountId) ? draft.accountId : null,
-					debtId: draft.debtId && debtIds.has(draft.debtId) ? draft.debtId : null,
-				},
-				id
-			);
-		});
-		if (importData.retirementGoal) await setRetirementGoal(importData.retirementGoal);
-		if (importData.reserveGoal) await setReserveGoal(importData.reserveGoal);
-
-		await restoreEach('budgets', asArray(importData.budgets), async (budget) => {
-			if (!Number.isFinite(budget?.year) || !Number.isFinite(budget?.month)) return;
-			// Backup anterior à 1.2.7 não trazia o id; aí o mês recebe uma linha nova,
-			// como antes.
-			if (typeof budget.id === 'string' && budget.id.length > 0) {
-				await restoreBudget(budget.year, budget.month, readAmountCents(budget), budget.id);
-			} else {
-				await setBudget(budget.year, budget.month, readAmountCents(budget));
-			}
-		});
-
-		// A caixa de entrada depois do livro: uma captura confirmada guarda o
-		// `transactionId` que ela criou, e a de troca de bolso o `transferId` — os dois
-		// voltaram acima com o id do arquivo, então os ponteiros continuam válidos.
-		// Backups anteriores ao v4 não trazem nada disto.
-		const importedCaptures = await restoreEach(
-			'captures',
-			asArray(importData.captures),
-			restoreCapture
-		);
-		await restoreEach('merchantRules', asArray(importData.merchantRules), restoreMerchantRule);
-
-		// Moeda, idioma, taxa do CDI, avisos dispensados. Só as chaves conhecidas entram
-		// (ver `importPreferences`).
-		try {
-			await importPreferences(importData.preferences);
-		} catch (error) {
-			console.error('Error importing preferences:', error);
-			failures.push('preferences');
-		}
-
-		// As telas releem o banco: contas, orçamento e metas também mudaram.
-		syncQueue.notifyDataChanged();
+		// A fila de sync fica parada enquanto o backup é regravado (E2E-35). A volta do
+		// seletor de arquivo é a volta ao primeiro plano, e o `AuthContext` pede um sync
+		// na hora: a rodada abria a transação dela (`markChangesClean` depois do push,
+		// `applyPulledChanges` depois do pull) no meio da importação, e o `BEGIN` de quem
+		// viesse depois falhava — no aparelho, o do `restoreBudget`, e o orçamento de
+		// novembro não voltou. Pior que isso, cada gravação da importação feita com a
+		// transação do sync aberta ia parar dentro dela, e um ROLLBACK do sync a levaria
+		// junto. `runExclusive` espera a rodada em curso, não deixa outra começar e, no fim,
+		// roda uma — a que sobe o que acabou de ser importado.
+		const outcome = await syncQueue.runExclusive(() => restoreBackup(importData));
 
 		// O que o arquivo já avisava que não tinha, mais o que não entrou agora. O
 		// usuário precisa ouvir os dois: "importado com sucesso" sobre um arquivo
 		// incompleto é a mesma mentira que custou outubro de 2026.
+		const failedRows = Object.values(outcome.failed).some((count) => (count ?? 0) > 0);
 		const notes = [
 			...(Array.isArray(importData.incomplete) && importData.incomplete.length > 0
-				? [`The backup file itself was incomplete: ${importData.incomplete.join(', ')}.`]
+				? [i18next.t('settings.importFileIncomplete', { missing: backupPartNames(importData.incomplete) })]
 				: []),
-			...(failures.length > 0 ? [`Could not restore: ${failures.join(', ')}.`] : []),
+			...(failedRows ? [i18next.t('settings.importNotRestored', { list: backupSummary(outcome.failed) })] : []),
+			...(outcome.preferencesFailed ? [i18next.t('settings.importPreferencesFailed')] : []),
 		];
 
+		const done = i18next.t('settings.importDoneMsg', { summary: backupSummary(outcome.restored) });
 		return {
 			success: true,
-			message:
-				notes.length > 0
-					? `Data imported with warnings. ${notes.join(' ')}`
-					: 'Data imported successfully.',
+			message: notes.length > 0 ? `${done}\n\n${notes.join(' ')}` : done,
 			warnings: notes,
-			stats: {
-				transactions: importedTransactions,
-				categories: importedCategories,
-				recurringTransactions: importedRecurring,
-				captures: importedCaptures,
-			},
+			stats: outcome.stats,
 		};
 	} catch (error) {
 		console.error('Error importing database data:', error);
 		return {
 			success: false,
-			message: `Import failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+			message: i18next.t('settings.importFailedDetail', {
+				reason: error instanceof Error ? error.message : i18next.t('settings.exportErrorUnknown'),
+			}),
 		};
 	}
 };

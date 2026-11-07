@@ -28,6 +28,7 @@ import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
@@ -46,6 +47,10 @@ import { StatementImportError } from '../utils/statementImport';
 const SettingsScreen = () => {
 	const { t } = useTranslation();
 	const { account, isAvailable: isAuthAvailable } = useAuth();
+	// A linha da conta diz o mesmo que a tela da conta, em versão curta (E2E-36): era
+	// "Tudo salvo" fixo, até offline e com alterações presas.
+	const { status: syncStatus, pending: syncPending } = useSync();
+	const syncShort = describeSync(syncStatus, syncPending).short;
 	const { currentCurrency } = useCurrency();
 	const { currentLanguage } = useLanguage();
 	// O backup não passa mais pelo estado da tela: `exportDatabaseData` lê o banco. A
@@ -250,18 +255,8 @@ const SettingsScreen = () => {
 			const result = await importDatabaseData();
 			if (result.success) {
 				await refreshAppData();
-				const summary = t('settings.importSuccessMsg', {
-					transactions: result.stats?.transactions,
-					recurringTransactions: result.stats?.recurringTransactions,
-				});
-				// Uma restauração que deixou algo para trás não pode sair com a mesma cara
-				// de uma que voltou inteira: o aviso vem junto, mesmo em inglês, enquanto
-				// as chaves de tradução não existem (ver o relatório).
-				const warnings = result.warnings ?? [];
-				Alert.alert(
-					t('settings.importSuccess'),
-					warnings.length > 0 ? `${summary}\n\n${warnings.join(' ')}` : summary
-				);
+				// O resumo do que voltou (e do que não voltou) vem pronto e traduzido do import.
+				Alert.alert(t('settings.importSuccess'), result.message);
 			} else {
 				Alert.alert(t('settings.importFailed'), result.message);
 			}
@@ -427,7 +422,7 @@ const SettingsScreen = () => {
 							account ? account.email : t('account.signUpTitle'),
 							() => router.push('/account'),
 							<Text style={styles.accountStatus}>
-								{account ? t('account.statusSynced') : ''}
+								{account ? t(syncShort.key, { count: syncShort.count }) : ''}
 							</Text>
 						)}
 					</View>

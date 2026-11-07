@@ -71,7 +71,12 @@ jest.mock('expo-file-system', () => ({
 }));
 
 jest.mock('expo-sharing', () => ({ shareAsync: jest.fn() }));
-jest.mock('../../sync/queue', () => ({ notifyDataChanged: jest.fn(), schedule: jest.fn() }));
+// A importação roda com a fila parada (`runExclusive`): aqui, sem fila, o trabalho só roda.
+jest.mock('../../sync/queue', () => ({
+	notifyDataChanged: jest.fn(),
+	schedule: jest.fn(),
+	runExclusive: (work: () => Promise<unknown>) => work(),
+}));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { restoreCapture, restoreMerchantRule } from '../../database/captures';
@@ -83,7 +88,13 @@ import {
 	restoreTransaction,
 	setBudget,
 } from '../../database/database';
+import i18n from '../../i18n';
 import { importDatabaseData } from '../exportUtils';
+
+// Os avisos vêm da i18n de verdade, em inglês.
+beforeAll(async () => {
+	await i18n.changeLanguage('en');
+});
 
 const BACKUP = {
 	formatVersion: 3,
@@ -443,7 +454,8 @@ describe('uma parte que falha não leva o resto', () => {
 		expect(result.success).toBe(true);
 		expect(restoreTransaction).toHaveBeenCalledTimes(2);
 		expect(result.stats?.transactions).toBe(1);
-		expect(result.warnings?.join(' ')).toContain('1 transactions');
+		// No singular: "1 transactions" era o plural de antes.
+		expect(result.warnings?.join(' ')).toContain('Could not restore: 1 transaction.');
 	});
 
 	it('arquivo que já veio marcado como incompleto é anunciado como tal', async () => {
@@ -451,6 +463,7 @@ describe('uma parte que falha não leva o resto', () => {
 
 		expect(result.success).toBe(true);
 		expect(result.warnings?.join(' ')).toContain('backup file itself was incomplete');
-		expect(result.message).toContain('warnings');
+		expect(result.warnings?.join(' ')).toContain('missing: inbox');
+		expect(result.message).toContain(result.warnings?.[0]);
 	});
 });

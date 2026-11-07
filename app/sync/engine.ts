@@ -543,11 +543,42 @@ const repairUnknownCategories = async (
 };
 
 /**
+ * Faz o próximo pull trazer de novo, inteira, cada coleção que teve linha recusada por
+ * `stale` (E2E-36).
+ *
+ * O servidor só recusa por `stale` o que ele tem mais novo, e essa versão quase sempre já
+ * desceu para cá antes: o pull anda pela `serverSeq` de cada coleção, e uma linha que não
+ * muda no servidor não ganha `serverSeq` nova. Esperar o pull seguinte, como o motor
+ * fazia, deixava a linha suja para sempre — "3 alterações aguardando envio" e "3 itens só
+ * existem neste aparelho" sem fim, com o servidor tendo as três. É o que acontece com o
+ * relógio de um aparelho adiantado, ou com a importação de um backup que regrava com o
+ * carimbo de hoje o que outro aparelho mexeu depois.
+ *
+ * Não existe no contrato um pedido por id, então o cursor da coleção volta a zero: a
+ * mesma recuperação de um cursor ilegível (`parseCursor`), só que de uma coleção. É
+ * seguro pelo mesmo motivo — `applyPulledChanges` só grava o que é estritamente mais
+ * novo que o daqui, então o que este aparelho tem de mais novo fica e o resto não muda;
+ * a versão recusada, mais velha, perde para a do servidor e sai limpa. O custo é baixar
+ * a coleção de novo, uma vez, num caso raro.
+ */
+const rewindForStale = async (rejected: RejectedRow[]): Promise<void> => {
+	const collections = new Set(rejected.filter((row) => row.reason === 'stale').map((row) => row.collection));
+	if (collections.size === 0) return;
+	// Uma cópia: sem cursor guardado, `readCursor` devolve o próprio `EMPTY_CURSOR`.
+	const cursor: SyncCursor = { ...(await readCursor()) };
+	for (const collection of collections) {
+		if (collection in cursor) cursor[collection as keyof SyncCursor] = 0;
+	}
+	await setSyncState(CURSOR_KEY, JSON.stringify(cursor));
+};
+
+/**
  * Sobe as linhas pendentes, em páginas.
  *
- * As `rejected` por `stale` são mais antigas que a versão do servidor. Elas não são
- * reenviadas: continuam sujas de propósito, e o `pullAll` seguinte traz a versão que
- * venceu — momento em que `applyPulledChanges` limpa a marca. As `unknown_category`
+ * As `rejected` por `stale` são mais antigas que a versão do servidor, e a do servidor
+ * vence: a marca sai como a das aceitas, e o cursor da coleção volta ao começo para o
+ * `pullAll` seguinte trazer a versão vencedora (`rewindForStale`). Antes elas ficavam
+ * sujas esperando esse pull, que nunca as trazia — ver lá. As `unknown_category`
  * são consertadas aqui e tentadas de novo na página seguinte. As `invalid` ficam
  * sujas e visíveis no contador de pendências: o servidor não tem como aceitá-las como
  * estão, e escondê-las seria pior do que mostrá-las.
@@ -633,7 +664,13 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 		countRows(stats, changes);
 		stats.rejected.push(...response.rejected);
 
-		const rejected = new Set(response.rejected.map((row) => `${row.collection}:${row.id}`));
+		// A `stale` sai limpa junto com as aceitas: a versão do servidor vence, e a daqui
+		// não tem mais o que subir. O cursor da coleção volta antes da marca sair — se o app
+		// morrer entre os dois, a linha continua suja e o próximo push refaz isto.
+		await rewindForStale(response.rejected);
+		const rejected = new Set(
+			response.rejected.filter((row) => row.reason !== 'stale').map((row) => `${row.collection}:${row.id}`)
+		);
 
 		await markChangesClean({
 			categories: changes.categories.filter((r) => !rejected.has(`categories:${r.id}`)),
