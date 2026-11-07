@@ -1,6 +1,6 @@
 import { brandFor } from '../utils/bankBrands';
 import { CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, CARD_CHARGE_NOTE_GLOB } from '../utils/cardMath';
-import { planDebitCardConversions } from '../utils/cardNames';
+import { parseCardNames, planDebitCardConversions, withCardName } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
@@ -1781,6 +1781,102 @@ export const repointTransfers = async (fromId: string, toId: string): Promise<vo
 			timestamp,
 			fromId,
 		]);
+	});
+};
+
+/**
+ * Junta um cartão de crédito em outro (SPD-097): o extrato OFX criou "NU PAGAMENTOS S.A. ·
+ * cartão final 1111" ao lado do "Nubank Teste" final 1111 que já existia (E2E-34).
+ *
+ * O critério é o número na tela bater com o do banco, e por isso não é o `mergeAccounts`
+ * das contas. O que fica mantém fechamento, vencimento, limite e a âncora (a fatura
+ * informada) dele — nada de somar a âncora do outro, que é outra leitura da mesma fatura.
+ * Do que sai vêm as compras, parcelas, estornos, encargos, pagamentos de fatura, capturas
+ * (inclusive as da caixa de entrada), contas a pagar e dívidas ligadas, e os finais e a
+ * chave de extrato, para o próximo aviso ou OFX cair no que fica. O ajuste com a fatura do
+ * banco do que sai (`isCardAdjustment`, mesmo critério de `getCardPurchasesOriginated`) não
+ * vem: ele acertava a fatura **dele**, e no que fica seria diferença inventada. Ganha
+ * lápide junto com o cartão. Compra datada até a âncora do que fica já está dentro da
+ * fatura informada dele, como qualquer compra antiga dele mesmo.
+ *
+ * Uma transação só, toda linha mudada suja para o sync levar; o cartão que sai sai como
+ * `deleteAccount` apaga (lápide). Fora de cartão para cartão, ou para ele mesmo, não faz nada.
+ */
+export const mergeCardInto = async (fromId: string, intoId: string): Promise<void> => {
+	if (fromId === intoId) return;
+	const [from, into] = await Promise.all([getAccount(fromId), getAccount(intoId)]);
+	if (!from || !into || from.deletedAt || into.deletedAt) return;
+	if (from.kind !== 'credit_card' || into.kind !== 'credit_card') return;
+
+	// Os finais do que sai entram sem trocar o nome que o que fica já dava a um final; o
+	// plástico dele, com o nome dele, só quando é outro final que não o do que fica.
+	const keptNames = parseCardNames(into.cardNames);
+	let cardNames = into.cardNames;
+	for (const [last4, name] of Object.entries(parseCardNames(from.cardNames))) {
+		if (last4 !== into.last4 && keptNames[last4] === undefined) cardNames = withCardName(cardNames, last4, name);
+	}
+	if (from.last4 && into.last4 && from.last4 !== into.last4 && keptNames[from.last4] === undefined) {
+		cardNames = withCardName(cardNames, from.last4, from.name);
+	}
+	const identity = {
+		cardNames,
+		last4: into.last4 ?? from.last4,
+		packageName: into.packageName ?? from.packageName,
+		accountKey: into.accountKey ?? from.accountKey,
+	};
+	const identityChanged =
+		identity.cardNames !== into.cardNames ||
+		identity.last4 !== into.last4 ||
+		identity.packageName !== into.packageName ||
+		identity.accountKey !== into.accountKey;
+
+	const timestamp = nowTimestamp();
+	await db.withTransactionAsync(async () => {
+		await db.runAsync(
+			`UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1
+       WHERE accountId = ? AND installmentGroup IS NULL AND TRIM(COALESCE(note, '')) = ? AND deletedAt IS NULL`,
+			[timestamp, timestamp, fromId, CARD_ADJUSTMENT_NOTE]
+		);
+		// Como em `moveAccountLedger`: lançamento sem final ganha o do cartão que sai.
+		await db.runAsync(
+			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			[intoId, from.last4, timestamp, fromId]
+		);
+		await db.runAsync('UPDATE captures SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ?', [intoId, timestamp, fromId]);
+		// Como em `repointTransfers`: o pagamento entre os dois era o mesmo dinheiro com duas fichas.
+		await db.runAsync(
+			`UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1
+       WHERE deletedAt IS NULL AND ((fromAccountId = ? AND toAccountId = ?) OR (fromAccountId = ? AND toAccountId = ?))`,
+			[timestamp, timestamp, fromId, intoId, intoId, fromId]
+		);
+		await db.runAsync('UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL', [
+			intoId,
+			timestamp,
+			fromId,
+		]);
+		await db.runAsync('UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL', [
+			intoId,
+			timestamp,
+			fromId,
+		]);
+		await db.runAsync('UPDATE bills SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+			intoId,
+			timestamp,
+			fromId,
+		]);
+		await db.runAsync('UPDATE debts SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+			intoId,
+			timestamp,
+			fromId,
+		]);
+		if (identityChanged) {
+			await db.runAsync(
+				'UPDATE accounts SET cardNames = ?, last4 = ?, packageName = ?, accountKey = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+				[identity.cardNames, identity.last4, identity.packageName, identity.accountKey, timestamp, intoId]
+			);
+		}
+		// A lápide do `deleteAccount`. Já não sobra lançamento nem transferência nele.
+		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, fromId]);
 	});
 };
 

@@ -55,7 +55,8 @@ interface CardEditScreenProps {
 const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit } = useAccounts();
+	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit, mergeCards } =
+		useAccounts();
 
 	const existing: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
@@ -268,6 +269,40 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		]);
 	};
 
+	/**
+	 * O mesmo cartão do banco com duas fichas no app: a cadastrada à mão e a que o extrato
+	 * OFX criou, por exemplo (E2E-34). Como "Juntar com outra conta": este sai e o escolhido
+	 * fica, com o fechamento, o limite e a fatura informada dele (`mergeCards`).
+	 */
+	const mergeCandidates = existing
+		? accounts.filter(
+				(account) => account.kind === 'credit_card' && account.id !== existing.id && !account.deletedAt && !account.archived
+			)
+		: [];
+
+	const handleMerge = () => {
+		if (!existing || mergeCandidates.length === 0) return;
+		Alert.alert(t('cards.edit.merge'), t('cards.edit.mergePick', { name: existing.name }), [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			...mergeCandidates.map((card) => ({
+				text: card.name,
+				onPress: () => {
+					Alert.alert(t('cards.edit.merge'), t('cards.edit.mergeConfirm', { from: existing.name, into: card.name }), [
+						{ text: t('cards.cancel'), style: 'cancel' as const },
+						{
+							text: t('cards.edit.mergeAction'),
+							onPress: async () => {
+								await mergeCards(existing.id, card.id);
+								announce(t('cards.edit.merged', { into: card.name }));
+								router.replace({ pathname: '/cards/[id]', params: { id: card.id } });
+							},
+						},
+					]);
+				},
+			})),
+		]);
+	};
+
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
@@ -466,6 +501,15 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								variant="secondary"
 								icon={existing.archived ? 'arrow-undo-outline' : 'archive-outline'}
 							/>
+							{mergeCandidates.length > 0 ? (
+								<Button
+									label={t('cards.edit.merge')}
+									hint={t('cards.edit.mergeHint')}
+									onPress={handleMerge}
+									variant="secondary"
+									icon="git-merge-outline"
+								/>
+							) : null}
 							<Button label={t('cards.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
 						</View>
 					) : null}

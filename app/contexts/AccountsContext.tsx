@@ -24,6 +24,7 @@ import {
 	getUnassignedNet,
 	getUnassignedPeriodSummary,
 	getTransfersByDateRange,
+	mergeCardInto,
 	moveAccountLedger,
 	normalizeAccountDraft,
 	reassignCaptureLedger,
@@ -270,6 +271,12 @@ interface AccountsContextType {
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
 	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
 	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
+	/**
+	 * Junta dois cartões de crédito do mesmo cartão do banco (E2E-34): compras, parcelas,
+	 * encargos e pagamentos vão para `intoId`, que mantém fechamento, limite e fatura
+	 * informada; o ajuste com a fatura do banco do que sai some com ele (`mergeCardInto`).
+	 */
+	mergeCards: (fromId: string, intoId: string) => Promise<void>;
 	/** As compras que o app do banco avisa passam a cair nesta conta, e não na outra. */
 	takeNotifications: (accountId: string) => Promise<void>;
 	/** Os avisos da PJ ("da conta Nu Empresas") passam a cair nesta conta (SPD-074). */
@@ -963,6 +970,21 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	/**
+	 * Dois cartões para o mesmo cartão do banco — o cadastrado à mão e o que o extrato OFX
+	 * criou, por exemplo. Não é o `mergeAccounts`: lá o saldo de uma soma no da outra, e aqui
+	 * a fatura do que fica é a que o banco mostra para ele, e não pode ganhar a âncora nem o
+	 * ajuste do outro. A regra inteira está em `mergeCardInto`.
+	 */
+	const mergeCards = useCallback(
+		async (fromId: string, intoId: string) => {
+			await mergeCardInto(fromId, intoId);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[refresh, refreshData]
+	);
+
+	/**
 	 * Puxa para esta conta as compras que o app do banco avisa.
 	 *
 	 * Duas contas no mesmo banco (a de todo dia e a do envelope, a PF e a PJ) não dizem
@@ -1148,6 +1170,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,
 			renameCard,
@@ -1190,6 +1213,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,
 			renameCard,

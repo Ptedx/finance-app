@@ -1407,6 +1407,12 @@ account: {
 			archiveHint: 'Hides the card from the home screen and totals',
 			delete: 'Delete card',
 			deleteConfirm: 'Purchases keep their history but lose the link to this card. Continue?',
+			merge: 'Merge into another card',
+			mergeHint: "Moves this card's purchases into another one and deletes this one",
+			mergePick: 'Which card should take what is in {{name}}?',
+			mergeConfirm: 'Purchases, installments, charges and payments from {{from}} move to {{into}}, and {{from}} is deleted. {{into}} keeps its own closing day, limit and stated bill; the match with the bank bill made on {{from}} is deleted with it.',
+			mergeAction: 'Merge',
+			merged: 'Cards merged into {{into}}',
 		},
 	},
 

@@ -1402,6 +1402,12 @@ const pt = {
 			archiveHint: 'Esconde o cartão da tela inicial e dos totais',
 			delete: 'Excluir cartão',
 			deleteConfirm: 'As compras mantêm o histórico, mas perdem o vínculo com este cartão. Continuar?',
+			merge: 'Juntar com outro cartão',
+			mergeHint: 'Leva as compras deste cartão para outro e apaga este',
+			mergePick: 'Para qual cartão levar o que está em {{name}}?',
+			mergeConfirm: 'As compras, parcelas, encargos e pagamentos de {{from}} passam para {{into}}, e {{from}} é apagado. {{into}} continua com o fechamento, o limite e a fatura informada dele; o acerto com a fatura do banco feito em {{from}} é apagado junto.',
+			mergeAction: 'Juntar',
+			merged: 'Cartões juntados em {{into}}',
 		},
 	},
 

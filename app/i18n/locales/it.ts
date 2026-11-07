@@ -1408,6 +1408,12 @@ account: {
 			archiveHint: 'Nasconde la carta dalla schermata iniziale e dai totali',
 			delete: 'Elimina carta',
 			deleteConfirm: 'Gli acquisti mantengono lo storico ma perdono il collegamento a questa carta. Continuare?',
+			merge: "Unisci a un'altra carta",
+			mergeHint: "Sposta gli acquisti di questa carta in un'altra ed elimina questa",
+			mergePick: 'In quale carta spostare ciò che è in {{name}}?',
+			mergeConfirm: "Acquisti, rate, oneri e pagamenti di {{from}} passano a {{into}}, e {{from}} viene eliminata. {{into}} mantiene la propria chiusura, il plafond e l'estratto conto indicato; l'allineamento con l'estratto della banca fatto su {{from}} viene eliminato insieme.",
+			mergeAction: 'Unisci',
+			merged: 'Carte unite in {{into}}',
 		},
 	},
 
