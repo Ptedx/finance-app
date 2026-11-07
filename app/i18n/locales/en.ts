@@ -1414,6 +1414,24 @@ account: {
 			mergeAction: 'Merge',
 			merged: 'Cards merged into {{into}}',
 		},
+		duplicates: {
+			notice_one: '{{count}} entry may be a repeat',
+			notice_other: '{{count}} entries may be repeats',
+			noticeBody: 'Same amount, at most 1 day apart. If they are repeats, that is {{amount}} too much on the bill. Open the extra one and delete it.',
+			noticeBodyPlain: 'Same amount, at most 1 day apart. Open the extra one and delete it.',
+			showOnly: 'Tap to see only the marked ones',
+			showAll: 'Showing only the marked ones · tap to see all',
+			showOnlyHint: 'Leaves only the marked entries in the list',
+			showAllHint: 'Shows all the entries of the bill again',
+			pairWith: 'May be the same as {{entries}}',
+			notDuplicate: 'Not a repeat',
+			notDuplicateHint: 'Removes the mark from this pair on this device',
+			dismissed: 'Mark removed',
+			afterMerge_one:
+				'{{count}} entry on {{into}} may be a repeat: same amount, at most 1 day apart. It is marked on the card screen; open it and delete the extra one.',
+			afterMerge_other:
+				'{{count}} entries on {{into}} may be repeats: same amount, at most 1 day apart. They are marked on the card screen; open them and delete the extra ones.',
+		},
 	},
 
 	month: {

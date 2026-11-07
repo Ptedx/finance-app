@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
 import { useAccounts } from '../contexts/AccountsContext';
+import { useTransactions } from '../contexts/TransactionsContext';
 import { type Account, type AccountDraft, DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
 import {
 	BANK_BRANDS,
@@ -17,7 +18,9 @@ import {
 	NETWORK_LABELS,
 	NEUTRAL_CARD_COLOR,
 } from '../utils/bankBrands';
-import { cycleFor, invoicesToInform } from '../utils/cardMath';
+import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
+import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
+import { cycleFor, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
 import { addDays, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
@@ -57,6 +60,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const router = useRouter();
 	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit, mergeCards } =
 		useAccounts();
+	const { transactions } = useTransactions();
 
 	const existing: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
@@ -280,6 +284,22 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			)
 		: [];
 
+	/**
+	 * Quantos lançamentos do cartão que fica podem estar repetidos depois de juntar (E2E-34): a
+	 * padaria digitada no Nubank Teste e a mesma padaria que o extrato pôs no duplicado. Conta
+	 * sobre a lista de antes de juntar, do jeito que `mergeCardInto` a deixa — a lista da tela
+	 * só se atualiza depois deste toque: o ajuste do que sai não vem, e o lançamento sem final
+	 * ganha o do cartão que sai.
+	 */
+	const keptDuplicateCount = (from: Account, intoId: string, dismissed: ReadonlySet<string>): number => {
+		const kept = transactions.flatMap((tx) => {
+			if (tx.accountId === intoId) return [tx];
+			if (tx.accountId !== from.id || isCardAdjustment(tx)) return [];
+			return [{ ...tx, cardLast4: tx.cardLast4 ?? from.last4 }];
+		});
+		return summarizeCardDuplicates(findCardDuplicates(kept, dismissed).groups).count;
+	};
+
 	const handleMerge = () => {
 		if (!existing || mergeCandidates.length === 0) return;
 		Alert.alert(t('cards.edit.merge'), t('cards.edit.mergePick', { name: existing.name }), [
@@ -292,8 +312,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						{
 							text: t('cards.edit.mergeAction'),
 							onPress: async () => {
+								const dismissed = await getDismissedCardDuplicates();
+								const repeated = keptDuplicateCount(existing, card.id, dismissed);
 								await mergeCards(existing.id, card.id);
 								announce(t('cards.edit.merged', { into: card.name }));
+								// Juntar não apaga a cópia da compra que estava nos dois (SPD-098): o dono precisa saber.
+								if (repeated > 0) {
+									Alert.alert(t('cards.edit.merged', { into: card.name }), t('cards.duplicates.afterMerge', { count: repeated, into: card.name }));
+								}
 								router.replace({ pathname: '/cards/[id]', params: { id: card.id } });
 							},
 						},

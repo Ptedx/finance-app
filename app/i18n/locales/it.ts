@@ -1415,6 +1415,24 @@ account: {
 			mergeAction: 'Unisci',
 			merged: 'Carte unite in {{into}}',
 		},
+		duplicates: {
+			notice_one: '{{count}} movimento potrebbe essere ripetuto',
+			notice_other: '{{count}} movimenti potrebbero essere ripetuti',
+			noticeBody: "Stesso importo, al massimo 1 giorno di differenza. Se sono ripetuti, sono {{amount}} in più sull'estratto conto. Apri quello in più ed eliminalo.",
+			noticeBodyPlain: 'Stesso importo, al massimo 1 giorno di differenza. Apri quello in più ed eliminalo.',
+			showOnly: 'Tocca per vedere solo quelli segnati',
+			showAll: 'Solo quelli segnati · tocca per vederli tutti',
+			showOnlyHint: 'Lascia nella lista solo i movimenti segnati',
+			showAllHint: "Mostra di nuovo tutti i movimenti dell'estratto conto",
+			pairWith: 'Potrebbe essere lo stesso di {{entries}}',
+			notDuplicate: 'Non è ripetuto',
+			notDuplicateHint: 'Toglie il segno da questa coppia su questo dispositivo',
+			dismissed: 'Segno tolto',
+			afterMerge_one:
+				"{{count}} movimento di {{into}} potrebbe essere ripetuto: stesso importo, al massimo 1 giorno di differenza. È segnato nella schermata della carta; aprilo ed elimina quello in più.",
+			afterMerge_other:
+				'{{count}} movimenti di {{into}} potrebbero essere ripetuti: stesso importo, al massimo 1 giorno di differenza. Sono segnati nella schermata della carta; aprili ed elimina quelli in più.',
+		},
 	},
 
 	month: {

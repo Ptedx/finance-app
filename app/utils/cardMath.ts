@@ -678,8 +678,11 @@ export interface CardPayment {
 	date: string;
 }
 
-/** Diferença de data que ainda pode ser o mesmo pagamento visto duas vezes. */
-const SAME_PAYMENT_DAYS = 1;
+/**
+ * Diferença de data que ainda pode ser o mesmo pagamento visto duas vezes. É também a do
+ * "provável repetido" entre lançamentos do cartão (`utils/cardDuplicates.ts`).
+ */
+export const SAME_PAYMENT_DAYS = 1;
 
 /**
  * Os dois são o **mesmo** pagamento, visto duas vezes? É o caso real de a notificação do

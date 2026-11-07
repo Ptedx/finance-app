@@ -1409,6 +1409,24 @@ const pt = {
 			mergeAction: 'Juntar',
 			merged: 'Cartões juntados em {{into}}',
 		},
+		duplicates: {
+			notice_one: '{{count}} lançamento pode estar repetido',
+			notice_other: '{{count}} lançamentos podem estar repetidos',
+			noticeBody: 'Mesmo valor, com até 1 dia de diferença. Se forem repetidos, são {{amount}} a mais na fatura. Abra o que sobrou e apague.',
+			noticeBodyPlain: 'Mesmo valor, com até 1 dia de diferença. Abra o que sobrou e apague.',
+			showOnly: 'Toque para ver só os marcados',
+			showAll: 'Mostrando só os marcados · toque para ver todos',
+			showOnlyHint: 'Deixa na lista só os lançamentos marcados',
+			showAllHint: 'Volta a mostrar todos os lançamentos da fatura',
+			pairWith: 'Pode ser o mesmo que {{entries}}',
+			notDuplicate: 'Não é repetido',
+			notDuplicateHint: 'Tira a marca deste par neste aparelho',
+			dismissed: 'Marca tirada',
+			afterMerge_one:
+				'{{count}} lançamento de {{into}} pode estar repetido: mesmo valor, com até 1 dia de diferença. Ele aparece marcado na tela do cartão; abra e apague o que sobrou.',
+			afterMerge_other:
+				'{{count}} lançamentos de {{into}} podem estar repetidos: mesmo valor, com até 1 dia de diferença. Eles aparecem marcados na tela do cartão; abra e apague o que sobrou.',
+		},
 	},
 
 	month: {

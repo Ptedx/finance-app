@@ -13,8 +13,11 @@ import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Account } from '../database/schema';
+import type { Account, Transaction } from '../database/schema';
+import { accountPairKey } from '../utils/accountBinding';
 import { findCheckingForCard } from '../utils/accountResolver';
+import { dismissCardDuplicates, getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
+import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import {
 	CARD_CHARGE_NOTE,
 	type CardChargeKind,
@@ -106,6 +109,24 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		[transactions, cardId]
 	);
 
+	// Provável repetido (E2E-34): o mesmo valor com até um dia de diferença neste cartão. O app
+	// só marca; quem apaga é o dono, pela tela do lançamento. "Não é repetido" fica neste aparelho.
+	const [dismissedDuplicates, setDismissedDuplicates] = useState<ReadonlySet<string>>(() => new Set());
+	const [onlyDuplicates, setOnlyDuplicates] = useState(false);
+	useEffect(() => {
+		let alive = true;
+		getDismissedCardDuplicates().then((dismissed) => {
+			if (alive) setDismissedDuplicates(dismissed);
+		});
+		return () => {
+			alive = false;
+		};
+	}, []);
+	const duplicates = useMemo(
+		() => findCardDuplicates(cardTransactions, dismissedDuplicates),
+		[cardTransactions, dismissedDuplicates]
+	);
+
 	if (!card) {
 		return (
 			<SafeAreaView style={styles.container}>
@@ -127,6 +148,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		.filter((tx) => inSelected(tx.date) && tx.date <= card.openingBalanceDate)
 		.sort((a, b) => b.date.localeCompare(a.date));
 	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
+	// Os prováveis repetidos da fatura na tela: o grupo conta quando algum lançamento dele está
+	// nela — o par pode cair um de cada lado do fechamento.
+	const selectedDuplicates = summarizeCardDuplicates(
+		duplicates.groups,
+		new Set([...selectedTransactions, ...beforeAnchor].map((tx) => tx.id))
+	);
+	const showOnlyDuplicates = onlyDuplicates && selectedDuplicates.count > 0;
+	const matchesDuplicates = (id: string) => !showOnlyDuplicates || selectedDuplicates.ids.has(id);
 	// Quem gastou nesta fatura: o físico e cada virtual. A fatura é uma só; isto é o "por cartão".
 	// O ajuste com a fatura do banco e o encargo (juros, anuidade) não são compra de cartão
 	// nenhum: ficam fora.
@@ -157,6 +186,46 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		if (tx.note.trim() === CARD_CHARGE_NOTE) return { ...tx, note: t('cards.charges.listLabelOther') };
 		if (kind === null || kind === 'other') return tx;
 		return { ...tx, note: t('cards.charges.listLabel', { kind: t(`cards.charges.kinds.${kind}`) }) };
+	};
+
+	const dismissDuplicates = async (keys: string[]) => {
+		try {
+			setDismissedDuplicates(await dismissCardDuplicates(keys));
+			AccessibilityInfo.announceForAccessibility(t('cards.duplicates.dismissed'));
+		} catch {
+			// Sem gravar, a marca fica: o dono pode tentar de novo, e nada se perdeu.
+		}
+	};
+
+	/** Um lançamento da fatura e, quando ele tem provável par, a linha que diz com qual. */
+	const renderTransaction = (transaction: Transaction, shown: Transaction = transaction) => {
+		const partnerIds = duplicates.partners.get(transaction.id);
+		const partners = (partnerIds ?? []).flatMap((id) => cardTransactions.filter((tx) => tx.id === id));
+		const open = (tx: Transaction) => router.push({ pathname: '/transaction/[id]', params: { id: tx.id } });
+		if (!partnerIds || partners.length === 0) return <TransactionItem key={transaction.id} transaction={shown} onPress={open} />;
+		const entries = partners
+			.map((partner) => `${shownNote(partner).note || t('transactionsList.noDescription')}, ${formatDayMonth(partner.date)}`)
+			.join('; ');
+		return (
+			<View key={transaction.id}>
+				<TransactionItem transaction={shown} onPress={open} />
+				<View style={styles.duplicateRow}>
+					<Ionicons name="copy-outline" size={16} color="#FFD166" />
+					<Text style={styles.duplicateText}>{t('cards.duplicates.pairWith', { entries })}</Text>
+					<Pressable
+						testID={`notDuplicate:${transaction.id}`}
+						onPress={() => dismissDuplicates(partnerIds.map((id) => accountPairKey(transaction.id, id)))}
+						accessibilityRole="button"
+						accessibilityLabel={t('cards.duplicates.notDuplicate')}
+						accessibilityHint={t('cards.duplicates.notDuplicateHint')}
+						hitSlop={8}
+						style={({ pressed }) => pressed && styles.pressed}
+					>
+						<Text style={styles.duplicateAction}>{t('cards.duplicates.notDuplicate')}</Text>
+					</Pressable>
+				</View>
+			</View>
+		);
 	};
 
 	const invoiceStatus = (invoice: InvoiceView): string => {
@@ -267,6 +336,15 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									{t('cards.invoice.period', { start: formatDayMonth(selected.cycle.start), end: formatDayMonth(selected.cycle.end) })}
 								</Text>
 
+								{selectedDuplicates.count > 0 ? (
+									<DuplicatesNotice
+										count={selectedDuplicates.count}
+										extraCents={selectedDuplicates.extraCents}
+										onlyMarked={showOnlyDuplicates}
+										onPress={() => setOnlyDuplicates((only) => !only)}
+									/>
+								) : null}
+
 								{selected.previousUnpaidCents > 0 ? (
 									<View
 										style={styles.anchorRow}
@@ -344,7 +422,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</View>
 								) : null}
 
-								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4)).map((entry) => (
+								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4) && !showOnlyDuplicates).map((entry) => (
 									<Pressable
 										key={entry.id}
 										onPress={() => router.push('/inbox')}
@@ -371,13 +449,9 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								selected.previousUnpaidCents === 0 ? (
 									<Text style={styles.empty}>{t('cards.invoice.empty')}</Text>
 								) : (
-									selectedTransactions.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
-										<TransactionItem
-											key={transaction.id}
-											transaction={shownNote(transaction)}
-											onPress={(tx) => router.push({ pathname: '/transaction/[id]', params: { id: tx.id } })}
-										/>
-									))
+									selectedTransactions
+										.filter((transaction) => matchesFilter(transaction.cardLast4) && matchesDuplicates(transaction.id))
+										.map((transaction) => renderTransaction(transaction, shownNote(transaction)))
 								)}
 
 								{showBeforeAnchor ? (
@@ -388,13 +462,9 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 												: t('cards.invoice.beforeStart', { count: beforeAnchor.length })}
 										</Text>
 										<View style={styles.coveredList}>
-											{beforeAnchor.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
-												<TransactionItem
-													key={transaction.id}
-													transaction={transaction}
-													onPress={(tx) => router.push({ pathname: '/transaction/[id]', params: { id: tx.id } })}
-												/>
-											))}
+											{beforeAnchor
+												.filter((transaction) => matchesFilter(transaction.cardLast4) && matchesDuplicates(transaction.id))
+												.map((transaction) => renderTransaction(transaction))}
 										</View>
 									</>
 								) : null}
@@ -617,6 +687,40 @@ const Stat: React.FC<{ label: string; value: string; tone?: 'default' | 'danger'
 		<Text style={[styles.statValue, tone === 'danger' && styles.danger]}>{value}</Text>
 	</View>
 );
+
+/**
+ * "2 lançamentos podem estar repetidos" (E2E-34). O número é quantos sobram se forem: em cada
+ * grupo de iguais, todos menos um. O toque deixa na lista só os marcados, e de novo mostra todos.
+ */
+const DuplicatesNotice: React.FC<{ count: number; extraCents: number; onlyMarked: boolean; onPress: () => void }> = ({
+	count,
+	extraCents,
+	onlyMarked,
+	onPress,
+}) => {
+	const { t } = useTranslation();
+	const title = t('cards.duplicates.notice', { count });
+	const body =
+		extraCents > 0 ? t('cards.duplicates.noticeBody', { amount: formatCents(extraCents) }) : t('cards.duplicates.noticeBodyPlain');
+	const toggle = onlyMarked ? t('cards.duplicates.showAll') : t('cards.duplicates.showOnly');
+	return (
+		<Pressable
+			onPress={onPress}
+			accessibilityRole="button"
+			accessibilityState={{ selected: onlyMarked }}
+			accessibilityLabel={`${title}. ${body}`}
+			accessibilityHint={onlyMarked ? t('cards.duplicates.showAllHint') : t('cards.duplicates.showOnlyHint')}
+			style={({ pressed }) => [styles.notice, styles.duplicateNotice, pressed && styles.pressed]}
+		>
+			<Ionicons name="copy-outline" size={22} color="#FFD166" />
+			<View style={styles.flex}>
+				<Text style={styles.noticeTitle}>{title}</Text>
+				<Text style={styles.noticeBody}>{body}</Text>
+				<Text style={styles.duplicateToggle}>{toggle}</Text>
+			</View>
+		</Pressable>
+	);
+};
 
 const Line: React.FC<{ label: string; value: string }> = ({ label, value }) => (
 	<View style={styles.line} accessible accessibilityLabel={`${label}, ${value}`}>
@@ -1267,6 +1371,35 @@ const styles = StyleSheet.create({
 	pendingLabel: {
 		fontSize: 13,
 		color: '#FFD166',
+	},
+	duplicateNotice: {
+		marginTop: 10,
+		backgroundColor: 'rgba(255,209,102,0.08)',
+		borderColor: 'rgba(255,209,102,0.45)',
+	},
+	duplicateToggle: {
+		fontSize: 13,
+		fontWeight: '600',
+		color: '#FFD166',
+		marginTop: 6,
+	},
+	// Embaixo do lançamento marcado: com qual ele pode ser o mesmo.
+	duplicateRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 6,
+		paddingBottom: 8,
+	},
+	duplicateText: {
+		flex: 1,
+		fontSize: 13,
+		color: '#FFD166',
+	},
+	duplicateAction: {
+		fontSize: 13,
+		fontWeight: '600',
+		color: ACCENT,
+		paddingVertical: 4,
 	},
 	empty: {
 		fontSize: 14,
