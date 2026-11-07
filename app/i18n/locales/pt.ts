@@ -1242,6 +1242,8 @@ const pt = {
 			informed: 'Valor informado (compras até {{date}})',
 			beforeStart_one: '{{count}} compra de antes do início do cartão no app não entra nesta fatura',
 			beforeStart_other: '{{count}} compras de antes do início do cartão no app não entram nesta fatura',
+			paymentCovered: 'Pagamento de {{date}} já está no valor informado',
+			paymentBeforeStart: 'Pagamento de {{date}}, de antes do início do cartão no app, não abate esta fatura',
 			empty: 'Nenhuma compra nesta fatura.',
 		},
 		limit: {

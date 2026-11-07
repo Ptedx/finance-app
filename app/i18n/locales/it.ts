@@ -1248,6 +1248,8 @@ account: {
 			informed: 'Importo impostato (acquisti fino al {{date}})',
 			beforeStart_one: "{{count}} acquisto precedente all'aggiunta della carta nell'app non è in questo estratto",
 			beforeStart_other: "{{count}} acquisti precedenti all'aggiunta della carta nell'app non sono in questo estratto",
+			paymentCovered: "Pagamento del {{date}} già compreso nell'importo impostato",
+			paymentBeforeStart: "Pagamento del {{date}}, precedente all'aggiunta della carta nell'app, non riduce questo estratto",
 			empty: 'Nessun acquisto in questo estratto.',
 		},
 		limit: {

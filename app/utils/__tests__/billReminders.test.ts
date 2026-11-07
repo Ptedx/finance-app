@@ -356,4 +356,25 @@ describe('cardReminders', () => {
 		const refund = { ...entry('estorno', 5_000, '2026-11-07'), isIncome: true };
 		expect(lines([source(NUBANK, [refund], [], now)], now)).toEqual([]);
 	});
+
+	describe('pagamento de antes da fatura informada (E2E-41): o mesmo "falta pagar" da tela', () => {
+		// Cadastro de 07/11 com R$ 1.234,56: âncora no fim de 06/11. Mercado R$ 100 e parcela 2/5 de R$ 300 em 07/11.
+		const informed: CardSettings = { ...NUBANK, openingBalanceCents: -123_456 };
+		const purchases = [entry('mercado', 10_000, '2026-11-07'), entry('notebook 2/5', 30_000, '2026-11-07')];
+
+		it('o "Pagamento recebido" de 05/11 já está no valor informado: avisa R$ 1.634,56, não R$ 400', () => {
+			const now = new Date(2026, 10, 7, 10, 0);
+			expect(lines([source(informed, purchases, [payment(123_456, '2026-11-05')], now)], now)).toEqual([
+				'nubank soon 2026-11-14 09:00 [2026-11] 163456',
+				'nubank today 2026-11-17 09:00 [2026-11] 163456',
+			]);
+		});
+
+		it('pagamento de R$ 1.000 em 08/11 abate: avisa R$ 634,56', () => {
+			const now = new Date(2026, 10, 8, 10, 0);
+			expect(
+				lines([source(informed, purchases, [payment(123_456, '2026-11-05'), payment(100_000, '2026-11-08')], now)], now)
+			).toEqual(['nubank soon 2026-11-14 09:00 [2026-11] 63456', 'nubank today 2026-11-17 09:00 [2026-11] 63456']);
+		});
+	});
 });

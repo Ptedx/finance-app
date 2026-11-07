@@ -60,6 +60,10 @@
  * que ele quita segue a ordem do banco — primeiro a fatura fechada, depois a aberta
  * (pagamento antecipado). Por isso "a pagar" é o devido menos o que já caiu na fatura
  * aberta, e a fatura fechada está paga quando isso chega a zero.
+ *
+ * Pagamento datado até a âncora é como a compra datada até ela: já está no valor informado
+ * (`inInformedValue`) e não abate fatura nenhuma — nem o devido, nem o "pago" de cada fatura,
+ * nem o lembrete. A tela o mostra junto das compras de antes (`coveredPayments`).
  */
 
 import { DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
@@ -270,6 +274,20 @@ export const cycleFor = (date: string, rule: CycleRule): InvoiceCycle => {
 const signed = (entry: CardEntry): number => (entry.isIncome ? -entry.amountCents : entry.amountCents);
 
 /**
+ * O lançamento ou pagamento datado em `date` já está no valor informado? A âncora é o que o
+ * cartão devia no **fim** de `openingBalanceDate`, então o que é datado até esse dia,
+ * inclusive, já está dentro dela; do dia seguinte em diante, soma ou abate. No cadastro a
+ * âncora fica na véspera (`planCardOpening`): a compra e o pagamento do dia do cadastro contam.
+ *
+ * É a regra única para compras e pagamentos — o devido, o valor e o "pago" de cada fatura, o
+ * limite, o lembrete e a lista "de antes" da tela saem dela. Antes, o "pago" das faturas não a
+ * seguia: o "Pagamento recebido" de 05/11 de um cartão informado em 07/11 aparecia como
+ * pagamento antecipado e o lembrete o abatia (R$ 400 onde a tela e o banco diziam R$ 1.634,56).
+ */
+export const inInformedValue = (settings: Pick<CardSettings, 'openingBalanceDate'>, date: string): boolean =>
+	date <= settings.openingBalanceDate;
+
+/**
  * Quanto o cartão deve no fim de `asOf`: a âncora mais compras, menos estornos e
  * pagamentos, contando só o que é datado depois da âncora. Negativo é crédito.
  */
@@ -277,10 +295,10 @@ export const owedOn = (settings: CardSettings, entries: CardEntry[], movements: 
 	// `0 - x` e não `-x`: com âncora zero, `-0` vazaria para a tela e para comparações.
 	let owed = 0 - settings.openingBalanceCents;
 	for (const entry of entries) {
-		if (entry.date > settings.openingBalanceDate && entry.date <= asOf) owed += signed(entry);
+		if (!inInformedValue(settings, entry.date) && entry.date <= asOf) owed += signed(entry);
 	}
 	for (const movement of movements) {
-		if (movement.date > settings.openingBalanceDate && movement.date <= asOf) {
+		if (!inInformedValue(settings, movement.date) && movement.date <= asOf) {
 			owed += movement.inbound ? -movement.amountCents : movement.amountCents;
 		}
 	}
@@ -301,7 +319,7 @@ export const invoiceAmount = (
 	let total = 0;
 	for (const entry of entries) {
 		if (entry.date < cycle.start || entry.date > last) continue;
-		if (entry.date <= settings.openingBalanceDate) continue;
+		if (inInformedValue(settings, entry.date)) continue;
 		total += signed(entry);
 	}
 	if (settings.openingBalanceDate >= cycle.start && settings.openingBalanceDate <= last) {
@@ -390,6 +408,11 @@ export interface InvoiceView {
 	 * fatura seguinte (é o `previousUnpaidCents` dela).
 	 */
 	leftOpenCents: number;
+	/**
+	 * Pagamentos datados no ciclo desta fatura até a âncora: já estão no valor informado
+	 * (`inInformedValue`) e não entram no `paidCents`. A tela os mostra com as compras de antes.
+	 */
+	coveredPayments: Array<{ date: string; amountCents: number }>;
 }
 
 export interface InstallmentPlan {
@@ -518,6 +541,10 @@ export const buildCardSummary = (
 ): CardSummary => {
 	const owedNow = owedOn(settings, entries, movements, today);
 	const owedCents = Math.max(0, owedNow);
+	// Os pagamentos que abatem fatura: os datados depois da âncora, como no devido. Os de antes
+	// já estão no valor informado — contá-los no "pago" fazia um pagamento antecipado que não houve.
+	const payments = movements.filter((movement) => movement.inbound && !inInformedValue(settings, movement.date));
+	const paymentsBeforeAnchor = movements.filter((movement) => movement.inbound && inInformedValue(settings, movement.date));
 
 	let futureSigned = 0;
 	for (const entry of entries) {
@@ -586,8 +613,8 @@ export const buildCardSummary = (
 	const toPayCents = Math.max(0, owedNow - openPostedCents);
 
 	let paidSinceClosingCents = 0;
-	for (const movement of movements) {
-		if (movement.inbound && movement.date >= closedCycle.closingDate && movement.date <= today) {
+	for (const movement of payments) {
+		if (movement.date >= closedCycle.closingDate && movement.date <= today) {
 			paidSinceClosingCents += movement.amountCents;
 		}
 	}
@@ -616,13 +643,13 @@ export const buildCardSummary = (
 	// antecipado da aberta. Da fechada conta o que ela cobra: o crédito de faturas anteriores
 	// já abateu parte. Sem o saldo anterior aqui, pagar R$ 800 numa fechada de R$ 300 com
 	// R$ 500 de saldo anterior mostrava R$ 500 de "pagamento antecipado" que não houve.
-	const closedWindowPaid = paymentsBetween(movements, closedCycle.closingDate, openCycle.closingDate);
+	const closedWindowPaid = paymentsBetween(payments, closedCycle.closingDate, openCycle.closingDate);
 	const closedChargedCents =
 		Math.max(0, closedInvoiceCents) - creditApplied(closedCycle, closedInvoiceCents) + previousUnpaid(closedCycle, -1);
 	const invoicePaidCents = (cycle: InvoiceCycle, offset: number, amountCents: number, previousCents: number): number => {
 		if (offset > 0) return 0;
 		if (offset === 0) return Math.max(0, closedWindowPaid - closedChargedCents);
-		const window = offset === -1 ? closedWindowPaid : paymentsBetween(movements, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate);
+		const window = offset === -1 ? closedWindowPaid : paymentsBetween(payments, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate);
 		return Math.min(window, Math.max(0, amountCents) + previousCents);
 	};
 
@@ -636,6 +663,9 @@ export const buildCardSummary = (
 		const leftOpenCents = offset < -1 ? nextPreviousUnpaid : 0;
 		nextPreviousUnpaid = previousUnpaidCents;
 		const paidCents = invoicePaidCents(cycle, offset, amountCents, previousUnpaidCents);
+		const coveredPayments = paymentsBeforeAnchor
+			.filter((movement) => movement.date >= cycle.start && movement.date <= cycle.end)
+			.map((movement) => ({ date: movement.date, amountCents: movement.amountCents }));
 		if (offset < -1 && amountCents === 0 && paidCents === 0 && previousUnpaidCents === 0 && leftOpenCents === 0) continue;
 		if (offset > 0 && amountCents === 0) continue;
 		invoices.unshift({
@@ -646,6 +676,7 @@ export const buildCardSummary = (
 			creditAppliedCents: creditApplied(cycle, amountCents),
 			previousUnpaidCents,
 			leftOpenCents,
+			coveredPayments,
 		});
 	}
 
@@ -1126,6 +1157,24 @@ export const invoiceStatusOf = (invoice: InvoiceView, summary: CardSummary, toda
 };
 
 /**
+ * O que falta pagar de uma fatura: o número do lembrete (`cardReminders`), que tem de bater
+ * com o da tela e o do banco.
+ *
+ * - A fechada: o "a pagar" do resumo (`toPayCents`) — o devido menos o que já caiu na aberta.
+ * - A aberta e as futuras: o valor menos o crédito que chegou das anteriores e o pagamento
+ *   antecipado (`paidCents`), nunca abaixo de zero.
+ * - As anteriores à fechada: zero — o que ficou delas já está no saldo anterior da fechada.
+ *
+ * Os pagamentos são os de `buildCardSummary`: o datado até a âncora já está no valor informado
+ * (`inInformedValue`) e não abate aqui.
+ */
+export const invoiceDueCents = (invoice: InvoiceView, summary: Pick<CardSummary, 'toPayCents'>): number => {
+	if (invoice.offset === -1) return summary.toPayCents;
+	if (invoice.offset < -1) return 0;
+	return Math.max(0, invoice.amountCents - invoice.creditAppliedCents - invoice.paidCents);
+};
+
+/**
  * A fatura do mês para o quadro "Este mês": as faturas que **fecham** entre `startDate`
  * e `endDate` — a de setembro fecha em setembro e é paga logo depois. Inclui parcelas e
  * a "fatura atual" informada. Nulo quando o cartão não tem fechamento; aí quem chama usa
@@ -1170,6 +1219,8 @@ export default {
 	isCardNonPurchase,
 	isSameCardPayment,
 	splitCardCharges,
+	inInformedValue,
+	invoiceDueCents,
 	invoiceStatusOf,
 	invoicesToInform,
 	openInvoiceInformed,

@@ -14,7 +14,7 @@
  */
 
 import type { Bill } from '../database/schema';
-import type { CardSummary } from './cardMath';
+import { type CardSummary, invoiceDueCents } from './cardMath';
 import {
 	addDays,
 	buildClampedDate,
@@ -170,13 +170,16 @@ const CARD_OFFSETS: { kind: CardReminderKind; offset: number }[] = [
 
 /**
  * As faturas de um cartão que ainda vão vencer com algo a pagar, com o valor que a tela do
- * cartão mostra:
+ * cartão mostra — o "falta pagar" de `invoiceDueCents`, a mesma regra da tela:
  *
  * - a **fechada**: o "a pagar" (`toPayCents`) — o devido menos o que já caiu na aberta, já
  *   descontados os pagamentos; pagamento parcial deixa o resto;
  * - a **aberta** (a fechar): o valor dela menos o crédito que chegou de faturas anteriores
  *   e o que sobrou de pagamento antecipado (`paidCents`). Até fechar, o valor pode crescer:
  *   a agenda é refeita a cada recarga das faturas.
+ *
+ * Pagamento datado até a fatura informada (a âncora) já está no valor dela e não abate
+ * (E2E-41: o aviso dizia R$ 400 onde a tela dizia R$ 1.634,56).
  */
 export const cardInvoicesDue = (
 	summary: CardReminderSource['summary']
@@ -184,17 +187,19 @@ export const cardInvoicesDue = (
 	if (!summary.configured) return [];
 	const due: { invoice: string; dueDate: string; amountCents: number }[] = [];
 
-	if (summary.closedCycle && summary.toPayCents > 0) {
+	const closed = summary.invoices.find((invoice) => invoice.offset === -1);
+	const closedDue = closed ? invoiceDueCents(closed, summary) : summary.toPayCents;
+	if (summary.closedCycle && closedDue > 0) {
 		due.push({
 			invoice: summary.closedCycle.key,
 			dueDate: summary.closedCycle.dueDate,
-			amountCents: summary.toPayCents,
+			amountCents: closedDue,
 		});
 	}
 
 	const open = summary.invoices.find((invoice) => invoice.offset === 0);
 	if (summary.openCycle && open) {
-		const charged = open.amountCents - open.creditAppliedCents - open.paidCents;
+		const charged = invoiceDueCents(open, summary);
 		if (charged > 0) {
 			due.push({ invoice: summary.openCycle.key, dueDate: summary.openCycle.dueDate, amountCents: charged });
 		}

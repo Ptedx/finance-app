@@ -174,7 +174,11 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	// dele, ou o ajuste do cadastro antigo (âncora zero e ajuste no dia seguinte). Sem nada
 	// informado, o cartão começou do zero no cadastro e elas ficam fora da fatura — a tela
 	// diz isso, em vez de afirmar que estão num valor que ninguém informou.
-	const showBeforeAnchor = anchorDateInSelected && beforeAnchor.length > 0;
+	// O pagamento de antes da âncora também já está no valor (E2E-38): não abate a fatura e não
+	// é "pagamento antecipado" — aparece aqui, junto das compras de antes.
+	const coveredPayments = selected?.coveredPayments ?? [];
+	const coveredKeys = new Map<string, number>();
+	const showBeforeAnchor = anchorDateInSelected && (beforeAnchor.length > 0 || coveredPayments.length > 0);
 	const beforeAnchorInformed = anchorInSelected || selectedTransactions.some((tx) => isCardAdjustment(tx));
 	const today = todayISO();
 
@@ -456,16 +460,41 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 
 								{showBeforeAnchor ? (
 									<>
-										<Text style={styles.covered}>
-											{beforeAnchorInformed
-												? t('cards.invoice.coveredByAnchor', { count: beforeAnchor.length })
-												: t('cards.invoice.beforeStart', { count: beforeAnchor.length })}
-										</Text>
-										<View style={styles.coveredList}>
-											{beforeAnchor
-												.filter((transaction) => matchesFilter(transaction.cardLast4) && matchesDuplicates(transaction.id))
-												.map((transaction) => renderTransaction(transaction))}
-										</View>
+										{beforeAnchor.length > 0 ? (
+											<>
+												<Text style={styles.covered}>
+													{beforeAnchorInformed
+														? t('cards.invoice.coveredByAnchor', { count: beforeAnchor.length })
+														: t('cards.invoice.beforeStart', { count: beforeAnchor.length })}
+												</Text>
+												<View style={styles.coveredList}>
+													{beforeAnchor
+														.filter((transaction) => matchesFilter(transaction.cardLast4) && matchesDuplicates(transaction.id))
+														.map((transaction) => renderTransaction(transaction))}
+												</View>
+											</>
+										) : null}
+										{coveredPayments.map((payment) => {
+											const label = beforeAnchorInformed
+												? t('cards.invoice.paymentCovered', { date: formatDayMonth(payment.date) })
+												: t('cards.invoice.paymentBeforeStart', { date: formatDayMonth(payment.date) });
+											// Pagamento não tem id aqui: dois iguais no mesmo dia levam o número da vez.
+											const base = `${payment.date}:${payment.amountCents}`;
+											const repeat = (coveredKeys.get(base) ?? 0) + 1;
+											coveredKeys.set(base, repeat);
+											return (
+												<View
+													key={`${base}:${repeat}`}
+													style={styles.anchorRow}
+													accessible
+													accessibilityLabel={`${label}, ${formatCents(payment.amountCents)}`}
+												>
+													<Ionicons name="checkmark-circle-outline" size={18} color="rgba(255,255,255,0.6)" />
+													<Text style={styles.anchorText}>{label}</Text>
+													<Text style={styles.anchorAmount}>{formatCents(payment.amountCents)}</Text>
+												</View>
+											);
+										})}
 									</>
 								) : null}
 							</View>

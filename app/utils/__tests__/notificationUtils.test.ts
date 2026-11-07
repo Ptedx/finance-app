@@ -428,6 +428,26 @@ describe('scheduleCardReminders', () => {
 		);
 	});
 
+	it('pagamento de antes da fatura informada (E2E-41): o texto diz R$ 1.634,56, como a tela', async () => {
+		// Fatura informada no cadastro de 07/11 (âncora no fim de 06/11) e o "Pagamento recebido" de 05/11 do extrato.
+		const informed: CardSettings = { ...NUBANK, openingBalanceCents: -123_456 };
+		const source: CardReminderSource = {
+			cardId: 'nubank',
+			name: 'Nubank Teste',
+			summary: buildCardSummary(
+				informed,
+				[purchase('mercado', 10_000), purchase('parcela', 30_000)],
+				[{ amountCents: 123_456, date: '2026-11-05', inbound: true }],
+				'2026-11-07'
+			),
+		};
+		expect(await scheduleCardReminders([source], now)).toBe(2);
+		expect(mockScheduled.get('card:nubank:2026-11:soon:3')?.content.body).toBe(
+			`Nubank Teste — fatura de ${formatCents(163_456)} no dia 17`
+		);
+		expect(mockScheduled.get('card:nubank:2026-11:today:0')?.content.body).toBe(`Nubank Teste — fatura de ${formatCents(163_456)}`);
+	});
+
 	it('cartões e contas a pagar não apagam os avisos um do outro', async () => {
 		await scheduleBillReminders([bill({ dueDay: 10 })], new Date(2026, 9, 24, 12, 0));
 		await scheduleCardReminders([nubank()], now);

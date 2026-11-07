@@ -12,6 +12,7 @@ import {
 	type CardSettings,
 	existingInstallmentDates,
 	invoiceAmount,
+	invoiceDueCents,
 	invoiceStatusOf,
 	invoicesToInform,
 	isCardAdjustment,
@@ -296,5 +297,84 @@ describe('ajuste conta na fatura, como antes', () => {
 		const summary = buildCardSummary(settings, [adjustment(TODAY, 123_456), purchase('2026-11-01', 5_000)], [], TODAY);
 		expect(summary.openInvoiceCents).toBe(123_456);
 		expect(invoiceAmount(summary.openCycle as NonNullable<typeof summary.openCycle>, settings, [adjustment(TODAY, 123_456)])).toBe(123_456);
+	});
+});
+
+/**
+ * Pagamento de antes da fatura informada (E2E-38, E2E-41). O Nubank Teste foi cadastrado em
+ * 07/11 com a fatura de novembro em R$ 1.234,56 (âncora no fim de 06/11); depois entraram o
+ * Mercado de R$ 100 e a parcela 2/5 de R$ 300 do notebook, de 07/11, e o "Pagamento recebido"
+ * de R$ 1.234,56 de 05/11 que veio do extrato. O banco mostra R$ 1.634,56: o pagamento de 05/11
+ * já está no valor informado e não abate nada — nem na tela, nem no lembrete.
+ */
+describe('pagamento de antes da fatura informada (E2E-38, E2E-41)', () => {
+	const settings = nubank({ openingBalanceCents: -123_456, openingBalanceDate: '2026-11-06' });
+	const notebook = (index: number, date: string) =>
+		purchase(date, 30_000, { note: `Notebook (${index}/5)`, installmentGroup: 'notebook', installmentIndex: index, installmentCount: 5 });
+	const entries = [
+		purchase(TODAY, 10_000, { note: 'Mercado' }),
+		notebook(2, TODAY),
+		notebook(3, '2026-11-10'),
+		notebook(4, '2026-12-10'),
+		notebook(5, '2027-01-10'),
+	];
+	const openOf = (summary: ReturnType<typeof buildCardSummary>) => {
+		const open = summary.invoices.find((i) => i.offset === 0);
+		if (!open) throw new Error('sem fatura aberta');
+		return open;
+	};
+
+	it('o pagamento de 05/11 já está no valor informado: falta pagar R$ 1.634,56, sem pagamento antecipado', () => {
+		const summary = buildCardSummary(settings, entries, [payment('2026-11-05', 123_456)], TODAY);
+		const open = openOf(summary);
+		expect(open.amountCents).toBe(163_456);
+		expect(open.paidCents).toBe(0);
+		expect(invoiceDueCents(open, summary)).toBe(163_456);
+		expect(summary.owedCents).toBe(163_456);
+		expect(summary.paidSinceClosingCents).toBe(0);
+		expect(summary.limitUsedCents).toBe(163_456 + 90_000);
+		// Aparece com as compras de antes, e não como pagamento.
+		expect(open.coveredPayments).toEqual([{ date: '2026-11-05', amountCents: 123_456 }]);
+	});
+
+	it('pagamento de R$ 1.000 em 08/11, depois da fatura informada: falta pagar R$ 634,56', () => {
+		const day = '2026-11-08';
+		const summary = buildCardSummary(settings, entries, [payment('2026-11-05', 123_456), payment(day, 100_000)], day);
+		const open = openOf(summary);
+		expect(open.paidCents).toBe(100_000);
+		expect(invoiceDueCents(open, summary)).toBe(63_456);
+		expect(summary.owedCents).toBe(63_456);
+		expect(summary.paidSinceClosingCents).toBe(100_000);
+		expect(open.coveredPayments).toEqual([{ date: '2026-11-05', amountCents: 123_456 }]);
+	});
+
+	it('o dia conta como nas compras: até a âncora (06/11) está no valor; no dia do cadastro (07/11) abate', () => {
+		const onAnchor = buildCardSummary(settings, entries, [payment('2026-11-06', 50_000)], TODAY);
+		expect(invoiceDueCents(openOf(onAnchor), onAnchor)).toBe(163_456);
+		expect(openOf(onAnchor).coveredPayments).toEqual([{ date: '2026-11-06', amountCents: 50_000 }]);
+
+		const onSignup = buildCardSummary(settings, entries, [payment(TODAY, 50_000)], TODAY);
+		expect(invoiceDueCents(openOf(onSignup), onSignup)).toBe(113_456);
+		expect(openOf(onSignup).paidCents).toBe(50_000);
+		expect(openOf(onSignup).coveredPayments).toEqual([]);
+	});
+
+	it('cadastro antigo (âncora zero e o ajuste de 07/11): mesma regra', () => {
+		const summary = buildCardSummary(nubank(), [adjustment(TODAY, 123_456), ...entries], [payment('2026-11-05', 123_456)], TODAY);
+		const open = openOf(summary);
+		expect(open.paidCents).toBe(0);
+		expect(invoiceDueCents(open, summary)).toBe(163_456);
+		expect(open.coveredPayments).toEqual([{ date: '2026-11-05', amountCents: 123_456 }]);
+	});
+
+	it('a fechada: o que falta pagar é o "a pagar" do resumo; o pagamento de antes da âncora fica nela, sem abater', () => {
+		const closedSettings = inter({ openingBalanceCents: -200_000, openingBalanceDate: '2026-11-04' });
+		const summary = buildCardSummary(closedSettings, [], [payment('2026-11-03', 200_000), payment('2026-11-06', 50_000)], TODAY);
+		const closed = summary.invoices.find((i) => i.offset === -1);
+		expect(summary.toPayCents).toBe(150_000);
+		expect(invoiceDueCents(closed as NonNullable<typeof closed>, summary)).toBe(150_000);
+		expect(closed?.paidCents).toBe(50_000);
+		expect(closed?.coveredPayments).toEqual([{ date: '2026-11-03', amountCents: 200_000 }]);
+		expect(summary.invoices.find((i) => i.offset === 0)?.paidCents).toBe(0);
 	});
 });

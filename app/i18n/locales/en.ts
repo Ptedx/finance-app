@@ -1247,6 +1247,8 @@ account: {
 			informed: 'Amount set (purchases up to {{date}})',
 			beforeStart_one: '{{count}} purchase from before the card was added to the app is not in this bill',
 			beforeStart_other: '{{count}} purchases from before the card was added to the app are not in this bill',
+			paymentCovered: 'Payment of {{date}} is already in the set amount',
+			paymentBeforeStart: 'Payment of {{date}}, from before the card was added to the app, does not reduce this bill',
 			empty: 'No purchases in this bill.',
 		},
 		limit: {
