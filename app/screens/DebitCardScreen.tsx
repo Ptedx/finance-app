@@ -11,6 +11,7 @@ import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { capitalizeFirst } from '../utils/capitalize';
 import { formatMonthLong, getMonthName } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 
@@ -93,7 +94,7 @@ const DebitCardScreen: React.FC<DebitCardScreenProps> = ({ accountId, last4 }) =
 								accessibilityLabel={`${formatMonthLong(`${month.key}-01`)} ${month.key.slice(0, 4)}, ${formatCents(month.totalCents)}`}
 							>
 								<Text style={styles.monthTitle}>
-									{formatMonthLong(`${month.key}-01`)} {month.key.slice(0, 4)}
+									{capitalizeFirst(`${formatMonthLong(`${month.key}-01`)} ${month.key.slice(0, 4)}`)}
 								</Text>
 								<Text style={styles.monthTotal}>{formatCents(month.totalCents)}</Text>
 							</View>
@@ -181,7 +182,6 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 		fontWeight: '700',
 		color: '#FFFFFF',
-		textTransform: 'capitalize',
 	},
 	monthTotal: {
 		fontSize: 16,

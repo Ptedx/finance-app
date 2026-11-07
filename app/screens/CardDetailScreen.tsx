@@ -16,6 +16,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, Transaction } from '../database/schema';
 import { accountPairKey } from '../utils/accountBinding';
 import { findCheckingForCard } from '../utils/accountResolver';
+import { capitalizeFirst } from '../utils/capitalize';
 import { dismissCardDuplicates, getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import {
@@ -325,7 +326,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>
 							{summary.invoices.map((invoice) => {
 								const isSelected = invoice.cycle.key === selectedKey;
-								const month = formatMonthShort(invoiceMonth(invoice));
+								// "Nov · atual": maiúscula só na primeira letra (E2E-46).
+								const month = capitalizeFirst(formatMonthShort(invoiceMonth(invoice)));
 								return (
 									<Pressable
 										key={invoice.cycle.key}
@@ -1295,7 +1297,6 @@ const styles = StyleSheet.create({
 	tabMonth: {
 		fontSize: 13,
 		color: 'rgba(255,255,255,0.8)',
-		textTransform: 'capitalize',
 	},
 	tabAmount: {
 		fontSize: 15,

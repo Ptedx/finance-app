@@ -11,6 +11,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, Transaction, Transfer } from '../database/schema';
+import { capitalizeFirst } from '../utils/capitalize';
 import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 import { transactionTotals } from '../utils/monthOverview';
@@ -134,14 +135,17 @@ const TransactionListScreen = () => {
 		for (const row of [...filtered].sort((a, b) => b.date.localeCompare(a.date) || a.type.localeCompare(b.type))) {
 			let day = byDay.get(row.date);
 			if (!day) {
+				// Maiúscula só na primeira letra: o `capitalize` do estilo fazia "17 De Novembro De
+				// 2026" (E2E-46).
 				day = {
 					date: row.date,
-					title:
+					title: capitalizeFirst(
 						row.date === today
 							? t('transactionsList.today')
 							: row.date === yesterday
 								? t('transactionsList.yesterday')
-								: formatFullDate(row.date),
+								: formatFullDate(row.date)
+					),
 					totalCents: 0,
 					data: [],
 				};
@@ -506,7 +510,6 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		fontWeight: '700',
 		color: 'rgba(255,255,255,0.85)',
-		textTransform: 'capitalize',
 	},
 	dayTotal: {
 		fontSize: 14,
