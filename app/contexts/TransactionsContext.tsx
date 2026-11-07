@@ -15,6 +15,7 @@ import {
 	getPeriodSummary,
 	getTotalByCategory,
 	getTransactions,
+	getTransactionsByCategory,
 	getTransactionsByDateRange,
 	initDatabase,
 	type PeriodSummary,
@@ -85,7 +86,8 @@ interface TransactionsContextType {
 	// Category Management Actions
 	addCategory: (category: CategoryDraft) => Promise<string>;
 	updateCategory: (category: CategoryEdit) => Promise<void>;
-	deleteCategory: (categoryId: string) => Promise<void>;
+	/** Com `moveToCategoryId`, os lançamentos da categoria vão para ela antes de apagar. */
+	deleteCategory: (categoryId: string, moveToCategoryId?: string) => Promise<void>;
 }
 
 const EMPTY_SUMMARY: PeriodSummary = { incomeCents: 0, expenseCents: 0, passThroughCents: 0, netCents: 0 };
@@ -310,15 +312,33 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const deleteCategory = async (categoryId: string): Promise<void> => {
+	/**
+	 * Apaga a categoria. Com destino, os lançamentos dela vão para o destino **antes**: sem
+	 * isso, o banco os jogava em "uncategorized" e a compra perdia o nome que vinha da
+	 * categoria. Mover um a um com `updateTransaction` deixa cada lançamento sujo para o
+	 * sync, como uma edição; se um falhar, a categoria não é apagada e nada se perde — os
+	 * já movidos ficam no destino, os outros continuam nela.
+	 *
+	 * As recorrências não são movidas aqui: o banco as põe em "uncategorized", como antes.
+	 * Quem avisa do erro é a tela, no idioma do app.
+	 */
+	const deleteCategory = async (categoryId: string, moveToCategoryId?: string): Promise<void> => {
 		try {
+			if (moveToCategoryId && moveToCategoryId !== categoryId) {
+				// Relidos do banco, não do estado: o lançamento inteiro é regravado.
+				for (const transaction of await getTransactionsByCategory(categoryId)) {
+					await updateTransaction({ ...transaction, category: moveToCategoryId });
+				}
+			}
 			await dbDeleteCategory(categoryId);
 			syncQueue.schedule();
-			// Transactions were reassigned to "uncategorized", so totals change too.
+			// Transactions were moved or reassigned to "uncategorized", so totals change too.
 			await refreshData();
 		} catch (error) {
 			console.error('Error deleting category:', error);
-			Alert.alert('Error', 'Failed to delete category. Please try again.');
+			// O que já foi movido precisa subir e aparecer, mesmo com a categoria ainda lá.
+			syncQueue.schedule();
+			await refreshData();
 			throw error;
 		}
 	};

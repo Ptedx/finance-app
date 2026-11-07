@@ -31,7 +31,7 @@ jest.mock('expo-sqlite', () => ({
 import type { Account, Capture } from '../../database/schema';
 import pt from '../../i18n/locales/pt';
 import { formatCents } from '../../utils/money';
-import { currencyWarning, destinationLabel, ignoredAppLabel, installmentsLabel, resolvedReasonLabel } from '../CaptureInboxScreen';
+import { currencyWarning, destinationLabel, fallbackCategory, ignoredAppLabel, installmentsLabel, resolvedReasonLabel } from '../CaptureInboxScreen';
 
 /** `t` mínimo: busca a chave no português e interpola `{{assim}}`, como o i18next. */
 const t = (key: string, options: Record<string, unknown> = {}): string => {
@@ -151,5 +151,12 @@ describe('o app que o usuário ensinou a ignorar aparece com "desfazer" (SPD-022
 	it('os outros motivos continuam como antes', () => {
 		expect(resolvedReasonLabel({ reason: 'manual', appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('Sua escolha');
 		expect(resolvedReasonLabel({ reason: null, appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('');
+	});
+});
+
+describe('categoria de reserva', () => {
+	// A sugestão que não bate com nenhuma categoria caía em "Uncategorized", fixo em inglês.
+	it('chama-se "Sem categoria" em português', () => {
+		expect(fallbackCategory(t)).toMatchObject({ id: 'uncategorized', name: 'Sem categoria' });
 	});
 });

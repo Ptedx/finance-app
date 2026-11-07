@@ -129,12 +129,15 @@ export const resolvedReasonLabel = (
 	return t(`captures.reason.${capture.reason}`, { defaultValue: '', app: capture.appLabel });
 };
 
-const FALLBACK_CATEGORY: Pick<Category, 'id' | 'name' | 'color' | 'icon'> = {
+/** A categoria mostrada quando a sugerida não existe: o nome vem da tradução, não fixo em inglês. */
+export const fallbackCategory = (
+	t: (key: string, options?: Record<string, unknown>) => string
+): Pick<Category, 'id' | 'name' | 'color' | 'icon'> => ({
 	id: 'uncategorized',
-	name: 'Uncategorized',
+	name: t('transactionsList.uncategorized'),
 	color: '#9CA3AF',
 	icon: 'help-circle',
-};
+});
 
 interface ActionButtonProps {
 	label: string;
@@ -193,7 +196,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [rawOpen, setRawOpen] = useState(false);
 
-	const category = categories.find((c) => c.id === categoryId) ?? FALLBACK_CATEGORY;
+	const category = categories.find((c) => c.id === categoryId) ?? fallbackCategory(t);
 	const amount = formatCents(capture.amountCents);
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
 	const destination = destinationLabel(capture, accounts, t);

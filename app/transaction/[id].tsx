@@ -5,16 +5,19 @@ import { useTranslation } from 'react-i18next';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
-import { formatCents } from '../utils/money';
+import { parseCardNames } from '../utils/cardNames';
 import { formatFullDate } from '../utils/dateUtils';
+import { formatCents } from '../utils/money';
 
 export default function TransactionDetailScreen() {
 	const { id } = useLocalSearchParams();
 	const router = useRouter();
 	const { t } = useTranslation();
 	const { transactions, categories, removeTransaction, removeInstallmentGroup } = useTransactions();
+	const { accounts } = useAccounts();
 	const [transaction, setTransaction] = useState<Transaction | null>(null);
 	// biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
 	const [category, setCategory] = useState<any>(null);
@@ -26,18 +29,18 @@ export default function TransactionDetailScreen() {
 		if (foundTransaction) {
 			setTransaction(foundTransaction);
 
-			// Find category, use default Uncategorized if not found
+			// Find category; sem ela, o nome de reserva vem da tradução ("Sem categoria").
 			const foundCategory = categories.find((c) => c.id === foundTransaction.category);
 			setCategory(
 				foundCategory || {
 					id: 'uncategorized',
-					name: 'Uncategorized',
+					name: t('transactionsList.uncategorized'),
 					color: '#9CA3AF',
 					icon: 'help-circle',
 				}
 			);
 		}
-	}, [id, transactions, categories]);
+	}, [id, transactions, categories, t]);
 
 	const handleEdit = () => {
 		if (transaction) {
@@ -84,7 +87,7 @@ export default function TransactionDetailScreen() {
 			<SafeAreaView style={styles.container}>
 				<Stack.Screen
 					options={{
-						title: 'Transaction Details',
+						title: t('transactionDetail.title'),
 						headerStyle: {
 							backgroundColor: '#1A1A1A',
 						},
@@ -93,17 +96,35 @@ export default function TransactionDetailScreen() {
 					}}
 				/>
 				<View style={styles.loadingContainer}>
-					<Text style={styles.loadingText}>Loading transaction details...</Text>
+					<Text style={styles.loadingText}>{t('transactionDetail.loading')}</Text>
 				</View>
 			</SafeAreaView>
 		);
 	}
 
+	// De onde saiu (ou para onde foi) o dinheiro: a conta, o cartão pelo nome dado ao final
+	// (ou "final 1234") e, numa compra parcelada, qual parcela é esta.
+	const account = transaction.accountId ? accounts.find((item) => item.id === transaction.accountId) : null;
+	const accountLabel = !transaction.accountId
+		? t('transactionDetail.noAccount')
+		: (account?.name ?? t('transactionDetail.removedAccount'));
+	const cardLabel = transaction.cardLast4
+		? (parseCardNames(account?.cardNames)[transaction.cardLast4] ??
+			t('transactionDetail.cardEnding', { last4: transaction.cardLast4 }))
+		: null;
+	const installmentLabel =
+		transaction.installmentIndex && transaction.installmentCount && transaction.installmentCount > 1
+			? t('transactionDetail.installmentOf', {
+					index: transaction.installmentIndex,
+					count: transaction.installmentCount,
+				})
+			: null;
+
 	return (
 		<SafeAreaView style={styles.container}>
 			<Stack.Screen
 				options={{
-					title: transaction.isIncome ? 'Income Details' : 'Expense Details',
+					title: transaction.isIncome ? t('transactionDetail.titleIncome') : t('transactionDetail.titleExpense'),
 					headerStyle: {
 						backgroundColor: '#1A1A1A',
 					},
@@ -124,12 +145,12 @@ export default function TransactionDetailScreen() {
 							transaction.isIncome ? styles.incomeType : styles.expenseType,
 						]}
 					>
-						{transaction.isIncome ? 'Income' : 'Expense'}
+						{transaction.isIncome ? t('transactionDetail.income') : t('transactionDetail.expense')}
 					</Text>
 				</View>
 
 				<View style={styles.amountContainer}>
-					<Text style={styles.amountLabel}>Amount</Text>
+					<Text style={styles.amountLabel}>{t('transactionDetail.amount')}</Text>
 					<Text
 						style={[
 							styles.amount,
@@ -141,13 +162,32 @@ export default function TransactionDetailScreen() {
 				</View>
 
 				<View style={styles.detailItem}>
-					<Text style={styles.detailLabel}>Date</Text>
+					<Text style={styles.detailLabel}>{t('transactionDetail.date')}</Text>
 					<Text style={styles.detailValue}>{formatFullDate(transaction.date)}</Text>
 				</View>
 
+				<View style={styles.detailItem}>
+					<Text style={styles.detailLabel}>{t('transactionDetail.account')}</Text>
+					<Text style={styles.detailValue}>{accountLabel}</Text>
+				</View>
+
+				{cardLabel ? (
+					<View style={styles.detailItem}>
+						<Text style={styles.detailLabel}>{t('transactionDetail.card')}</Text>
+						<Text style={styles.detailValue}>{cardLabel}</Text>
+					</View>
+				) : null}
+
+				{installmentLabel ? (
+					<View style={styles.detailItem}>
+						<Text style={styles.detailLabel}>{t('transactionDetail.installment')}</Text>
+						<Text style={styles.detailValue}>{installmentLabel}</Text>
+					</View>
+				) : null}
+
 				{transaction.note ? (
 					<View style={styles.detailItem}>
-						<Text style={styles.detailLabel}>Note</Text>
+						<Text style={styles.detailLabel}>{t('transactionDetail.note')}</Text>
 						<Text style={styles.detailValue}>{transaction.note}</Text>
 					</View>
 				) : null}
@@ -155,7 +195,7 @@ export default function TransactionDetailScreen() {
 				<View style={styles.actions}>
 					<TouchableOpacity style={[styles.actionButton, styles.editButton]} onPress={handleEdit}>
 						<Ionicons name="pencil" size={20} color="#FFFFFF" />
-						<Text style={styles.actionButtonText}>Edit</Text>
+						<Text style={styles.actionButtonText}>{t('transactionDetail.edit')}</Text>
 					</TouchableOpacity>
 
 					<TouchableOpacity
@@ -163,7 +203,7 @@ export default function TransactionDetailScreen() {
 						onPress={handleDelete}
 					>
 						<Ionicons name="trash-outline" size={20} color="#FFFFFF" />
-						<Text style={styles.actionButtonText}>Delete</Text>
+						<Text style={styles.actionButtonText}>{t('transactionDetail.delete')}</Text>
 					</TouchableOpacity>
 				</View>
 			</View>
