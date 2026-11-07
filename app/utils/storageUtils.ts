@@ -40,6 +40,12 @@ export const STORAGE_KEYS = {
 	 * escolha do usuário (`utils/businessFeed.ts`).
 	 */
 	businessFeeds: '@spendr_business_feeds',
+	/**
+	 * Os pares de lançamentos do cartão que o dono disse **não** serem repetidos, para o aviso
+	 * de "provável repetido" não voltar (`utils/cardDuplicateDismissals.ts`). O nome é o de
+	 * antes de viajar (SPD-098): o que já foi dispensado neste aparelho continua valendo.
+	 */
+	cardDuplicateDismissed: '@spendr_card_duplicate_dismissed',
 } as const;
 
 /**
@@ -66,6 +72,7 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
+	STORAGE_KEYS.cardDuplicateDismissed,
 ];
 
 /**
@@ -87,6 +94,7 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
+	STORAGE_KEYS.cardDuplicateDismissed,
 ];
 
 /**

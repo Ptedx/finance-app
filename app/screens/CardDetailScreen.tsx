@@ -110,7 +110,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	);
 
 	// Provável repetido (E2E-34): o mesmo valor com até um dia de diferença neste cartão. O app
-	// só marca; quem apaga é o dono, pela tela do lançamento. "Não é repetido" fica neste aparelho.
+	// só marca; quem apaga é o dono, pela tela do lançamento. "Não é repetido" vai com a conta e no backup.
 	const [dismissedDuplicates, setDismissedDuplicates] = useState<ReadonlySet<string>>(() => new Set());
 	const [onlyDuplicates, setOnlyDuplicates] = useState(false);
 	useEffect(() => {

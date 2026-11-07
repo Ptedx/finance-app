@@ -1426,7 +1426,7 @@ account: {
 			showAllHint: "Mostra di nuovo tutti i movimenti dell'estratto conto",
 			pairWith: 'Potrebbe essere lo stesso di {{entries}}',
 			notDuplicate: 'Non è ripetuto',
-			notDuplicateHint: 'Toglie il segno da questa coppia su questo dispositivo',
+			notDuplicateHint: 'Toglie il segno da questa coppia',
 			dismissed: 'Segno tolto',
 			afterMerge_one:
 				"{{count}} movimento di {{into}} potrebbe essere ripetuto: stesso importo, al massimo 1 giorno di differenza. È segnato nella schermata della carta; aprilo ed elimina quello in più.",

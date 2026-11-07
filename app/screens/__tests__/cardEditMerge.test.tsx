@@ -15,6 +15,11 @@ const mockTransactions: { list: unknown[] } = { list: [] };
 jest.mock('@react-native-async-storage/async-storage', () =>
 	require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
+// O "Não é repetido" grava pela preferência que sobe no sync (SPD-100); aqui, só o AsyncStorage.
+jest.mock('../../database/database', () => ({
+	setPreference: (key: string, value: string) =>
+		require('@react-native-async-storage/async-storage/jest/async-storage-mock').setItem(key, value),
+}));
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ replace: mockReplace, back: jest.fn(), push: jest.fn() }),

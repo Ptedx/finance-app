@@ -1425,7 +1425,7 @@ account: {
 			showAllHint: 'Shows all the entries of the bill again',
 			pairWith: 'May be the same as {{entries}}',
 			notDuplicate: 'Not a repeat',
-			notDuplicateHint: 'Removes the mark from this pair on this device',
+			notDuplicateHint: 'Removes the mark from this pair',
 			dismissed: 'Mark removed',
 			afterMerge_one:
 				'{{count}} entry on {{into}} may be a repeat: same amount, at most 1 day apart. It is marked on the card screen; open it and delete the extra one.',

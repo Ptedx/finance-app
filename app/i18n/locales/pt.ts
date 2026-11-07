@@ -1420,7 +1420,7 @@ const pt = {
 			showAllHint: 'Volta a mostrar todos os lançamentos da fatura',
 			pairWith: 'Pode ser o mesmo que {{entries}}',
 			notDuplicate: 'Não é repetido',
-			notDuplicateHint: 'Tira a marca deste par neste aparelho',
+			notDuplicateHint: 'Tira a marca deste par',
 			dismissed: 'Marca tirada',
 			afterMerge_one:
 				'{{count}} lançamento de {{into}} pode estar repetido: mesmo valor, com até 1 dia de diferença. Ele aparece marcado na tela do cartão; abra e apague o que sobrou.',
