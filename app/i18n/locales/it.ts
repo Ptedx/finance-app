@@ -1285,7 +1285,7 @@ account: {
 			total: 'Limite',
 			noLimit: 'Imposta il limite modificando la carta per seguire il disponibile.',
 			owed: 'Estratti da pagare',
-			future: 'Rate future',
+			future: 'Prossimi estratti',
 			credit: 'Credito sulla carta',
 		},
 		plans: {

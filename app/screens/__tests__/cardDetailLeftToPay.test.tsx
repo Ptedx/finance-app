@@ -254,3 +254,31 @@ describe('"Falta pagar" na fatura fechada: o "a pagar" do resumo', () => {
 		expect(paidLines()).toEqual([]);
 	});
 });
+
+describe('pagamento depois da âncora e antes do fechamento, com a anterior zerada (SPD-120)', () => {
+	// Fecha dia 10 e vence dia 17; informado em 01/11 com R$ 0. R$ 300 de compras em 03/11 e
+	// 04/11 (fatura de novembro) e o pagamento de 05/11, na janela da de outubro, que é zero.
+	const AFTER_ANCHOR: Account = { ...NUBANK, dueDay: 17, openingBalanceCents: 0, openingBalanceDate: '2026-11-01' };
+	const NOVEMBER = [tx('mercado', 10_000, '2026-11-03'), tx('farmacia', 20_000, '2026-11-04')];
+
+	it('paga em parte: a fechada mostra "Pago R$ 200" e falta pagar R$ 100, o número do lembrete', async () => {
+		const summary = load(AFTER_ANCHOR, NOVEMBER, [payment('2026-11-05', 20_000)], '2026-11-12');
+		expect(reminderOf(summary, '2026-11')).toBe(10_000);
+		await mount('nubank');
+		await selectInvoice('2026-11');
+
+		expect(labels('cards.invoice.paidRow')).toEqual([`cards.invoice.paidRow, ${formatCents(20_000)}`]);
+		expect(labels(LEFT)).toEqual([`${LEFT}, ${formatCents(10_000)}`]);
+	});
+
+	it('paga inteira: a fechada diz "Paga" e mostra o pagamento', async () => {
+		const summary = load(AFTER_ANCHOR, NOVEMBER, [payment('2026-11-05', 30_000)], '2026-11-12');
+		expect(reminderOf(summary, '2026-11')).toBeUndefined();
+		await mount('nubank');
+		await selectInvoice('2026-11');
+
+		expect(texts()).toContain('cards.invoice.paid');
+		expect(labels('cards.invoice.paidRow')).toEqual([`cards.invoice.paidRow, ${formatCents(30_000)}`]);
+		expect(labels(LEFT)).toEqual([]);
+	});
+});

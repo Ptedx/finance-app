@@ -1279,7 +1279,7 @@ const pt = {
 			total: 'Limite',
 			noLimit: 'Informe o limite na edição do cartão para acompanhar o disponível.',
 			owed: 'Faturas a pagar',
-			future: 'Parcelas futuras',
+			future: 'Próximas faturas',
 			credit: 'Crédito no cartão',
 		},
 		plans: {

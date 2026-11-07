@@ -64,6 +64,11 @@
  * (pagamento antecipado). Por isso "a pagar" é o devido menos o que já caiu na fatura
  * aberta, e a fatura fechada está paga quando isso chega a zero.
  *
+ * O que sobra do pagamento depois de quitar a fatura da janela vai para a seguinte, e dela
+ * para a outra, até a aberta. É o caso do pagamento feito depois da âncora e antes do
+ * fechamento com a fatura anterior zerada: ele é da fatura seguinte, que aparece paga (ou paga
+ * em parte) como qualquer outra (SPD-120, DEC-37).
+ *
  * Pagamento datado até a âncora é como a compra datada até ela: já está no valor informado
  * (`inInformedValue`) e não abate fatura nenhuma — nem o devido, nem o "pago" de cada fatura,
  * nem o lembrete. A tela o mostra junto das compras de antes (`coveredPayments`).
@@ -419,7 +424,9 @@ export interface InvoiceView {
 	offset: number;
 	/**
 	 * Pagamentos feitos entre o fechamento desta fatura e o da seguinte — a janela em que
-	 * ela é a fatura a pagar. Na aberta, pagamentos antecipados feitos desde o começo dela.
+	 * ela é a fatura a pagar —, mais o que sobrou da janela das anteriores, até o que ela
+	 * cobra. Na aberta, pagamentos antecipados feitos desde o começo dela e o que sobrou da
+	 * fechada.
 	 */
 	paidCents: number;
 	/**
@@ -668,18 +675,35 @@ export const buildCardSummary = (
 		return Math.max(0, owedOn(settings, entries, movements, cycle.end) - invoiceAmount(cycle, settings, entries));
 	};
 
-	// O pagamento feito na janela de uma fatura quita ela até o que ela cobra — o valor dela
-	// mais o saldo anterior que veio junto; o que sobra da janela da fechada é pagamento
-	// antecipado da aberta. Da fechada conta o que ela cobra: o crédito de faturas anteriores
-	// já abateu parte. Sem o saldo anterior aqui, pagar R$ 800 numa fechada de R$ 300 com
-	// R$ 500 de saldo anterior mostrava R$ 500 de "pagamento antecipado" que não houve.
-	const closedWindowPaid = paymentsBetween(payments, closedCycle.closingDate, openCycle.closingDate);
+	// O pagamento que sobrou das janelas anteriores e chega a uma fatura fechada: o espelho do
+	// saldo anterior. O devido na véspera do fechamento menos o que é dela, quando negativo, é
+	// o que foi pago a mais antes dela — tirado o crédito de estorno, que `carriedCredit` já
+	// leva. É o caso do pagamento feito depois da âncora e antes do fechamento, com a fatura
+	// anterior zerada (SPD-120, DEC-37): ele cai na janela da anterior, que não cobra nada, e
+	// abatia o devido sem a fatura seguinte aparecer paga. Sai do mesmo `owedOn` do "a pagar",
+	// do saldo anterior e do lembrete: um número só. Antes da âncora é zero, como o saldo anterior.
+	const paidFromBefore = (cycle: InvoiceCycle): number => {
+		if (cycle.end < settings.openingBalanceDate) return 0;
+		const before = invoiceAmount(cycle, settings, entries) - owedOn(settings, entries, movements, cycle.end);
+		return Math.max(0, before - creditInto(cycle.key));
+	};
+
+	// O pagamento feito na janela de uma fatura — mais o que sobrou das anteriores — quita ela
+	// até o que ela cobra: o valor dela mais o saldo anterior que veio junto; o que sobra da
+	// janela da fechada é pagamento antecipado da aberta. Da fechada conta o que ela cobra: o
+	// crédito de faturas anteriores já abateu parte. Sem o saldo anterior aqui, pagar R$ 800
+	// numa fechada de R$ 300 com R$ 500 de saldo anterior mostrava R$ 500 de "pagamento
+	// antecipado" que não houve.
+	const closedWindowPaid = paymentsBetween(payments, closedCycle.closingDate, openCycle.closingDate) + paidFromBefore(closedCycle);
 	const closedChargedCents =
 		Math.max(0, closedInvoiceCents) - creditApplied(closedCycle, closedInvoiceCents) + previousUnpaid(closedCycle, -1);
 	const invoicePaidCents = (cycle: InvoiceCycle, offset: number, amountCents: number, previousCents: number): number => {
 		if (offset > 0) return 0;
 		if (offset === 0) return Math.max(0, closedWindowPaid - closedChargedCents);
-		const window = offset === -1 ? closedWindowPaid : paymentsBetween(payments, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate);
+		const window =
+			offset === -1
+				? closedWindowPaid
+				: paymentsBetween(payments, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate) + paidFromBefore(cycle);
 		return Math.min(window, Math.max(0, amountCents) + previousCents);
 	};
 

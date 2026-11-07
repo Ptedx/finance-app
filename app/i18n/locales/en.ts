@@ -1284,7 +1284,7 @@ account: {
 			total: 'Limit',
 			noLimit: 'Set the limit when editing the card to track what is available.',
 			owed: 'Bills to pay',
-			future: 'Future installments',
+			future: 'Upcoming bills',
 			credit: 'Card credit',
 		},
 		plans: {
