@@ -15,6 +15,7 @@ import {
 	type RecurrenceRule,
 } from '../utils/recurrence';
 import { STORAGE_KEYS, SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
+import { nextStamp, nextStampSql } from '../utils/syncStamp';
 import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile, stampAfter } from '../sync/preferences';
 import {
 	type Budget,
@@ -91,6 +92,18 @@ import { KNOWN_WIPE_AT_KEY, type SyncChanges } from '../sync/types';
  * próprias tabelas; telas e contexts continuam passando pelas funções deste arquivo.
  */
 export const db = SQLite.openDatabaseSync(DATABASE_NAME);
+
+/**
+ * O `updatedAt` de toda gravação numa linha que já existe: agora, ou 1 ms depois do
+ * carimbo que a linha tem, o que vier por último (SPD-107; a conta e o motivo estão em
+ * `utils/syncStamp.ts`). Com um carimbo no futuro — relógio adiantado, aqui ou no aparelho
+ * que gravou —, a edição carimbada com agora ficava mais velha que a cópia do servidor: o
+ * push voltava `stale` e o pull desfazia a edição. Ocupa o lugar do `?` de agora, então os
+ * parâmetros não mudam. Linha nova (INSERT) continua com agora.
+ */
+const NEXT_STAMP = nextStampSql();
+/** O mesmo, no `DO UPDATE` de um upsert: o agora é o `excluded.updatedAt` que o INSERT trazia. */
+const NEXT_STAMP_UPSERT = nextStampSql('excluded.updatedAt');
 
 /**
  * A prova de que uma tarefa está dentro de uma transação aberta por `runInTransaction`.
@@ -679,7 +692,7 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
  * O carimbo depende de onde a linha veio. A recém-semeada (1970) troca só o nome e continua
  * perdendo para a conta: com carimbo novo e suja, o primeiro login de um aparelho novo
  * desfaria os nomes que o usuário deu na conta (o motivo do `SEED_TIMESTAMP`). A que já veio
- * da conta ou foi editada troca como uma edição — carimbo de agora e suja, para subir.
+ * da conta ou foi editada troca como uma edição — carimbo novo (`NEXT_STAMP`) e suja, para subir.
  *
  * `from` protege uma edição do usuário que tenha chegado entre a leitura e a escrita: a
  * troca só vale se a linha ainda tiver aquele nome.
@@ -696,7 +709,7 @@ export const renameDefaultCategories = async (
 			const result = await db.runAsync(
 				`UPDATE categories
          SET name = ?,
-             updatedAt = CASE WHEN updatedAt = ? THEN updatedAt ELSE ? END,
+             updatedAt = CASE WHEN updatedAt = ? THEN updatedAt ELSE ${NEXT_STAMP} END,
              dirty = CASE WHEN updatedAt = ? THEN dirty ELSE 1 END
          WHERE id = ? AND name = ? AND deletedAt IS NULL`,
 				[rename.name, SEED_TIMESTAMP, timestamp, SEED_TIMESTAMP, rename.id, rename.from]
@@ -986,7 +999,7 @@ export const repairPhantomAppAccounts = async (): Promise<number> => {
 		);
 		// Na dúvida (consulta sem resposta), a conta fica.
 		if ((inUse?.total ?? 1) > 0) continue;
-		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
 			timestamp,
 			timestamp,
 			account.id,
@@ -1397,7 +1410,7 @@ export const addCategory = async (
      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO UPDATE SET
        name = excluded.name, color = excluded.color, icon = excluded.icon,
-       type = excluded.type, nature = excluded.nature, updatedAt = excluded.updatedAt,
+       type = excluded.type, nature = excluded.nature, updatedAt = ${NEXT_STAMP_UPSERT},
        deletedAt = NULL, dirty = 1`,
 		[
 			id,
@@ -1437,7 +1450,7 @@ export const restoreCategory = async (
 export const updateCategory = async (category: CategoryEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE categories
-     SET name = ?, color = ?, icon = ?, type = ?, nature = ?, updatedAt = ?, dirty = 1
+     SET name = ?, color = ?, icon = ?, type = ?, nature = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE id = ?`,
 		[
 			category.name,
@@ -1463,18 +1476,18 @@ export const deleteCategory = async (categoryId: string): Promise<void> => {
 		// rows are dirtied too: without that, another device would keep showing them
 		// under a category this one has already deleted.
 		await db.runAsync(
-			`UPDATE transactions SET category = 'uncategorized', updatedAt = ?, dirty = 1
+			`UPDATE transactions SET category = 'uncategorized', updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE category = ? AND deletedAt IS NULL`,
 			[timestamp, categoryId]
 		);
 		await db.runAsync(
-			`UPDATE recurring_transactions SET category = 'uncategorized', updatedAt = ?, dirty = 1
+			`UPDATE recurring_transactions SET category = 'uncategorized', updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE category = ? AND deletedAt IS NULL`,
 			[timestamp, categoryId]
 		);
 		// Tombstone rather than DELETE, so the removal itself can be synced.
 		await db.runAsync(
-			'UPDATE categories SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			`UPDATE categories SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 			[timestamp, timestamp, categoryId]
 		);
 	});
@@ -1578,7 +1591,7 @@ export const updateTransaction = async (transaction: TransactionEdit): Promise<v
        SET amountCents = ?, category = ?, date = ?, note = ?, isIncome = ?,
            accountId = CASE WHEN ? THEN ? ELSE accountId END,
            cardLast4 = CASE WHEN ? THEN ? ELSE cardLast4 END,
-           updatedAt = ?, dirty = 1
+           updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE id = ?`,
 			[
 				transaction.amountCents,
@@ -1606,7 +1619,7 @@ export const deleteTransaction = async (id: string): Promise<void> => {
 	try {
 		// Tombstone: the row has to outlive the delete so other devices hear about it.
 		await db.runAsync(
-			'UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			`UPDATE transactions SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 			[timestamp, timestamp, id]
 		);
 	} catch (error) {
@@ -1747,7 +1760,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
      SET name = ?, kind = ?, role = ?, envelopeMonthlyCents = ?, network = ?, bankName = ?, color = ?,
          last4 = ?, closingDay = ?, dueDay = ?, closingDaysBefore = ?, creditLimitCents = ?, cardNames = ?, yieldCdiBp = ?, reservePurpose = ?, packageName = ?, accountKey = ?,
          openingBalanceCents = ?, openingBalanceDate = ?, sortOrder = ?, archived = ?,
-         updatedAt = ?, dirty = 1
+         updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE id = ?`,
 		[...accountValues(account), nowTimestamp(), id]
 	);
@@ -1761,7 +1774,7 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
  * `deleteAccount`, dentro da mesma transação da lápide da conta.
  */
 const TOMBSTONE_TRANSFERS_OF_ACCOUNT =
-	'UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL';
+	`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL`;
 
 /**
  * Lápide, como nas demais tabelas sincronizadas. Os lançamentos ficam "sem conta" e as
@@ -1775,13 +1788,13 @@ const TOMBSTONE_TRANSFERS_OF_ACCOUNT =
 export const deleteAccount = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await runInTransaction(async () => {
-		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
 			timestamp,
 			timestamp,
 			id,
 		]);
 		await db.runAsync(
-			'UPDATE transactions SET accountId = NULL, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			`UPDATE transactions SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`,
 			[timestamp, id]
 		);
 		await db.runAsync(TOMBSTONE_TRANSFERS_OF_ACCOUNT, [timestamp, timestamp, id, id]);
@@ -1802,24 +1815,24 @@ export const moveAccountLedger = async (fromId: string, toId: string, cardLast4:
 		// Lançamento sem final de cartão ganha o do cartão que está saindo: o histórico
 		// continua sabendo que foi aquele cartão.
 		await db.runAsync(
-			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`,
 			[toId, cardLast4, timestamp, fromId]
 		);
 		// A captura também sincroniza desde o v19: mover a conta dela é uma edição, e sem
 		// `dirty` o outro aparelho continuaria mostrando a compra no cartão que não existe.
-		await db.runAsync('UPDATE captures SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ?', [
+		await db.runAsync(`UPDATE captures SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ?`, [
 			toId,
 			timestamp,
 			fromId,
 		]);
 		// Como em `mergeCardInto`. A da dívida e a dívida vão juntas: `ensureDebtBills` põe na
 		// conta a pagar a conta da dívida, e uma sem a outra seria desfeita na próxima carga.
-		await db.runAsync('UPDATE bills SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE bills SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
 			toId,
 			timestamp,
 			fromId,
 		]);
-		await db.runAsync('UPDATE debts SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE debts SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
 			toId,
 			timestamp,
 			fromId,
@@ -1856,16 +1869,16 @@ export const repointTransfers = async (fromId: string, toId: string): Promise<vo
 	const timestamp = nowTimestamp();
 	await runInTransaction(async () => {
 		await db.runAsync(
-			`UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1
+			`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL AND ((fromAccountId = ? AND toAccountId = ?) OR (fromAccountId = ? AND toAccountId = ?))`,
 			[timestamp, timestamp, fromId, toId, toId, fromId]
 		);
-		await db.runAsync('UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE transfers SET fromAccountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL`, [
 			toId,
 			timestamp,
 			fromId,
 		]);
-		await db.runAsync('UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE transfers SET toAccountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL`, [
 			toId,
 			timestamp,
 			fromId,
@@ -1922,50 +1935,50 @@ export const mergeCardInto = async (fromId: string, intoId: string): Promise<voi
 	const timestamp = nowTimestamp();
 	await runInTransaction(async () => {
 		await db.runAsync(
-			`UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1
+			`UPDATE transactions SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE accountId = ? AND installmentGroup IS NULL AND TRIM(COALESCE(note, '')) = ? AND deletedAt IS NULL`,
 			[timestamp, timestamp, fromId, CARD_ADJUSTMENT_NOTE]
 		);
 		// Como em `moveAccountLedger`: lançamento sem final ganha o do cartão que sai.
 		await db.runAsync(
-			'UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
+			`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`,
 			[intoId, from.last4, timestamp, fromId]
 		);
-		await db.runAsync('UPDATE captures SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ?', [intoId, timestamp, fromId]);
+		await db.runAsync(`UPDATE captures SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ?`, [intoId, timestamp, fromId]);
 		// Como em `repointTransfers`: o pagamento entre os dois era o mesmo dinheiro com duas fichas.
 		await db.runAsync(
-			`UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1
+			`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL AND ((fromAccountId = ? AND toAccountId = ?) OR (fromAccountId = ? AND toAccountId = ?))`,
 			[timestamp, timestamp, fromId, intoId, intoId, fromId]
 		);
-		await db.runAsync('UPDATE transfers SET fromAccountId = ?, updatedAt = ?, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE transfers SET fromAccountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE fromAccountId = ? AND deletedAt IS NULL`, [
 			intoId,
 			timestamp,
 			fromId,
 		]);
-		await db.runAsync('UPDATE transfers SET toAccountId = ?, updatedAt = ?, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE transfers SET toAccountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE toAccountId = ? AND deletedAt IS NULL`, [
 			intoId,
 			timestamp,
 			fromId,
 		]);
-		await db.runAsync('UPDATE bills SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE bills SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
 			intoId,
 			timestamp,
 			fromId,
 		]);
-		await db.runAsync('UPDATE debts SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL', [
+		await db.runAsync(`UPDATE debts SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
 			intoId,
 			timestamp,
 			fromId,
 		]);
 		if (identityChanged) {
 			await db.runAsync(
-				'UPDATE accounts SET cardNames = ?, last4 = ?, packageName = ?, accountKey = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+				`UPDATE accounts SET cardNames = ?, last4 = ?, packageName = ?, accountKey = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 				[identity.cardNames, identity.last4, identity.packageName, identity.accountKey, timestamp, intoId]
 			);
 		}
 		// A lápide do `deleteAccount`. Já não sobra lançamento nem transferência nele.
-		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [timestamp, timestamp, fromId]);
+		await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [timestamp, timestamp, fromId]);
 	});
 };
 
@@ -1980,7 +1993,7 @@ export const reassignCaptureLedger = async (
 	accountId: string | null
 ): Promise<void> => {
 	await db.runAsync(
-		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL',
+		`UPDATE transactions SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE (id = ? OR installmentGroup = ?) AND deletedAt IS NULL`,
 		[accountId, nowTimestamp(), transactionId ?? '', installmentGroup]
 	);
 };
@@ -2167,7 +2180,7 @@ export interface UnassignedAssignment {
 export const assignUnassignedToAccount = async (accountId: string): Promise<UnassignedAssignment> => {
 	const beforeAnchor = await countUnassignedOnOrBeforeAnchor(accountId);
 	const result = await db.runAsync(
-		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId IS NULL AND deletedAt IS NULL',
+		`UPDATE transactions SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId IS NULL AND deletedAt IS NULL`,
 		[accountId, nowTimestamp()]
 	);
 	return { moved: result.changes, beforeAnchor };
@@ -2196,7 +2209,7 @@ export const getUnassignedNet = async (asOfDate: string): Promise<number> => {
 /** Âncora explícita: o saldo (num cartão, negativo = deve) no fim de `date`. */
 export const setAccountAnchor = async (accountId: string, balanceCents: number, date: string): Promise<void> => {
 	await db.runAsync(
-		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ?, dirty = 1
+		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE id = ?`,
 		[balanceCents, date, nowTimestamp(), accountId]
 	);
@@ -2214,7 +2227,7 @@ export const setAccountBalanceToday = async (accountId: string, balanceCents: nu
 		activity.incomeCents - activity.expenseCents + activity.transfersInCents - activity.transfersOutCents;
 
 	await db.runAsync(
-		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ?, dirty = 1
+		`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE id = ?`,
 		[balanceCents - todayNet, addDays(today, -1), nowTimestamp(), accountId]
 	);
@@ -2235,23 +2248,50 @@ export const addTransfer = async (transfer: TransferDraft, explicitId?: string):
 	return id;
 };
 
+/** As tabelas que a restauração regrava por cima da lápide, todas com a identidade em `id`. */
+type RestoredTable = 'accounts' | 'transfers' | 'transactions' | 'recurring_transactions' | 'debts' | 'bills' | 'budgets';
+
+/**
+ * Tira a lápide de `id` para a restauração regravar a linha, e devolve o carimbo dela (nulo
+ * sem lápide). O carimbo tem de sair daqui antes do DELETE: a linha regravada precisa
+ * passar dele (`stampPastTombstone`), senão a lápide guardada no servidor — de um relógio
+ * adiantado, ou carimbada pelo `resetDatabase` depois de um carimbo no futuro — venceria a
+ * restauração por `stale` (SPD-107).
+ */
+const liftTombstone = async (table: RestoredTable, id: string): Promise<string | null> => {
+	const tombstone = await db.getFirstAsync<{ updatedAt: string | null }>(
+		`SELECT updatedAt FROM ${table} WHERE id = ? AND deletedAt IS NOT NULL`,
+		[id]
+	);
+	await db.runAsync(`DELETE FROM ${table} WHERE id = ? AND deletedAt IS NOT NULL`, [id]);
+	return tombstone ? (tombstone.updatedAt ?? '') : null;
+};
+
+/** Leva o carimbo da linha regravada para depois do da lápide que ela substituiu. */
+const stampPastTombstone = async (table: RestoredTable, id: string, tombstone: string | null): Promise<void> => {
+	if (tombstone === null) return;
+	await db.runAsync(`UPDATE ${table} SET updatedAt = ? WHERE id = ?`, [nextStamp(tombstone, nowTimestamp()), id]);
+};
+
 /**
  * Grava uma conta ou transferência de um backup com o id original, **ressuscitando** a
  * linha se ela estiver apagada. A importação apaga tudo (lápides) antes de regravar, e o
  * `ON CONFLICT DO NOTHING` de `addAccount`/`addTransfer` deixava as contas apagadas: o
  * app ficava sem contas, e os lançamentos importados, presos a contas invisíveis.
  *
- * A lápide sai e a linha entra de novo, suja e com carimbo de agora — mais nova que a
- * lápide em qualquer aparelho ou no servidor, então é ela que vale no sync.
+ * A lápide sai e a linha entra de novo, suja e com carimbo depois do da lápide — mais nova
+ * que ela em qualquer aparelho ou no servidor, então é ela que vale no sync.
  */
 export const restoreAccount = async (draft: AccountDraft, id: string): Promise<void> => {
-	await db.runAsync('DELETE FROM accounts WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	const tombstone = await liftTombstone('accounts', id);
 	await addAccount(draft, id);
+	await stampPastTombstone('accounts', id, tombstone);
 };
 
 export const restoreTransfer = async (draft: TransferDraft, id: string): Promise<void> => {
-	await db.runAsync('DELETE FROM transfers WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	const tombstone = await liftTombstone('transfers', id);
 	await addTransfer(draft, id);
+	await stampPastTombstone('transfers', id, tombstone);
 };
 
 /**
@@ -2268,8 +2308,9 @@ export const restoreTransfer = async (draft: TransferDraft, id: string): Promise
  */
 export const restoreTransaction = async (draft: TransactionDraft, id?: string): Promise<void> => {
 	const rowId = id ?? generateUniqueId();
-	await db.runAsync('DELETE FROM transactions WHERE id = ? AND deletedAt IS NOT NULL', [rowId]);
+	const tombstone = await liftTombstone('transactions', rowId);
 	await addTransaction(draft, rowId);
+	await stampPastTombstone('transactions', rowId, tombstone);
 };
 
 /**
@@ -2284,7 +2325,7 @@ export const restoreRecurringTransaction = async (
 	id?: string
 ): Promise<void> => {
 	const rowId = id ?? generateUniqueId();
-	await db.runAsync('DELETE FROM recurring_transactions WHERE id = ? AND deletedAt IS NOT NULL', [rowId]);
+	const tombstone = await liftTombstone('recurring_transactions', rowId);
 	await db.runAsync(
 		`INSERT INTO recurring_transactions
        (id, amountCents, isIncome, note, category, recurrenceType, day, month, weekday,
@@ -2309,36 +2350,39 @@ export const restoreRecurringTransaction = async (
 			nowTimestamp(),
 		]
 	);
+	await stampPastTombstone('recurring_transactions', rowId, tombstone);
 };
 
 /** Grava uma dívida do backup com o id original, pelo mesmo motivo dos lançamentos. */
 export const restoreDebt = async (draft: DebtDraft, id?: string): Promise<void> => {
 	const rowId = id ?? generateUniqueId();
-	await db.runAsync('DELETE FROM debts WHERE id = ? AND deletedAt IS NOT NULL', [rowId]);
+	const tombstone = await liftTombstone('debts', rowId);
 	await db.runAsync(
 		`INSERT INTO debts (id, ${DEBT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
      VALUES (?, ${DEBT_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[rowId, ...debtValues(draft), nowTimestamp()]
 	);
+	await stampPastTombstone('debts', rowId, tombstone);
 };
 
 /** Grava uma conta a pagar do backup com o id original, pelo mesmo motivo das dívidas. */
 export const restoreBill = async (draft: BillDraft, id?: string): Promise<void> => {
 	const rowId = id ?? generateUniqueId();
-	await db.runAsync('DELETE FROM bills WHERE id = ? AND deletedAt IS NOT NULL', [rowId]);
+	const tombstone = await liftTombstone('bills', rowId);
 	await db.runAsync(
 		`INSERT INTO bills (id, ${BILL_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
      VALUES (?, ${BILL_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
      ON CONFLICT (id) DO NOTHING`,
 		[rowId, ...billValues(draft), nowTimestamp()]
 	);
+	await stampPastTombstone('bills', rowId, tombstone);
 };
 
 export const updateTransfer = async (transfer: TransferEdit): Promise<void> => {
 	await db.runAsync(
 		`UPDATE transfers SET fromAccountId = ?, toAccountId = ?, amountCents = ?, date = ?, note = ?,
-       updatedAt = ?, dirty = 1
+       updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE id = ?`,
 		[transfer.fromAccountId, transfer.toAccountId, transfer.amountCents, transfer.date, transfer.note, nowTimestamp(), transfer.id]
 	);
@@ -2351,7 +2395,7 @@ export const getTransfer = async (id: string): Promise<Transfer | null> => {
 
 export const deleteTransfer = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.runAsync('UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+	await db.runAsync(`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
 		timestamp,
 		timestamp,
 		id,
@@ -2366,7 +2410,7 @@ export const deleteTransfer = async (id: string): Promise<void> => {
  */
 /** Nomes dos cartões de uma conta (`cardNames`, JSON). */
 export const setAccountCardNames = async (accountId: string, cardNames: string | null): Promise<void> => {
-	await db.runAsync('UPDATE accounts SET cardNames = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+	await db.runAsync(`UPDATE accounts SET cardNames = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
 		cardNames,
 		nowTimestamp(),
 		accountId,
@@ -2418,7 +2462,7 @@ export const findLiveTransfer = async (match: {
 export const deleteTransactionsInGroup = async (installmentGroup: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		'UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE installmentGroup = ? AND deletedAt IS NULL',
+		`UPDATE transactions SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE installmentGroup = ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, installmentGroup]
 	);
 };
@@ -2426,7 +2470,7 @@ export const deleteTransactionsInGroup = async (installmentGroup: string): Promi
 /** Dá conta a um lançamento que ainda não tem: o extrato sabe de onde ele saiu. */
 export const assignTransactionAccount = async (id: string, accountId: string): Promise<void> => {
 	await db.runAsync(
-		'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND accountId IS NULL',
+		`UPDATE transactions SET accountId = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND accountId IS NULL`,
 		[accountId, nowTimestamp(), id]
 	);
 };
@@ -2772,7 +2816,7 @@ export const updateRecurringTransaction = async (
 			`UPDATE recurring_transactions
        SET amountCents = ?, isIncome = ?, note = ?, category = ?,
            recurrenceType = ?, day = ?, month = ?, weekday = ?,
-           lastProcessed = ?, nextDue = ?, active = ?, updatedAt = ?, dirty = 1
+           lastProcessed = ?, nextDue = ?, active = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE id = ?`,
 			[
 				transaction.amountCents,
@@ -2800,7 +2844,7 @@ export const deleteRecurringTransaction = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	try {
 		await db.runAsync(
-			'UPDATE recurring_transactions SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			`UPDATE recurring_transactions SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 			[timestamp, timestamp, id]
 		);
 	} catch (error) {
@@ -2869,7 +2913,7 @@ export const processRecurringTransactions = async (): Promise<number> => {
 
 				await db.runAsync(
 					`UPDATE recurring_transactions
-           SET lastProcessed = ?, nextDue = ?, updatedAt = ?, dirty = 1
+           SET lastProcessed = ?, nextDue = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
            WHERE id = ?`,
 					[
 						lastPosted ?? transaction.lastProcessed ?? null,
@@ -2920,19 +2964,19 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 		// otherwise they would keep the old currency's numbers under the new symbol.
 		await db.runAsync(
 			`UPDATE transactions
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL`,
 			[rate, timestamp]
 		);
 		await db.runAsync(
 			`UPDATE recurring_transactions
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL`,
 			[rate, timestamp]
 		);
 		await db.runAsync(
 			`UPDATE budgets
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL`,
 			[rate, timestamp]
 		);
@@ -2940,7 +2984,7 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 			`UPDATE retirement_goals
        SET targetMonthlyCents = CAST(ROUND(targetMonthlyCents * ?) AS INTEGER),
            outsideCapitalCents = CAST(ROUND(outsideCapitalCents * ?) AS INTEGER),
-           updatedAt = ?, dirty = 1
+           updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL`,
 			[rate, rate, timestamp]
 		);
@@ -2948,14 +2992,14 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 			`UPDATE debts
        SET openingBalanceCents = CAST(ROUND(openingBalanceCents * ?) AS INTEGER),
            installmentCents = CAST(ROUND(installmentCents * ?) AS INTEGER),
-           updatedAt = ?, dirty = 1
+           updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL`,
 			[rate, rate, timestamp]
 		);
 		// A conta a pagar que varia (`amountCents` nulo) não tem o que converter.
 		await db.runAsync(
 			`UPDATE bills
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ?, dirty = 1
+       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
        WHERE deletedAt IS NULL AND amountCents IS NOT NULL`,
 			[rate, timestamp]
 		);
@@ -3031,7 +3075,7 @@ export const addDebt = async (draft: DebtDraft): Promise<string> => {
 
 export const updateDebt = async (id: string, draft: DebtDraft): Promise<void> => {
 	await db.runAsync(
-		`UPDATE debts SET ${DEBT_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ?, dirty = 1 WHERE id = ?`,
+		`UPDATE debts SET ${DEBT_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 		[...debtValues(draft), nowTimestamp(), id]
 	);
 };
@@ -3039,7 +3083,7 @@ export const updateDebt = async (id: string, draft: DebtDraft): Promise<void> =>
 /** Lápide: some aqui e, no próximo sync, dos outros aparelhos. */
 export const deleteDebt = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.runAsync('UPDATE debts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [timestamp, timestamp, id]);
+	await db.runAsync(`UPDATE debts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`, [timestamp, timestamp, id]);
 };
 
 // ---------------------------------------------------------------------------
@@ -3101,7 +3145,7 @@ export const addBill = async (draft: BillDraft): Promise<string> => {
 
 export const updateBill = async (id: string, draft: BillDraft): Promise<void> => {
 	await db.runAsync(
-		`UPDATE bills SET ${BILL_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ?, dirty = 1 WHERE id = ?`,
+		`UPDATE bills SET ${BILL_COLUMNS.map((column) => `${column} = ?`).join(', ')}, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 		[...billValues(draft), nowTimestamp(), id]
 	);
 };
@@ -3109,7 +3153,7 @@ export const updateBill = async (id: string, draft: BillDraft): Promise<void> =>
 /** Lápide: some aqui e, no próximo sync, dos outros aparelhos. */
 export const deleteBill = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.runAsync('UPDATE bills SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [timestamp, timestamp, id]);
+	await db.runAsync(`UPDATE bills SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`, [timestamp, timestamp, id]);
 };
 
 /**
@@ -3145,7 +3189,7 @@ export const ensureDebtBills = async (debts: Debt[]): Promise<number> => {
 			Boolean(bill.active) === target.active;
 		if (unchanged) return;
 		await db.runAsync(
-			'UPDATE bills SET name = ?, dueDay = ?, amountCents = ?, accountId = ?, active = ?, updatedAt = ?, dirty = 1 WHERE id = ?',
+			`UPDATE bills SET name = ?, dueDay = ?, amountCents = ?, accountId = ?, active = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 			[target.name, target.dueDay, target.amountCents, target.accountId, target.active ? 1 : 0, timestamp, bill.id]
 		);
 		written += 1;
@@ -3191,7 +3235,7 @@ export const ensureDebtBills = async (debts: Debt[]): Promise<number> => {
            ON CONFLICT (id) DO UPDATE SET
              name = excluded.name, dueDay = excluded.dueDay, amountCents = excluded.amountCents,
              accountId = excluded.accountId, category = excluded.category, debtId = excluded.debtId,
-             active = 1, updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+             active = 1, updatedAt = ${NEXT_STAMP_UPSERT}, deletedAt = NULL, dirty = 1`,
 					[debt.id, ...billValues(draft), timestamp]
 				);
 				written += 1;
@@ -3253,14 +3297,14 @@ export const setRetirementGoal = async (draft: RetirementGoalDraft): Promise<voi
      ON CONFLICT (id) DO UPDATE SET
        targetMonthlyCents = excluded.targetMonthlyCents, reinvestBp = excluded.reinvestBp,
        expectedYieldBp = excluded.expectedYieldBp, outsideCapitalCents = excluded.outsideCapitalCents,
-       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+       updatedAt = ${NEXT_STAMP_UPSERT}, deletedAt = NULL, dirty = 1`,
 		[RETIREMENT_GOAL_ID, draft.targetMonthlyCents, draft.reinvestBp, draft.expectedYieldBp, draft.outsideCapitalCents, nowTimestamp()]
 	);
 };
 
 export const clearRetirementGoal = async (): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.runAsync('UPDATE retirement_goals SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ? AND deletedAt IS NULL', [
+	await db.runAsync(`UPDATE retirement_goals SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`, [
 		timestamp,
 		timestamp,
 		RETIREMENT_GOAL_ID,
@@ -3296,7 +3340,7 @@ export const setReserveGoal = async (draft: ReserveGoalDraft): Promise<void> => 
      VALUES (?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO UPDATE SET
        targetMonths = excluded.targetMonths, customMonthlyCostCents = excluded.customMonthlyCostCents,
-       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+       updatedAt = ${NEXT_STAMP_UPSERT}, deletedAt = NULL, dirty = 1`,
 		[RESERVE_GOAL_ID, draft.targetMonths, draft.customMonthlyCostCents, nowTimestamp()]
 	);
 };
@@ -3337,7 +3381,7 @@ export const setBudget = async (
 	);
 
 	if (existing) {
-		await db.runAsync('UPDATE budgets SET amountCents = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
+		await db.runAsync(`UPDATE budgets SET amountCents = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
 			amountCents,
 			timestamp,
 			existing.id,
@@ -3377,11 +3421,11 @@ export const restoreBudget = async (
 	amountCents: number,
 	id: string
 ): Promise<void> => {
-	await db.runAsync('DELETE FROM budgets WHERE id = ? AND deletedAt IS NOT NULL', [id]);
+	const tombstone = await liftTombstone('budgets', id);
 	// O índice único cobre só as linhas vivas: se o mês já tem outra linha viva (uma
 	// que a importação não apagou), ela perde a vez para a do arquivo.
 	await db.runAsync(
-		`UPDATE budgets SET deletedAt = ?, updatedAt = ?, dirty = 1
+		`UPDATE budgets SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE year = ? AND month = ? AND id != ? AND deletedAt IS NULL`,
 		[nowTimestamp(), nowTimestamp(), year, month, id]
 	);
@@ -3390,15 +3434,16 @@ export const restoreBudget = async (
      VALUES (?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (id) DO UPDATE SET
        year = excluded.year, month = excluded.month, amountCents = excluded.amountCents,
-       updatedAt = excluded.updatedAt, deletedAt = NULL, dirty = 1`,
+       updatedAt = ${NEXT_STAMP_UPSERT}, deletedAt = NULL, dirty = 1`,
 		[id, year, month, amountCents, nowTimestamp()]
 	);
+	await stampPastTombstone('budgets', id, tombstone);
 };
 
 export const clearBudget = async (year: number, month: number): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		`UPDATE budgets SET deletedAt = ?, updatedAt = ?, dirty = 1
+		`UPDATE budgets SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE year = ? AND month = ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, year, month]
 	);
@@ -3860,7 +3905,7 @@ export const reassignToUncategorized = async (
 	id: string
 ): Promise<void> => {
 	await db.runAsync(
-		`UPDATE ${table} SET category = 'uncategorized', updatedAt = ?, dirty = 1 WHERE id = ?`,
+		`UPDATE ${table} SET category = 'uncategorized', updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
 		[nowTimestamp(), id]
 	);
 };
@@ -4516,7 +4561,7 @@ export const resetDatabase = async (): Promise<void> => {
 		await runInTransaction(async () => {
 			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals', 'bills']) {
 				await db.runAsync(
-					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
+					`UPDATE ${table} SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
 				);
 			}
@@ -4532,7 +4577,7 @@ export const resetDatabase = async (): Promise<void> => {
 			await db.runAsync(
 				`UPDATE captures
          SET status = 'ignored', reason = 'data_reset', transactionId = NULL, transferId = NULL,
-             question = NULL, updatedAt = ?, dirty = 1
+             question = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1
          WHERE deletedAt IS NULL AND (transactionId IS NOT NULL OR transferId IS NOT NULL)`,
 				[timestamp]
 			);
@@ -4541,7 +4586,7 @@ export const resetDatabase = async (): Promise<void> => {
 			// ("é duplicata daquela?") compara com itens que acabaram de perder o
 			// lançamento. A pergunta cai; o item continua pendente, para o usuário decidir.
 			await db.runAsync(
-				`UPDATE captures SET question = NULL, relatedId = NULL, updatedAt = ?, dirty = 1
+				`UPDATE captures SET question = NULL, relatedId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1
          WHERE deletedAt IS NULL AND status = 'pending' AND question IS NOT NULL`,
 				[timestamp]
 			);
@@ -4550,7 +4595,7 @@ export const resetDatabase = async (): Promise<void> => {
 			// para a compra que estava esperando revisão também, e a lápide é o que faz a
 			// remoção chegar à conta e aos outros aparelhos em vez de voltar no pull.
 			await db.runAsync(
-				`UPDATE captures SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
+				`UPDATE captures SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL`,
 				[timestamp, timestamp]
 			);
 		});

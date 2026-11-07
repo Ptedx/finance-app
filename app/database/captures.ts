@@ -18,8 +18,16 @@
 import { BLOCKED_PACKAGES, isSmsPackage } from '../utils/captureMatcher';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { nowTimestamp } from '../utils/dateUtils';
+import { nextStampSql } from '../utils/syncStamp';
 import { db } from './database';
 import type { Capture, MerchantRule } from './schema';
+
+/**
+ * O `updatedAt` de uma gravação em linha que já existe: agora, ou 1 ms depois do carimbo
+ * dela (SPD-107, como o `NEXT_STAMP` de `database.ts`). Sem isso, a edição de uma captura
+ * que desceu com carimbo no futuro perdia para a cópia do servidor e voltava no pull.
+ */
+const NEXT_STAMP = nextStampSql();
 
 interface CaptureRow extends Omit<Capture, 'autoConfirmed' | 'deletedAt'> {
 	autoConfirmed: number;
@@ -273,7 +281,7 @@ export const updateCapture = async (id: string, patch: CapturePatch): Promise<vo
 
 	// Toda decisão do usuário precisa subir: sem `dirty = 1` ela ficaria só aqui, e o
 	// outro aparelho continuaria perguntando o que já foi respondido.
-	assignments.push('updatedAt = ?', 'dirty = 1');
+	assignments.push(`updatedAt = ${NEXT_STAMP}`, 'dirty = 1');
 	values.push(nowTimestamp());
 	values.push(id);
 
@@ -292,7 +300,7 @@ export const updateCapture = async (id: string, patch: CapturePatch): Promise<vo
 export const pruneResolvedCaptures = async (olderThanISO: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		`UPDATE captures SET deletedAt = ?, updatedAt = ?, dirty = 1
+		`UPDATE captures SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE status <> 'pending' AND updatedAt < ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, olderThanISO]
 	);
@@ -354,7 +362,7 @@ export const saveMerchantRule = async (
      VALUES (?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (merchantKey) DO UPDATE SET
        categoryId = excluded.categoryId, treatAs = excluded.treatAs,
-       confirmations = excluded.confirmations, updatedAt = excluded.updatedAt,
+       confirmations = excluded.confirmations, updatedAt = ${nextStampSql('excluded.updatedAt')},
        deletedAt = NULL, dirty = 1`,
 		[rule.merchantKey, rule.categoryId, rule.treatAs, rule.confirmations, nowTimestamp()]
 	);
@@ -368,7 +376,7 @@ export const saveMerchantRule = async (
 export const deleteMerchantRule = async (merchantKey: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		'UPDATE merchant_rules SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE merchantKey = ? AND deletedAt IS NULL',
+		`UPDATE merchant_rules SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE merchantKey = ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, merchantKey]
 	);
 };

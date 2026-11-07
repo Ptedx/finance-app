@@ -59,6 +59,7 @@ jest.mock('../../utils/categoryEditUtils', () => ({
 }));
 
 import type { SyncChanges, WireBill } from '../../sync/types';
+import { nextStampSql } from '../../utils/syncStamp';
 import {
 	addBill,
 	applyMigrations,
@@ -344,7 +345,8 @@ describe('CRUD de contas a pagar', () => {
 		const updated = matching('UPDATE bills');
 		expect(updated).toHaveLength(1);
 		const sql = flat(updated[0].sql);
-		expect(sql).toContain('updatedAt = ?');
+		// Avança a partir do carimbo que a linha já tem, nunca para trás dele (SPD-107).
+		expect(sql).toContain(`updatedAt = ${nextStampSql()}`);
 		expect(sql).toContain('dirty = 1');
 		expect(sql).toContain('WHERE id = ?');
 		expect(updated[0].params).toContain('2026-10');
