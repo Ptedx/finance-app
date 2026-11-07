@@ -136,11 +136,12 @@ export interface Account extends SyncMeta {
 	network: string | null;
 	/** Dia do mês em que a fatura fecha. Define o ciclo e o nome da fatura. Só cartões. */
 	closingDay: number | null;
-	/** Informativo: dia do mês em que costuma vencer (fechamento + N). O ciclo não usa. */
+	/** Informativo: o dia de vencimento que a fatura mostra, como o dono digitou. O ciclo não usa. */
 	dueDay: number | null;
 	/**
-	 * Dias entre o fechamento e o vencimento (Nubank: 7). O vencimento real é o fechamento
-	 * mais isso, no próximo dia útil. Só cartões.
+	 * Dias entre o fechamento e o vencimento, contados pelo formulário a partir dos dois dias
+	 * que a fatura mostra. O vencimento real é o fechamento mais isso, no próximo dia útil.
+	 * Só cartões.
 	 */
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
@@ -453,7 +454,11 @@ export const ACCOUNT_V17_COLUMNS: Array<[name: string, sql: string]> = [['reserv
 /** Para que serve o dinheiro de uma conta de reserva. Só `'investment'` existe: nulo é a cascata. */
 export type ReservePurpose = 'investment';
 
-/** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
+/**
+ * Prazo entre fechamento e vencimento só para cartão que tem fechamento e nenhum prazo
+ * gravado (dado antigo, ou que chegou sem ele). Não é palpite de banco: o formulário grava o
+ * prazo a partir do dia de vencimento que a fatura mostra e nunca parte deste número.
+ */
 export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
 
 export const CREATE_TRANSFERS_TABLE = `

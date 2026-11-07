@@ -10,7 +10,7 @@ import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/f
 import MergeTargetSheet from '../components/MergeTargetSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { type Account, type AccountDraft, DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
+import type { Account, AccountDraft } from '../database/schema';
 import {
 	BANK_BRANDS,
 	brandFor,
@@ -21,8 +21,8 @@ import {
 } from '../utils/bankBrands';
 import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
-import { cycleFor, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
-import { addDays, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
+import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
+import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 /**
@@ -33,10 +33,13 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * Isso confirma a escolha sem precisar ler.
  *
  * Campos na ordem em que se acha a informação no app do banco: banco, final, bandeira,
- * limite, dia de fechamento e quantos dias depois vence (7 no Nubank). O vencimento não
- * é digitado: sai do fechamento, já empurrado para dia útil, e a tela mostra as datas da
- * fatura atual para conferir com o banco. Só o banco é obrigatório; sem fechamento o
- * cartão funciona, mas não monta faturas — e a tela diz isso.
+ * limite, dia de fechamento e dia de vencimento — os dois como a fatura mostra, em qualquer
+ * banco. Nada vem suposto: o cartão novo começa sem banco e sem vencimento (SPD-109; antes
+ * vinha o Nubank escolhido e 7 dias de prazo). O ciclo guarda o prazo entre os dois
+ * (`closingDaysBefore`), contado na fatura aberta de hoje (`dueGapFor`), e o vencimento sai
+ * dele, já empurrado para dia útil; a tela mostra as datas da fatura atual para conferir com
+ * o banco. Só o banco é obrigatório; sem fechamento o cartão funciona, mas não monta faturas
+ * — e a tela diz isso.
  *
  * A fatura que o banco mostra hoje vai com o nome do mês no rótulo, para não haver dúvida
  * de qual é. Entre o fechamento e o vencimento o banco mostra duas — a fechada a pagar e a
@@ -49,8 +52,38 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 const POPULAR_BANKS = ['nubank', 'inter', 'mercadopago', 'itau', 'bradesco', 'santander', 'bb', 'caixa', 'c6', 'picpay'];
 const OTHER = 'other';
+/** O maior prazo entre fechamento e vencimento que o formulário aceita. */
+const MAX_DUE_GAP = 20;
 
 type CardType = 'credit' | 'debit';
+
+/**
+ * Dias entre o fechamento e o vencimento, contados na fatura aberta de hoje: o fechamento
+ * dela e o primeiro dia `dueDay` depois dele (no mês seguinte quando o dia já passou).
+ * Fecha 28 e vence 5 dá 8 dias em outubro (28/10 → 05/11), 7 em novembro e 5 em fevereiro —
+ * conta-se na fatura que o dono tem aberta no app do banco enquanto preenche. Dia que o mês
+ * não tem vai para o último (vence 31 em novembro é 30/11).
+ */
+export const dueGapFor = (closingDay: number, dueDay: number, today: string): number => {
+	const { closingDate } = cycleFor(today, { closingDay, dueDaysAfter: 1 });
+	const [year, month] = closingDate.split('-').map(Number);
+	const sameMonth = buildClampedDate(year, month, dueDay);
+	const due = sameMonth > closingDate ? sameMonth : buildClampedDate(month === 12 ? year + 1 : year, (month % 12) + 1, dueDay);
+	return daysBetween(closingDate, due);
+};
+
+/**
+ * O dia de vencimento que o campo mostra ao abrir um cartão: o que foi digitado e gravado
+ * (`dueDay`), ou, em cartão de versão antiga sem ele, o dia que sai do fechamento e do prazo
+ * na fatura aberta de hoje. Sem fechamento, em branco: o vencimento sozinho não monta fatura,
+ * e o salvar de um cartão em que ninguém mexeu não pode pedir o fechamento.
+ */
+export const dueDayShown = (card: Pick<Account, 'closingDay' | 'closingDaysBefore' | 'dueDay'>, today: string): string => {
+	const rule = cycleRuleOf(card);
+	if (!rule) return '';
+	if (card.dueDay) return String(card.dueDay);
+	return String(Number(addDays(cycleFor(today, rule).closingDate, rule.dueDaysAfter).slice(8, 10)));
+};
 
 interface CardEditScreenProps {
 	cardId?: string;
@@ -68,8 +101,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		[accounts, cardId]
 	);
 
+	// Sem banco escolhido até o dono escolher: cartão novo, ou um antigo que ficou sem banco.
+	// O salvar pede o banco (`bankRequired`).
 	const initialBrand = brandFor(existing?.bankName);
-	const [bankId, setBankId] = useState<string>(initialBrand?.id ?? (existing?.bankName ? OTHER : 'nubank'));
+	const [bankId, setBankId] = useState<string | null>(initialBrand?.id ?? (existing?.bankName ? OTHER : null));
 	const [otherBank, setOtherBank] = useState(initialBrand ? '' : (existing?.bankName ?? ''));
 	const [name, setName] = useState(existing?.name ?? '');
 	const [last4, setLast4] = useState(existing?.last4 ?? '');
@@ -77,8 +112,11 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [limit, setLimit] = useState(existing?.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
 	const [cardType, setCardType] = useState<CardType>('credit');
 	const [debitAccountId, setDebitAccountId] = useState<string | null>(null);
-	const [closingDaysBefore, setClosingDaysBefore] = useState(String(existing?.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
-	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
+	// Como o cartão está gravado: com os dois dias sem mexer, o salvar mantém o prazo dele.
+	const savedClosing = existing?.closingDay ? String(existing.closingDay) : '';
+	const savedDue = existing ? dueDayShown(existing, todayISO()) : '';
+	const [closingDay, setClosingDay] = useState(savedClosing);
+	const [dueDay, setDueDay] = useState(savedDue);
 	const [currentInvoice, setCurrentInvoice] = useState('');
 	const [closedInvoice, setClosedInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -89,14 +127,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	useEffect(() => {
 		if (!existing) return;
 		const brand = brandFor(existing.bankName);
-		setBankId(brand?.id ?? (existing.bankName ? OTHER : 'nubank'));
+		setBankId(brand?.id ?? (existing.bankName ? OTHER : null));
 		setOtherBank(brand ? '' : (existing.bankName ?? ''));
 		setName(existing.name);
 		setLast4(existing.last4 ?? '');
 		setNetwork((existing.network as CardNetwork | null) ?? null);
 		setLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
-		setClosingDaysBefore(String(existing.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
 		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
+		setDueDay(dueDayShown(existing, todayISO()));
 	}, [existing]);
 
 	const brand = BANK_BRANDS.find((b) => b.id === bankId) ?? null;
@@ -145,12 +183,23 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
+	/**
+	 * O prazo que o ciclo vai usar com os dois dias digitados. Com os dois como estão gravados,
+	 * o do cartão: recontar na fatura de outro mês trocaria o prazo (8 dias em outubro, 7 em
+	 * novembro) sem o dono ter mexido em nada. Nulo sem os dois dias válidos.
+	 */
+	const gapOf = (closing: number | null | false, due: number | null | false): number | null => {
+		if (!closing || !due) return null;
+		if (existing?.closingDaysBefore && closingDay === savedClosing && dueDay === savedDue) return existing.closingDaysBefore;
+		return dueGapFor(closing, due, todayISO());
+	};
+
 	// As datas da fatura atual com o que está digitado, para conferir com o app do banco.
 	const typedClosing = parseDay(closingDay);
-	const typedDaysAfter = Number(closingDaysBefore);
+	const typedGap = gapOf(typedClosing, parseDay(dueDay));
 	const typedRule =
-		typedClosing && Number.isInteger(typedDaysAfter) && typedDaysAfter >= 1 && typedDaysAfter <= 20
-			? { closingDay: typedClosing, dueDaysAfter: typedDaysAfter }
+		typedClosing && typedGap !== null && typedGap >= 1 && typedGap <= MAX_DUE_GAP
+			? { closingDay: typedClosing, dueDaysAfter: typedGap }
 			: null;
 	const cyclePreview = typedRule ? cycleFor(todayISO(), typedRule) : null;
 	// As faturas que o banco mostra hoje: a aberta e, até o vencimento, a fechada.
@@ -166,9 +215,13 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		const next: Record<string, string | undefined> = {};
 		if (!bankName) next.bank = t('cards.edit.bankRequired');
 		const closing = parseDay(closingDay);
-		const daysAfter = Number(closingDaysBefore);
-		if (!Number.isInteger(daysAfter) || daysAfter < 1 || daysAfter > 20) next.daysAfter = t('cards.edit.invalidDaysAfter');
+		const due = parseDay(dueDay);
+		const gap = gapOf(closing, due);
 		if (closing === false) next.closing = t('cards.edit.invalidDay');
+		else if (closing === null && due) next.closing = t('cards.edit.closingNeeded');
+		if (due === false) next.due = t('cards.edit.invalidDay');
+		else if (closing && due === null) next.due = t('cards.edit.dueNeeded');
+		else if (gap !== null && (gap < 1 || gap > MAX_DUE_GAP)) next.due = t('cards.edit.invalidDueGap');
 		if (last4 && !/^\d{4}$/.test(last4)) next.last4 = t('cards.edit.invalidLast4');
 
 		let limitCents: number | null = null;
@@ -199,10 +252,11 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			bankName,
 			color,
 			last4: last4 || null,
-			closingDay: closing as number | null,
-			// Informativo: o dia em que costuma vencer. O ciclo sai do fechamento.
-			dueDay: closing ? ((closing + daysAfter - 1) % 30) + 1 : null,
-			closingDaysBefore: closing ? daysAfter : null,
+			closingDay: closing || null,
+			// Informativo: o dia de vencimento que a fatura mostra, como o dono digitou. O ciclo
+			// sai do fechamento e do prazo.
+			dueDay: closing && due ? due : null,
+			closingDaysBefore: closing ? gap : null,
 			creditLimitCents: limitCents,
 			cardNames: existing?.cardNames ?? null,
 			packageName: existing?.packageName ?? null,
@@ -480,12 +534,12 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						</View>
 						<View style={styles.column}>
 							<Field
-								label={t('cards.edit.dueDaysAfter')}
-								value={closingDaysBefore}
-								onChangeText={(text) => setClosingDaysBefore(text.replace(/\D/g, '').slice(0, 2))}
+								label={t('cards.edit.dueDay')}
+								value={dueDay}
+								onChangeText={(text) => setDueDay(text.replace(/\D/g, '').slice(0, 2))}
 								keyboardType="number-pad"
 								maxLength={2}
-								error={errors.daysAfter}
+								error={errors.due}
 							/>
 						</View>
 					</View>
