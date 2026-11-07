@@ -92,6 +92,80 @@ import { KNOWN_WIPE_AT_KEY, type SyncChanges } from '../sync/types';
  */
 export const db = SQLite.openDatabaseSync(DATABASE_NAME);
 
+/**
+ * A prova de que uma tarefa está dentro de uma transação aberta por `runInTransaction`.
+ * Só vale enquanto aquela transação está aberta.
+ */
+export interface TransactionScope {
+	readonly openedBy: 'runInTransaction';
+}
+
+/** O fim da última transação pedida: a próxima começa depois dele. */
+let transactionTail: Promise<void> = Promise.resolve();
+/** A transação aberta agora, se houver uma. */
+let openTransaction: TransactionScope | null = null;
+
+/**
+ * Roda `task` numa transação, **uma de cada vez** no app inteiro (SPD-101, E2E-37). Toda
+ * transação do app passa por aqui; `db.withTransactionAsync` direto, não.
+ *
+ * O `withTransactionAsync` do expo-sqlite não isola nada: é BEGIN, a tarefa e COMMIT na
+ * conexão única, e enquanto a tarefa espera um `await` qualquer comando de outro lugar
+ * entra no meio. Duas transações juntas — na abertura, o `renameDefaultCategories` do
+ * TransactionsContext e o `ensureDebtBills` do DebtsContext; depois de juntar cartões, dois
+ * `ensureDebtBills` — davam isto: o BEGIN da segunda falhava ("cannot start a transaction
+ * within a transaction"), o ROLLBACK dela desfazia o que a primeira já tinha gravado, o
+ * resto da primeira entrava solto, sem transação, e o COMMIT e o ROLLBACK dela falhavam
+ * ("cannot rollback - no transaction is active"). Gravação pela metade. Aqui a segunda
+ * espera o COMMIT (ou o ROLLBACK) da primeira, na ordem em que foram pedidas, e o erro de
+ * uma desfaz só ela.
+ *
+ * O `withExclusiveTransactionAsync` não serve: ele abre outra conexão, todo comando da
+ * tarefa teria de ir pelo `txn` dela (e o que a tarefa chama, como `captures.ts`, usa
+ * `db`), e uma escrita pela conexão de sempre enquanto ela grava não espera — falha com
+ * "database is locked".
+ *
+ * **Aninhar.** Uma tarefa que chamasse outra função que também abre transação travaria a
+ * fila esperando a si mesma (hoje não há nenhuma: o BEGIN aninhado já falhava antes). Quem
+ * precisar disso passa adiante o `scope` que recebeu: com o escopo da transação aberta,
+ * `task` roda dentro dela, sem BEGIN próprio, e um erro desfaz a de fora inteira. O escopo
+ * de uma transação que já terminou é recusado.
+ *
+ * O que a fila **não** cobre: um `db.runAsync` solto (fora de transação) de outra tarefa
+ * ainda cai dentro da transação aberta, como antes — grava junto no COMMIT e só se perde
+ * se ela terminar em ROLLBACK.
+ */
+export const runInTransaction = async (
+	task: (scope: TransactionScope) => Promise<void>,
+	within?: TransactionScope
+): Promise<void> => {
+	if (within) {
+		if (within !== openTransaction) {
+			throw new Error('runInTransaction: o escopo é de uma transação que já terminou');
+		}
+		await task(within);
+		return;
+	}
+
+	const previous = transactionTail;
+	let release: () => void = () => {};
+	transactionTail = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	try {
+		await previous;
+		const scope: TransactionScope = { openedBy: 'runInTransaction' };
+		openTransaction = scope;
+		try {
+			await db.withTransactionAsync(() => task(scope));
+		} finally {
+			openTransaction = null;
+		}
+	} finally {
+		release();
+	}
+};
+
 interface SyncColumnsDB {
 	updatedAt: string;
 	deletedAt: string | null;
@@ -501,7 +575,7 @@ const migrateBudgetsFromStorage = async (): Promise<void> => {
 
 	const timestamp = nowTimestamp();
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const budget of parsed) {
 			// Entries written before the move to integer cents still hold a float.
 			const amountCents =
@@ -579,7 +653,7 @@ const seedMissingDefaultCategories = async (): Promise<void> => {
 	// da conta sempre vence; uma conta nova recebe as padrão pelo `markEverythingDirty`.
 	const timestamp = SEED_TIMESTAMP;
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const category of missing) {
 			await db.runAsync(
 				`INSERT INTO categories (id, name, color, icon, type, nature, updatedAt, deletedAt, dirty)
@@ -617,7 +691,7 @@ export const renameDefaultCategories = async (
 	const timestamp = nowTimestamp();
 	let changed = 0;
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const rename of renames) {
 			const result = await db.runAsync(
 				`UPDATE categories
@@ -1026,7 +1100,7 @@ const migrateCardsPerPurchase = async (): Promise<void> => {
 	const accounts = (await db.getAllAsync<AccountDB>('SELECT * FROM accounts WHERE deletedAt IS NULL')).map(convertAccount);
 	for (const plan of planDebitCardConversions(accounts)) {
 		const { card, checking } = plan;
-		await db.withTransactionAsync(async () => {
+		await runInTransaction(async () => {
 			await db.runAsync(
 				`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ?, dirty = 1
          WHERE accountId = ? AND deletedAt IS NULL`,
@@ -1068,7 +1142,7 @@ const migrateCardPurchasesToRealCard = async (): Promise<void> => {
 	if (plan.mergeCards.length === 0 && plan.moveCaptures.length === 0) return;
 
 	const timestamp = nowTimestamp();
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const { fromId, toId } of plan.mergeCards) {
 			await db.runAsync(
 				'UPDATE transactions SET accountId = ?, updatedAt = ?, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL',
@@ -1384,7 +1458,7 @@ export const deleteCategory = async (categoryId: string): Promise<void> => {
 
 	const timestamp = nowTimestamp();
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		// Reassign in one statement instead of a round trip per transaction. The moved
 		// rows are dirtied too: without that, another device would keep showing them
 		// under a category this one has already deleted.
@@ -1700,7 +1774,7 @@ const TOMBSTONE_TRANSFERS_OF_ACCOUNT =
  */
 export const deleteAccount = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		await db.runAsync('UPDATE accounts SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE id = ?', [
 			timestamp,
 			timestamp,
@@ -1724,7 +1798,7 @@ export const deleteAccount = async (id: string): Promise<void> => {
  */
 export const moveAccountLedger = async (fromId: string, toId: string, cardLast4: string | null = null): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		// Lançamento sem final de cartão ganha o do cartão que está saindo: o histórico
 		// continua sabendo que foi aquele cartão.
 		await db.runAsync(
@@ -1780,7 +1854,7 @@ export const foldAccountBalance = async (fromId: string, intoId: string): Promis
  */
 export const repointTransfers = async (fromId: string, toId: string): Promise<void> => {
 	const timestamp = nowTimestamp();
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		await db.runAsync(
 			`UPDATE transfers SET deletedAt = ?, updatedAt = ?, dirty = 1
        WHERE deletedAt IS NULL AND ((fromAccountId = ? AND toAccountId = ?) OR (fromAccountId = ? AND toAccountId = ?))`,
@@ -1846,7 +1920,7 @@ export const mergeCardInto = async (fromId: string, intoId: string): Promise<voi
 		identity.accountKey !== into.accountKey;
 
 	const timestamp = nowTimestamp();
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		await db.runAsync(
 			`UPDATE transactions SET deletedAt = ?, updatedAt = ?, dirty = 1
        WHERE accountId = ? AND installmentGroup IS NULL AND TRIM(COALESCE(note, '')) = ? AND deletedAt IS NULL`,
@@ -2757,7 +2831,7 @@ export const processRecurringTransactions = async (): Promise<number> => {
 
 		let posted = 0;
 
-		await db.withTransactionAsync(async () => {
+		await runInTransaction(async () => {
 			for (const dbTransaction of dueTransactions) {
 				const transaction = convertRecurringTransaction(dbTransaction);
 				const rule = toRule(transaction);
@@ -2841,7 +2915,7 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 
 	const timestamp = nowTimestamp();
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		// Every rescaled row is a genuine change and has to reach the other devices,
 		// otherwise they would keep the old currency's numbers under the new symbol.
 		await db.runAsync(
@@ -3059,13 +3133,6 @@ export const deleteBill = async (id: string): Promise<void> => {
  * como apagada.
  */
 export const ensureDebtBills = async (debts: Debt[]): Promise<number> => {
-	const linked = await db.getAllAsync<BillDB>('SELECT * FROM bills WHERE debtId IS NOT NULL AND deletedAt IS NULL');
-	const billsOf = new Map<string, BillDB[]>();
-	for (const bill of linked) {
-		if (!bill.debtId) continue;
-		billsOf.set(bill.debtId, [...(billsOf.get(bill.debtId) ?? []), bill]);
-	}
-
 	const timestamp = nowTimestamp();
 	let written = 0;
 
@@ -3084,7 +3151,17 @@ export const ensureDebtBills = async (debts: Debt[]): Promise<number> => {
 		written += 1;
 	};
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
+		// Lidas já dentro da transação: duas cargas do DebtsContext juntas (o aviso de contas a
+		// pagar e o fim do sync, depois de juntar cartões) esperam uma à outra, e a segunda
+		// precisa ver o que a primeira gravou, senão regravava tudo de novo à toa.
+		const linked = await db.getAllAsync<BillDB>('SELECT * FROM bills WHERE debtId IS NOT NULL AND deletedAt IS NULL');
+		const billsOf = new Map<string, BillDB[]>();
+		for (const bill of linked) {
+			if (!bill.debtId) continue;
+			billsOf.set(bill.debtId, [...(billsOf.get(bill.debtId) ?? []), bill]);
+		}
+
 		const known = new Set<string>();
 		for (const debt of debts) {
 			known.add(debt.id);
@@ -3669,7 +3746,7 @@ export const getSyncedIds = async (table: SyncedTable): Promise<Set<string>> => 
  * substituição e voltaria no pull seguinte.
  */
 export const stampEverything = async (timestamp: string): Promise<void> => {
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const table of SYNCED_TABLES) {
 			await db.runAsync(`UPDATE ${table} SET updatedAt = ?, dirty = 1`, [timestamp]);
 		}
@@ -3733,7 +3810,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['preferences', changes.preferences ?? []],
 	];
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const [table, rows] of byTable) {
 			const identity = identityColumnOf(table);
 			for (const row of rows) {
@@ -3836,7 +3913,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 		return local !== null && local.updatedAt >= updatedAt;
 	};
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		// Categorias primeiro: um lançamento pode vir na mesma leva que a categoria dele.
 		for (const row of changes.categories) {
 			if (await isStale('categories', row.id, row.updatedAt)) continue;
@@ -4342,7 +4419,7 @@ export const reconcilePreferences = async (): Promise<number> => {
 	const writes = planPreferenceReconcile(current, stored, nowTimestamp());
 	if (writes.length === 0) return 0;
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const write of writes) {
 			await db.runAsync(UPSERT_DIRTY_PREFERENCE, [write.key, write.value, write.updatedAt, write.deletedAt]);
 		}
@@ -4382,7 +4459,7 @@ export const clearSyncState = async (): Promise<void> => {
  * nenhum outro lugar.
  */
 export const markEverythingDirty = async (): Promise<void> => {
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const table of SYNCED_TABLES) {
 			await db.runAsync(`UPDATE ${table} SET dirty = 1`);
 		}
@@ -4402,7 +4479,7 @@ export const markEverythingDirty = async (): Promise<void> => {
  * fingerprints não faz nenhum aviso ser interpretado duas vezes.
  */
 export const clearSyncedData = async (): Promise<void> => {
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const table of SYNCED_TABLES) {
 			await db.runAsync(`DELETE FROM ${table}`);
 		}
@@ -4436,7 +4513,7 @@ export const resetDatabase = async (): Promise<void> => {
 	try {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
-		await db.withTransactionAsync(async () => {
+		await runInTransaction(async () => {
 			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals', 'bills']) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE deletedAt IS NULL`,
@@ -4574,7 +4651,7 @@ export interface LocalWipeOptions {
 export const wipeLocalData = async (options: LocalWipeOptions = {}): Promise<void> => {
 	const timestamp = nowTimestamp();
 
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		await db.runAsync(
 			`INSERT OR IGNORE INTO seen_capture_fingerprints (fingerprint, seenAt)
        SELECT fingerprint, ? FROM captures WHERE fingerprint NOT LIKE 'ofx:%'`,
@@ -4615,6 +4692,7 @@ export const wipeLocalData = async (options: LocalWipeOptions = {}): Promise<voi
 
 export default {
 	initDatabase,
+	runInTransaction,
 	getDebts,
 	addDebt,
 	updateDebt,

@@ -28,10 +28,10 @@ import {
 } from '../database/captures';
 import {
 	assignTransactionAccount,
-	db,
 	getAccounts,
 	getTransactionsByDateRange,
 	reassignCaptureLedger,
+	runInTransaction,
 } from '../database/database';
 import type { Account } from '../database/schema';
 import { generateUniqueId } from '../utils/categoryEditUtils';
@@ -323,7 +323,7 @@ export const importOfxContent = async (
 
 	// Tudo ou nada: um import pela metade deixaria linhas "já vistas" sem as que as
 	// justificam, e a próxima tentativa pularia as gravadas pelo FITID.
-	await db.withTransactionAsync(async () => {
+	await runInTransaction(async () => {
 		for (const item of planned) {
 			const { action, line, fingerprint, id } = item;
 			if (action.type === 'skip_existing') continue;

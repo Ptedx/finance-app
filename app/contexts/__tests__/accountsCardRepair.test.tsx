@@ -28,7 +28,7 @@ const mockStore: {
 };
 
 jest.mock('../../database/database', () => ({
-	db: { withTransactionAsync: jest.fn(async (fn: () => Promise<void>) => fn()) },
+	runInTransaction: jest.fn(async (fn: () => Promise<void>) => fn()),
 	getAccounts: jest.fn(async () => mockStore.accounts.map((account) => ({ ...account }))),
 	getAccount: jest.fn(async (id: string) => {
 		const found = mockStore.accounts.find((account) => account.id === id);

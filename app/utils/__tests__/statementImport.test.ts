@@ -10,7 +10,7 @@ jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
 jest.mock('expo-file-system', () => ({ File: jest.fn() }));
 
 jest.mock('../../database/database', () => ({
-	db: { withTransactionAsync: jest.fn(async (body: () => Promise<void>) => body()) },
+	runInTransaction: jest.fn(async (body: () => Promise<void>) => body()),
 	addAccount: jest.fn(async () => 'nova'),
 	updateAccount: jest.fn(async () => {}),
 	findAccountBySource: jest.fn(async () => null),

@@ -8,7 +8,6 @@ import {
 	assignUnassignedToAccount,
 	countUnassignedOnOrBeforeAnchor,
 	type UnassignedAssignment,
-	db,
 	deleteAccount,
 	deleteTransfer,
 	deleteTransfersOf,
@@ -29,6 +28,7 @@ import {
 	normalizeAccountDraft,
 	reassignCaptureLedger,
 	repointTransfers,
+	runInTransaction,
 	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
@@ -339,7 +339,7 @@ const repairCardLedger = async (cardId: string): Promise<CardLedgerRepairNotice 
 		const plan = planCardLedgerRepair(cardId, list, captures, ledger);
 		keptCount = plan.keptEdited.length;
 		for (const move of plan.moves) {
-			await db.withTransactionAsync(async () => {
+			await runInTransaction(async () => {
 				await updateCapture(move.captureId, { accountId: move.toId });
 				if (move.transactionIds.length > 0) await reassignCaptureLedger(move.transactionId, move.captureId, move.toId);
 			});
