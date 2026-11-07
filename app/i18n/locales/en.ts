@@ -1238,6 +1238,7 @@ account: {
 			paid: 'Paid',
 			paidRow: 'Paid',
 			advance: 'Early payment',
+			leftToPay: 'Left to pay',
 			closed: 'Closed · was due {{due}}',
 			closedUpcoming: 'Closed · due {{due}}',
 			leftOpen: 'Was due {{due}} · {{amount}} left unpaid and moved to the next bill',

@@ -1239,6 +1239,7 @@ account: {
 			paid: 'Pagato',
 			paidRow: 'Pagato',
 			advance: 'Pagamento anticipato',
+			leftToPay: 'Ancora da pagare',
 			closed: 'Chiuso · scaduto il {{due}}',
 			closedUpcoming: 'Chiuso · scade il {{due}}',
 			leftOpen: "Scaduto il {{due}} · {{amount}} non pagati sono passati all'estratto successivo",

@@ -646,6 +646,45 @@ describe('já comprometido', () => {
 			{ month: '2026-11', cards: [], cardCents: 0, debts: [], debtCents: 0, fixedCents: R(500), totalCents: R(500) },
 		]);
 	});
+
+	/**
+	 * A fechada que vence no mês seguinte entra com o "a pagar" da tela do cartão e do lembrete
+	 * (`invoiceDueCents`), não com valor menos pago (SPD-108). O cartão fecha dia 25 e vence
+	 * 7 dias depois: a fatura que fechou em 25/11 vence em 02/12.
+	 */
+	describe('a fechada que vence no mês seguinte: o mesmo número da tela do cartão', () => {
+		const pay = (date: string, amountCents: number) => ({ date, amountCents, inbound: true });
+		const TODAY = '2026-11-27';
+
+		it('valor informado R$ 1.234,56 no cadastro, R$ 400 de compras e R$ 1.000 pagos antes de fechar: R$ 634,56', () => {
+			// Cadastro em 20/11 com a fatura em R$ 1.234,56 (âncora no fim de 19/11).
+			const informed = { ...card, openingBalanceCents: -123_456, openingBalanceDate: '2026-11-19' };
+			const entries = [purchase('2026-11-20', R(100)), purchase('2026-11-21', R(300))];
+			const summary = buildCardSummary(informed, entries, [pay('2026-11-23', R(1_000))], TODAY);
+			const closed = summary.invoices.find((invoice) => invoice.offset === -1);
+			expect(closed?.cycle.dueDate).toBe('2026-12-02');
+			// A soma do que a fatura tem (informado mais compras) não é o que falta pagar: o
+			// pagamento de 23/11 caiu antes do fechamento e abate o devido.
+			expect(closed?.amountCents).toBe(163_456);
+			expect(summary.toPayCents).toBe(63_456);
+
+			const [december, january] = committedMonths([{ id: 'card', name: 'Cartão Nubank', summary }], 0, '2026-11', 3);
+			expect(december.month).toBe('2026-12');
+			expect(december.cardCents).toBe(63_456);
+			expect(january.cardCents).toBe(0);
+		});
+
+		it('com saldo anterior não pago, a fechada cobra ele junto, como na tela', () => {
+			// Outubro (vence 02/11) ficou sem pagar R$ 500; novembro tem R$ 300.
+			const entries = [purchase('2026-10-10', R(500)), purchase('2026-11-10', R(300))];
+			const summary = buildCardSummary(card, entries, [], TODAY);
+			expect(summary.invoices.find((invoice) => invoice.offset === -1)?.previousUnpaidCents).toBe(R(500));
+			expect(summary.toPayCents).toBe(R(800));
+
+			const [december] = committedMonths([{ id: 'card', name: 'Cartão Nubank', summary }], 0, '2026-11', 1);
+			expect(december.cardCents).toBe(R(800));
+		});
+	});
 });
 
 describe('renda: o que conta, e o que pode estar contado duas vezes', () => {

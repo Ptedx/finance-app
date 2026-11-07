@@ -14,7 +14,7 @@
 
 import type { Account, Category, Transaction, Transfer } from '../database/schema';
 import { provisionalFlows } from './accountMath';
-import { type CardEntry, type CardSummary, invoicesClosingBetween, isCardAdjustment, isCardCharge } from './cardMath';
+import { type CardEntry, type CardSummary, invoiceDueCents, invoicesClosingBetween, isCardAdjustment, isCardCharge } from './cardMath';
 import type { DebtMonthLine } from './debt';
 import { lastDayOfMonth, monthKeyOf, monthKeyRange, shiftMonthKey } from './dateUtils';
 import { type CategoryTotal, categoryDeltas, FULL_BASIS_POINTS } from './metrics';
@@ -531,6 +531,11 @@ export interface CommittedMonth {
  * O crédito conta porque é o que o banco faz: estornar a compra parcelada inteira deixa a
  * fatura do estorno negativa, e esse crédito cobre as parcelas seguintes — que, sem ele,
  * apareciam aqui como R$ 100 por mês de uma compra devolvida.
+ *
+ * Cada fatura entra com o que falta pagar dela (`invoiceDueCents`), o número da tela do
+ * cartão e do lembrete: na fechada, o "a pagar" do resumo, com o saldo anterior e o que já
+ * abateu o devido. Antes era o valor menos o pago também na fechada, e a que vence no mês
+ * seguinte aparecia aqui com outro número (SPD-108).
  */
 export const committedMonths = (
 	cards: Array<{ id: string; name: string; summary: CardSummary }>,
@@ -547,7 +552,7 @@ export const committedMonths = (
 				name: card.name,
 				cents: card.summary.invoices
 					.filter((invoice) => invoice.offset >= -1 && monthKeyOf(invoice.cycle.dueDate) === month)
-					.reduce((sum, invoice) => sum + Math.max(0, invoice.amountCents - invoice.creditAppliedCents - invoice.paidCents), 0),
+					.reduce((sum, invoice) => sum + invoiceDueCents(invoice, card.summary), 0),
 			}))
 			.filter((card) => card.cents > 0);
 		const cardCents = perCard.reduce((sum, card) => sum + card.cents, 0);

@@ -30,6 +30,7 @@ import {
 	cycleFor,
 	cycleRuleOf,
 	existingInstallmentDates,
+	invoiceDueCents,
 	invoiceMonthOf,
 	invoiceStatusOf,
 	type InvoiceView,
@@ -196,6 +197,30 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const showBeforeAnchor = anchorDateInSelected && (beforeAnchor.length > 0 || coveredPayments.length > 0);
 	const beforeAnchorInformed = anchorInSelected || selectedTransactions.some((tx) => isCardAdjustment(tx));
 	const today = todayISO();
+	// O que ainda falta pagar da fatura escolhida (SPD-108): o número do lembrete e da tela
+	// inicial (`invoiceDueCents`; na fechada, o "a pagar" do resumo). Aparece embaixo das
+	// linhas que mexem no valor — pagamento, valor informado, saldo anterior, crédito —, e só
+	// quando há alguma: sem elas, repetiria o valor da fatura. As anteriores à fechada não têm:
+	// o que ficou delas está no saldo anterior da fechada, e o status já diz.
+	const dueCents = selected && summary ? invoiceDueCents(selected, summary) : 0;
+	const dueExplained =
+		selected !== undefined &&
+		selected.offset >= -1 &&
+		(selected.paidCents > 0 ||
+			anchorInSelected ||
+			selected.previousUnpaidCents > 0 ||
+			selected.creditAppliedCents > 0 ||
+			coveredPayments.length > 0);
+	const showLeftToPay = dueExplained && dueCents > 0;
+	// Quitada, a linha diz "Paga", como o status das fechadas, e não "Falta pagar R$ 0,00". Na
+	// fechada o status já diz "Paga": a linha só aparece na aberta e nas futuras, cujo status
+	// é "Aberta · fecha…" — o antecipado ou o crédito cobriu tudo, até entrar compra nova.
+	const showSettled =
+		dueExplained &&
+		dueCents === 0 &&
+		selected !== undefined &&
+		selected.offset >= 0 &&
+		selected.amountCents + selected.previousUnpaidCents > 0;
 
 	// O encargo é gravado com a nota-marcador em português (é o que o reconhece); na lista da
 	// fatura ele aparece com o tipo no idioma do app. Nota editada à mão fica como está.
@@ -394,6 +419,21 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 										<Ionicons name="checkmark-circle-outline" size={18} color="#81C784" />
 										<Text style={styles.anchorText}>{selected.offset === 0 ? t('cards.invoice.advance') : t('cards.invoice.paidRow')}</Text>
 										<Text style={[styles.anchorAmount, styles.paidAmount]}>{formatCents(selected.paidCents)}</Text>
+									</View>
+								) : null}
+
+								{showLeftToPay ? (
+									<View style={styles.anchorRow} accessible accessibilityLabel={`${t('cards.invoice.leftToPay')}, ${formatCents(dueCents)}`}>
+										<Ionicons name="wallet-outline" size={18} color="#FFFFFF" />
+										<Text style={styles.anchorText}>{t('cards.invoice.leftToPay')}</Text>
+										<Text style={styles.anchorAmount}>{formatCents(dueCents)}</Text>
+									</View>
+								) : null}
+
+								{showSettled ? (
+									<View style={styles.anchorRow} accessible accessibilityLabel={t('cards.invoice.paid')}>
+										<Ionicons name="checkmark-done-outline" size={18} color="#81C784" />
+										<Text style={styles.anchorText}>{t('cards.invoice.paid')}</Text>
 									</View>
 								) : null}
 

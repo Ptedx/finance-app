@@ -1233,6 +1233,7 @@ const pt = {
 			paid: 'Paga',
 			paidRow: 'Pago',
 			advance: 'Pagamento antecipado',
+			leftToPay: 'Falta pagar',
 			closed: 'Fechada · venceu {{due}}',
 			closedUpcoming: 'Fechada · vence {{due}}',
 			leftOpen: 'Venceu {{due}} · {{amount}} ficaram em aberto e foram para a fatura seguinte',
