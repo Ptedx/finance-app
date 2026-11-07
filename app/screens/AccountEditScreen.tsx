@@ -35,8 +35,8 @@ import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
-import { formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
-import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
+import { addDays, formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
+import { centsToDisplayInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
 
 /**
@@ -93,6 +93,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [yieldCdi, setYieldCdi] = useState(existing?.yieldCdiBp ? bpToPercentInput(existing.yieldCdiBp) : '');
 	// Numa reserva: entra na cascata da reserva de emergência, ou é só investimento.
 	const [reservePurpose, setReservePurpose] = useState<'cascade' | 'investment'>(existing?.reservePurpose === 'investment' ? 'investment' : 'cascade');
+	// Só na criação: o saldo que o banco mostra hoje. Em branco, a conta nasce zerada.
+	const [openingBalance, setOpeningBalance] = useState('');
 	const [adjusting, setAdjusting] = useState(false);
 	const [errors, setErrors] = useState<{ name?: string; day?: string; amount?: string; balance?: string; yieldCdi?: string }>({});
 	const [saving, setSaving] = useState(false);
@@ -141,6 +143,13 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		const yieldCdiBp = yieldCdi.trim() === '' ? null : percentInputToBp(yieldCdi, 1_000);
 		if (yieldCdi.trim() !== '' && yieldCdiBp === null) nextErrors.yieldCdi = t('accounts.edit.invalidYield');
 
+		let openingCents = 0;
+		if (!existing && openingBalance.trim() !== '') {
+			const parsed = parseAmountToCents(openingBalance);
+			if (parsed === null || parsed < 0) nextErrors.balance = t('accounts.edit.invalidAmount');
+			else openingCents = parsed;
+		}
+
 		setErrors(nextErrors);
 		if (Object.keys(nextErrors).length > 0) {
 			announce(Object.values(nextErrors).join('. '));
@@ -165,8 +174,12 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			reservePurpose: role === 'reserve' && reservePurpose === 'investment' ? 'investment' : null,
 			packageName: existing?.packageName ?? null,
 			accountKey: existing?.accountKey ?? null,
-			openingBalanceCents: existing?.openingBalanceCents ?? 0,
-			openingBalanceDate: existing?.openingBalanceDate ?? todayISO(),
+			// Conta nova: o saldo de hoje vira âncora no fim de ontem, como no "Acertar com o
+			// banco" (`setAccountBalanceToday`). Âncora com a data de hoje já conta o dia
+			// inteiro, e o que a conta recebesse ou gastasse ainda hoje não mexeria no saldo.
+			// Nenhum lançamento: o dinheiro já estava na conta, não é receita do mês.
+			openingBalanceCents: existing?.openingBalanceCents ?? openingCents,
+			openingBalanceDate: existing?.openingBalanceDate ?? addDays(todayISO(), -1),
 			sortOrder: existing?.sortOrder ?? accounts.length,
 			archived: existing?.archived ?? false,
 		};
@@ -491,6 +504,19 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							error: errors.amount,
 						})}
 
+					{existing ? null : (
+						<>
+							{field(t('accounts.edit.openingBalance'), openingBalance, (text) => setOpeningBalance(formatAmountInput(text)), {
+								keyboardType: 'decimal-pad',
+								placeholder: centsToDisplayInput(0),
+								hint: t('accounts.edit.openingBalanceHint'),
+								error: errors.balance,
+								optional: true,
+							})}
+							<Text style={styles.fieldNote}>{t('accounts.edit.openingBalanceHint')}</Text>
+						</>
+					)}
+
 					{kind !== 'credit_card' ? (
 						<>
 							{field(t('accounts.edit.yieldCdi'), yieldCdi, setYieldCdi, {
@@ -500,7 +526,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								error: errors.yieldCdi,
 								optional: true,
 							})}
-							<Text style={styles.yieldNote}>
+							<Text style={styles.fieldNote}>
 								{cdi
 									? t('accounts.edit.cdiToday', { rate: formatPercentBp(cdi.annualBp, 2), date: formatDate(cdi.date) })
 									: t('accounts.edit.cdiUnknown')}
@@ -675,11 +701,15 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 16,
 		paddingBottom: 120,
 	},
-	yieldNote: {
+	// A nota sob um campo (o CDI em uso, o saldo de hoje): encosta no campo de cima e deixa
+	// o mesmo respiro de um campo para o rótulo seguinte — sem ele, o "Banco · opcional"
+	// colava na frase do CDI (E2E-03).
+	fieldNote: {
 		fontSize: 13,
 		lineHeight: 18,
 		color: 'rgba(255,255,255,0.6)',
 		marginTop: -8,
+		marginBottom: 16,
 	},
 	balanceCard: {
 		backgroundColor: '#1E1E1E',

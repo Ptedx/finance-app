@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AccessibilityInfo, StyleSheet, Text } from 'react-native';
+import { AccessibilityInfo, StyleSheet, Text, View } from 'react-native';
 import type { Account } from '../../database/schema';
 import { counterpartCents } from '../../utils/accountMath';
 import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../../utils/money';
@@ -20,6 +20,12 @@ import Sheet from '../cards/Sheet';
  * Mexer nos dois é permitido de propósito: quando sobrou dinheiro do mês passado que o app
  * não conhecia, a conta não fecha com o teto de hoje, e é o usuário quem sabe disso. O app
  * então lança o gasto no mês e trata o resto como ponto de partida.
+ *
+ * Por isso o app só preenche um campo **enquanto o usuário não digitou nele**. Antes, cada
+ * tecla num campo recalculava o outro: numa conta nova o dinheiro do mês é zero, e digitar
+ * "gastei 1.200" e depois "tenho 5.000" zerava o gasto (E2E-01). Digitados os dois, valem
+ * os dois, e a prévia diz quanto do que não fecha é dinheiro de antes — ponto de partida,
+ * não receita do mês.
  *
  * Numa reserva ou investimento não existe "gasto do mês": o dinheiro só entra, sai por
  * transferência e rende. Ali a folha tem um campo só, o saldo de hoje, e acertar nunca
@@ -45,12 +51,15 @@ const AdjustAccountSheet: React.FC<{
 	const { t } = useTranslation();
 	const [spent, setSpent] = useState('');
 	const [balance, setBalance] = useState('');
+	// Os campos que o usuário já digitou: nesses o app não escreve mais.
+	const [typed, setTyped] = useState({ spent: false, balance: false });
 	const [error, setError] = useState<string | undefined>();
 
 	useEffect(() => {
 		if (!visible) return;
 		setSpent(centsToDisplayInput(spentCents));
 		setBalance(centsToDisplayInput(balanceCents));
+		setTyped({ spent: false, balance: false });
 		setError(undefined);
 	}, [visible, spentCents, balanceCents]);
 
@@ -63,16 +72,18 @@ const AdjustAccountSheet: React.FC<{
 	const onSpentChange = (text: string) => {
 		const next = formatAmountInput(text);
 		setSpent(next);
+		setTyped((current) => ({ ...current, spent: true }));
 		const value = parseAmountToCents(next);
-		if (value !== null) setBalance(centsToDisplayInput(counterpartCents(availableCents, value)));
+		if (value !== null && !typed.balance) setBalance(centsToDisplayInput(counterpartCents(availableCents, value)));
 	};
 
 	const onBalanceChange = (text: string) => {
 		const next = formatAmountInput(text);
 		setBalance(next);
+		setTyped((current) => ({ ...current, balance: true }));
 		if (balanceOnly) return;
 		const value = parseAmountToCents(next);
-		if (value !== null) setSpent(centsToDisplayInput(counterpartCents(availableCents, value)));
+		if (value !== null && !typed.spent) setSpent(centsToDisplayInput(counterpartCents(availableCents, value)));
 	};
 
 	const preview =
@@ -86,6 +97,17 @@ const AdjustAccountSheet: React.FC<{
 						target: formatCents(typedSpent + typedBalance),
 					})
 				: t('accounts.adjust.preview', { spent: formatCents(typedSpent), balance: formatCents(typedBalance) });
+
+	// O que não fecha com o que o app sabia: lançada a diferença do gasto, o saldo ainda
+	// precisa andar isto para bater, e anda pela âncora (`adjustAccountMonth`), fora do mês.
+	const beforeCents =
+		balanceOnly || typedSpent === null || typedBalance === null ? 0 : typedBalance + typedSpent - spentCents - balanceCents;
+	const beforeNote =
+		beforeCents > 0
+			? t('accounts.adjust.previewBefore', { amount: formatCents(beforeCents) })
+			: beforeCents < 0
+				? t('accounts.adjust.previewBeforeLess', { amount: formatCents(-beforeCents) })
+				: null;
 
 	return (
 		<Sheet
@@ -116,9 +138,10 @@ const AdjustAccountSheet: React.FC<{
 				error={error}
 			/>
 			{preview ? (
-				<Text style={styles.preview} accessibilityLiveRegion="polite">
-					{preview}
-				</Text>
+				<View style={styles.preview} accessibilityLiveRegion="polite">
+					<Text style={styles.previewText}>{preview}</Text>
+					{beforeNote ? <Text style={[styles.previewText, styles.previewNote]}>{beforeNote}</Text> : null}
+				</View>
 			) : null}
 			<Button
 				label={t('accounts.adjust.confirm')}
@@ -140,12 +163,20 @@ const AdjustAccountSheet: React.FC<{
 
 const styles = StyleSheet.create({
 	preview: {
-		fontSize: 15,
-		lineHeight: 22,
-		color: '#FFFFFF',
 		backgroundColor: 'rgba(21,232,254,0.1)',
 		borderRadius: 12,
 		padding: 12,
+		gap: 6,
+	},
+	previewText: {
+		fontSize: 15,
+		lineHeight: 22,
+		color: '#FFFFFF',
+	},
+	previewNote: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: 'rgba(255,255,255,0.75)',
 	},
 });
 
