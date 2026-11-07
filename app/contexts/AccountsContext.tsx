@@ -50,6 +50,7 @@ import {
 } from '../utils/accountMath';
 import {
 	buildCardSummary,
+	CARD_ADJUSTMENT_NOTE,
 	type CardEntry,
 	type CardMovement,
 	type CardSummary,
@@ -57,8 +58,10 @@ import {
 	existingInstallmentDates,
 	invoicesClosingBetween,
 	isSameCardPayment,
+	openInvoiceInformed,
 	pickOpenCardPayment,
 	planCardAdjustment,
+	planCardOpening,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
@@ -201,14 +204,21 @@ interface AccountsContextType {
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
 	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`). `null` é "não
 	 * informei": aquela fatura fica valendo o que já valia.
+	 *
+	 * `opening`: é o cadastro do cartão. A aberta vira a âncora sempre que dá, sem lançamento
+	 * de ajuste (`planCardOpening`) — como o saldo informado de uma conta.
 	 */
-	adjustCardInvoices: (cardId: string, openCents: number | null, closedCents: number | null) => Promise<void>;
+	adjustCardInvoices: (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean }) => Promise<void>;
 	/**
 	 * Pagamento de fatura: transferência da conta (ou de fora) para o cartão. Devolve falso
 	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
 	 */
 	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<boolean>;
-	/** Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. */
+	/**
+	 * Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. Com a
+	 * fatura aberta já informada (`openInvoiceInformed`), a parcela atual já está no valor
+	 * dela e não é criada.
+	 */
 	addExistingInstallments: (input: ExistingInstallmentsInput) => Promise<number>;
 	/**
 	 * Cartão de débito cadastrado como cartão: leva os lançamentos para a conta de onde o
@@ -246,9 +256,6 @@ interface YieldAccountInput {
 
 /** Quantos meses a janela do "rendeu nos últimos 12 meses" cobre, contando o de hoje. */
 const YIELD_WINDOW_MONTHS = 12;
-
-/** Nota do lançamento de ajuste: o mesmo texto em qualquer idioma, é um marcador. */
-const ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
 
 /** Nota do lançamento que acerta o saldo de uma conta. */
 const BALANCE_ADJUSTMENT_NOTE = 'Ajuste com o saldo do banco';
@@ -649,7 +656,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	);
 
 	const adjustCardInvoices = useCallback(
-		async (cardId: string, openCents: number | null, closedCents: number | null) => {
+		async (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean }) => {
 			const card = (await getAccounts()).find((account) => account.id === cardId);
 			if (!card) return;
 			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
@@ -674,7 +681,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			}));
 
 			const today = todayISO();
-			const plan = planCardAdjustment(card, entries, movements, today, openCents, closedCents);
+			const plan = (options?.opening ? planCardOpening : planCardAdjustment)(card, entries, movements, today, openCents, closedCents);
 			// Sem a fatura fechada informada não há âncora nova: mexer nela zeraria a fechada
 			// que o usuário não falou nada sobre.
 			if (plan.anchor) await setAccountAnchor(card.id, plan.anchor.cents, plan.anchor.date);
@@ -684,7 +691,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					amountCents: Math.abs(plan.adjustmentCents),
 					category: resolveCategoryId(isIncome ? 'other_income' : 'other_expense', isIncome ? 'in' : 'out', categories),
 					date: today,
-					note: ADJUSTMENT_NOTE,
+					note: CARD_ADJUSTMENT_NOTE,
 					isIncome,
 					accountId: card.id,
 				});
@@ -744,12 +751,27 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		async (input: ExistingInstallmentsInput) => {
 			const card = accounts.find((account) => account.id === input.cardId);
 			if (!card) return 0;
+			const today = todayISO();
+			// A parcela atual já está na fatura informada? A mesma pergunta que a prévia da folha
+			// faz, com os lançamentos gravados do cartão.
+			const ledger: CardEntry[] = (await getAccountTransactions(card.id)).map((tx) => ({
+				id: tx.id,
+				amountCents: tx.amountCents,
+				isIncome: tx.isIncome,
+				date: tx.date,
+				note: tx.note,
+				category: tx.category,
+				installmentGroup: tx.installmentGroup,
+				installmentIndex: tx.installmentIndex,
+				installmentCount: tx.installmentCount,
+			}));
 			const dates = existingInstallmentDates(
 				input.currentIndex,
 				input.totalCount,
 				cycleRuleOf(card),
-				todayISO(),
-				card.openingBalanceDate
+				today,
+				card.openingBalanceDate,
+				openInvoiceInformed(card, ledger, today)
 			);
 			const group = generateUniqueId();
 			for (const { index, date } of dates) {
@@ -765,8 +787,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					installmentCount: input.totalCount,
 				});
 			}
-			syncQueue.schedule();
-			await refreshData();
+			if (dates.length > 0) {
+				syncQueue.schedule();
+				await refreshData();
+			}
 			return dates.length;
 		},
 		[accounts, refreshData]

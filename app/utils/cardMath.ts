@@ -29,6 +29,16 @@
  * (transferência para o cartão) subtrai do devido. Assim o valor devido, a fatura aberta
  * e a fechada sempre fecham entre si.
  *
+ * ## Ajuste com a fatura do banco
+ *
+ * A âncora é um ponto só. Quando o banco mostra duas faturas — a fechada ainda não paga e a
+ * aberta —, a fechada vira a âncora e a diferença da aberta entra como um lançamento de
+ * ajuste datado hoje (`CARD_ADJUSTMENT_NOTE`, ver `planCardAdjustment`). O ajuste conta na
+ * fatura, no devido e no limite, mas **não é compra nem receita**: é o app acertando o que
+ * não viu. Quem soma compras do mês, "por cartão" ou entradas e saídas o deixa de fora
+ * (`isCardAdjustment`). No cadastro, fora da janela entre o fechamento e o vencimento, a
+ * fatura informada vira a âncora e nenhum lançamento (`planCardOpening`).
+ *
  * ## Crédito levado adiante
  *
  * Estorno maior que as compras do ciclo deixa a fatura negativa. Como no banco, isso é
@@ -109,6 +119,29 @@ export const cycleRuleOf = (settings: Pick<CardSettings, 'closingDay' | 'closing
 	settings.closingDay === null
 		? null
 		: { closingDay: settings.closingDay, dueDaysAfter: settings.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE };
+
+/**
+ * Nota do lançamento de ajuste com a fatura do banco: o mesmo texto em qualquer idioma, é
+ * um marcador. Já está gravado assim nos aparelhos e no servidor — não mude.
+ */
+export const CARD_ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
+
+/**
+ * O lançamento é o ajuste com a fatura do banco, e não uma compra ou um estorno?
+ *
+ * Sem coluna própria (mudar o schema e o sync por isto não vale), o ajuste é reconhecido
+ * pela nota-marcador exata, a única coisa que todo ajuste já gravado tem em comum — os de
+ * antes desta versão inclusive. A categoria não entra: ela cai em outra quando "Outras
+ * despesas" foi apagada, ou o dono pode tê-la trocado, e o lançamento continua sendo o
+ * ajuste. Parcela nunca é ajuste. Quem chama garante que o lançamento é de um cartão:
+ * numa conta, a mesma nota é lançamento comum.
+ *
+ * O limite é o da nota: se o dono a editar, o lançamento passa a contar como compra; se
+ * digitar exatamente esse texto numa compra do cartão, ela deixa de contar como compra
+ * (continua na fatura).
+ */
+export const isCardAdjustment = (entry: { note: string | null | undefined; installmentGroup?: string | null }): boolean =>
+	!entry.installmentGroup && (entry.note ?? '').trim() === CARD_ADJUSTMENT_NOTE;
 
 // ---------------------------------------------------------------------------
 // Datas
@@ -272,6 +305,17 @@ export interface InvoiceView {
 	 * continua sendo a soma dos lançamentos dela; o que ela cobra é a diferença.
 	 */
 	creditAppliedCents: number;
+	/**
+	 * Só nas fechadas: o que as faturas anteriores deixaram sem pagar e veio para esta, como
+	 * a linha "saldo anterior" da fatura do banco. Sem juros — o app não sabe deles. Zero
+	 * quando a fatura é de antes da âncora: dali para trás o app não sabe o que foi pago.
+	 */
+	previousUnpaidCents: number;
+	/**
+	 * Só nas anteriores à fechada: o que ficou em aberto depois do vencimento e passou para a
+	 * fatura seguinte (é o `previousUnpaidCents` dela).
+	 */
+	leftOpenCents: number;
 }
 
 export interface InstallmentPlan {
@@ -484,26 +528,51 @@ export const buildCardSummary = (
 	const creditInto = carriedCredit(settings, entries, rule);
 	const creditApplied = (cycle: InvoiceCycle, amountCents: number): number => Math.min(creditInto(cycle.key), Math.max(0, amountCents));
 
-	// O pagamento feito na janela de uma fatura quita ela até o valor dela; o que sobra
-	// da janela da fechada é pagamento antecipado da aberta. Da fechada conta o que ela
-	// cobra: o crédito de faturas anteriores já abateu parte.
+	// O saldo anterior de uma fatura fechada: o que o cartão devia na véspera do fechamento
+	// dela menos o que é dela. Os pagamentos da janela da anterior — que é justamente o ciclo
+	// desta — já estão descontados, então é o que a anterior deixou sem pagar. Antes da âncora
+	// o devido não quer dizer nada (seria a própria âncora), e aí é zero.
+	const previousUnpaid = (cycle: InvoiceCycle, offset: number): number => {
+		if (offset > -1 || cycle.end < settings.openingBalanceDate) return 0;
+		return Math.max(0, owedOn(settings, entries, movements, cycle.end) - invoiceAmount(cycle, settings, entries));
+	};
+
+	// O pagamento feito na janela de uma fatura quita ela até o que ela cobra — o valor dela
+	// mais o saldo anterior que veio junto; o que sobra da janela da fechada é pagamento
+	// antecipado da aberta. Da fechada conta o que ela cobra: o crédito de faturas anteriores
+	// já abateu parte. Sem o saldo anterior aqui, pagar R$ 800 numa fechada de R$ 300 com
+	// R$ 500 de saldo anterior mostrava R$ 500 de "pagamento antecipado" que não houve.
 	const closedWindowPaid = paymentsBetween(movements, closedCycle.closingDate, openCycle.closingDate);
-	const closedChargedCents = Math.max(0, closedInvoiceCents) - creditApplied(closedCycle, closedInvoiceCents);
-	const invoicePaidCents = (cycle: InvoiceCycle, offset: number, amountCents: number): number => {
+	const closedChargedCents =
+		Math.max(0, closedInvoiceCents) - creditApplied(closedCycle, closedInvoiceCents) + previousUnpaid(closedCycle, -1);
+	const invoicePaidCents = (cycle: InvoiceCycle, offset: number, amountCents: number, previousCents: number): number => {
 		if (offset > 0) return 0;
 		if (offset === 0) return Math.max(0, closedWindowPaid - closedChargedCents);
 		const window = offset === -1 ? closedWindowPaid : paymentsBetween(movements, cycle.closingDate, shiftCycle(cycle, 1, rule).closingDate);
-		return Math.min(window, Math.max(0, amountCents));
+		return Math.min(window, Math.max(0, amountCents) + previousCents);
 	};
 
 	const invoices: InvoiceView[] = [];
-	for (let offset = -PAST_INVOICES; offset <= FUTURE_INVOICES; offset += 1) {
+	// Da mais nova para a mais antiga: o que uma fatura deixou em aberto é o saldo anterior da seguinte.
+	let nextPreviousUnpaid = 0;
+	for (let offset = FUTURE_INVOICES; offset >= -PAST_INVOICES; offset -= 1) {
 		const cycle = shiftCycle(openCycle, offset, rule);
 		const amountCents = invoiceAmount(cycle, settings, entries);
-		const paidCents = invoicePaidCents(cycle, offset, amountCents);
-		if (offset < -1 && amountCents === 0 && paidCents === 0) continue;
+		const previousUnpaidCents = previousUnpaid(cycle, offset);
+		const leftOpenCents = offset < -1 ? nextPreviousUnpaid : 0;
+		nextPreviousUnpaid = previousUnpaidCents;
+		const paidCents = invoicePaidCents(cycle, offset, amountCents, previousUnpaidCents);
+		if (offset < -1 && amountCents === 0 && paidCents === 0 && previousUnpaidCents === 0 && leftOpenCents === 0) continue;
 		if (offset > 0 && amountCents === 0) continue;
-		invoices.push({ cycle, amountCents, offset, paidCents, creditAppliedCents: creditApplied(cycle, amountCents) });
+		invoices.unshift({
+			cycle,
+			amountCents,
+			offset,
+			paidCents,
+			creditAppliedCents: creditApplied(cycle, amountCents),
+			previousUnpaidCents,
+			leftOpenCents,
+		});
 	}
 
 	return {
@@ -679,6 +748,55 @@ export const planCardAdjustment = (
 };
 
 /**
+ * As faturas que o cadastro do cartão pergunta hoje. A aberta sempre; a fechada só entre o
+ * fechamento e o vencimento dela — é quando o app do banco mostra em destaque uma fatura
+ * fechada a pagar, e quem copia esse número para "a fatura atual" o punha na fatura errada.
+ * Depois do vencimento a fechada já foi paga (ou é atraso, para o "Acertar valor").
+ */
+export const invoicesToInform = (rule: CycleRule, today: string): { open: InvoiceCycle; closed: InvoiceCycle | null } => {
+	const open = cycleFor(today, rule);
+	const closed = shiftCycle(open, -1, rule);
+	return { open, closed: today <= closed.dueDate ? closed : null };
+};
+
+/**
+ * A fatura informada no **cadastro** do cartão, do jeito que a conta corrente faz com o
+ * saldo: a aberta vira a **âncora** na véspera, e nenhum lançamento. Tudo até ontem já está
+ * no valor informado; o que entra de hoje em diante soma. Antes ela virava um lançamento de
+ * ajuste datado hoje, que aparecia como compra do mês e saída em Lançamentos (E2E-06).
+ *
+ * Quando a âncora não dá conta, vale o "Acertar valor" (`planCardAdjustment`):
+ *
+ * - com a fechada informada (hoje está entre o fechamento e o vencimento), a âncora é dela,
+ *   na véspera do fechamento, e a aberta entra como ajuste — a âncora é um ponto só;
+ * - no dia do fechamento a véspera é da fatura fechada: ancorar ali poria a aberta nela;
+ * - sem dia de fechamento, a âncora já é a véspera de hoje.
+ *
+ * O que já está no ciclo aberto (o conserto pode ter trazido compras do cartão que caíram na
+ * conta corrente) entra na conta: datado até ontem, está dentro do valor; de hoje, soma — e a
+ * âncora desconta, para a fatura dar o informado.
+ */
+export const planCardOpening = (
+	settings: CardSettings,
+	entries: CardEntry[],
+	movements: CardMovement[],
+	today: string,
+	openTypedCents: number | null,
+	closedTypedCents: number | null
+): CardAdjustmentPlan => {
+	const rule = cycleRuleOf(settings);
+	if (rule === null || closedTypedCents !== null) {
+		return planCardAdjustment(settings, entries, movements, today, openTypedCents, closedTypedCents);
+	}
+	if (openTypedCents === null) return { anchor: null, adjustmentCents: 0 };
+	const open = cycleFor(today, rule);
+	const yesterday = addDays(today, -1);
+	if (yesterday < open.start) return planCardAdjustment(settings, entries, movements, today, openTypedCents, null);
+	const fromToday = invoiceAmount(open, { ...settings, openingBalanceCents: 0, openingBalanceDate: yesterday }, entries);
+	return { anchor: { date: yesterday, cents: 0 - (openTypedCents - fromToday) }, adjustmentCents: 0 };
+};
+
+/**
  * Datas das parcelas de uma compra parcelada no cartão: a primeira no dia da compra, as
  * seguintes um mês depois cada, **uma por fatura**. Somar um mês nem sempre muda de
  * fatura — comprar em 29/01 com fechamento dia 30 põe a segunda parcela em 28/02, que já
@@ -711,8 +829,12 @@ export const cardInstallmentDates = (purchaseDate: string, count: number, rule: 
  * que vem depois dela: o dia seguinte é, por isso, o primeiro dia que conta. Num cartão
  * cadastrado hoje (âncora = ontem) o começo do ciclo aberto é o fechamento anterior,
  * semanas atrás — a parcela atual cairia antes da âncora e seria descartada da fatura e
- * da lista; e com a "fatura atual" informada antes (que já continha essa parcela) ela
- * passaria a contar em cima do valor informado.
+ * da lista.
+ *
+ * **Fatura aberta já informada** (`currentCovered`, ver `openInvoiceInformed`): o valor que o
+ * dono copiou do banco já traz a parcela atual — a 2/5 que a fatura do banco mostra. Ela
+ * não é criada de novo: entram só as seguintes, a partir da próxima fatura. Antes, a 2/5
+ * caía no dia seguinte à âncora e somava R$ 300 em cima dos R$ 1.234,56 informados.
  */
 export const existingInstallmentDates = (
 	currentIndex: number,
@@ -720,14 +842,17 @@ export const existingInstallmentDates = (
 	rule: CycleRule | null,
 	today: string,
 	/** `openingBalanceDate` do cartão: a âncora que já engoliu tudo até ela. */
-	anchorDate: string
+	anchorDate: string,
+	/** A parcela atual já está no valor informado da fatura aberta: não criar. */
+	currentCovered = false
 ): Array<{ index: number; date: string }> => {
 	const dates: Array<{ index: number; date: string }> = [];
 	if (currentIndex < 1 || totalCount < currentIndex) return dates;
+	const fromIndex = currentCovered ? currentIndex + 1 : currentIndex;
 
 	const firstCounted = addDays(anchorDate, 1);
 	if (rule === null) {
-		for (let index = currentIndex; index <= totalCount; index += 1) {
+		for (let index = fromIndex; index <= totalCount; index += 1) {
 			const naive = addMonthsClamped(today, index - currentIndex);
 			dates.push({ index, date: naive > firstCounted ? naive : firstCounted });
 		}
@@ -738,13 +863,72 @@ export const existingInstallmentDates = (
 	const first = open.start > firstCounted ? open.start : firstCounted;
 	// As seguintes saem da fatura em que a atual caiu, e não do ciclo aberto: se o piso da
 	// âncora empurrou a atual para a fatura seguinte, as outras andam junto — uma por
-	// fatura, sem duas na mesma.
-	const firstCycle = cycleFor(first, rule);
-	for (let index = currentIndex; index <= totalCount; index += 1) {
+	// fatura, sem duas na mesma. A atual já informada está na aberta, então as seguintes
+	// saem dela.
+	const firstCycle = currentCovered ? open : cycleFor(first, rule);
+	for (let index = fromIndex; index <= totalCount; index += 1) {
 		const offset = index - currentIndex;
 		dates.push({ index, date: offset === 0 ? first : shiftCycle(firstCycle, offset, rule).start });
 	}
 	return dates;
+};
+
+/**
+ * A fatura aberta já tem o valor que o banco mostra? É o que decide se a parcela atual de
+ * uma compra antiga já está nela (`existingInstallmentDates`) e se as compras de antes da
+ * âncora estão "no valor informado".
+ *
+ * Duas formas de ter sido informada: a âncora com valor dentro do ciclo aberto (o cadastro
+ * de hoje, `planCardOpening`) ou um ajuste datado nele (o "Acertar valor", e o cadastro de
+ * antes desta versão, que deixava a âncora em zero e lançava o ajuste). Âncora zero sem
+ * ajuste é cartão cadastrado sem a fatura: o app não sabe de nada que estava nela.
+ *
+ * Limite: quem informou exatamente o que o app já tinha não gera ajuste, e aí a fatura
+ * conta como não informada.
+ */
+export const openInvoiceInformed = (settings: CardSettings, entries: CardEntry[], today: string): boolean => {
+	const rule = cycleRuleOf(settings);
+	// Sem fechamento não há ciclo: vale a âncora com valor do último mês, que é a fatura que
+	// o dono tinha na tela quando a informou.
+	if (rule === null) return settings.openingBalanceCents !== 0 && settings.openingBalanceDate > addMonthsClamped(today, -1);
+	const open = cycleFor(today, rule);
+	const inOpen = (date: string) => date >= open.start && date <= open.end;
+	if (settings.openingBalanceCents !== 0 && inOpen(settings.openingBalanceDate)) return true;
+	return entries.some((entry) => isCardAdjustment(entry) && inOpen(entry.date) && entry.date > settings.openingBalanceDate);
+};
+
+/** O que o chip de uma fatura diz. As datas saem do próprio ciclo. */
+export type InvoiceStatus =
+	| { kind: 'open' }
+	| { kind: 'future' }
+	/** A fechada, depois do vencimento, com o que falta pagar. */
+	| { kind: 'overdue'; amountCents: number }
+	/** A fechada, antes do vencimento, com o que falta pagar. */
+	| { kind: 'toPay'; amountCents: number }
+	| { kind: 'paid' }
+	/** Fechada sem nada a pagar, com o vencimento ainda por vir: "vence", nunca "venceu". */
+	| { kind: 'closedUpcoming' }
+	| { kind: 'closedPast' }
+	/** Venceu sem ser paga inteira: o que ficou foi para a fatura seguinte. */
+	| { kind: 'leftOpen'; amountCents: number };
+
+/**
+ * O estado de uma fatura para o chip dela. Antes, a fechada sem valor dizia "venceu 12/11"
+ * no dia 07/11, e a que ficou em aberto e já passou para a seguinte dizia só "venceu".
+ */
+export const invoiceStatusOf = (invoice: InvoiceView, summary: CardSummary, today: string): InvoiceStatus => {
+	if (invoice.offset === 0) return { kind: 'open' };
+	if (invoice.offset > 0) return { kind: 'future' };
+	const charged = invoice.amountCents + invoice.previousUnpaidCents;
+	if (invoice.offset === -1) {
+		if (summary.closedStatus === 'overdue') return { kind: 'overdue', amountCents: summary.toPayCents };
+		if (summary.toPayCents > 0) return { kind: 'toPay', amountCents: summary.toPayCents };
+		if (charged > 0) return { kind: 'paid' };
+		return invoice.cycle.dueDate >= today ? { kind: 'closedUpcoming' } : { kind: 'closedPast' };
+	}
+	if (invoice.leftOpenCents > 0) return { kind: 'leftOpen', amountCents: invoice.leftOpenCents };
+	if (charged > 0 && invoice.paidCents >= charged) return { kind: 'paid' };
+	return { kind: 'closedPast' };
 };
 
 /**
@@ -782,9 +966,14 @@ export const invoicesClosingBetween = (
 
 export default {
 	cardInstallmentDates,
+	isCardAdjustment,
 	isSameCardPayment,
+	invoiceStatusOf,
+	invoicesToInform,
+	openInvoiceInformed,
 	pickOpenCardPayment,
 	planCardAdjustment,
+	planCardOpening,
 	cycleRuleOf,
 	cycleFor,
 	invoiceClosingIn,

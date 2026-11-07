@@ -1,4 +1,5 @@
 import { brandFor } from '../utils/bankBrands';
+import { CARD_ADJUSTMENT_NOTE } from '../utils/cardMath';
 import { planDebitCardConversions } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1870,6 +1871,10 @@ export const getUnassignedPeriodSummary = async (
  * Valor cheio das compras **feitas** num cartão no período: as à vista datadas nele,
  * mais o total de cada compra parcelada cuja primeira parcela cai nele. É a métrica
  * "quanto comprei este mês", diferente de "quanto cai na fatura".
+ *
+ * O ajuste com a fatura do banco (`isCardAdjustment`: a nota-marcador, sem parcela) fica
+ * de fora: está na fatura, mas não é compra feita no mês — a fatura informada no cadastro
+ * aparecia como "R$ 1.234,56 comprados neste mês".
  */
 export const getCardPurchasesOriginated = async (
 	accountId: string,
@@ -1880,8 +1885,9 @@ export const getCardPurchasesOriginated = async (
 		db.getFirstAsync<{ total: number }>(
 			`SELECT COALESCE(SUM(amountCents), 0) AS total FROM transactions
        WHERE accountId = ? AND isIncome = 0 AND installmentGroup IS NULL
+         AND TRIM(COALESCE(note, '')) <> ?
          AND date BETWEEN ? AND ? AND deletedAt IS NULL`,
-			[accountId, startDate, endDate]
+			[accountId, CARD_ADJUSTMENT_NOTE, startDate, endDate]
 		),
 		db.getFirstAsync<{ total: number }>(
 			`SELECT COALESCE(SUM(t.amountCents), 0) AS total FROM transactions t

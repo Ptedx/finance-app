@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBudget } from '../contexts/BudgetContext';
+import { usePeriod } from '../contexts/PeriodContext';
+import { getMonthName } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 import BudgetEditor from './BudgetEditor';
 import PeriodSelector from './PeriodSelector';
@@ -41,6 +43,7 @@ const MonthOverviewCard: React.FC = () => {
 	const { t } = useTranslation();
 	const { month, provisionalMonth } = useAccounts();
 	const { currentBudgetCents } = useBudget();
+	const { selectedMonth } = usePeriod();
 	const [showBudgetEditor, setShowBudgetEditor] = useState(false);
 
 	if (!month) return null;
@@ -79,12 +82,19 @@ const MonthOverviewCard: React.FC = () => {
 				</View>
 				<Text style={[styles.groupValue, styles.expense]}>{formatCents(month.totalSpendCents)}</Text>
 			</View>
+			{/* O número da linha é a fatura que fecha no mês (é o que conta no Gastos); o de baixo, o
+			    que foi comprado no mês. São coisas diferentes e a linha diz qual é qual: antes os dois
+			    apareciam lado a lado sem nome e pareciam não bater. */}
 			{month.cards.map((card) => (
 				<Row
 					key={card.accountId}
 					label={card.name}
 					value={formatCents(card.spendCents)}
-					sub={t('month.cardPurchased', { amount: formatCents(card.purchasesCents) })}
+					sub={
+						card.invoiceBased
+							? t('month.cardInvoiceLine', { month: getMonthName(selectedMonth), amount: formatCents(card.purchasesCents) })
+							: t('month.cardNoClosingLine', { amount: formatCents(card.purchasesCents) })
+					}
 					indent
 				/>
 			))}

@@ -15,7 +15,15 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account } from '../database/schema';
 import { findCheckingForCard } from '../utils/accountResolver';
-import { cycleRuleOf, existingInstallmentDates, invoiceMonthOf, type InvoiceView } from '../utils/cardMath';
+import {
+	cycleRuleOf,
+	existingInstallmentDates,
+	invoiceMonthOf,
+	invoiceStatusOf,
+	type InvoiceView,
+	isCardAdjustment,
+	openInvoiceInformed,
+} from '../utils/cardMath';
 import { usageByCard } from '../utils/cardNames';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
@@ -84,36 +92,59 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 
 	const selected: InvoiceView | undefined = summary?.invoices.find((invoice) => invoice.cycle.key === selectedKey);
 	const inSelected = (date: string) => Boolean(selected) && date >= (selected as InvoiceView).cycle.start && date <= (selected as InvoiceView).cycle.end;
-	// A lista soma o valor da fatura: o que é de antes do valor informado já está dentro
-	// dele e só aparece contado numa linha, para ninguém achar que contou duas vezes.
+	// A lista soma o valor da fatura. O que é de antes da âncora não soma — já está no valor
+	// informado — e aparece à parte, embaixo de uma linha que diz isso: sumir com a compra
+	// fazia o dono procurá-la, e somá-la faria achar que contou duas vezes.
 	const selectedTransactions = cardTransactions
 		.filter((tx) => inSelected(tx.date) && tx.date > card.openingBalanceDate)
 		.sort((a, b) => b.date.localeCompare(a.date));
-	const coveredByAnchor = cardTransactions.filter((tx) => inSelected(tx.date) && tx.date <= card.openingBalanceDate).length;
+	const beforeAnchor = cardTransactions
+		.filter((tx) => inSelected(tx.date) && tx.date <= card.openingBalanceDate)
+		.sort((a, b) => b.date.localeCompare(a.date));
 	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
 	// Quem gastou nesta fatura: o físico e cada virtual. A fatura é uma só; isto é o "por cartão".
-	const usage = usageByCard([...selectedTransactions, ...selectedPending], card.cardNames, card.last4);
+	// O ajuste com a fatura do banco não é compra de cartão nenhum: fica fora.
+	const usage = usageByCard(
+		[...selectedTransactions.filter((tx) => !isCardAdjustment(tx)), ...selectedPending],
+		card.cardNames,
+		card.last4
+	);
 	const showUsage = usage.filter((item) => item.count > 0).length > 1 || usage.some((item) => item.last4 !== null && item.last4 !== card.last4);
 	const matchesFilter = (last4: string | null | undefined) => cardFilter === undefined || (last4 ?? null) === cardFilter;
 	const cardLabel = (last4: string | null, name: string | null) =>
 		last4 === null ? t('cards.byCard.unknown') : (name ?? t('cards.finalLabel', { last4 }));
-	const anchorInSelected =
-		selected &&
-		card.openingBalanceCents !== 0 &&
-		card.openingBalanceDate >= selected.cycle.start &&
-		card.openingBalanceDate <= selected.cycle.end;
+	const anchorDateInSelected = Boolean(selected) && inSelected(card.openingBalanceDate);
+	const anchorInSelected = anchorDateInSelected && card.openingBalanceCents !== 0;
+	// As compras de antes da âncora estão "no valor informado" quando houve valor: a âncora
+	// dele, ou o ajuste do cadastro antigo (âncora zero e ajuste no dia seguinte). Sem nada
+	// informado, o cartão começou do zero no cadastro e elas ficam fora da fatura — a tela
+	// diz isso, em vez de afirmar que estão num valor que ninguém informou.
+	const showBeforeAnchor = anchorDateInSelected && beforeAnchor.length > 0;
+	const beforeAnchorInformed = anchorInSelected || selectedTransactions.some((tx) => isCardAdjustment(tx));
+	const today = todayISO();
 
 	const invoiceStatus = (invoice: InvoiceView): string => {
 		const due = formatDayMonth(invoice.cycle.dueDate);
-		if (invoice.offset === 0) return t('cards.invoice.open', { closing: formatDayMonth(invoice.cycle.closingDate), due });
-		if (invoice.offset > 0) return t('cards.invoice.future', { due });
-		if (invoice.offset === -1 && summary) {
-			if (summary.closedStatus === 'overdue') return t('cards.invoice.overdue', { due, amount: formatCents(summary.toPayCents) });
-			if (summary.toPayCents > 0) return t('cards.invoice.closedToPay', { due, amount: formatCents(summary.toPayCents) });
-			if (invoice.amountCents > 0) return t('cards.invoice.paid');
+		if (!summary) return t('cards.invoice.closed', { due });
+		const status = invoiceStatusOf(invoice, summary, today);
+		switch (status.kind) {
+			case 'open':
+				return t('cards.invoice.open', { closing: formatDayMonth(invoice.cycle.closingDate), due });
+			case 'future':
+				return t('cards.invoice.future', { due });
+			case 'overdue':
+				return t('cards.invoice.overdue', { due, amount: formatCents(status.amountCents) });
+			case 'toPay':
+				return t('cards.invoice.closedToPay', { due, amount: formatCents(status.amountCents) });
+			case 'paid':
+				return t('cards.invoice.paid');
+			case 'closedUpcoming':
+				return t('cards.invoice.closedUpcoming', { due });
+			case 'leftOpen':
+				return t('cards.invoice.leftOpen', { due, amount: formatCents(status.amountCents) });
+			default:
+				return t('cards.invoice.closed', { due });
 		}
-		if (invoice.offset < -1 && invoice.amountCents > 0 && invoice.paidCents >= invoice.amountCents) return t('cards.invoice.paid');
-		return t('cards.invoice.closed', { due });
 	};
 
 	return (
@@ -199,6 +230,18 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									{t('cards.invoice.period', { start: formatDayMonth(selected.cycle.start), end: formatDayMonth(selected.cycle.end) })}
 								</Text>
 
+								{selected.previousUnpaidCents > 0 ? (
+									<View
+										style={styles.anchorRow}
+										accessible
+										accessibilityLabel={`${t('cards.invoice.previousUnpaid')}, ${formatCents(selected.previousUnpaidCents)}`}
+									>
+										<Ionicons name="alert-circle-outline" size={18} color="#FFD166" />
+										<Text style={styles.anchorText}>{t('cards.invoice.previousUnpaid')}</Text>
+										<Text style={styles.anchorAmount}>{formatCents(selected.previousUnpaidCents)}</Text>
+									</View>
+								) : null}
+
 								{anchorInSelected ? (
 									<View style={styles.anchorRow} accessible accessibilityLabel={`${t('cards.invoice.informed', { date: formatDayMonth(card.openingBalanceDate) })}, ${formatCents(-card.openingBalanceCents)}`}>
 										<Ionicons name="scale-outline" size={18} color="rgba(255,255,255,0.8)" />
@@ -264,10 +307,6 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</View>
 								) : null}
 
-								{anchorInSelected && coveredByAnchor > 0 ? (
-									<Text style={styles.covered}>{t('cards.invoice.coveredByAnchor', { count: coveredByAnchor })}</Text>
-								) : null}
-
 								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4)).map((entry) => (
 									<Pressable
 										key={entry.id}
@@ -288,7 +327,11 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</Pressable>
 								))}
 
-								{selectedTransactions.length === 0 && selectedPending.length === 0 && !anchorInSelected ? (
+								{selectedTransactions.length === 0 &&
+								selectedPending.length === 0 &&
+								!anchorInSelected &&
+								!showBeforeAnchor &&
+								selected.previousUnpaidCents === 0 ? (
 									<Text style={styles.empty}>{t('cards.invoice.empty')}</Text>
 								) : (
 									selectedTransactions.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
@@ -299,6 +342,25 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 										/>
 									))
 								)}
+
+								{showBeforeAnchor ? (
+									<>
+										<Text style={styles.covered}>
+											{beforeAnchorInformed
+												? t('cards.invoice.coveredByAnchor', { count: beforeAnchor.length })
+												: t('cards.invoice.beforeStart', { count: beforeAnchor.length })}
+										</Text>
+										<View style={styles.coveredList}>
+											{beforeAnchor.filter((transaction) => matchesFilter(transaction.cardLast4)).map((transaction) => (
+												<TransactionItem
+													key={transaction.id}
+													transaction={transaction}
+													onPress={(tx) => router.push({ pathname: '/transaction/[id]', params: { id: tx.id } })}
+												/>
+											))}
+										</View>
+									</>
+								) : null}
 							</View>
 						) : null}
 					</View>
@@ -449,6 +511,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						visible={sheet === 'installments'}
 						onClose={() => setSheet(null)}
 						card={card}
+						currentCovered={openInvoiceInformed(card, cardTransactions, today)}
 						categories={categories}
 						onConfirm={async (input) => {
 							const created = await addExistingInstallments({ ...input, cardId: card.id });
@@ -661,9 +724,11 @@ const InstallmentsSheet: React.FC<{
 	visible: boolean;
 	onClose: () => void;
 	card: Account;
+	/** A fatura aberta já tem o valor do banco: a parcela atual já está nela (`openInvoiceInformed`). */
+	currentCovered: boolean;
 	categories: ReturnType<typeof useTransactions>['categories'];
 	onConfirm: (input: { note: string; category: string; parcelCents: number; currentIndex: number; totalCount: number }) => Promise<void>;
-}> = ({ visible, onClose, card, categories, onConfirm }) => {
+}> = ({ visible, onClose, card, currentCovered, categories, onConfirm }) => {
 	const { t } = useTranslation();
 	const [note, setNote] = useState('');
 	const [parcel, setParcel] = useState('');
@@ -688,8 +753,19 @@ const InstallmentsSheet: React.FC<{
 	const valid =
 		Number.isInteger(currentIndex) && Number.isInteger(totalCount) && currentIndex >= 1 && totalCount >= 2 && totalCount <= 48 && currentIndex <= totalCount;
 	// A âncora entra: a prévia mostra as mesmas faturas que serão gravadas, inclusive quando
-	// o piso da âncora empurra a parcela atual para a fatura seguinte.
-	const dates = valid ? existingInstallmentDates(currentIndex, totalCount, cycleRuleOf(card), todayISO(), card.openingBalanceDate) : [];
+	// o piso da âncora empurra a parcela atual para a fatura seguinte — e diz quando a parcela
+	// atual fica de fora por já estar na fatura informada.
+	const dates = valid
+		? existingInstallmentDates(currentIndex, totalCount, cycleRuleOf(card), todayISO(), card.openingBalanceDate, currentCovered)
+		: [];
+	const currentLabel = `${currentIndex}/${totalCount}`;
+	const range = (list: typeof dates) => ({
+		count: list.length,
+		amount: parcelCents ? formatCents(parcelCents) : '',
+		first: list.length > 0 ? formatMonthShort(`${invoiceMonthOf(list[0].date, cycleRuleOf(card))}-01`) : '',
+		last: list.length > 0 ? formatMonthShort(`${invoiceMonthOf(list[list.length - 1].date, cycleRuleOf(card))}-01`) : '',
+	});
+	const nothingToAdd = valid && currentCovered && dates.length === 0;
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.installments.title')} subtitle={t('cards.installments.subtitle')}>
@@ -726,12 +802,14 @@ const InstallmentsSheet: React.FC<{
 			</View>
 			{dates.length > 0 && parcelCents ? (
 				<Text style={styles.preview} accessibilityLiveRegion="polite">
-					{t('cards.installments.preview', {
-						count: dates.length,
-						amount: formatCents(parcelCents),
-						first: formatMonthShort(`${invoiceMonthOf(dates[0].date, cycleRuleOf(card))}-01`),
-						last: formatMonthShort(`${invoiceMonthOf(dates[dates.length - 1].date, cycleRuleOf(card))}-01`),
-					})}
+					{currentCovered
+						? t('cards.installments.previewCovered', { ...range(dates), current: currentLabel })
+						: t('cards.installments.preview', range(dates))}
+				</Text>
+			) : null}
+			{nothingToAdd ? (
+				<Text style={styles.preview} accessibilityLiveRegion="polite">
+					{t('cards.installments.allCovered', { current: currentLabel })}
 				</Text>
 			) : null}
 			<Button
@@ -747,6 +825,12 @@ const InstallmentsSheet: React.FC<{
 					const messages = Object.values(next).filter(Boolean);
 					if (messages.length > 0 || parcelCents === null || !category) {
 						AccessibilityInfo.announceForAccessibility(messages.join('. '));
+						return;
+					}
+					// A última parcela já estava na fatura informada: não há o que criar.
+					if (nothingToAdd) {
+						AccessibilityInfo.announceForAccessibility(t('cards.installments.allCovered', { current: currentLabel }));
+						onClose();
 						return;
 					}
 					await onConfirm({ note: note.trim(), category, parcelCents, currentIndex, totalCount });
@@ -932,7 +1016,12 @@ const styles = StyleSheet.create({
 	covered: {
 		fontSize: 13,
 		color: 'rgba(255,255,255,0.7)',
+		paddingTop: 8,
 		paddingBottom: 8,
+	},
+	// Fora da soma da fatura: mais apagadas que as que somam.
+	coveredList: {
+		opacity: 0.6,
 	},
 	usage: {
 		borderTopWidth: 1,

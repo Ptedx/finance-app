@@ -17,7 +17,7 @@ import {
 	NETWORK_LABELS,
 	NEUTRAL_CARD_COLOR,
 } from '../utils/bankBrands';
-import { cycleFor } from '../utils/cardMath';
+import { cycleFor, invoicesToInform } from '../utils/cardMath';
 import { addDays, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
@@ -33,6 +33,11 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * é digitado: sai do fechamento, já empurrado para dia útil, e a tela mostra as datas da
  * fatura atual para conferir com o banco. Só o banco é obrigatório; sem fechamento o
  * cartão funciona, mas não monta faturas — e a tela diz isso.
+ *
+ * A fatura que o banco mostra hoje vai com o nome do mês no rótulo, para não haver dúvida
+ * de qual é. Entre o fechamento e o vencimento o banco mostra duas — a fechada a pagar e a
+ * aberta —, e a tela pede as duas (`invoicesToInform`): um campo só levava a fechada para a
+ * fatura aberta e deixava o vencimento dela sem aviso.
  *
  * Débito fica de fora: não tem fatura nem limite, a compra sai da conta na hora. Quem
  * cadastrou um débito aqui por engano leva os lançamentos para a conta com um toque.
@@ -69,6 +74,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [closingDaysBefore, setClosingDaysBefore] = useState(String(existing?.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
 	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
 	const [currentInvoice, setCurrentInvoice] = useState('');
+	const [closedInvoice, setClosedInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
 
@@ -134,10 +140,19 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	// As datas da fatura atual com o que está digitado, para conferir com o app do banco.
 	const typedClosing = parseDay(closingDay);
 	const typedDaysAfter = Number(closingDaysBefore);
-	const cyclePreview =
+	const typedRule =
 		typedClosing && Number.isInteger(typedDaysAfter) && typedDaysAfter >= 1 && typedDaysAfter <= 20
-			? cycleFor(todayISO(), { closingDay: typedClosing, dueDaysAfter: typedDaysAfter })
+			? { closingDay: typedClosing, dueDaysAfter: typedDaysAfter }
 			: null;
+	const cyclePreview = typedRule ? cycleFor(todayISO(), typedRule) : null;
+	// As faturas que o banco mostra hoje: a aberta e, até o vencimento, a fechada.
+	const asked = typedRule ? invoicesToInform(typedRule, todayISO()) : null;
+
+	const parseInvoice = (value: string): number | null | false => {
+		if (!value.trim()) return null;
+		const cents = parseAmountToCents(value);
+		return cents === null || cents < 0 ? false : cents;
+	};
 
 	const handleSave = async () => {
 		const next: Record<string, string | undefined> = {};
@@ -153,11 +168,12 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			limitCents = parseAmountToCents(limit);
 			if (limitCents === null || limitCents <= 0) next.limit = t('cards.edit.invalidAmount');
 		}
-		let invoiceCents: number | null = null;
-		if (!existing && currentInvoice.trim()) {
-			invoiceCents = parseAmountToCents(currentInvoice);
-			if (invoiceCents === null || invoiceCents < 0) next.invoice = t('cards.edit.invalidAmount');
-		}
+		const openCents = existing ? null : parseInvoice(currentInvoice);
+		// A fechada só conta enquanto a tela a pede: com o fechamento trocado depois de digitar,
+		// o campo some e o valor não vai para uma fatura que não foi perguntada.
+		const closedCents = existing || !asked?.closed ? null : parseInvoice(closedInvoice);
+		if (openCents === false) next.invoice = t('cards.edit.invalidAmount');
+		if (closedCents === false) next.closedInvoice = t('cards.edit.invalidAmount');
 
 		setErrors(next);
 		const messages = Object.values(next).filter(Boolean);
@@ -198,10 +214,13 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 				router.back();
 			} else {
 				const id = await createAccount(draft);
-				// Só a fatura aberta foi informada: a fechada vai como `null` ("não informei"), e
-				// não como zero — o cartão novo pode ter uma fechada em aberto que ninguém
-				// declarou aqui, e zerá-la lançaria um estorno falso datado hoje.
-				if (invoiceCents !== null && invoiceCents > 0) await adjustCardInvoices(id, invoiceCents, null);
+				// Campo em branco vai como `null` ("não informei"), e não como zero — o cartão novo
+				// pode ter uma fechada em aberto que ninguém declarou aqui, e zerá-la lançaria um
+				// estorno falso datado hoje. A aberta vira a âncora (`planCardOpening`): a fatura
+				// informada não é compra do mês nem saída em Lançamentos.
+				const open = openCents === false ? null : openCents;
+				const closed = closedCents === false ? null : closedCents;
+				if ((open ?? 0) > 0 || (closed ?? 0) > 0) await adjustCardInvoices(id, open, closed, { opening: true });
 				router.replace({ pathname: '/cards/[id]', params: { id } });
 			}
 		} finally {
@@ -403,14 +422,35 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						</Text>
 					) : null}
 
+					{!existing && asked?.closed ? (
+						<Field
+							label={t('cards.edit.closedInvoice', {
+								month: formatMonthLong(`${asked.closed.key}-01`),
+								due: formatDayMonth(asked.closed.dueDate),
+							})}
+							optionalLabel={t('cards.edit.optional')}
+							value={closedInvoice}
+							onChangeText={setClosedInvoice}
+							keyboardType="decimal-pad"
+							hint={t('cards.edit.closedInvoiceHint')}
+							error={errors.closedInvoice}
+						/>
+					) : null}
 					{!existing ? (
 						<Field
-							label={t('cards.edit.currentInvoice')}
+							label={
+								asked
+									? t('cards.edit.openInvoice', {
+											month: formatMonthLong(`${asked.open.key}-01`),
+											closing: formatDayMonth(asked.open.closingDate),
+										})
+									: t('cards.edit.currentInvoice')
+							}
 							optionalLabel={t('cards.edit.optional')}
 							value={currentInvoice}
 							onChangeText={setCurrentInvoice}
 							keyboardType="decimal-pad"
-							hint={t('cards.edit.currentInvoiceHint')}
+							hint={asked ? t('cards.edit.openInvoiceHint') : t('cards.edit.currentInvoiceHint')}
 							error={errors.invoice}
 						/>
 					) : null}

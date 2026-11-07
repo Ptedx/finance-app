@@ -1,4 +1,5 @@
-import { type AccountMonthActivity, buildMonthOverview } from '../monthOverview';
+import { CARD_ADJUSTMENT_NOTE } from '../cardMath';
+import { type AccountMonthActivity, buildMonthOverview, transactionTotals } from '../monthOverview';
 
 const activity = (overrides: Partial<AccountMonthActivity>): AccountMonthActivity => ({
 	accountId: 'a',
@@ -97,7 +98,7 @@ describe('buildMonthOverview — o mês que o usuário descreveu', () => {
 
 	it('o cartão traz as duas métricas: o que cai na fatura e o que foi comprado', () => {
 		expect(overview.cards).toEqual([
-			{ accountId: 'card', name: 'Cartão Nubank', spendCents: 680_000, purchasesCents: 740_000 },
+			{ accountId: 'card', name: 'Cartão Nubank', spendCents: 680_000, purchasesCents: 740_000, invoiceBased: false },
 		]);
 		expect(overview.cardPurchasesCents).toBe(740_000);
 	});
@@ -456,5 +457,62 @@ describe('repasse: dinheiro que só passou pela conta', () => {
 			unassigned: { incomeCents: 0, expenseCents: 0 },
 		});
 		expect(month).toMatchObject({ grossIncomeCents: 100_000, incomeCents: 100_000, passThroughCents: 0, mainSpendCents: 40_000 });
+	});
+});
+
+describe('o cartão diz de onde vem o número da linha (E2E-15)', () => {
+	it('com fechamento, o valor é a fatura que fecha no mês; sem, as compras do mês', () => {
+		const month = buildMonthOverview({
+			accounts: [
+				activity({ accountId: 'nu', name: 'Nubank', kind: 'credit_card', role: 'card', invoiceCents: 133_456, purchasesOriginatedCents: 15_000 }),
+				activity({ accountId: 'x', name: 'Sem fechamento', kind: 'credit_card', role: 'card', expenseCents: 4_000, invoiceCents: null }),
+			],
+			unassigned: { incomeCents: 0, expenseCents: 0 },
+		});
+		expect(month.cards).toEqual([
+			{ accountId: 'nu', name: 'Nubank', spendCents: 133_456, purchasesCents: 15_000, invoiceBased: true },
+			{ accountId: 'x', name: 'Sem fechamento', spendCents: 4_000, purchasesCents: 0, invoiceBased: false },
+		]);
+	});
+});
+
+describe('transactionTotals — Entrou e Saiu da tela Lançamentos (E2E-17)', () => {
+	const cards = new Set(['nu', 'inter']);
+	let seq = 0;
+	const tx = (accountId: string | null, amountCents: number, isIncome: boolean, note = 'Compra', category = 'food') => ({
+		id: `t${++seq}`,
+		accountId,
+		amountCents,
+		isIncome,
+		note,
+		category,
+		installmentGroup: null,
+	});
+
+	it('o acerto da fatura não é entrada nem saída: novembro fica com as compras de verdade', () => {
+		const totals = transactionTotals(
+			[
+				// Cadastro antigo do Nubank (R$ 1.234,56) e o acerto do Inter: −2.000 e +1.920.
+				tx('nu', 123_456, false, CARD_ADJUSTMENT_NOTE, 'other_expense'),
+				tx('inter', 200_000, false, CARD_ADJUSTMENT_NOTE, 'other_expense'),
+				tx('inter', 192_000, true, CARD_ADJUSTMENT_NOTE, 'other_income'),
+				// A padaria de 01/11 e a compra de R$ 100.
+				tx('nu', 5_000, false),
+				tx('nu', 10_000, false),
+			],
+			new Set(),
+			cards
+		);
+		expect(totals).toEqual({ incomeCents: 0, expenseCents: 15_000, netCents: -15_000 });
+	});
+
+	it('a mesma nota fora de cartão é lançamento comum, como na tela inicial', () => {
+		const totals = transactionTotals([tx(null, 7_000, false, CARD_ADJUSTMENT_NOTE), tx('conta', 3_000, false, CARD_ADJUSTMENT_NOTE)], new Set(), cards);
+		expect(totals).toEqual({ incomeCents: 0, expenseCents: 10_000, netCents: -10_000 });
+	});
+
+	it('repasse continua saindo da receita, e receita comum entra', () => {
+		const totals = transactionTotals([tx(null, 100_000, true, 'Salário', 'salary'), tx(null, 30_000, false, 'Repasse', 'pass')], new Set(['pass']), cards);
+		expect(totals).toEqual({ incomeCents: 70_000, expenseCents: 0, netCents: 70_000 });
 	});
 });

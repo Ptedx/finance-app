@@ -13,6 +13,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, Transaction, Transfer } from '../database/schema';
 import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
+import { transactionTotals } from '../utils/monthOverview';
 
 /**
  * Lançamentos: a lista de tudo o que entrou e saiu, com o extrato como referência.
@@ -82,18 +83,13 @@ const TransactionListScreen = () => {
 		[transactions, startDate, endDate]
 	);
 
-	const totals = useMemo(() => {
-		let incomeCents = 0;
-		let expenseCents = 0;
-		for (const transaction of inPeriod) {
-			if (transaction.isIncome) incomeCents += transaction.amountCents;
-			// Repasse: entrou e foi adiante. Sai da receita e não é gasto — a mesma regra
-			// do "Este mês" da Home, para os totais baterem entre as telas.
-			else if (passThroughCategories.has(transaction.category)) incomeCents -= transaction.amountCents;
-			else expenseCents += transaction.amountCents;
-		}
-		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
-	}, [inPeriod]);
+	// Repasse sai da receita, e o ajuste com a fatura do banco não é entrada nem saída
+	// (`transactionTotals`): a mesma regra do "Este mês" da Home, para as telas conversarem.
+	const cardIds = useMemo(
+		() => new Set(accounts.filter((account) => account.kind === 'credit_card').map((account) => account.id)),
+		[accounts]
+	);
+	const totals = useMemo(() => transactionTotals(inPeriod, passThroughCategories, cardIds), [inPeriod, passThroughCategories, cardIds]);
 
 	const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
 
