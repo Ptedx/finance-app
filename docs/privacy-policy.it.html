@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spendr — Informativa sulla privacy</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #121212;
+      --surface: #1A1A1A;
+      --surface-2: #1E1E1E;
+      --border: #3e3e3e;
+      --accent: #15E8FE;
+      --accent-dim: rgba(21, 232, 254, 0.12);
+      --text: #FFFFFF;
+      --text-muted: #9CA3AF;
+      --success: #4CAF50;
+      --danger: #FF6B6B;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .header-inner {
+      max-width: 760px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      height: 64px;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+    }
+
+    .app-name {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+
+    .app-name span {
+      color: var(--accent);
+    }
+
+    .badge {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(21, 232, 254, 0.3);
+      border-radius: 999px;
+      padding: 3px 10px;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 60px 24px 40px;
+    }
+
+    .langs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .langs a {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+    }
+
+    .langs a:hover { color: var(--text); }
+
+    .langs a[aria-current="page"] {
+      color: var(--accent);
+      background: var(--accent-dim);
+      border-color: rgba(21, 232, 254, 0.3);
+    }
+
+    .hero h1 {
+      font-size: clamp(28px, 5vw, 40px);
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1.15;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 .highlight {
+      color: var(--accent);
+    }
+
+    .hero p {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 540px;
+    }
+
+    .updated {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 14px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      flex-shrink: 0;
+    }
+
+    /* ── Card pill summary ── */
+    .summary-grid {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px 40px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .summary-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+
+    .summary-card .icon {
+      font-size: 22px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .summary-card .label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .summary-card .desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* ── Content ── */
+    .content {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .section-icon {
+      font-size: 18px;
+      width: 36px;
+      height: 36px;
+      background: var(--accent-dim);
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .section-header h2 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+
+    .section-body {
+      padding: 20px 24px;
+      color: var(--text-muted);
+      font-size: 14.5px;
+    }
+
+    .section-body p + p { margin-top: 12px; }
+
+    .section-body ul {
+      margin-top: 10px;
+      padding-left: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .section-body ul li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .section-body ul li::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+      margin-top: 7px;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      text-align: center;
+      padding: 28px 24px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-inner">
+      <img src="./icon.png" alt="Icona di Spendr" class="logo" />
+      <span class="app-name">Spend<span>r</span></span>
+      <span class="badge">Informativa sulla privacy</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <nav class="langs" aria-label="Lingua">
+        <a href="./privacy-policy.html" lang="pt-BR">Português</a>
+        <a href="./privacy-policy.en.html" lang="en">English</a>
+        <a href="./privacy-policy.it.html" lang="it" aria-current="page">Italiano</a>
+      </nav>
+      <h1>I tuoi dati sono tuoi.<br /><span class="highlight">Nulla viene venduto.</span></h1>
+      <p>Spendr funziona sul tuo dispositivo. Se crei un account, una copia dei tuoi dati resta sul server di Spendr per sincronizzarli e ritrovarli su un nuovo dispositivo. Niente pubblicità, niente tracciamento, nessuna vendita di dati.</p>
+      <div class="updated">
+        <span class="dot"></span>
+        Aggiornata il 27 ottobre 2026
+      </div>
+    </section>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="icon">📱</div>
+        <div>
+          <div class="label">Funziona senza account</div>
+          <div class="desc">Senza account, i tuoi dati restano solo sul dispositivo</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">☁️</div>
+        <div>
+          <div class="label">Account facoltativo</div>
+          <div class="desc">Con un account, una copia resta sul server di Spendr</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">🚫</div>
+        <div>
+          <div class="label">Nessun tracciamento</div>
+          <div class="desc">Niente pubblicità, niente analytics, niente SDK di terze parti</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="icon">🤝</div>
+        <div>
+          <div class="label">Nulla viene venduto</div>
+          <div class="desc">I tuoi dati non vengono venduti né condivisi</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">📱</div>
+          <h2>Cosa resta sul tuo dispositivo</h2>
+        </div>
+        <div class="section-body">
+          <p>Movimenti, conti, carte, conti da pagare, budget, debiti, obiettivi, categorie e impostazioni sono salvati in un database sul dispositivo stesso.</p>
+          <p>Senza account, nulla di tutto questo esce dal dispositivo. L'app usa internet solo per scaricare il tasso CDI e gli aggiornamenti dell'app stessa (vedi «Servizi di terze parti»).</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🔔</div>
+          <h2>Notifiche della banca (acquisizione automatica)</h2>
+        </div>
+        <div class="section-body">
+          <p>Su Android, se consenti l'accesso alle notifiche, Spendr legge le notifiche in arrivo per trasformare acquisti, Pix e trasferimenti in movimenti.</p>
+          <p>Viene salvata solo la notifica che riporta un importo in denaro e proviene da un'app bancaria (o da un messaggio che cita una banca): il titolo, il testo, l'app di origine e l'orario. Le altre notifiche vengono scartate senza essere salvate.</p>
+          <p>Puoi disattivare questo accesso quando vuoi, nelle impostazioni di Android.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">☁️</div>
+          <h2>Se crei un account</h2>
+        </div>
+        <div class="section-body">
+          <p>L'account è facoltativo e serve a sincronizzare i dati tra dispositivi e a recuperarli su un nuovo dispositivo. Con un account, il server di Spendr conserva:</p>
+          <ul>
+            <li><strong>Registrazione</strong> — nome, e-mail, valuta e lingua. La password non viene mai salvata: solo un'impronta crittografica (bcrypt).</li>
+            <li><strong>I dati dell'app</strong> — movimenti, conti e carte (nome, banca, ultime 4 cifre, limite e saldo), trasferimenti, conti da pagare, budget, debiti, obiettivi, le categorie che l'app ha imparato per ogni negozio e le tue preferenze.</li>
+            <li><strong>Notifiche della banca</strong> — le notifiche acquisite, compreso il testo della notifica, perché la revisione possa continuare su un altro dispositivo.</li>
+          </ul>
+          <p>La connessione con il server è cifrata (HTTPS). La sessione usa un accesso che scade dopo 15 minuti e una chiave di rinnovo salvata nell'archivio sicuro del dispositivo; sul server resta solo l'impronta di questa chiave.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🩺</div>
+          <h2>Diagnostica</h2>
+        </div>
+        <div class="section-body">
+          <p>Per correggere gli errori, l'app tiene un registro tecnico di ciò che ha fatto: cosa ha deciso su ogni notifica, gli errori di sincronizzazione, la versione dell'app, il sistema e un identificativo casuale dell'installazione (non è il numero del dispositivo).</p>
+          <p>Con un account, questo registro viene inviato al server al massimo ogni 6 ore e cancellato dopo 30 giorni. Quando una notifica della banca non viene capita, il suo testo viene inviato insieme, perché la lettura possa essere corretta. Il registro non contiene mai e-mail, password o chiave di accesso.</p>
+          <p>Il server registra anche ogni richiesta che riceve (il percorso, l'esito, il tempo e l'indirizzo IP senza le ultime cifre), senza il contenuto della richiesta.</p>
+          <p>In Impostazioni, «Esporta diagnostica» salva questo registro in un file che esce dal dispositivo solo se lo condividi.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🌐</div>
+          <h2>Servizi di terze parti</h2>
+        </div>
+        <div class="section-body">
+          <ul>
+            <li><strong>Banca Centrale del Brasile</strong> — l'app consulta il tasso CDI per calcolare il rendimento dei conti. Nessun tuo dato viene inviato.</li>
+            <li><strong>Expo</strong> — distribuisce gli aggiornamenti dell'app.</li>
+          </ul>
+          <p>Spendr non usa pubblicità, analytics, tracciamento né segnalazioni di errore di terze parti, e non vende, affitta né condivide i tuoi dati.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🔐</div>
+          <h2>Permessi</h2>
+        </div>
+        <div class="section-body">
+          <ul>
+            <li><strong>Accesso alle notifiche</strong> — per l'acquisizione automatica delle notifiche della banca. Facoltativo.</li>
+            <li><strong>Notifiche</strong> — per i promemoria dei conti da pagare. Generati sul dispositivo stesso.</li>
+            <li><strong>Biometria</strong> — per bloccare l'app con l'impronta o il volto, tramite il sistema stesso. L'app non riceve dati biometrici.</li>
+            <li><strong>File</strong> — per esportare e importare il backup, i report in CSV e gli estratti conto OFX.</li>
+            <li><strong>Internet</strong> — per l'account, la sincronizzazione e il tasso CDI.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">💾</div>
+          <h2>Backup ed esportazione</h2>
+        </div>
+        <div class="section-body">
+          <p>Il backup e i report sono file che generi tu e invii dove preferisci, tramite la condivisione del sistema. Non sono cifrati e il backup contiene il testo delle notifiche della banca: conservali in un posto sicuro.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🗑️</div>
+          <h2>I tuoi controlli</h2>
+        </div>
+        <div class="section-body">
+          <ul>
+            <li><strong>Esci dall'account</strong> — chiude la sessione sul server e mantiene tutto su questo dispositivo.</li>
+            <li><strong>Reimposta tutti i dati</strong> — in Impostazioni, cancella movimenti, conti, carte, conti da pagare, budget, debiti, obiettivi e notifiche acquisite; restano le categorie, ciò che l'app ha imparato di ogni negozio e le impostazioni. Con un account, cancella davvero anche sul server, e gli altri dispositivi collegati all'account cancellano alla sincronizzazione successiva. Di ogni notifica cancellata resta su questo dispositivo solo un segno, senza testo né importo, perché la stessa notifica non entri di nuovo.</li>
+            <li><strong>Elimina l'account</strong> — in Impostazioni, nella sezione Account, elimina l'account e tutti i suoi dati sul server e su tutti i dispositivi collegati — su questo subito; gli altri escono dall'account e cancellano i dati la prossima volta che si collegano al server. Su ogni dispositivo restano le categorie, ciò che l'app ha imparato di ogni negozio e le impostazioni. Chi non ha più l'app può chiedere l'eliminazione dell'account via e-mail: vinicosta37@gmail.com.</li>
+          </ul>
+          <p>Ai sensi della LGPD (la legge brasiliana sulla protezione dei dati), puoi chiedere l'accesso, la rettifica o la cancellazione dei tuoi dati. Il backup in Impostazioni ti dà già una copia di tutto; per il resto, scrivi al contatto qui sotto.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">👶</div>
+          <h2>Minori</h2>
+        </div>
+        <div class="section-body">
+          <p>Spendr non è pensato per i minori di 13 anni e non raccoglie consapevolmente i loro dati.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">🔄</div>
+          <h2>Modifiche a questa informativa</h2>
+        </div>
+        <div class="section-body">
+          <p>Quando questa informativa cambia, la nuova versione compare qui con la data di aggiornamento. Le nuove funzioni che usano i tuoi dati vengono spiegate prima di arrivare nell'app.</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-icon">✉️</div>
+          <h2>Contatti</h2>
+        </div>
+        <div class="section-body">
+          <p>Domande su questa informativa o sui tuoi dati: vinicosta37@gmail.com.</p>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer>
+    <p>Spendr — nato dal progetto open source di <a href="https://github.com/okazakee" target="_blank">okazakee</a>.</p>
+  </footer>
+
+</body>
+</html>

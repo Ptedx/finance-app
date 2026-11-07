@@ -88,6 +88,31 @@
       padding: 60px 24px 40px;
     }
 
+    .langs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .langs a {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+    }
+
+    .langs a:hover { color: var(--text); }
+
+    .langs a[aria-current="page"] {
+      color: var(--accent);
+      background: var(--accent-dim);
+      border-color: rgba(21, 232, 254, 0.3);
+    }
+
     .hero h1 {
       font-size: clamp(28px, 5vw, 40px);
       font-weight: 800;
@@ -270,6 +295,11 @@
 
   <main>
     <section class="hero">
+      <nav class="langs" aria-label="Idioma">
+        <a href="./privacy-policy.html" lang="pt-BR" aria-current="page">Português</a>
+        <a href="./privacy-policy.en.html" lang="en">English</a>
+        <a href="./privacy-policy.it.html" lang="it">Italiano</a>
+      </nav>
       <h1>Seus dados são seus.<br /><span class="highlight">Nada é vendido.</span></h1>
       <p>O Spendr funciona no seu aparelho. Se você criar uma conta, uma cópia dos seus dados fica no servidor do Spendr para sincronizar e voltar num aparelho novo. Não há anúncios, rastreio nem venda de dados.</p>
       <div class="updated">
