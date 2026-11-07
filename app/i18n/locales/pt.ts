@@ -1289,6 +1289,8 @@ const pt = {
 			due: 'Vencimento',
 			explain_one: 'A fatura fecha todo dia {{day}} e vence {{count}} dia depois, no próximo dia útil se cair em fim de semana ou feriado. Compras a partir de {{best}} já entram na fatura seguinte.',
 			explain_other: 'A fatura fecha todo dia {{day}} e vence {{count}} dias depois, no próximo dia útil se cair em fim de semana ou feriado. Compras a partir de {{best}} já entram na fatura seguinte.',
+			explainDueDay: 'A fatura fecha todo dia {{day}} e vence todo dia {{dueDay}}, no próximo dia útil se cair em fim de semana ou feriado. Compras a partir de {{best}} já entram na fatura seguinte.',
+			explainClosingOnly: 'A fatura fecha todo dia {{day}}; vencimento em fim de semana ou feriado passa para o próximo dia útil. Compras a partir de {{best}} já entram na fatura seguinte.',
 		},
 		pay: {
 			title: 'Pagar fatura',

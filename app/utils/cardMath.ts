@@ -8,13 +8,16 @@
  *
  * ## Ciclo
  *
- * O usuário informa o **dia do fechamento** e quantos dias depois a fatura vence (7 no
- * Nubank):
+ * O usuário informa o **dia do fechamento** e o **dia do vencimento**, os dois como a fatura
+ * do banco mostra:
  *
  * - a fatura fecha no começo do dia do fechamento — compras desse dia em diante vão
  *   para a próxima. O dia do fechamento é, por isso, o **melhor dia de compra**;
- * - o vencimento é o fechamento mais N dias, empurrado para o próximo dia útil quando
- *   cai em fim de semana ou feriado bancário;
+ * - o vencimento é o dia do vencimento (`dueDay`) no mês do fechamento, quando cai depois
+ *   dele, ou no mês seguinte; dia que o mês não tem é o último. Fecha 28 e vence 5: a de
+ *   novembro vence 05/12, a de fevereiro 05/03. Em fim de semana ou feriado bancário, o
+ *   próximo dia útil. Cartão sem o dia gravado usa o fechamento mais N dias
+ *   (`closingDaysBefore`), a regra de antes (SPD-119);
  * - a fatura leva o **nome do mês em que fecha**: fecha 25/09 e vence 02/10, é a fatura
  *   de setembro. A de outubro só começa a receber compras em 25/09.
  *
@@ -79,21 +82,28 @@ export interface InvoiceCycle {
 	/** Último dia com compras nesta fatura (véspera do fechamento). */
 	end: string;
 	closingDate: string;
-	/** Fechamento mais N dias, já ajustado para dia útil. */
+	/** O dia do vencimento depois do fechamento (ou fechamento mais N dias), já em dia útil. */
 	dueDate: string;
 }
 
 /** O que define o ciclo de um cartão. */
 export interface CycleRule {
 	closingDay: number;
-	/** Dias entre o fechamento e o vencimento. */
+	/**
+	 * Dias entre o fechamento e o vencimento. Só decide o vencimento sem `dueDay`; com ele, é o
+	 * prazo de uma fatura só (a que estava aberta quando o dono digitou).
+	 */
 	dueDaysAfter: number;
+	/** O dia de vencimento que a fatura mostra. Quando há, toda fatura vence nesse dia. */
+	dueDay?: number;
 }
 
 export interface CardSettings {
 	closingDay: number | null;
 	/** Dias entre o fechamento e o vencimento (coluna `closingDaysBefore`). */
 	closingDaysBefore: number | null;
+	/** O dia de vencimento digitado (coluna `dueDay`). Sem ele, o vencimento sai do prazo. */
+	dueDay?: number | null;
 	creditLimitCents: number | null;
 	openingBalanceCents: number;
 	openingBalanceDate: string;
@@ -126,11 +136,16 @@ export interface CardMovement {
 	inbound: boolean;
 }
 
-/** A regra do ciclo, ou nula enquanto o cartão não tem dia de fechamento. */
-export const cycleRuleOf = (settings: Pick<CardSettings, 'closingDay' | 'closingDaysBefore'>): CycleRule | null =>
-	settings.closingDay === null
-		? null
-		: { closingDay: settings.closingDay, dueDaysAfter: settings.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE };
+/**
+ * A regra do ciclo, ou nula enquanto o cartão não tem dia de fechamento. Leva o dia de
+ * vencimento quando o cartão o tem gravado: é ele que dá o vencimento de cada fatura.
+ */
+export const cycleRuleOf = (settings: Pick<CardSettings, 'closingDay' | 'closingDaysBefore' | 'dueDay'>): CycleRule | null => {
+	if (settings.closingDay === null) return null;
+	const rule: CycleRule = { closingDay: settings.closingDay, dueDaysAfter: settings.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE };
+	if (settings.dueDay) rule.dueDay = settings.dueDay;
+	return rule;
+};
 
 /**
  * Nota do lançamento de ajuste com a fatura do banco: o mesmo texto em qualquer idioma, é
@@ -240,6 +255,21 @@ const dayNumber = (date: string): number => {
 /** Dias de `from` até `to`; negativo quando `to` já passou. */
 export const daysBetween = (from: string, to: string): number => dayNumber(to) - dayNumber(from);
 
+/**
+ * O vencimento de uma fatura antes do dia útil. Com o dia de vencimento: esse dia no mês do
+ * fechamento, quando cai depois dele, senão no mês seguinte; dia que o mês não tem é o último
+ * (fecha 25 e vence 31: 30/11; fecha 28 e vence 5: 05/03 para a de fevereiro). É a conta do
+ * formulário (`dueGapFor`), então o prazo gravado é o desta data na fatura que estava aberta
+ * quando o dono digitou. Sem o dia, o fechamento mais o prazo.
+ */
+const rawDueDate = (year: number, month: number, closingDate: string, rule: CycleRule): string => {
+	if (!rule.dueDay) return addDays(closingDate, rule.dueDaysAfter);
+	const sameMonth = buildClampedDate(year, month, rule.dueDay);
+	if (sameMonth > closingDate) return sameMonth;
+	const [ny, nm] = shiftYearMonth(year, month, 1);
+	return buildClampedDate(ny, nm, rule.dueDay);
+};
+
 /** A fatura que fecha no mês `year`/`month`. Sempre derivada da regra, nunca de uma data já presa. */
 export const invoiceClosingIn = (year: number, month: number, rule: CycleRule): InvoiceCycle => {
 	const closingDate = buildClampedDate(year, month, rule.closingDay);
@@ -249,7 +279,7 @@ export const invoiceClosingIn = (year: number, month: number, rule: CycleRule): 
 		start: buildClampedDate(py, pm, rule.closingDay),
 		end: addDays(closingDate, -1),
 		closingDate,
-		dueDate: nextBusinessDay(addDays(closingDate, rule.dueDaysAfter)),
+		dueDate: nextBusinessDay(rawDueDate(year, month, closingDate, rule)),
 	};
 };
 

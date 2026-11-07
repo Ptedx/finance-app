@@ -333,6 +333,13 @@ describe('prazo entre fechamento e vencimento, pelo dia do vencimento da fatura'
 		expect(mockSaveAccount.mock.calls[0][0]).toMatchObject({ id: 'c6', closingDay: 28, closingDaysBefore: 8, dueDay: 5 });
 	});
 
+	it('a prévia vence no dia digitado, não no prazo gravado: em fevereiro, com os 8 dias de outubro, 05/03 (não 08/03)', async () => {
+		mockToday.value = '2027-02-10';
+		mockAccounts.accounts = [{ ...C6, closingDay: 28, closingDaysBefore: 8, dueDay: 5 }];
+		await mount('c6');
+		expect(visibleTexts()).toContain(mockT('cards.edit.cyclePreview', { month: 'fevereiro', closing: '28/02', due: '05/03' }));
+	});
+
 	it('trocar o vencimento de um cartão existente recalcula o prazo: C6 fecha 3, vence 13 → 15 são 12 dias', async () => {
 		mockAccounts.accounts = [C6];
 		await mount('c6');

@@ -1295,6 +1295,8 @@ account: {
 			due: 'Scadenza',
 			explain_one: "L'estratto chiude ogni giorno {{day}} e scade {{count}} giorno dopo, il primo giorno lavorativo se cade nel weekend o in un festivo. Gli acquisti dal {{best}} vanno nell'estratto successivo.",
 			explain_other: "L'estratto chiude ogni giorno {{day}} e scade {{count}} giorni dopo, il primo giorno lavorativo se cade nel weekend o in un festivo. Gli acquisti dal {{best}} vanno nell'estratto successivo.",
+			explainDueDay: "L'estratto chiude ogni giorno {{day}} e scade ogni giorno {{dueDay}}, il primo giorno lavorativo se cade nel weekend o in un festivo. Gli acquisti dal {{best}} vanno nell'estratto successivo.",
+			explainClosingOnly: "L'estratto chiude ogni giorno {{day}}; la scadenza nel weekend o in un festivo passa al primo giorno lavorativo. Gli acquisti dal {{best}} vanno nell'estratto successivo.",
 		},
 		pay: {
 			title: 'Paga estratto',

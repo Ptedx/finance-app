@@ -136,12 +136,15 @@ export interface Account extends SyncMeta {
 	network: string | null;
 	/** Dia do mês em que a fatura fecha. Define o ciclo e o nome da fatura. Só cartões. */
 	closingDay: number | null;
-	/** Informativo: o dia de vencimento que a fatura mostra, como o dono digitou. O ciclo não usa. */
+	/**
+	 * O dia de vencimento que a fatura mostra, como o dono digitou. Dá o vencimento de cada fatura
+	 * (`cardMath`, SPD-119); sem ele, o vencimento é o fechamento mais `closingDaysBefore`.
+	 */
 	dueDay: number | null;
 	/**
 	 * Dias entre o fechamento e o vencimento, contados pelo formulário a partir dos dois dias
-	 * que a fatura mostra. O vencimento real é o fechamento mais isso, no próximo dia útil.
-	 * Só cartões.
+	 * que a fatura mostra. Sem `dueDay`, o vencimento é o fechamento mais isso, no próximo dia
+	 * útil; com ele, fica gravado para os aparelhos com versão antiga. Só cartões.
 	 */
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;

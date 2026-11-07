@@ -667,11 +667,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 							<Line label={t('cards.dates.closing')} value={formatDayMonth(summary.openCycle.closingDate)} />
 							<Line label={t('cards.dates.due')} value={formatDayMonth(summary.openCycle.dueDate)} />
 							<Text style={styles.explain}>
-								{t('cards.dates.explain', {
-									count: cycleRuleOf(card)?.dueDaysAfter ?? 7,
-									day: card.closingDay,
-									best: formatDayMonth(summary.openCycle.closingDate),
-								})}
+								{t(...datesExplain(card, card.closingDay, formatDayMonth(summary.openCycle.closingDate)))}
 							</Text>
 						</View>
 					</View>
@@ -805,6 +801,22 @@ const DuplicatesNotice: React.FC<{ count: number; extraCents: number; onlyMarked
 			</View>
 		</Pressable>
 	);
+};
+
+/**
+ * O texto do painel "Datas" com a regra que o ciclo usa (`cycleRuleOf`): com o dia de
+ * vencimento gravado, "vence todo dia X" — o prazo gravado é o de uma fatura só e mudaria de
+ * mês a mês; sem o dia, o prazo gravado; sem nenhum dos dois, o texto não diz prazo (antes
+ * dizia 7, suposto).
+ */
+const datesExplain = (
+	card: Pick<Account, 'dueDay' | 'closingDaysBefore'>,
+	day: number,
+	best: string
+): [key: string, params: Record<string, unknown>] => {
+	if (card.dueDay) return ['cards.dates.explainDueDay', { day, dueDay: card.dueDay, best }];
+	if (card.closingDaysBefore) return ['cards.dates.explain', { count: card.closingDaysBefore, day, best }];
+	return ['cards.dates.explainClosingOnly', { day, best }];
 };
 
 const Line: React.FC<{ label: string; value: string }> = ({ label, value }) => (

@@ -35,11 +35,12 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * Campos na ordem em que se acha a informação no app do banco: banco, final, bandeira,
  * limite, dia de fechamento e dia de vencimento — os dois como a fatura mostra, em qualquer
  * banco. Nada vem suposto: o cartão novo começa sem banco e sem vencimento (SPD-109; antes
- * vinha o Nubank escolhido e 7 dias de prazo). O ciclo guarda o prazo entre os dois
- * (`closingDaysBefore`), contado na fatura aberta de hoje (`dueGapFor`), e o vencimento sai
- * dele, já empurrado para dia útil; a tela mostra as datas da fatura atual para conferir com
- * o banco. Só o banco é obrigatório; sem fechamento o cartão funciona, mas não monta faturas
- * — e a tela diz isso.
+ * vinha o Nubank escolhido e 7 dias de prazo). Cada fatura vence no dia digitado, já
+ * empurrado para dia útil (SPD-119); o prazo entre os dois (`closingDaysBefore`), contado na
+ * fatura aberta de hoje (`dueGapFor`), continua gravado para o aparelho com versão antiga,
+ * que só lê o prazo. A tela mostra as datas da fatura atual para conferir com o banco. Só o
+ * banco é obrigatório; sem fechamento o cartão funciona, mas não monta faturas — e a tela
+ * diz isso.
  *
  * A fatura que o banco mostra hoje vai com o nome do mês no rótulo, para não haver dúvida
  * de qual é. Entre o fechamento e o vencimento o banco mostra duas — a fechada a pagar e a
@@ -194,12 +195,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		return dueGapFor(closing, due, todayISO());
 	};
 
-	// As datas da fatura atual com o que está digitado, para conferir com o app do banco.
+	// As datas da fatura atual com o que está digitado, para conferir com o app do banco. A
+	// regra é a que o salvar grava: com o dia de vencimento, que dá o vencimento de cada fatura.
 	const typedClosing = parseDay(closingDay);
-	const typedGap = gapOf(typedClosing, parseDay(dueDay));
+	const typedDue = parseDay(dueDay);
+	const typedGap = gapOf(typedClosing, typedDue);
 	const typedRule =
-		typedClosing && typedGap !== null && typedGap >= 1 && typedGap <= MAX_DUE_GAP
-			? { closingDay: typedClosing, dueDaysAfter: typedGap }
+		typedClosing && typedDue && typedGap !== null && typedGap >= 1 && typedGap <= MAX_DUE_GAP
+			? cycleRuleOf({ closingDay: typedClosing, closingDaysBefore: typedGap, dueDay: typedDue })
 			: null;
 	const cyclePreview = typedRule ? cycleFor(todayISO(), typedRule) : null;
 	// As faturas que o banco mostra hoje: a aberta e, até o vencimento, a fechada.
@@ -253,8 +256,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			color,
 			last4: last4 || null,
 			closingDay: closing || null,
-			// Informativo: o dia de vencimento que a fatura mostra, como o dono digitou. O ciclo
-			// sai do fechamento e do prazo.
+			// O dia de vencimento que a fatura mostra, como o dono digitou: é ele que dá o
+			// vencimento de cada fatura. O prazo fica para o aparelho com versão antiga.
 			dueDay: closing && due ? due : null,
 			closingDaysBefore: closing ? gap : null,
 			creditLimitCents: limitCents,

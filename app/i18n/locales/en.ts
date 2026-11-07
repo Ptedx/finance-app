@@ -1294,6 +1294,8 @@ account: {
 			due: 'Due',
 			explain_one: 'The bill closes on day {{day}} of each month and is due {{count}} day later, on the next business day if that falls on a weekend or holiday. Purchases from {{best}} go to the next bill.',
 			explain_other: 'The bill closes on day {{day}} of each month and is due {{count}} days later, on the next business day if that falls on a weekend or holiday. Purchases from {{best}} go to the next bill.',
+			explainDueDay: 'The bill closes on day {{day}} and is due on day {{dueDay}} of each month, on the next business day if that falls on a weekend or holiday. Purchases from {{best}} go to the next bill.',
+			explainClosingOnly: 'The bill closes on day {{day}} of each month; a due date on a weekend or holiday moves to the next business day. Purchases from {{best}} go to the next bill.',
 		},
 		pay: {
 			title: 'Pay bill',
