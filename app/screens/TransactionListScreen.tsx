@@ -171,6 +171,11 @@ const TransactionListScreen = () => {
 		(transaction: Transaction) => router.push({ pathname: '/transaction/[id]', params: { id: transaction.id } }),
 		[router]
 	);
+	// A transferência não tem tela de detalhe: abre direto a edição, que também exclui (E2E-28).
+	const openTransfer = useCallback(
+		(transfer: Transfer) => router.push({ pathname: '/transaction/edit/[id]', params: { id: transfer.id, kind: 'transfer' } }),
+		[router]
+	);
 
 	const isFiltered = kind !== 'all' || accountId !== null || search.trim() !== '';
 	const clearFilters = () => {
@@ -341,7 +346,7 @@ const TransactionListScreen = () => {
 					item.type === 'transaction' ? (
 						<TransactionItem transaction={item.transaction} onPress={openTransaction} />
 					) : (
-						<TransferItem transfer={item.transfer} accountsById={accountsById} />
+						<TransferItem transfer={item.transfer} accountsById={accountsById} onPress={openTransfer} />
 					)
 				}
 				renderSectionHeader={({ section }) => (

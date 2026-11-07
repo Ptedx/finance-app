@@ -19,8 +19,12 @@ const mockUpdateExistingTransaction = jest.fn(async (_edit: unknown) => {});
 const mockRefreshData = jest.fn(async () => {});
 const mockAddTransaction = jest.fn(async (_draft: unknown): Promise<string> => 'parcela');
 const mockSchedule = jest.fn();
+const mockSaveTransfer = jest.fn(async (_input: unknown): Promise<boolean> => true);
 const mockAccounts = {
+	accounts: [] as Array<Record<string, unknown>>,
 	activeAccounts: [] as Array<Record<string, unknown>>,
+	saveTransfer: (input: unknown) => mockSaveTransfer(input),
+	removeTransfer: jest.fn(async () => {}),
 };
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
@@ -69,7 +73,7 @@ jest.mock('../../utils/categoryEditUtils', () => ({
 	generateUniqueId: () => 'grupo-1',
 }));
 
-import { AccessibilityInfo, ScrollView, Switch, Text, TextInput } from 'react-native';
+import { AccessibilityInfo, ScrollView, Text, TextInput } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { Transaction } from '../../database/schema';
 import { configureDateLocale } from '../../utils/dateUtils';
@@ -166,6 +170,13 @@ const pickCategory = async (tree: ReactTestRenderer, name: string) => {
 	await press(node);
 };
 
+/** Toca um dos tipos (Despesa, Receita, Transferência) no topo do formulário. */
+const pressType = async (tree: ReactTestRenderer, kind: 'expense' | 'income' | 'transfer') => {
+	const [option] = queryTestId(tree, `transaction-form-type-${kind}`);
+	if (!option) throw new Error(`tipo ${kind} não está na tela`);
+	await press(option);
+};
+
 const pickAccount = async (tree: ReactTestRenderer, name: string) => {
 	const chip = tree.root.find((node) => node.props.accessibilityRole === 'radio' && node.props.accessibilityLabel === name && typeof node.props.onPress === 'function');
 	await press(chip);
@@ -199,6 +210,7 @@ beforeEach(() => {
 	});
 	jest.clearAllMocks();
 	mockAccounts.activeAccounts = [CARD, CHECKING];
+	mockAccounts.accounts = [CARD, CHECKING];
 	announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {});
 });
 
@@ -286,8 +298,7 @@ describe('TransactionForm — parcelas no cartão (E2E-12)', () => {
 		expect(byTestId(tree, 'transaction-form-installments').props.value).toBe('1');
 
 		// Receita no cartão (estorno) não é compra parcelada.
-		const [toggle] = ofType(tree.root, Switch);
-		await act(async () => toggle.props.onValueChange(true));
+		await pressType(tree, 'income');
 		expect(queryTestId(tree, 'transaction-form-installments')).toHaveLength(0);
 	});
 
@@ -444,3 +455,91 @@ function transaction(overrides: Partial<Transaction> = {}): Transaction {
 		...overrides,
 	} as Transaction;
 }
+
+describe('TransactionForm — transferência entre contas (E2E-28)', () => {
+	const RESERVE = { id: 'reserva', name: 'Reserva', kind: 'savings', color: '#00A86B', last4: null, cardNames: null, closingDay: null, closingDaysBefore: null, archived: false };
+
+	const transferIds = (tree: ReactTestRenderer, side: 'from' | 'to'): string[] => [
+		...new Set(
+			tree.root
+				.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith(`transfer-${side}-`))
+				.map((node) => node.props.testID.slice(`transfer-${side}-`.length))
+		),
+	];
+
+	const pressId = async (tree: ReactTestRenderer, testID: string) => {
+		const [node] = queryTestId(tree, testID);
+		if (!node) throw new Error(`${testID} não está na tela`);
+		await press(node);
+	};
+
+	beforeEach(() => {
+		mockAccounts.activeAccounts = [CARD, CHECKING, RESERVE];
+		mockAccounts.accounts = [CARD, CHECKING, RESERVE];
+	});
+
+	it('o "+" oferece Transferência ao lado de Despesa e Receita', async () => {
+		const tree = await render();
+		for (const kind of ['expense', 'income', 'transfer']) {
+			expect(queryTestId(tree, `transaction-form-type-${kind}`).length).toBeGreaterThan(0);
+		}
+		expect(allTexts(tree)).toContain('transactionForm.transfer.type');
+		expect(queryTestId(tree, 'transfer-form')).toHaveLength(0);
+	});
+
+	it('Transferência troca os campos por De, Para, Valor, Data e Descrição, sem categoria', async () => {
+		const tree = await render();
+		await pressType(tree, 'transfer');
+
+		expect(queryTestId(tree, 'transfer-form').length).toBeGreaterThan(0);
+		expect(queryTestId(tree, 'transaction-form-amount')).toHaveLength(0);
+		const texts = allTexts(tree);
+		for (const key of ['transfer.from', 'transfer.to', 'amount', 'date', 'note']) expect(texts).toContain(`transactionForm.${key}`);
+		// O cartão de crédito é destino (pagar a fatura), nunca origem.
+		expect(transferIds(tree, 'from')).toEqual(['inter', 'reserva']);
+		expect(transferIds(tree, 'to')).toEqual(['nubank', 'inter', 'reserva']);
+		// O tipo continua escolhível: voltar para Despesa traz o formulário de antes.
+		await pressType(tree, 'expense');
+		expect(queryTestId(tree, 'transfer-form')).toHaveLength(0);
+		expect(queryTestId(tree, 'transaction-form-amount').length).toBeGreaterThan(0);
+	});
+
+	it('De igual a Para não salva e diz por quê', async () => {
+		const tree = await render();
+		await pressType(tree, 'transfer');
+		await pressId(tree, 'transfer-from-inter');
+		await pressId(tree, 'transfer-to-inter');
+		await act(async () => {
+			queryTestId(tree, 'transfer-form-amount')[0].props.onChangeText('1000');
+		});
+		await pressId(tree, 'transfer-form-save');
+
+		expect(mockSaveTransfer).not.toHaveBeenCalled();
+		expect(String(queryTestId(tree, 'transfer-form-error-summary')[0].props.children)).toBe('transactionForm.transfer.sameAccount');
+	});
+
+	it('R$ 1.000 do Inter para a Reserva em 07/11 é transferência, não lançamento', async () => {
+		const onSubmit = jest.fn();
+		const tree = await render({ onSubmit });
+		await pressType(tree, 'transfer');
+		await pressId(tree, 'transfer-from-inter');
+		await pressId(tree, 'transfer-to-reserva');
+		await act(async () => {
+			queryTestId(tree, 'transfer-form-amount')[0].props.onChangeText('1000');
+		});
+		await pressId(tree, 'transfer-form-save');
+
+		expect(mockSaveTransfer).toHaveBeenCalledWith(
+			expect.objectContaining({ fromAccountId: 'inter', toAccountId: 'reserva', amountCents: 100_000, date: '2026-11-07' })
+		);
+		expect(mockAddNewTransaction).not.toHaveBeenCalled();
+		expect(mockAddTransaction).not.toHaveBeenCalled();
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+	});
+
+	it('editar um lançamento não oferece Transferência', async () => {
+		const tree = await render({ initialTransaction: transaction() });
+		expect(queryTestId(tree, 'transaction-form-type-transfer')).toHaveLength(0);
+		expect(queryTestId(tree, 'transaction-form-type-expense').length).toBeGreaterThan(0);
+	});
+});

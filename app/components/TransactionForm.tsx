@@ -7,9 +7,9 @@ import {
 	KeyboardAvoidingView,
 	type LayoutChangeEvent,
 	Platform,
+	Pressable,
 	ScrollView,
 	StyleSheet,
-	Switch,
 	Text,
 	TextInput,
 	TouchableOpacity,
@@ -36,6 +36,17 @@ import {
 import AccountPicker from './AccountPicker';
 import CategoryPicker from './CategoryPicker';
 import DatePickerModal from './DatePickerModal';
+import TransferForm from './TransferForm';
+
+/** O que o "+" lança: despesa, receita ou transferência entre contas suas (E2E-28). */
+type EntryKind = 'expense' | 'income' | 'transfer';
+
+/** A cor de cada tipo no seletor: a mesma dos botões Salvar de cada formulário. */
+const KIND_COLORS: Record<EntryKind, string> = {
+	expense: '#FF6B6B',
+	income: '#4CAF50',
+	transfer: '#15E8FE',
+};
 
 export interface InstallmentPlan {
 	/** Valor de cada parcela, em centavos; somam o total. */
@@ -144,6 +155,9 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				? defaultIsIncome
 				: false
 	);
+	// Transferência só no lançamento novo: um lançamento gravado não vira transferência
+	// (é outra tabela), e a transferência se edita pela linha dela em Lançamentos.
+	const [isTransfer, setIsTransfer] = useState(false);
 	// Texto, para o campo poder ficar vazio enquanto se digita; "1" é à vista.
 	const [installments, setInstallments] = useState('1');
 	const [isSubmitting, setIsSubmitting] = useState(false);
@@ -294,8 +308,13 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 		setShowDateModal(false);
 	};
 
-	const toggleTransactionType = () => {
-		const newIsIncome = !isIncome;
+	const chooseType = (kind: EntryKind) => {
+		if (kind === 'transfer') {
+			setIsTransfer(true);
+			return;
+		}
+		setIsTransfer(false);
+		const newIsIncome = kind === 'income';
 
 		// Drop the selection if it belongs to the other side of the ledger. The category's
 		// own `type` decides this now — it used to be a hardcoded list of ids, so every
@@ -350,6 +369,47 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				})
 			: null;
 
+	const currentKind: EntryKind = isTransfer && !isEditing ? 'transfer' : isIncome ? 'income' : 'expense';
+	const typeOption = (kind: EntryKind, label: string) => {
+		const selected = currentKind === kind;
+		const color = KIND_COLORS[kind];
+		return (
+			<Pressable
+				key={kind}
+				testID={`transaction-form-type-${kind}`}
+				onPress={() => chooseType(kind)}
+				accessibilityRole="radio"
+				accessibilityState={{ selected }}
+				accessibilityLabel={label}
+				style={({ pressed }) => [
+					styles.typeOption,
+					selected && { borderColor: color, backgroundColor: `${color}33` },
+					pressed && styles.pressed,
+				]}
+			>
+				{/* O selecionado não depende só da cor: ganha o check. */}
+				{selected ? <Ionicons name="checkmark-circle" size={16} color={color} /> : null}
+				<Text style={[styles.toggleLabel, selected && { color }]} numberOfLines={1}>
+					{label}
+				</Text>
+			</Pressable>
+		);
+	};
+	const typeSelector = (
+		<View style={styles.typeToggleContainer}>
+			<Text style={styles.label}>{t('transactionForm.type')}</Text>
+			<View style={styles.toggleRow} accessibilityRole="radiogroup" accessibilityLabel={t('transactionForm.type')}>
+				{typeOption('expense', t('transactionForm.expense'))}
+				{typeOption('income', t('transactionForm.income'))}
+				{isEditing ? null : typeOption('transfer', t('transactionForm.transfer.type'))}
+			</View>
+		</View>
+	);
+
+	if (currentKind === 'transfer') {
+		return <TransferForm header={typeSelector} onSubmit={onSubmit} onCancel={onCancel} />;
+	}
+
 	return (
 		<KeyboardAvoidingView
 			behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -362,26 +422,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					</Text>
 				) : null}
 
-				{/* Transaction Type Toggle */}
-				<View style={styles.typeToggleContainer}>
-					<Text style={styles.label}>{t('transactionForm.type')}</Text>
-					<View style={styles.toggleRow}>
-						<Text style={styles.toggleLabel}>{t('transactionForm.expense')}</Text>
-						<Switch
-							value={isIncome}
-							onValueChange={toggleTransactionType}
-							trackColor={{
-								false: 'rgba(255, 107, 107, 0.3)',
-								true: 'rgba(76, 175, 80, 0.3)',
-							}}
-							thumbColor={isIncome ? '#4CAF50' : '#FF6B6B'}
-							ios_backgroundColor="rgba(255, 107, 107, 0.3)"
-							style={styles.switch}
-							accessibilityLabel={t('transactionForm.typeA11y')}
-						/>
-						<Text style={styles.toggleLabel}>{t('transactionForm.income')}</Text>
-					</View>
-				</View>
+				{typeSelector}
 
 				<View style={styles.formGroup} onLayout={measure('amount')} testID="transaction-form-amount-group">
 					<Text style={styles.label}>{t('transactionForm.amount')}</Text>
@@ -702,15 +743,29 @@ const styles = StyleSheet.create({
 		marginTop: 8,
 		backgroundColor: '#1E1E1E',
 		borderRadius: 8,
-		padding: 12,
+		padding: 6,
+		gap: 6,
+	},
+	typeOption: {
+		flex: 1,
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: 4,
+		minHeight: 48,
+		paddingHorizontal: 6,
+		borderRadius: 6,
+		borderWidth: 1,
+		borderColor: 'transparent',
+	},
+	pressed: {
+		opacity: 0.7,
 	},
 	toggleLabel: {
-		fontSize: 16,
+		fontSize: 15,
 		color: '#ffffff',
 		fontWeight: '500',
-	},
-	switch: {
-		marginHorizontal: 20,
+		flexShrink: 1,
 	},
 });
 

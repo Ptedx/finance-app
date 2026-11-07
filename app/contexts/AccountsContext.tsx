@@ -10,6 +10,7 @@ import {
 	type UnassignedAssignment,
 	db,
 	deleteAccount,
+	deleteTransfer,
 	deleteTransfersOf,
 	foldAccountBalance,
 	getAccount,
@@ -129,6 +130,21 @@ export interface CardLedgerRepairNotice {
 	keptCount: number;
 }
 
+/**
+ * Uma transferência entre contas suas, como o formulário a manda: sem `id` é nova, com `id`
+ * é a edição daquela. Um lado nulo é "fora do app" — só aparece ao editar uma transferência
+ * que a captura gravou assim; a manual nova tem os dois lados.
+ */
+export interface TransferInput {
+	id?: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	/** `YYYY-MM-DD`. */
+	date: string;
+	note: string;
+}
+
 export interface ExistingInstallmentsInput {
 	cardId: string;
 	note: string;
@@ -232,6 +248,15 @@ interface AccountsContextType {
 	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
 	 */
 	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<boolean>;
+	/**
+	 * Transferência manual entre contas suas (o "+" e a edição em Lançamentos, E2E-28): não
+	 * é receita nem despesa, só muda o saldo das duas pontas. Nova para um cartão de crédito
+	 * é pagamento de fatura e vai por `recordCardPayment`. Devolve falso quando aquele
+	 * pagamento já estava registrado; recusa De igual a Para e valor que não seja positivo.
+	 */
+	saveTransfer: (input: TransferInput) => Promise<boolean>;
+	/** Apaga (com lápide, que o sync leva) uma transferência. */
+	removeTransfer: (id: string) => Promise<void>;
 	/**
 	 * Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. Com a
 	 * fatura aberta já informada (`openInvoiceInformed`), a parcela atual já está no valor
@@ -800,6 +825,44 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh]
 	);
 
+	const saveTransfer = useCallback(
+		async (input: TransferInput) => {
+			const { fromAccountId, toAccountId, amountCents, date } = input;
+			if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error('Transfer amount must be positive');
+			if (fromAccountId === toAccountId || (fromAccountId === null && toAccountId === null)) {
+				throw new Error('Transfer needs two different accounts');
+			}
+			const note = input.note.trim();
+			if (input.id) {
+				// O mesmo `updateTransfer` com que a captura e o pagamento de fatura completam uma
+				// transferência: a linha fica suja e a fila de sync a leva.
+				await updateTransfer({ id: input.id, fromAccountId, toAccountId, amountCents, date, note });
+			} else {
+				// Para um cartão é o pagamento de fatura, com a mesma conferência do botão "Pagar
+				// fatura" (não lança de novo o que o aviso do banco já registrou). Dois caminhos
+				// para o mesmo dinheiro divergiriam na primeira notificação.
+				const destination = toAccountId ? await getAccount(toAccountId) : null;
+				if (toAccountId && destination?.kind === 'credit_card') {
+					return recordCardPayment(toAccountId, fromAccountId, amountCents, date);
+				}
+				await addTransfer({ fromAccountId, toAccountId, amountCents, date, note });
+			}
+			syncQueue.schedule();
+			await refresh();
+			return true;
+		},
+		[refresh, recordCardPayment]
+	);
+
+	const removeTransfer = useCallback(
+		async (id: string) => {
+			await deleteTransfer(id);
+			syncQueue.schedule();
+			await refresh();
+		},
+		[refresh]
+	);
+
 	const addExistingInstallments = useCallback(
 		async (input: ExistingInstallmentsInput) => {
 			const card = accounts.find((account) => account.id === input.cardId);
@@ -1080,6 +1143,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			adjustCardInvoices,
 			addCardCharge,
 			recordCardPayment,
+			saveTransfer,
+			removeTransfer,
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
@@ -1120,6 +1185,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			adjustCardInvoices,
 			addCardCharge,
 			recordCardPayment,
+			saveTransfer,
+			removeTransfer,
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,

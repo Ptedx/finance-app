@@ -6,9 +6,11 @@
 
 const mockParams: { current: Record<string, string> } = { current: {} };
 const mockTitles: string[] = [];
+// O mesmo roteador a cada render, como o de verdade: a tela de edição o tem como dependência.
+const mockRouter = { back: jest.fn() };
 
 jest.mock('expo-router', () => ({
-	useRouter: () => ({ back: jest.fn() }),
+	useRouter: () => mockRouter,
 	useLocalSearchParams: () => mockParams.current,
 	Stack: {
 		Screen: ({ options }: { options: { title: string } }) => {
@@ -28,6 +30,21 @@ jest.mock('react-i18next', () => ({
 }));
 
 jest.mock('../../components/TransactionForm', () => () => null);
+
+// A transferência (E2E-28) mora em outra tabela: a edição a busca no banco.
+const mockTransferForms: Array<{ initialTransfer?: { id: string } }> = [];
+jest.mock('../../components/TransferForm', () => (props: { initialTransfer?: { id: string } }) => {
+	mockTransferForms.push(props);
+	return null;
+});
+const mockGetTransfer = jest.fn(async (id: string) =>
+	id === 'transf'
+		? { id, fromAccountId: 'corrente', toAccountId: 'reserva', amountCents: 100_000, date: '2026-11-07', note: '', updatedAt: 'u1', deletedAt: null }
+		: id === 'apagada'
+			? { id, fromAccountId: 'corrente', toAccountId: 'reserva', amountCents: 100_000, date: '2026-11-07', note: '', updatedAt: 'u1', deletedAt: 'd1' }
+			: null
+);
+jest.mock('../../database/database', () => ({ getTransfer: (id: string) => mockGetTransfer(id) }));
 
 // A mesma lista a cada render, como o contexto de verdade: as telas a têm como dependência.
 const mockTransactions = [
@@ -74,5 +91,32 @@ describe('títulos das telas de lançamento', () => {
 		['receita', 'transactionForm.titleEditIncome'],
 	])('edição de %s', async (id, title) => {
 		expect(await lastTitle(<EditTransactionScreen />, { id })).toBe(title);
+	});
+});
+
+describe('editar uma transferência a partir de Lançamentos (E2E-28)', () => {
+	beforeEach(() => {
+		mockRouter.back.mockClear();
+		mockTransferForms.length = 0;
+	});
+
+	const settle = () =>
+		act(async () => {
+			await Promise.resolve();
+		});
+
+	it.each([[{ id: 'transf', kind: 'transfer' }], [{ id: 'transf' }]])('%j abre o formulário de transferência com o título dela', async (params) => {
+		await lastTitle(<EditTransactionScreen />, params);
+		await settle();
+		expect(mockTitles[mockTitles.length - 1]).toBe('transactionForm.transfer.titleEdit');
+		expect(mockTransferForms[mockTransferForms.length - 1]?.initialTransfer?.id).toBe('transf');
+		expect(mockRouter.back).not.toHaveBeenCalled();
+	});
+
+	it.each(['apagada', 'nenhuma'])('transferência %s: volta', async (id) => {
+		await lastTitle(<EditTransactionScreen />, { id, kind: 'transfer' });
+		await settle();
+		expect(mockTransferForms).toHaveLength(0);
+		expect(mockRouter.back).toHaveBeenCalled();
 	});
 });
