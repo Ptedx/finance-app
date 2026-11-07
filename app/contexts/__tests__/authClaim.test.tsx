@@ -73,6 +73,7 @@ jest.mock('../../sync/engine', () => ({
 	pullAll: jest.fn(async () => 0),
 	replaceAccountWithDevice: jest.fn(async () => ({ removed: 0, notRemoved: 0 })),
 	resetCursor: jest.fn(async () => undefined),
+	learnAccountWipe: jest.fn(async () => 'none'),
 }));
 
 /** O acesso de leitura de notificações do Android: o módulo nativo, programável por teste. */
@@ -99,12 +100,15 @@ jest.mock('../../sync/queue', () => ({
 	schedule: jest.fn(),
 	syncImmediately: jest.fn(),
 	notifyDataChanged: jest.fn(),
+	runExclusive: jest.fn((work: () => Promise<unknown>) => work()),
 }));
 
 import { act, create } from 'react-test-renderer';
 import { login } from '../../api/auth';
-import { clearSyncState, markEverythingDirty } from '../../database/database';
+import { fetchSyncStatus } from '../../api/sync';
+import { clearSyncState, countLocalData, markEverythingDirty } from '../../database/database';
 import { readPendingClaim, savePendingClaim } from '../../sync/claim';
+import { learnAccountWipe } from '../../sync/engine';
 import * as syncQueue from '../../sync/queue';
 import { STORAGE_KEYS } from '../../utils/storageUtils';
 import { AuthProvider, type ClaimChoice, useAuth } from '../AuthContext';
@@ -318,5 +322,70 @@ describe('o acesso às notificações, que não viaja com a conta', () => {
 		await signInFresh();
 
 		expect(mockStorage.get(STORAGE_KEYS.captureAccessDismissed)).toBe('1');
+	});
+});
+
+describe('o apagar da conta chega antes do primeiro push (SPD-083)', () => {
+	// Uma conta apagada em outro aparelho recusa (409) o push de quem não sabe do apagar.
+	// O login aprende a marca pelo `/sync/status` antes de qualquer coisa subir — senão o
+	// primeiro upload do claim seria recusado — e antes de contar o aparelho, porque um
+	// aparelho que já sincronizava com a conta é apagado ali mesmo.
+	const WIPED_AT = '2026-10-27T10:00:00.000Z';
+	const PROFILE = {
+		id: 'conta-1',
+		email: 'eu@exemplo.com',
+		name: 'Eu',
+		baseCurrency: 'BRL',
+		language: 'pt',
+	};
+	const wipedStatus = (hasData: boolean) => ({ hasData, counts: {}, dataWipedAt: WIPED_AT });
+
+	const signIn = async () => {
+		const { loadTokens } = jest.requireMock('../../api/tokens') as { loadTokens: jest.Mock };
+		loadTokens.mockResolvedValueOnce(null);
+		const api = await mount();
+		(login as jest.Mock).mockResolvedValueOnce(PROFILE);
+		await act(async () => {
+			await api().signIn({ email: 'eu@exemplo.com', password: 'x' });
+		});
+		return api;
+	};
+
+	const order = (mock: unknown) => (mock as jest.Mock).mock.invocationCallOrder[0];
+
+	it('conta vazia: a marca vem antes de tudo subir', async () => {
+		(fetchSyncStatus as jest.Mock).mockResolvedValueOnce(wipedStatus(false));
+
+		await signIn();
+
+		expect(learnAccountWipe).toHaveBeenCalledWith(WIPED_AT);
+		expect(order(learnAccountWipe)).toBeLessThan(order(markEverythingDirty));
+		expect(order(learnAccountWipe)).toBeLessThan(order(queueStart));
+		// Com a fila parada: uma rodada que sobrou da sessão anterior não corre junto.
+		expect(syncQueue.runExclusive).toHaveBeenCalledTimes(1);
+		expect(order(syncQueue.runExclusive)).toBeLessThan(order(learnAccountWipe));
+	});
+
+	it('os dois lados com dados: a marca vem antes de contar o aparelho e de a pergunta nascer', async () => {
+		let claimWhenLearned: unknown = 'não chamado';
+		(learnAccountWipe as jest.Mock).mockImplementationOnce(async () => {
+			claimWhenLearned = await readPendingClaim();
+			return 'adopted';
+		});
+		(fetchSyncStatus as jest.Mock).mockResolvedValueOnce(wipedStatus(true));
+
+		const api = await signIn();
+
+		expect(learnAccountWipe).toHaveBeenCalledWith(WIPED_AT);
+		expect(claimWhenLearned).toBeNull();
+		expect(order(learnAccountWipe)).toBeLessThan(order(countLocalData));
+		expect(api().pendingClaim).toBe(true);
+	});
+
+	it('servidor sem o campo: o login segue como antes', async () => {
+		await signIn();
+
+		expect(learnAccountWipe).toHaveBeenCalledWith(undefined);
+		expect((await readPendingClaim())?.accountId).toBe('conta-1');
 	});
 });

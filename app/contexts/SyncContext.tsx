@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { startDiaryUploads } from '../diagnostics/upload';
 import { getLastSyncedAt } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
+import { startRemoteWipes } from '../sync/remoteWipe';
 
 interface SyncContextType {
 	status: syncQueue.SyncStatus;
@@ -34,9 +35,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
 		// certo e ao voltar ao primeiro plano, só com sessão e no máximo a cada 6 h.
 		const stopDiaryUploads = startDiaryUploads();
 
+		// Quem apaga este aparelho quando a conta foi apagada em outro (SPD-083). Registrado
+		// aqui, que monta antes de o AuthProvider ligar a fila: sem o registro, o sync que
+		// descobre o apagar falha em vez de seguir sem apagar.
+		const stopRemoteWipes = startRemoteWipes();
+
 		return () => {
 			unsubscribe();
 			stopDiaryUploads();
+			stopRemoteWipes();
 		};
 	}, []);
 

@@ -1405,6 +1405,12 @@ const pt = {
 			fallbackName: 'Lançamento recorrente',
 		},
 	},
+
+	dataWipe: {
+		wipedElsewhereTitle: 'Os dados foram apagados',
+		wipedElsewhereMessage:
+			'Os dados desta conta foram apagados em outro aparelho, e saíram deste também. As categorias, o que o app aprendeu e as configurações continuam aqui.',
+	},
 } as const;
 
 export default pt;

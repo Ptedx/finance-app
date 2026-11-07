@@ -18,7 +18,7 @@ import {
 	readPendingClaim,
 	savePendingClaim,
 } from '../sync/claim';
-import { pullAll, replaceAccountWithDevice, resetCursor } from '../sync/engine';
+import { learnAccountWipe, pullAll, replaceAccountWithDevice, resetCursor } from '../sync/engine';
 import * as syncQueue from '../sync/queue';
 import { STORAGE_KEYS } from '../utils/storageUtils';
 
@@ -223,7 +223,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 			const firstSession = await beginSessionFor(accountId);
 			if (firstSession) await rearmCaptureAccessPrompt();
 
-			const [status, device] = await Promise.all([fetchSyncStatus(), countLocalData()]);
+			const status = await fetchSyncStatus();
+			// O último "Apagar todos os dados" da conta, antes de qualquer push (SPD-083): o
+			// servidor recusa a remessa de quem não sabe dele, e o primeiro upload do claim
+			// seria recusado. Entrando agora, o aparelho só passa a conhecê-lo; o que já
+			// sincronizava com a conta (mesma conta, estado guardado) é apagado aqui — por
+			// isso o aparelho é contado depois. Com a fila parada: uma rodada da sessão
+			// anterior ainda em curso não pode gravar nem subir no meio disso.
+			await syncQueue.runExclusive(() => learnAccountWipe(status.dataWipedAt));
+			const device = await countLocalData();
 
 			// A escolha de dados no login: automática quando um dos lados está vazio. Só as
 			// contagens de linhas, nunca o que elas são.

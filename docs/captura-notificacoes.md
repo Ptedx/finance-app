@@ -127,6 +127,42 @@ banco).
 - Também saem os lembretes agendados e o diário de diagnóstico (o id da instalação fica).
 - Código: `app/utils/dataWipe.ts` (a ordem) e `wipeLocalData` em `app/database/database.ts`.
 
+### Nos outros aparelhos da conta
+
+O apagar chega aos outros aparelhos pelo sync (SPD-083). O servidor diz quando a conta
+foi apagada pela última vez (`dataWipedAt`) em três lugares: no pull, no `/sync/status`
+e no 409 `data_wiped` com que recusa o push de quem ainda não sabe. Um `dataWipedAt` mais
+novo que o `knownWipeAt` do aparelho quer dizer que a conta foi esvaziada depois do que
+ele sabe, e aí a regra é uma só (`app/sync/accountWipe.ts`):
+
+- **O aparelho que já sincronizava com a conta apaga a sua cópia** — o mesmo
+  `wipeDevice` do botão, com a marca do servidor na mesma transação — e mostra uma vez
+  "Os dados desta conta foram apagados em outro aparelho". "Já sincronizava" é ter o
+  último sync ou o cursor do pull desta conta em `sync_state`, sem escolha de dados
+  pendente.
+- **O aparelho que está entrando na conta agora só passa a conhecer o apagar.** O que ele
+  tem foi criado nele antes do login e nunca esteve na conta: apagar isso faria o login num
+  celular novo levar embora o que o usuário criou ali. No login, a marca vem do
+  `/sync/status` antes de qualquer push — senão o primeiro upload seria recusado.
+- **Servidor que não manda o campo** (o de produção até o SPD-080 subir): nada muda.
+
+No pull, a página que trouxe a marca nova **não é gravada**: o servidor lê as linhas antes
+de ler a marca, então elas podem ser do que o apagar levou. Ela é lida de novo — do mesmo
+cursor, ou do zero quando o aparelho foi apagado (a conta acabou de ser esvaziada; o pull
+inteiro é curto). No push recusado, nada daquela remessa foi aplicado: depois do apagar
+ela é relida do banco, e o que saiu com ele não está mais lá para subir; o que fica (uma
+categoria editada) sobe com a marca nova. Uma vez por rodada: se a conta for apagada de
+novo no meio dela, a rodada falha e a fila tenta mais tarde, com o intervalo de sempre.
+Tudo isso roda dentro da rodada da fila, que nunca corre junto com outra nem com o botão
+de apagar (`runExclusive`).
+
+Sair da conta ou entrar em outra limpa o `sync_state` inteiro, a marca junto: ela é desta
+conta. O que foi criado neste aparelho sem rede depois do instante do apagar também sai —
+o aparelho não tem como saber, com o relógio dele, o que veio antes ou depois.
+
+Código: `app/sync/accountWipe.ts` (a regra), `applyWipeMark` em `app/sync/engine.ts` (onde
+pull, push e login a aplicam) e `app/sync/remoteWipe.ts` (o apagar e o aviso).
+
 ## Ligar
 
 Configurações → Captura automática → "Ler notificações do banco" abre a tela do

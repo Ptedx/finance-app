@@ -2,12 +2,21 @@
  * O SyncProvider liga o envio do diário de diagnóstico (SPD-016) uma vez, ao montar, e
  * desliga ao desmontar. Os gatilhos em si (fim de sync, primeiro plano) estão em
  * `diagnostics/__tests__/upload.test.ts`.
+ *
+ * Do mesmo jeito, registra quem apaga este aparelho quando a conta foi apagada em outro
+ * (SPD-083, `sync/remoteWipe.ts`).
  */
 
 const mockStopUploads = jest.fn();
 
 jest.mock('../../diagnostics/upload', () => ({
 	startDiaryUploads: jest.fn(() => mockStopUploads),
+}));
+
+const mockStopRemoteWipes = jest.fn();
+
+jest.mock('../../sync/remoteWipe', () => ({
+	startRemoteWipes: jest.fn(() => mockStopRemoteWipes),
 }));
 
 jest.mock('../../sync/engine', () => ({
@@ -19,6 +28,7 @@ jest.mock('../../api/client', () => ({ ApiError: class ApiError extends Error {}
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { startDiaryUploads } from '../../diagnostics/upload';
+import { startRemoteWipes } from '../../sync/remoteWipe';
 import { SyncProvider } from '../SyncContext';
 
 describe('SyncProvider e o envio do diário', () => {
@@ -39,5 +49,28 @@ describe('SyncProvider e o envio do diário', () => {
 			tree?.unmount();
 		});
 		expect(mockStopUploads).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('SyncProvider e o apagar feito em outro aparelho', () => {
+	beforeEach(() => jest.clearAllMocks());
+
+	it('registra quem apaga ao montar, uma vez só, e tira ao desmontar', async () => {
+		let tree: ReactTestRenderer | null = null;
+		await act(async () => {
+			tree = create(<SyncProvider>{null}</SyncProvider>);
+		});
+		expect(startRemoteWipes).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			tree?.update(<SyncProvider>{null}</SyncProvider>);
+		});
+		expect(startRemoteWipes).toHaveBeenCalledTimes(1);
+		expect(mockStopRemoteWipes).not.toHaveBeenCalled();
+
+		await act(async () => {
+			tree?.unmount();
+		});
+		expect(mockStopRemoteWipes).toHaveBeenCalledTimes(1);
 	});
 });

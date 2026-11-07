@@ -375,7 +375,7 @@ export interface PullResponse {
 	/**
 	 * O último "Apagar todos os dados" da conta, ou `null` se ela nunca apagou. O servidor
 	 * que está em produção ainda não manda: ausente vale como "não se sabe". Quem compara
-	 * com o `knownWipeAt` daqui é o SPD-083.
+	 * com o `knownWipeAt` daqui é `applyWipeMark` (`sync/engine.ts`, SPD-083).
 	 */
 	dataWipedAt?: string | null;
 }

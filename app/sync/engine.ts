@@ -18,6 +18,8 @@ import { SCHEMA_VERSION } from '../database/schema';
 import { elapsedSince, log } from '../diagnostics/log';
 import { logSyncFailure, rejectionSummary } from '../diagnostics/sync';
 import { nowTimestamp } from '../utils/dateUtils';
+import { dataWipedRefusal, decideAccountWipe, isNewerWipe } from './accountWipe';
+import { readPendingClaim } from './claim';
 import { emitPreferencesChanged } from './preferenceEvents';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
 import {
@@ -25,6 +27,7 @@ import {
 	inheritCursor,
 	KNOWN_WIPE_AT_KEY,
 	onlyKnownCollections,
+	type PushResponse,
 	type RejectedRow,
 	type SyncChanges,
 	type SyncCursor,
@@ -169,6 +172,114 @@ export const getLastSyncedAt = async (): Promise<string | null> => getSyncState(
  */
 export const getKnownWipeAt = async (): Promise<string | null> => getSyncState(KNOWN_WIPE_AT_KEY);
 
+/**
+ * Quem apaga este aparelho quando a conta foi apagada em outro (SPD-083): o `wipeDevice`
+ * do "Apagar todos os dados", mais o aviso ao usuário (`sync/remoteWipe.ts`, registrado
+ * pelo `SyncProvider`).
+ *
+ * Entra por registro, como o `setSessionLostHandler` do cliente HTTP, e não por import:
+ * `utils/dataWipe.ts` importa a fila, que importa este motor. Sem ninguém registrado, o
+ * apagar que precisa acontecer não acontece e o sync falha — nunca guarda a marca sem
+ * apagar, que faria o próximo push subir o que devia ter sumido.
+ */
+type AccountWipedHandler = (dataWipedAt: string) => Promise<void>;
+let accountWipedHandler: AccountWipedHandler | null = null;
+
+export const setAccountWipedHandler = (handler: AccountWipedHandler | null): void => {
+	accountWipedHandler = handler;
+};
+
+/** O que um `dataWipedAt` do servidor fez aqui: nada, só passou a ser conhecido, ou apagou. */
+export type AccountWipeOutcome = 'none' | 'adopted' | 'wiped';
+
+/**
+ * A conta foi apagada no meio de um trabalho que não dá para continuar com o que já leu
+ * dela — a foto do "subir deste aparelho", uma segunda volta do pull na mesma rodada.
+ */
+class AccountWipedMidway extends Error {
+	constructor() {
+		super('A conta foi apagada durante o sync; o que já tinha sido lido dela não vale mais.');
+		this.name = 'AccountWipedMidway';
+	}
+}
+
+/**
+ * Se este aparelho já tem dados que vieram desta conta ou foram para ela: completou um
+ * sync com ela (`lastSyncedAt`) ou já baixou páginas dela (o cursor). Os dois saem quando
+ * a conta muda (`beginSessionFor`, `endSyncSession`), então só falam desta conta.
+ *
+ * Com a escolha de dados pendente, não: o que está aqui é o que o usuário trouxe de antes
+ * do login e ainda não decidiu o que fazer — o apagar da conta não é sobre isso.
+ */
+const hasSyncedWithAccount = async (): Promise<boolean> => {
+	if (await readPendingClaim()) return false;
+	for (const key of [LAST_SYNCED_KEY, CURSOR_KEY, LEGACY_CURSOR_KEY]) {
+		if (await getSyncState(key)) return true;
+	}
+	return false;
+};
+
+/**
+ * Aplica um `dataWipedAt` que o servidor mandou. A regra está em `sync/accountWipe.ts`:
+ *
+ * - `adopted`: este aparelho está entrando na conta agora e só passa a conhecer o apagar;
+ *   nada sai daqui.
+ * - `wiped`: já sincronizava com ela, e foi apagado — a marca entra na mesma transação do
+ *   apagar (`wipeLocalData`). Depois o cursor recomeça: é barato, a conta acabou de ser
+ *   esvaziada, e não depende de nenhuma suposição sobre a ordem das `serverSeq` em volta
+ *   do apagar. Se o app morrer entre o apagar e o cursor, o cursor antigo também serve:
+ *   o que a conta ganhou depois do apagar está depois dele.
+ */
+const applyWipeMark = async (
+	dataWipedAt: string | null | undefined,
+	source: 'pull' | 'push' | 'status'
+): Promise<AccountWipeOutcome> => {
+	const knownWipeAt = await getKnownWipeAt();
+	if (!isNewerWipe(knownWipeAt, dataWipedAt)) return 'none';
+
+	const syncedBefore = await hasSyncedWithAccount();
+	const decision = decideAccountWipe({ knownWipeAt, dataWipedAt, syncedBefore });
+	if (decision === 'wipe') {
+		if (!accountWipedHandler) {
+			throw new Error('A conta foi apagada em outro aparelho, e não há quem apague este.');
+		}
+		await accountWipedHandler(dataWipedAt);
+		await resetCursor();
+	} else {
+		await setSyncState(KNOWN_WIPE_AT_KEY, dataWipedAt);
+	}
+
+	const outcome: AccountWipeOutcome = decision === 'wipe' ? 'wiped' : 'adopted';
+	// Depois do apagar, que zera o diário: o diário novo começa dizendo por que está vazio.
+	log('sync', 'sync_account_wiped', { data: { outcome, source } });
+	return outcome;
+};
+
+/**
+ * O login aprende o último apagar da conta pelo `/sync/status` **antes** do primeiro push
+ * (`AuthContext`): sem isso, o primeiro upload de quem está entrando numa conta apagada
+ * seria recusado. Num aparelho que já sincronizava com ela, apaga ali mesmo.
+ */
+export const learnAccountWipe = (
+	dataWipedAt: string | null | undefined
+): Promise<AccountWipeOutcome> => applyWipeMark(dataWipedAt, 'status');
+
+/**
+ * O que um push recusado por `data_wiped` ensina: aplica o apagar e diz o que fez. Uma
+ * falha que não é essa, ou uma recusa que não traz apagar novo, sobe como veio — a fila
+ * tenta de novo mais tarde, com o intervalo dela, em vez de martelar o servidor.
+ *
+ * O 409 sem o instante (o contrato manda; é só prudência) pergunta ao `/sync/status`.
+ */
+const learnFromRefusal = async (error: unknown): Promise<AccountWipeOutcome> => {
+	const refusal = dataWipedRefusal(error);
+	if (!refusal) throw error;
+	const dataWipedAt = refusal.dataWipedAt ?? (await api.fetchSyncStatus()).dataWipedAt;
+	const outcome = await applyWipeMark(dataWipedAt, 'push');
+	if (outcome === 'none') throw error;
+	return outcome;
+};
+
 /** O que sobrou de uma substituição: linhas da conta que o servidor não deixou apagar. */
 export interface ReplaceResult {
 	/** Linhas da conta apagadas porque não existiam neste aparelho. */
@@ -188,13 +299,33 @@ export interface ReplaceResult {
  *
  * Interromper no meio é seguro: as lápides já aceitas ficam, e o resto do aparelho
  * continua marcado para subir no próximo sync.
+ *
+ * A conta apagada em outro aparelho no meio disso (SPD-083) invalida a foto: as lápides
+ * levam o conteúdo que a conta tinha, e subi-las depois do apagar devolveria à conta o
+ * que ele levou. A substituição recomeça uma vez, com a foto nova; se apagarem de novo,
+ * falha, e a escolha continua de pé para o usuário tentar outra vez.
  */
 export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
+	try {
+		return await replaceOnce();
+	} catch (error) {
+		if (!(error instanceof AccountWipedMidway)) throw error;
+		return replaceOnce();
+	}
+};
+
+const replaceOnce = async (): Promise<ReplaceResult> => {
 	const pages = [];
 	let cursor: SyncCursor = EMPTY_CURSOR;
 	// Sem o teto de páginas do sync normal: a foto da conta precisa estar inteira.
 	for (let page = 0; page < 10_000; page += 1) {
 		const response = await api.pull(cursor);
+		// A conta foi apagada enquanto a foto era tirada: as páginas de antes podem ter o que
+		// o apagar levou, e a foto recomeça. Com a escolha pendente, nada sai daqui — o
+		// apagar só passa a ser conhecido.
+		if ((await applyWipeMark(response.dataWipedAt, 'pull')) !== 'none') {
+			throw new AccountWipedMidway();
+		}
 		pages.push(response.changes);
 		cursor = response.cursor;
 		if (!response.hasMore) break;
@@ -218,7 +349,13 @@ export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
 	let removed = 0;
 	let notRemoved = 0;
 	for (const chunk of chunkChanges(tombstones, PAGE_SIZE)) {
-		const response = await api.push(chunk, knownWipeAt);
+		let response: PushResponse;
+		try {
+			response = await api.push(chunk, knownWipeAt);
+		} catch (error) {
+			await learnFromRefusal(error);
+			throw new AccountWipedMidway();
+		}
 		removed += response.applied;
 		notRemoved += response.rejected.length;
 		for (const row of response.rejected) {
@@ -281,10 +418,29 @@ const pullPages = async (stats: PullStats): Promise<number> => {
 	const startCursor = JSON.stringify(cursor);
 	let received = 0;
 	let complete = false;
+	let wipeApplied = false;
 
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const response = await api.pull(cursor);
 		stats.pages += 1;
+
+		// A conta foi apagada depois do que este aparelho sabe (SPD-083). A página que trouxe
+		// a notícia não é gravada: o servidor lê as linhas **antes** da marca, então elas
+		// podem ser do que o apagar levou — gravá-las traria de volta, e só aqui, o que
+		// saiu da conta. O cursor fica onde estava (ou recomeça, se o aparelho foi apagado)
+		// e a página é lida de novo, já com a marca conhecida.
+		//
+		// Uma vez por rodada: um segundo apagar novo no meio dela para o pull, e a fila
+		// tenta de novo mais tarde.
+		if (wipeApplied && isNewerWipe(await getKnownWipeAt(), response.dataWipedAt)) {
+			throw new AccountWipedMidway();
+		}
+		if ((await applyWipeMark(response.dataWipedAt, 'pull')) !== 'none') {
+			wipeApplied = true;
+			cursor = await readCursor();
+			continue;
+		}
+
 		countRows(stats, response.changes);
 		for (const [collection, rows] of Object.entries(response.changes)) {
 			if (!(collection in EMPTY_CURSOR) && Array.isArray(rows)) {
@@ -437,7 +593,8 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
 	const resentCategories = new Set<string>();
 	const known = await readServerCollections();
-	const knownWipeAt = await getKnownWipeAt();
+	let knownWipeAt = await getKnownWipeAt();
+	let wipeApplied = false;
 
 	// O que mudou no AsyncStorage por fora vira linha suja antes de ler o que está sujo.
 	await reconcilePreferencesSafely();
@@ -454,7 +611,21 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 
 		if (pending === 0) break;
 
-		const response = await api.push(changes, knownWipeAt);
+		let response: PushResponse;
+		try {
+			response = await api.push(changes, knownWipeAt);
+		} catch (error) {
+			// Recusado (409 `data_wiped`) porque a conta foi apagada em outro aparelho
+			// (SPD-083): nada desta página foi aplicado. Aplicado o apagar, a página é
+			// relida do banco — se o aparelho foi apagado, o que saiu com ele já não está
+			// sujo e não sobe; o que fica (uma categoria editada) sobe com a marca nova.
+			// Uma vez por rodada: a segunda recusa sobe como erro, e a fila espera.
+			if (wipeApplied || !dataWipedRefusal(error)) throw error;
+			await learnFromRefusal(error);
+			wipeApplied = true;
+			knownWipeAt = await getKnownWipeAt();
+			continue;
+		}
 		stats.pages += 1;
 		countRows(stats, changes);
 		stats.rejected.push(...response.rejected);
@@ -542,4 +713,13 @@ export const syncNow = async (): Promise<SyncResult> => {
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { syncNow, pullAll, pushAll, resetCursor, getLastSyncedAt, getKnownWipeAt };
+export default {
+	syncNow,
+	pullAll,
+	pushAll,
+	resetCursor,
+	getLastSyncedAt,
+	getKnownWipeAt,
+	learnAccountWipe,
+	setAccountWipedHandler,
+};

@@ -33,7 +33,13 @@ export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
-		readonly code: string
+		readonly code: string,
+		/**
+		 * O corpo JSON da resposta de erro, para quem precisa de mais que a mensagem: o 409
+		 * `data_wiped` do push traz o `dataWipedAt` da conta (SPD-083). Vazio quando a
+		 * resposta não era da API.
+		 */
+		readonly details: Readonly<Record<string, unknown>> = {}
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -103,7 +109,7 @@ const parseError = async (response: Response): Promise<ApiError> => {
 	try {
 		const body = (await response.json()) as { error?: string; code?: string };
 		return body.error
-			? new ApiError(response.status, body.error, body.code ?? 'error')
+			? new ApiError(response.status, body.error, body.code ?? 'error', body)
 			: fallback();
 	} catch {
 		// Corpo não era JSON: veio de um proxy, não da API.

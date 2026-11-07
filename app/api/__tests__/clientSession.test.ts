@@ -120,3 +120,34 @@ describe('o 401 que desloga', () => {
 		expect(JSON.stringify(logMock.mock.calls)).not.toMatch(/secreto|novo-|cursor|removida|exemplo/);
 	});
 });
+
+describe('o corpo da resposta de erro (SPD-083)', () => {
+	const push = () =>
+		client.apiRequest('/api/sync/push', { method: 'POST', body: {}, authenticated: true });
+
+	it('fica no erro: o 409 `data_wiped` do push traz o instante do apagar da conta', async () => {
+		fetchMock.mockResolvedValueOnce(
+			response(409, {
+				error: 'Os dados desta conta foram apagados.',
+				code: 'data_wiped',
+				dataWipedAt: '2026-10-27T10:00:00.000Z',
+			})
+		);
+
+		await expect(push()).rejects.toMatchObject({
+			status: 409,
+			code: 'data_wiped',
+			details: { dataWipedAt: '2026-10-27T10:00:00.000Z' },
+		});
+	});
+
+	it('resposta que não veio da API (um gateway): o erro de sempre, sem corpo', async () => {
+		fetchMock.mockResolvedValueOnce(response(502, '<html>Bad Gateway</html>'));
+
+		await expect(push()).rejects.toMatchObject({
+			status: 502,
+			code: 'gateway_unreachable',
+			details: {},
+		});
+	});
+});

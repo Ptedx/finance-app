@@ -1410,6 +1410,12 @@ account: {
 			fallbackName: 'Recurring transaction',
 		},
 	},
+
+	dataWipe: {
+		wipedElsewhereTitle: 'Your data was deleted',
+		wipedElsewhereMessage:
+			"This account's data was deleted on another device, so it was deleted from this one too. Your categories, what the app learned and your settings are still here.",
+	},
 } as const;
 
 export default en;

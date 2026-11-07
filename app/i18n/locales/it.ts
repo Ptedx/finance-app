@@ -1410,6 +1410,12 @@ account: {
 			fallbackName: 'Movimento ricorrente',
 		},
 	},
+
+	dataWipe: {
+		wipedElsewhereTitle: 'I dati sono stati eliminati',
+		wipedElsewhereMessage:
+			'I dati di questo account sono stati eliminati su un altro dispositivo, quindi anche da questo. Le categorie, ciò che l’app ha imparato e le impostazioni restano.',
+	},
 } as const;
 
 export default it;
