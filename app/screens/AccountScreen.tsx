@@ -9,6 +9,7 @@ import {
 	KeyboardAvoidingView,
 	Modal,
 	Platform,
+	Pressable,
 	ScrollView,
 	StyleSheet,
 	Text,
@@ -277,12 +278,31 @@ const AccountScreen: React.FC = () => {
 		/>
 	);
 
+	// A pilha da raiz não desenha cabeçalho: a tela desenha o seu, como Configurações, de
+	// onde se chega aqui.
+	const topBar = (
+		<View style={styles.topBar}>
+			<Pressable
+				onPress={() => router.back()}
+				accessibilityRole="button"
+				accessibilityLabel={t('account.back')}
+				style={styles.iconButton}
+			>
+				<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+			</Pressable>
+			<Text style={styles.topBarTitle} accessibilityRole="header" numberOfLines={1}>
+				{t('account.screenTitle')}
+			</Text>
+		</View>
+	);
+
 	// Sem URL de API configurada não há o que oferecer: melhor dizer isso do que
 	// mostrar um formulário que falharia em toda tentativa.
 	if (!isAvailable) {
 		return (
 			<SafeAreaView style={styles.container}>
 				{header}
+				{topBar}
 				<View style={styles.centered}>
 					<Ionicons name="cloud-offline-outline" size={48} color="#8E8E93" />
 					<Text style={styles.unavailable}>{t('account.unavailable')}</Text>
@@ -298,6 +318,7 @@ const AccountScreen: React.FC = () => {
 		return (
 			<SafeAreaView style={styles.container}>
 				{header}
+				{topBar}
 				<ScrollView contentContainerStyle={styles.content}>
 					<Ionicons name="git-merge-outline" size={40} color="#15E8FE" style={styles.heroIcon} />
 					<Text style={styles.title}>{t('account.claimTitle')}</Text>
@@ -365,6 +386,7 @@ const AccountScreen: React.FC = () => {
 		return (
 			<SafeAreaView style={styles.container}>
 				{header}
+				{topBar}
 				<ScrollView contentContainerStyle={styles.content}>
 					<View style={styles.card}>
 						<Text style={styles.cardLabel}>{t('account.signedInAs')}</Text>
@@ -431,76 +453,93 @@ const AccountScreen: React.FC = () => {
 					onRequestClose={closeDeleteModal}
 					statusBarTranslucent
 				>
-					<KeyboardAvoidingView
-						style={styles.modalOverlay}
-						behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-					>
-						<View style={styles.modalCard} accessibilityViewIsModal>
-							<Text style={styles.modalTitle} accessibilityRole="header">
-								{t('account.deletePasswordTitle')}
-							</Text>
-							<Text style={styles.paragraph}>
-								{t('account.deletePasswordMsg', { email: account.email })}
-							</Text>
-
-							<TextInput
-								style={styles.input}
-								placeholder={t('account.passwordPlaceholder')}
-								placeholderTextColor="#6B7280"
-								value={deletePassword}
-								onChangeText={(value) => {
-									setDeletePassword(value);
-									setDeleteError(null);
-								}}
-								secureTextEntry
-								autoCapitalize="none"
-								autoCorrect={false}
-								autoFocus
-								textContentType="password"
-								editable={!isDeleting}
-								accessibilityLabel={t('account.deletePasswordLabel')}
-								onSubmitEditing={confirmDeleteAccount}
-								returnKeyType="done"
-							/>
-
-							{deleteError ? (
-								<Text
-									style={styles.modalError}
-									accessibilityLiveRegion="polite"
-									accessibilityRole="alert"
-								>
-									{t(
-										deleteError === 'wrong_password'
-											? 'account.deleteWrongPassword'
-											: 'account.deleteUnavailable'
-									)}
-								</Text>
-							) : null}
-
-							<TouchableOpacity
-								style={[
-									styles.deleteAccountButton,
-									(isDeleting || !deletePassword) && styles.buttonDisabled,
-								]}
-								onPress={confirmDeleteAccount}
-								disabled={isDeleting || !deletePassword}
-								accessibilityRole="button"
-								accessibilityState={{ disabled: isDeleting || !deletePassword, busy: isDeleting }}
+					{/*
+					 * E2E-47: no Android o teclado cobria o "Apagar a conta para sempre" e o
+					 * modal não subia (sem `behavior` no Android, nada encolhia). O `height`
+					 * encolhe a área, como na `Sheet`, e o cartão fica centrado no que sobra
+					 * acima do teclado. A rolagem é para o celular pequeno, e o `handled` deixa
+					 * o botão responder ao 1º toque com o teclado aberto.
+					 */}
+					<View style={styles.modalBackdrop}>
+						<KeyboardAvoidingView
+							style={styles.flex}
+							behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+						>
+							<ScrollView
+								contentContainerStyle={styles.modalOverlay}
+								keyboardShouldPersistTaps="handled"
 							>
-								{isDeleting ? <ActivityIndicator color="#FFFFFF" /> : null}
-								<Text style={styles.deleteAccountButtonText}>{t('account.deleteAction')}</Text>
-							</TouchableOpacity>
+								<View style={styles.modalCard} accessibilityViewIsModal>
+									<Text style={styles.modalTitle} accessibilityRole="header">
+										{t('account.deletePasswordTitle')}
+									</Text>
+									<Text style={styles.paragraph}>
+										{t('account.deletePasswordMsg', { email: account.email })}
+									</Text>
 
-							<TouchableOpacity
-								style={styles.switchMode}
-								onPress={closeDeleteModal}
-								disabled={isDeleting}
-								accessibilityRole="button"
-							>
-								<Text style={styles.switchModeText}>{t('account.cancel')}</Text>
-							</TouchableOpacity>
-						</View>
-					</KeyboardAvoidingView>
+									<TextInput
+										style={styles.input}
+										placeholder={t('account.passwordPlaceholder')}
+										placeholderTextColor="#6B7280"
+										value={deletePassword}
+										onChangeText={(value) => {
+											setDeletePassword(value);
+											setDeleteError(null);
+										}}
+										secureTextEntry
+										autoCapitalize="none"
+										autoCorrect={false}
+										// No Android o modal abre logo depois da biometria e o
+										// `autoFocus` deixava o cursor no campo sem teclado
+										// (E2E-47): ali o campo espera o toque, que abre o teclado.
+										autoFocus={Platform.OS === 'ios'}
+										textContentType="password"
+										editable={!isDeleting}
+										accessibilityLabel={t('account.deletePasswordLabel')}
+										onSubmitEditing={confirmDeleteAccount}
+										returnKeyType="done"
+									/>
+
+									{deleteError ? (
+										<Text
+											style={styles.modalError}
+											accessibilityLiveRegion="polite"
+											accessibilityRole="alert"
+										>
+											{t(
+												deleteError === 'wrong_password'
+													? 'account.deleteWrongPassword'
+													: 'account.deleteUnavailable'
+											)}
+										</Text>
+									) : null}
+
+									<TouchableOpacity
+										style={[
+											styles.deleteAccountButton,
+											(isDeleting || !deletePassword) && styles.buttonDisabled,
+										]}
+										onPress={confirmDeleteAccount}
+										disabled={isDeleting || !deletePassword}
+										accessibilityRole="button"
+										accessibilityState={{ disabled: isDeleting || !deletePassword, busy: isDeleting }}
+									>
+										{isDeleting ? <ActivityIndicator color="#FFFFFF" /> : null}
+										<Text style={styles.deleteAccountButtonText}>{t('account.deleteAction')}</Text>
+									</TouchableOpacity>
+
+									<TouchableOpacity
+										style={styles.switchMode}
+										onPress={closeDeleteModal}
+										disabled={isDeleting}
+										accessibilityRole="button"
+									>
+										<Text style={styles.switchModeText}>{t('account.cancel')}</Text>
+									</TouchableOpacity>
+								</View>
+							</ScrollView>
+						</KeyboardAvoidingView>
+					</View>
 				</Modal>
 			</SafeAreaView>
 		);
@@ -512,6 +551,7 @@ const AccountScreen: React.FC = () => {
 	return (
 		<SafeAreaView style={styles.container}>
 			{header}
+			{topBar}
 			<KeyboardAvoidingView
 				style={styles.flex}
 				behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -593,6 +633,9 @@ const AccountScreen: React.FC = () => {
 const styles = StyleSheet.create({
 	container: { flex: 1, backgroundColor: '#121212' },
 	flex: { flex: 1 },
+	topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, gap: 4 },
+	iconButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
+	topBarTitle: { flex: 1, fontSize: 22, fontWeight: '700', color: '#FFFFFF' },
 	content: { padding: 20, paddingBottom: 40 },
 	centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
 	heroIcon: { alignSelf: 'center', marginBottom: 16 },
@@ -650,12 +693,8 @@ const styles = StyleSheet.create({
 		marginTop: 20,
 	},
 	deleteAccountButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
-	modalOverlay: {
-		flex: 1,
-		backgroundColor: 'rgba(0, 0, 0, 0.7)',
-		justifyContent: 'center',
-		padding: 24,
-	},
+	modalBackdrop: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)' },
+	modalOverlay: { flexGrow: 1, justifyContent: 'center', padding: 24 },
 	modalCard: { backgroundColor: '#1C1C1E', borderRadius: 12, padding: 20 },
 	modalTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '700', marginBottom: 8 },
 	modalError: { color: '#FF6B6B', fontSize: 14, lineHeight: 20, marginBottom: 4 },

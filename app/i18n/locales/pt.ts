@@ -127,6 +127,7 @@ const pt = {
 		installmentOf: '{{index}} de {{count}}',
 		edit: 'Editar',
 		delete: 'Apagar',
+		back: 'Voltar',
 	},
 
 	wealth: {
@@ -824,6 +825,7 @@ const pt = {
 
 	account: {
 		screenTitle: 'Conta',
+		back: 'Voltar',
 		signUpTitle: 'Criar uma conta',
 		signInTitle: 'Entrar',
 		intro:

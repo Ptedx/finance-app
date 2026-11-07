@@ -127,6 +127,7 @@ const it = {
 		installmentOf: '{{index}} di {{count}}',
 		edit: 'Modifica',
 		delete: 'Elimina',
+		back: 'Indietro',
 	},
 
 	/**
@@ -829,6 +830,7 @@ const it = {
 	},
 account: {
 		screenTitle: 'Account',
+		back: 'Indietro',
 		signUpTitle: 'Crea un account',
 		signInTitle: 'Accedi',
 		intro:

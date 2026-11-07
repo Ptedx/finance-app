@@ -127,6 +127,7 @@ const en = {
 		installmentOf: '{{index}} of {{count}}',
 		edit: 'Edit',
 		delete: 'Delete',
+		back: 'Back',
 	},
 
 	/**
@@ -829,6 +830,7 @@ const en = {
 	},
 account: {
 		screenTitle: 'Account',
+		back: 'Back',
 		signUpTitle: 'Create an account',
 		signInTitle: 'Sign in',
 		intro:

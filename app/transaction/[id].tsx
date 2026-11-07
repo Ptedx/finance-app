@@ -2,8 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -15,6 +15,7 @@ import { formatCents } from '../utils/money';
 export default function TransactionDetailScreen() {
 	const { id } = useLocalSearchParams();
 	const router = useRouter();
+	const insets = useSafeAreaInsets();
 	const { t } = useTranslation();
 	const { transactions, categories, removeTransaction, removeInstallmentGroup } = useTransactions();
 	const { accounts } = useAccounts();
@@ -82,9 +83,26 @@ export default function TransactionDetailScreen() {
 		);
 	};
 
+	// A pilha da raiz não desenha cabeçalho: a tela desenha o seu, como Dívida e Cartão.
+	const topBar = (title: string) => (
+		<View style={styles.topBar}>
+			<Pressable
+				onPress={() => router.back()}
+				accessibilityRole="button"
+				accessibilityLabel={t('transactionDetail.back')}
+				style={styles.iconButton}
+			>
+				<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+			</Pressable>
+			<Text style={styles.topBarTitle} accessibilityRole="header" numberOfLines={1}>
+				{title}
+			</Text>
+		</View>
+	);
+
 	if (!transaction || !category) {
 		return (
-			<SafeAreaView style={styles.container}>
+			<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 				<Stack.Screen
 					options={{
 						title: t('transactionDetail.title'),
@@ -95,6 +113,7 @@ export default function TransactionDetailScreen() {
 						headerShadowVisible: false,
 					}}
 				/>
+				{topBar(t('transactionDetail.title'))}
 				<View style={styles.loadingContainer}>
 					<Text style={styles.loadingText}>{t('transactionDetail.loading')}</Text>
 				</View>
@@ -120,11 +139,15 @@ export default function TransactionDetailScreen() {
 				})
 			: null;
 
+	const title = transaction.isIncome ? t('transactionDetail.titleIncome') : t('transactionDetail.titleExpense');
+
+	// O fim rola e para acima da barra de gestos do Android (`insets.bottom`): com conta,
+	// cartão, parcela e observação, "Editar" e "Apagar" ficavam embaixo dela.
 	return (
-		<SafeAreaView style={styles.container}>
+		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen
 				options={{
-					title: transaction.isIncome ? t('transactionDetail.titleIncome') : t('transactionDetail.titleExpense'),
+					title,
 					headerStyle: {
 						backgroundColor: '#1A1A1A',
 					},
@@ -132,8 +155,12 @@ export default function TransactionDetailScreen() {
 					headerShadowVisible: false,
 				}}
 			/>
+			{topBar(title)}
 
-			<View style={styles.content}>
+			<ScrollView
+				contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 16 }]}
+				showsVerticalScrollIndicator={false}
+			>
 				<View style={styles.header}>
 					<View style={[styles.categoryIcon, { backgroundColor: category.color }]}>
 						<Ionicons name={category.icon} size={32} color="#000000" />
@@ -206,7 +233,7 @@ export default function TransactionDetailScreen() {
 						<Text style={styles.actionButtonText}>{t('transactionDetail.delete')}</Text>
 					</TouchableOpacity>
 				</View>
-			</View>
+			</ScrollView>
 		</SafeAreaView>
 	);
 }
@@ -215,7 +242,25 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingTop: 60,
+	},
+	topBar: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		paddingHorizontal: 8,
+		paddingVertical: 4,
+		gap: 4,
+	},
+	iconButton: {
+		width: 48,
+		height: 48,
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
+	topBarTitle: {
+		flex: 1,
+		fontSize: 22,
+		fontWeight: '700',
+		color: '#FFFFFF',
 	},
 	loadingContainer: {
 		flex: 1,
@@ -227,7 +272,6 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 	},
 	content: {
-		flex: 1,
 		padding: 16,
 	},
 	header: {
