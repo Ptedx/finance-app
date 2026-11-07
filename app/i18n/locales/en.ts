@@ -963,6 +963,14 @@ account: {
 		empty: 'Your accounts and cards appear here on their own as bank notifications and statements arrive. You can also add one now.',
 		add: 'Add account',
 		accountHint: 'Opens the account details',
+		balanceUnset: {
+			badge: 'Balance not set',
+			hint: "Opens \"Match the bank\" to type today's balance",
+			body: "Capture created this account on its own, starting from zero: the app doesn't know how much was in it. Type the balance your bank's app shows so the numbers match.",
+			dismiss: 'Dismiss notice',
+			dismissHint: 'The notice goes away for this account on this device',
+			dismissed: 'Notice dismissed',
+		},
 		kind: {
 			checking: 'Checking',
 			savings: 'Savings',

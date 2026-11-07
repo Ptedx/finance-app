@@ -4,10 +4,11 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { AccountRow } from '../components/AccountsOverview';
+import { AccountRow, useDismissedBalanceUnset } from '../components/AccountsOverview';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
+import { showsBalanceUnset } from '../utils/balanceUnset';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
 import { formatCents } from '../utils/money';
@@ -54,6 +55,8 @@ const AccountsScreen = () => {
 		}, [])
 	);
 	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
+	// "Saldo não informado" (SPD-114): a conta que a captura criou com saldo 0, até ser acertada.
+	const dismissedBalanceUnset = useDismissedBalanceUnset();
 
 	const keepBoth = (pair: DuplicateAccounts) => {
 		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);
@@ -165,6 +168,7 @@ const AccountsScreen = () => {
 							key={account.id}
 							account={account}
 							balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+							balanceUnset={showsBalanceUnset(account, dismissedBalanceUnset)}
 							onPress={openAccount}
 						/>
 					))}

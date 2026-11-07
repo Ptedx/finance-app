@@ -964,6 +964,14 @@ account: {
 		empty: 'I tuoi conti e le tue carte compaiono qui da soli man mano che arrivano notifiche ed estratti conto. Puoi anche aggiungerne uno adesso.',
 		add: 'Aggiungi conto',
 		accountHint: 'Apre i dettagli del conto',
+		balanceUnset: {
+			badge: 'Saldo non indicato',
+			hint: 'Apre "Allinea con la banca" per inserire il saldo di oggi',
+			body: "La cattura ha creato questo conto da sola, partendo da zero: l'app non sa quanto c'era. Inserisci il saldo che mostra l'app della banca perché i numeri tornino.",
+			dismiss: 'Ignora avviso',
+			dismissHint: "L'avviso sparisce per questo conto su questo dispositivo",
+			dismissed: 'Avviso ignorato',
+		},
 		kind: {
 			checking: 'Conto corrente',
 			savings: 'Risparmio',

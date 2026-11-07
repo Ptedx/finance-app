@@ -13,6 +13,7 @@ const mockAccounts: { accounts: unknown[] } = { accounts: [] };
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ replace: mockReplace, back: jest.fn(), push: jest.fn() }),
+	useLocalSearchParams: () => ({}),
 	Stack: { Screen: () => null },
 }));
 
@@ -30,6 +31,10 @@ jest.mock('react-i18next', () => ({
 jest.mock('../../database/database', () => ({}));
 jest.mock('../../database/captures', () => ({}));
 jest.mock('../../utils/businessFeedPreference', () => ({ getBusinessFeeds: jest.fn(async () => ({})) }));
+jest.mock('../../utils/balanceUnsetDismissals', () => ({
+	getDismissedBalanceUnset: jest.fn(async () => new Set()),
+	dismissBalanceUnset: jest.fn(async () => new Set()),
+}));
 jest.mock('../../components/TransactionItem', () => () => null);
 
 jest.mock('../../contexts/AccountsContext', () => ({

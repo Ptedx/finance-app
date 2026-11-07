@@ -958,6 +958,14 @@ const pt = {
 		empty: 'Suas contas e cartões aparecem aqui sozinhos conforme as notificações e extratos chegam. Você também pode adicionar uma agora.',
 		add: 'Adicionar conta',
 		accountHint: 'Abre os detalhes da conta',
+		balanceUnset: {
+			badge: 'Saldo não informado',
+			hint: 'Abre o "Acertar com o banco" para digitar o saldo de hoje',
+			body: 'A captura criou esta conta sozinha, começando do zero: o app não sabe quanto havia nela. Digite o saldo que o app do banco mostra para os números baterem.',
+			dismiss: 'Dispensar aviso',
+			dismissHint: 'O aviso some desta conta neste aparelho',
+			dismissed: 'Aviso dispensado',
+		},
 		kind: {
 			checking: 'Conta corrente',
 			savings: 'Poupança',

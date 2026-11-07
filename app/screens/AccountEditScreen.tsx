@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	AccessibilityInfo,
@@ -34,6 +34,8 @@ import { feedOwnerOf } from '../utils/accountBinding';
 import { planBusinessFeed } from '../utils/businessFeed';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
+import { showsBalanceUnset } from '../utils/balanceUnset';
+import { dismissBalanceUnset, getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
 import { addDays, formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
@@ -122,6 +124,31 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const chooseKind = (next: AccountKind) => {
 		setKind(next);
 		if (!existing) setRole(defaultRoleFor(next));
+	};
+
+	/**
+	 * "Saldo não informado" (SPD-114): a conta que a captura criou com saldo 0. Aqui o aviso
+	 * troca o "Saldo definido em" — ninguém definiu nada — e tem o "Dispensar", só neste
+	 * aparelho. Quem toca no selo da lista chega com `setBalance=1`, e o "Acertar com o banco"
+	 * já abre.
+	 */
+	const { setBalance: openSetBalance } = useLocalSearchParams<{ setBalance?: string }>();
+	const [dismissedBalanceUnset, setDismissedBalanceUnset] = useState<ReadonlySet<string>>(() => new Set());
+	useEffect(() => {
+		void getDismissedBalanceUnset().then(setDismissedBalanceUnset);
+	}, []);
+	const balanceUnset = !!existing && showsBalanceUnset(existing, dismissedBalanceUnset);
+	const openedFromBadge = useRef(false);
+	useEffect(() => {
+		if (!existing || existing.kind === 'credit_card' || openSetBalance !== '1' || openedFromBadge.current) return;
+		openedFromBadge.current = true;
+		setAdjusting(true);
+	}, [existing, openSetBalance]);
+
+	const handleDismissBalanceUnset = async () => {
+		if (!existing) return;
+		setDismissedBalanceUnset(await dismissBalanceUnset(existing.id));
+		announce(t('accounts.balanceUnset.dismissed'));
 	};
 
 	const balanceCents = existing ? (balances.get(existing.id) ?? existing.openingBalanceCents) : 0;
@@ -394,9 +421,28 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							<Text style={[styles.balanceValue, balanceCents < 0 && styles.owed]}>
 								{formatCents(balanceCents)}
 							</Text>
-							<Text style={styles.balanceMeta}>
-								{t('accounts.anchoredOn', { date: formatDate(existing.openingBalanceDate) })}
-							</Text>
+							{balanceUnset ? (
+								<View style={styles.balanceUnset}>
+									<View style={styles.balanceUnsetTitleRow}>
+										<Ionicons name="alert-circle-outline" size={18} color="#000000" />
+										<Text style={styles.balanceUnsetTitle}>{t('accounts.balanceUnset.badge')}</Text>
+									</View>
+									<Text style={styles.balanceUnsetBody}>{t('accounts.balanceUnset.body')}</Text>
+									<Pressable
+										onPress={handleDismissBalanceUnset}
+										accessibilityRole="button"
+										accessibilityLabel={t('accounts.balanceUnset.dismiss')}
+										accessibilityHint={t('accounts.balanceUnset.dismissHint')}
+										style={({ pressed }) => [styles.balanceUnsetDismiss, pressed && styles.pressed]}
+									>
+										<Text style={styles.balanceUnsetDismissText}>{t('accounts.balanceUnset.dismiss')}</Text>
+									</Pressable>
+								</View>
+							) : (
+								<Text style={styles.balanceMeta}>
+									{t('accounts.anchoredOn', { date: formatDate(existing.openingBalanceDate) })}
+								</Text>
+							)}
 							{existing.packageName && (
 								<Text style={styles.balanceMeta}>
 									{t('accounts.linkedNotifications', { app: existing.bankName ?? existing.packageName })}
@@ -689,6 +735,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					onClose={() => setAdjusting(false)}
 					onConfirm={async (input) => {
 						await adjustAccountMonth(existing.id, input);
+						// Acertado, o selo sai. A âncora nova já o tira, mas confirmar o valor que a
+						// tela mostrava (ou um saldo que de fato é zero) não mexe nela: aí vale como
+						// dispensa, neste aparelho.
+						if (balanceUnset) setDismissedBalanceUnset(await dismissBalanceUnset(existing.id));
 						setAdjusting(false);
 					}}
 				/>
@@ -769,6 +819,43 @@ const styles = StyleSheet.create({
 		fontSize: 13,
 		lineHeight: 18,
 		color: 'rgba(255,255,255,0.7)',
+	},
+	// O mesmo âmbar do selo na lista de contas.
+	balanceUnset: {
+		backgroundColor: '#FFB74D',
+		borderRadius: 10,
+		padding: 12,
+		gap: 6,
+		marginTop: 4,
+	},
+	balanceUnsetTitleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 6,
+	},
+	balanceUnsetTitle: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#000000',
+	},
+	balanceUnsetBody: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#000000',
+	},
+	balanceUnsetDismiss: {
+		minHeight: 44,
+		alignSelf: 'flex-start',
+		justifyContent: 'center',
+		paddingHorizontal: 12,
+		borderRadius: 10,
+		borderWidth: 1,
+		borderColor: '#000000',
+	},
+	balanceUnsetDismissText: {
+		fontSize: 14,
+		fontWeight: '600',
+		color: '#000000',
 	},
 	modes: {
 		gap: 8,

@@ -1,10 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import type React from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
+import { showsBalanceUnset } from '../utils/balanceUnset';
+import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { formatCents } from '../utils/money';
 import type { EnvelopeMonth } from '../utils/monthOverview';
 import { ACCOUNT_KIND_ICONS } from './AccountPicker';
@@ -29,11 +32,32 @@ interface AccountRowProps {
 	envelope?: EnvelopeMonth;
 	/** Entrou na reserva neste mês (líquido). */
 	savedThisMonthCents?: number;
+	/** O selo "Saldo não informado" (SPD-114): ver `utils/balanceUnset.ts`. */
+	balanceUnset?: boolean;
 	onPress: (account: Account) => void;
 }
 
-export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, envelope, savedThisMonthCents, onPress }) => {
+/**
+ * As contas em que o "Saldo não informado" foi dispensado neste aparelho. Relido no foco:
+ * a dispensa é feita na tela da conta, por cima desta.
+ */
+export const useDismissedBalanceUnset = (): ReadonlySet<string> => {
+	const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
+	useFocusEffect(
+		useCallback(() => {
+			void getDismissedBalanceUnset().then(setDismissed);
+		}, [])
+	);
+	return dismissed;
+};
+
+/** Para onde o selo leva: a tela da conta, já com o "Acertar com o banco" aberto. */
+const setBalanceRoute = (account: Account) =>
+	({ pathname: '/accounts/[id]', params: { id: account.id, setBalance: '1' } }) as const;
+
+export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, envelope, savedThisMonthCents, balanceUnset = false, onPress }) => {
 	const { t } = useTranslation();
+	const router = useRouter();
 	// Lido aqui, e não por prop, para a lista de Contas ganhar a mesma marca sem mudar nada lá.
 	const { provisionalBalances } = useAccounts();
 	const amount = `${balanceCents < 0 ? '− ' : ''}${formatCents(Math.abs(balanceCents))}`;
@@ -51,11 +75,11 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 		secondary = t('accounts.savedThisMonth', { amount: formatCents(savedThisMonthCents) });
 	}
 
-	return (
+	const row = (
 		<Pressable
 			onPress={() => onPress(account)}
 			accessibilityRole="button"
-			accessibilityLabel={`${t('accounts.accountSummary', { name: account.name, balance: amount })}. ${secondary}${pending ? `. ${pending}` : ''}`}
+			accessibilityLabel={`${t('accounts.accountSummary', { name: account.name, balance: amount })}. ${secondary}${pending ? `. ${pending}` : ''}${balanceUnset ? `. ${t('accounts.balanceUnset.badge')}` : ''}`}
 			accessibilityHint={t('accounts.accountHint')}
 			style={({ pressed }) => [styles.row, pressed && styles.pressed]}
 		>
@@ -88,12 +112,34 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 			<Text style={[styles.amount, balanceCents < 0 && styles.negative]}>{amount}</Text>
 		</Pressable>
 	);
+
+	if (!balanceUnset) return row;
+
+	// O selo é um botão ao lado da linha, não dentro dela: dentro de outro botão o leitor de
+	// tela não chega até ele.
+	return (
+		<View>
+			{row}
+			<Pressable
+				onPress={() => router.push(setBalanceRoute(account))}
+				accessibilityRole="button"
+				accessibilityLabel={t('accounts.balanceUnset.badge')}
+				accessibilityHint={t('accounts.balanceUnset.hint')}
+				style={({ pressed }) => [styles.badge, pressed && styles.pressed]}
+			>
+				<Ionicons name="alert-circle-outline" size={16} color="#000000" />
+				<Text style={styles.badgeText}>{t('accounts.balanceUnset.badge')}</Text>
+				<Ionicons name="chevron-forward" size={16} color="#000000" />
+			</Pressable>
+		</View>
+	);
 };
 
 const AccountsOverview: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { bankAccounts, balances, overview, provisionalOverview, month, unassignedNetCents, isLoading } = useAccounts();
+	const dismissedBalanceUnset = useDismissedBalanceUnset();
 
 	if (isLoading) return null;
 
@@ -167,6 +213,7 @@ const AccountsOverview: React.FC = () => {
 								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
 								envelope={envelopes.get(account.id)}
 								savedThisMonthCents={account.role === 'reserve' ? savedByAccount.get(account.id) : undefined}
+								balanceUnset={showsBalanceUnset(account, dismissedBalanceUnset)}
 								onPress={openAccount}
 							/>
 						))}
@@ -300,6 +347,24 @@ const styles = StyleSheet.create({
 	},
 	negative: {
 		color: '#FF8A80',
+	},
+	// O mesmo âmbar do aviso "Duas contas do mesmo banco": pede uma ação, não é erro.
+	badge: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		alignSelf: 'flex-start',
+		gap: 6,
+		minHeight: 44,
+		marginLeft: 52,
+		marginBottom: 8,
+		paddingHorizontal: 12,
+		borderRadius: 22,
+		backgroundColor: '#FFB74D',
+	},
+	badgeText: {
+		fontSize: 14,
+		fontWeight: '600',
+		color: '#000000',
 	},
 	empty: {
 		gap: 12,
