@@ -1,5 +1,6 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TransactionForm from '../../components/TransactionForm';
@@ -7,6 +8,7 @@ import { useTransactions } from '../../contexts/TransactionsContext';
 import type { Transaction } from '../../database/schema';
 
 export default function EditTransactionScreen() {
+	const { t } = useTranslation();
 	const router = useRouter();
 	const { id } = useLocalSearchParams();
 	const { transactions } = useTransactions();
@@ -36,7 +38,7 @@ export default function EditTransactionScreen() {
 		<SafeAreaView style={styles.container}>
 			<Stack.Screen
 				options={{
-					title: initialTransaction?.isIncome ? 'Edit Income' : 'Edit Expense',
+					title: initialTransaction?.isIncome ? t('transactionForm.titleEditIncome') : t('transactionForm.titleEditExpense'),
 					headerStyle: {
 						backgroundColor: '#1A1A1A',
 					},

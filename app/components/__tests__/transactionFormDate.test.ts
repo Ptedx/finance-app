@@ -9,11 +9,9 @@
  * (parse → getISODate) é identidade, em qualquer fuso.
  */
 
-import { getISODate, lastDayOfMonth, parseISODate } from '../../utils/dateUtils';
-
-/** O mesmo helper do formulário (não exportado de lá para não virar API do componente). */
-const buildPickedDate = (year: number, monthIndex: number, day: number): Date =>
-	new Date(year, monthIndex, Math.min(day, lastDayOfMonth(year, monthIndex + 1)));
+import { getISODate, parseISODate } from '../../utils/dateUtils';
+// O seletor de data saiu do formulário para o próprio componente (SPD-086).
+import { buildPickedDate } from '../DatePickerModal';
 
 describe('TransactionForm — data', () => {
 	it('parse → getISODate é identidade para todos os dias de 2020 a 2030', () => {

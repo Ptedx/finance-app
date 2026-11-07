@@ -1,5 +1,6 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TransactionForm from '../components/TransactionForm';
@@ -7,6 +8,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 
 const AddTransactionScreen = () => {
+	const { t } = useTranslation();
 	const router = useRouter();
 	const params = useLocalSearchParams();
 	const { transactions } = useTransactions();
@@ -58,12 +60,12 @@ const AddTransactionScreen = () => {
 	};
 
 	const screenTitle = initialTransaction
-		? 'Edit Transaction'
+		? t('transactionForm.titleEdit')
 		: defaultIsIncome === true
-			? 'Add Income'
+			? t('transactionForm.titleAddIncome')
 			: defaultIsIncome === false
-				? 'Add Expense'
-				: 'Add Transaction';
+				? t('transactionForm.titleAddExpense')
+				: t('transactionForm.titleAdd');
 
 	return (
 		<SafeAreaView style={styles.container}>

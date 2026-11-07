@@ -3,6 +3,7 @@ import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
 import type React from 'react';
 import { memo, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { Category } from '../database/schema';
 
@@ -22,6 +23,7 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({
 	onSelectCategory,
 	isIncome = false,
 }) => {
+	const { t } = useTranslation();
 	const router = useRouter();
 
 	// Only offer categories belonging to the side of the ledger being recorded, so an
@@ -68,9 +70,9 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({
 	return (
 		<View style={styles.container}>
 			<View style={styles.headerContainer}>
-				<Text style={styles.title}>Category</Text>
+				<Text style={styles.title}>{t('transactionForm.category')}</Text>
 				<TouchableOpacity style={styles.editButton} onPress={handleEditCategories}>
-					<Text style={styles.editButtonText}>Edit Categories</Text>
+					<Text style={styles.editButtonText}>{t('transactionForm.editCategories')}</Text>
 				</TouchableOpacity>
 			</View>
 			<View style={styles.categoriesContainer}>{categoryRows}</View>
