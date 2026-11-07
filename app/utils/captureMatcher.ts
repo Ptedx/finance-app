@@ -172,6 +172,14 @@ export const STATEMENT_PACKAGE_PREFIX = 'ofx:';
 export const isStatementPackage = (packageName: string): boolean =>
 	packageName.startsWith(STATEMENT_PACKAGE_PREFIX);
 
+/**
+ * O `reason` da linha de extrato que pergunta "Parece repetido" por causa de um lançamento
+ * digitado (E2E-34). A pergunta é a de duplicata (`question: 'duplicate'`), mas o
+ * `relatedId` aponta para o **lançamento**, não para outra captura: é por este motivo que a
+ * revisão sabe onde procurá-lo.
+ */
+export const STATEMENT_LEDGER_SUSPECT_REASON = 'statement_ledger_suspect';
+
 /** Tipos que podem ser uma perna de transferência entre contas. Compra nunca é. */
 const TRANSFERABLE_KINDS = new Set<CaptureKind>([
 	'pix_out',

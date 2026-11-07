@@ -17,9 +17,9 @@ import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import type { Account, Capture, Category } from '../database/schema';
+import type { Account, Capture, Category, Transaction } from '../database/schema';
 import { resolveCategoryId } from '../utils/captureActions';
-import { isStatementPackage } from '../utils/captureMatcher';
+import { isStatementPackage, STATEMENT_LEDGER_SUSPECT_REASON } from '../utils/captureMatcher';
 import { formatDate, getISODate } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { formatCents } from '../utils/money';
@@ -112,6 +112,41 @@ export const ignoredAppLabel = (
 	t: (key: string, options?: Record<string, unknown>) => string
 ): string => t('captures.ignoredApp', { app, defaultValue: 'Avisos do {{app}} estão sendo ignorados' });
 
+/**
+ * O botão que mostra o texto cru: "Linha do extrato" no item que veio de OFX — ele não
+ * veio de notificação nenhuma (E2E-34) —, "Notificação original" no resto.
+ */
+export const rawSourceLabel = (
+	capture: Pick<Capture, 'packageName'>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => (isStatementPackage(capture.packageName) ? t('captures.statementLine') : t('captures.originalNotification'));
+
+/** A linha do extrato pergunta se é um lançamento que o usuário digitou (`findLedgerSuspect`). */
+const isLedgerSuspect = (capture: Pick<Capture, 'question' | 'reason'>): boolean =>
+	capture.question === 'duplicate' && capture.reason === STATEMENT_LEDGER_SUSPECT_REASON;
+
+/**
+ * "Parece repetido: Padaria de R$ 50,00 em 1 nov, já lançado." O lançamento é o do
+ * `relatedId`; a descrição é a nota dele ou, sem nota, a categoria. Lançamento que a tela
+ * não tem mais (apagado depois do import) não impede a pergunta, só tira os detalhes.
+ */
+export const ledgerSuspectLabel = (
+	capture: Pick<Capture, 'relatedId'>,
+	transactions: Pick<Transaction, 'id' | 'amountCents' | 'date' | 'note' | 'category'>[],
+	categories: Pick<Category, 'id' | 'name'>[],
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+	const found = capture.relatedId ? transactions.find((transaction) => transaction.id === capture.relatedId) : undefined;
+	if (!found) return t('captures.ledgerSuspectUnknown');
+	const description =
+		found.note.trim() || categories.find((category) => category.id === found.category)?.name || t('captures.ledgerSuspectEntry');
+	return t('captures.ledgerSuspectBody', {
+		description,
+		amount: formatCents(found.amountCents),
+		date: formatDate(found.date),
+	});
+};
+
 /** O porquê de um item do histórico, ou vazio quando não há um para dizer. */
 export const resolvedReasonLabel = (
 	capture: Pick<Capture, 'reason' | 'appLabel'>,
@@ -170,6 +205,8 @@ interface CaptureCardProps {
 	capture: Capture;
 	related: Capture | null;
 	categories: Category[];
+	/** Os lançamentos, para o "Parece repetido" da linha de extrato dizer qual. */
+	transactions: Transaction[];
 	onConfirm: (capture: Capture, categoryId: string) => void;
 	onDismiss: (capture: Capture) => void;
 	onTransfer: (capture: Capture) => void;
@@ -181,6 +218,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	capture,
 	related,
 	categories,
+	transactions,
 	onConfirm,
 	onDismiss,
 	onTransfer,
@@ -188,6 +226,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onAnswerTransfer,
 }) => {
 	const { t } = useTranslation();
+	const ledgerSuspect = isLedgerSuspect(capture);
 	const { accounts } = useAccounts();
 	const isIncome = capture.direction === 'in';
 	const [categoryId, setCategoryId] = useState(() =>
@@ -252,15 +291,17 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 				<View style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.questionDuplicateTitle')}</Text>
 					<Text style={styles.questionBody}>
-						{t('captures.questionDuplicateBody', {
-							app: related?.appLabel ?? '?',
-							time: related ? whenLabelFor(related) : '?',
-						})}
+						{ledgerSuspect
+							? ledgerSuspectLabel(capture, transactions, categories, t)
+							: t('captures.questionDuplicateBody', {
+									app: related?.appLabel ?? '?',
+									time: related ? whenLabelFor(related) : '?',
+								})}
 					</Text>
 					<View style={styles.questionActions}>
 						<ActionButton
 							label={t('captures.sameEntry')}
-							hint={t('captures.sameEntryHint')}
+							hint={ledgerSuspect ? t('captures.ledgerSameHint') : t('captures.sameEntryHint')}
 							icon="copy-outline"
 							onPress={() => onAnswerDuplicate(capture, true)}
 							primary
@@ -357,11 +398,11 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			<Pressable
 				onPress={() => setRawOpen((open) => !open)}
 				accessibilityRole="button"
-				accessibilityLabel={t('captures.originalNotification')}
+				accessibilityLabel={rawSourceLabel(capture, t)}
 				accessibilityState={{ expanded: rawOpen }}
 				style={styles.rawToggle}
 			>
-				<Text style={styles.rawToggleText}>{t('captures.originalNotification')}</Text>
+				<Text style={styles.rawToggleText}>{rawSourceLabel(capture, t)}</Text>
 			</Pressable>
 			{rawOpen && (
 				<Text style={styles.raw} selectable>
@@ -417,7 +458,7 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert
 						{detail ? ` · ${detail}` : ''} · {whenLabelFor(capture)}
 					</Text>
 					<Text style={styles.resolvedSource}>
-						{capture.appLabel} · {rawOpen ? t('captures.hideOriginal') : t('captures.originalNotification')}
+						{capture.appLabel} · {rawOpen ? t('captures.hideOriginal') : rawSourceLabel(capture, t)}
 					</Text>
 				</Pressable>
 				<Pressable
@@ -444,7 +485,7 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert
 const CaptureInboxScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { categories } = useTransactions();
+	const { categories, transactions } = useTransactions();
 	const {
 		supported,
 		enabled,
@@ -645,6 +686,7 @@ const CaptureInboxScreen = () => {
 						capture={capture}
 						related={capture.relatedId ? (byId.get(capture.relatedId) ?? null) : null}
 						categories={categories}
+						transactions={transactions}
 						onConfirm={handleConfirm}
 						onDismiss={handleDismiss}
 						onTransfer={handleTransfer}

@@ -32,6 +32,7 @@ import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
+import type { StatementAccountChooser } from '../utils/accountResolver';
 import {
 	type BiometricKind,
 	biometricIcon,
@@ -42,7 +43,12 @@ import * as biometricUtils from '../utils/biometricUtils';
 import { eraseAllData } from '../utils/dataWipe';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import * as notificationUtils from '../utils/notificationUtils';
-import { StatementImportError } from '../utils/statementImport';
+import {
+	type StatementChoiceAnswer,
+	StatementImportError,
+	walkStatementChoice,
+	withStatementAccountChooser,
+} from '../utils/statementImport';
 
 const SettingsScreen = () => {
 	const { t } = useTranslation();
@@ -74,10 +80,45 @@ const SettingsScreen = () => {
 	 * Extrato OFX: nada entra no livro sem revisão. O resumo diz quantas linhas o app
 	 * já conhecia, quantas foram para a caixa de entrada e quantas ficaram de fora.
 	 */
+	/**
+	 * "Este extrato é do cartão Nubank Teste (final 1111)?" (E2E-34): o import pergunta
+	 * quando só o final bate, ou quando há mais de um candidato. Este / outro / criar novo,
+	 * uma conta de cada vez (`walkStatementChoice`).
+	 */
+	const askStatementAccount: StatementAccountChooser = (question) =>
+		walkStatementChoice(
+			question,
+			(candidate, hasMore) =>
+				new Promise<StatementChoiceAnswer>((resolve) => {
+					// Quem bateu pelo final mostra o do extrato (pode ser o de um virtual); os outros, o seu.
+					const last4 = question.candidates.includes(candidate) ? (question.last4 ?? candidate.last4) : candidate.last4;
+					const title =
+						question.isCard && question.last4
+							? t('captures.import.matchTitleCard', { bank: question.bankName, last4: question.last4 })
+							: t('captures.import.matchTitle', { bank: question.bankName });
+					const message = !question.isCard
+						? t('captures.import.matchAccount', { name: candidate.name })
+						: last4
+							? t('captures.import.matchCard', { name: candidate.name, last4 })
+							: t('captures.import.matchCardNoLast4', { name: candidate.name });
+					const other = question.isCard ? t('captures.import.matchOtherCard') : t('captures.import.matchOtherAccount');
+					Alert.alert(
+						title,
+						message,
+						[
+							{ text: t('captures.import.matchNew'), onPress: () => resolve('new') },
+							...(hasMore ? [{ text: other, onPress: () => resolve('other') }] : []),
+							{ text: t('captures.import.matchThis'), onPress: () => resolve('this') },
+						],
+						{ cancelable: false }
+					);
+				})
+		);
+
 	const handleImportStatement = async () => {
 		try {
 			setIsImportingStatement(true);
-			const result = await importStatement();
+			const result = await withStatementAccountChooser(askStatementAccount, importStatement);
 			if (!result) return;
 
 			const s = result.summary;

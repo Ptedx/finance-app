@@ -26,14 +26,27 @@ import {
 	insertCapture,
 	updateCapture,
 } from '../database/captures';
-import { assignTransactionAccount, db, getTransactionsByDateRange, reassignCaptureLedger } from '../database/database';
+import {
+	assignTransactionAccount,
+	db,
+	getAccounts,
+	getTransactionsByDateRange,
+	reassignCaptureLedger,
+} from '../database/database';
+import type { Account } from '../database/schema';
 import { generateUniqueId } from '../utils/categoryEditUtils';
-import { resolveAccountForStatement } from './accountResolver';
+import {
+	resolveAccountForStatement,
+	type StatementAccountChoice,
+	type StatementAccountChooser,
+	type StatementAccountQuestion,
+} from './accountResolver';
 import { applyDecision, type IngestOptions, toKnownCapture, toMerchantRule } from './captureActions';
-import { DEFAULT_AUTO_CONFIRM_THRESHOLD, type MerchantRule } from './captureMatcher';
+import { DEFAULT_AUTO_CONFIRM_THRESHOLD, type MerchantRule, STATEMENT_LEDGER_SUSPECT_REASON } from './captureMatcher';
 import { addDays } from './dateUtils';
 import { decodeOfxBytes, parseOfx } from './ofxParser';
 import {
+	findTransactionForLine,
 	type LedgerTransaction,
 	linesOf,
 	MATCH_INSTALLMENT_WINDOW_DAYS,
@@ -105,15 +118,107 @@ const baseDraftOf = (line: StatementLine, fingerprint: string, accountId: string
 	reason: null,
 });
 
+// ---------------------------------------------------------------------------
+// "De qual cartão é este extrato?"
+// ---------------------------------------------------------------------------
+
+/**
+ * Quem responde a pergunta da conta durante um import (`resolveAccountForStatement`). A
+ * tela que dispara o import a registra só enquanto ele roda: o import passa pelo contexto
+ * da caixa de entrada, que não sabe perguntar nada.
+ */
+let activeChooser: StatementAccountChooser | null = null;
+
+export const withStatementAccountChooser = async <T>(
+	chooser: StatementAccountChooser,
+	run: () => Promise<T>
+): Promise<T> => {
+	const previous = activeChooser;
+	activeChooser = chooser;
+	try {
+		return await run();
+	} finally {
+		activeChooser = previous;
+	}
+};
+
+export type StatementChoiceAnswer = 'this' | 'other' | 'new';
+
+/**
+ * A pergunta, uma conta de cada vez: "Este extrato é do cartão Nubank Teste (final
+ * 1111)?" com este / outro cartão / criar novo. "Outro" passa ao próximo candidato e
+ * depois aos outros cartões; acabou a lista, é novo. Uma de cada vez porque o alerta do
+ * Android tem no máximo três botões.
+ */
+export const walkStatementChoice = async (
+	question: StatementAccountQuestion,
+	ask: (account: Account, hasMore: boolean) => Promise<StatementChoiceAnswer>
+): Promise<StatementAccountChoice> => {
+	const queue = [...question.candidates, ...question.others];
+	for (let index = 0; index < queue.length; index += 1) {
+		const answer = await ask(queue[index], index < queue.length - 1);
+		if (answer === 'this') return { type: 'existing', accountId: queue[index].id };
+		if (answer === 'new') return { type: 'new' };
+	}
+	return { type: 'new' };
+};
+
+// ---------------------------------------------------------------------------
+// "Parece repetido"
+// ---------------------------------------------------------------------------
+
+/** Folga do "Parece repetido": o mesmo dia, a véspera ou o dia seguinte. */
+export const LEDGER_SUSPECT_DAYS = 1;
+
+const dayNumber = (date: string): number => {
+	const [year, month, day] = date.split('-').map(Number);
+	return Math.round(Date.UTC(year, month - 1, day) / 86_400_000);
+};
+
+/**
+ * O lançamento digitado que talvez já seja esta linha, mas noutra conta do mesmo tipo
+ * (E2E-34): a padaria de R$ 50 lançada à mão no cartão errado, ou no cartão que o import
+ * não reconheceu. No mesmo cartão o plano já casa sozinho (`findTransactionForLine`); de
+ * outro cartão ele não casa de propósito — o mercado de R$ 100 no débito não pode sumir
+ * com o do cartão —, então aqui só se pergunta.
+ *
+ * Mesmo critério do casamento (valor, direção, parcela, já ligado), com a data a no máximo
+ * um dia. Cartão com cartão, conta com conta: o Pix de R$ 50 da conta corrente não é a
+ * compra do cartão.
+ */
+export const findLedgerSuspect = (
+	line: StatementLine,
+	accountId: string | null,
+	transactions: LedgerTransaction[],
+	isCardAccount: ReadonlyMap<string, boolean>,
+	excluded: Set<string>
+): LedgerTransaction | undefined => {
+	const near = transactions.filter(
+		(transaction) =>
+			transaction.accountId != null &&
+			transaction.accountId !== accountId &&
+			isCardAccount.get(transaction.accountId) === line.isCard &&
+			Math.abs(dayNumber(line.postedDate) - dayNumber(transaction.date)) <= LEDGER_SUSPECT_DAYS
+	);
+	// Sem a conta, o filtro de conta do casamento deixa passar: a conta já foi vista acima.
+	return findTransactionForLine(
+		line,
+		near.map((transaction) => ({ ...transaction, accountId: null })),
+		excluded
+	);
+};
+
 /**
  * Importa o conteúdo de um arquivo OFX já decodificado.
  *
  * Todas as contas do arquivo são planejadas juntas: uma transferência entre duas
- * contas presentes no mesmo arquivo é reconhecida na hora.
+ * contas presentes no mesmo arquivo é reconhecida na hora. `chooseAccount` responde
+ * "de qual cartão é este extrato?"; sem ele vale o registrado por
+ * `withStatementAccountChooser`, e sem nenhum a dúvida vira conta nova.
  */
 export const importOfxContent = async (
 	content: string,
-	options: IngestOptions
+	options: IngestOptions & { chooseAccount?: StatementAccountChooser }
 ): Promise<StatementImportResult> => {
 	const statement = parseOfx(content);
 	const lines = statement.accounts.flatMap(linesOf);
@@ -169,8 +274,9 @@ export const importOfxContent = async (
 	// A conta de cada extrato do arquivo, criada ou adotada antes de qualquer gravação:
 	// as linhas nascem já com a conta, e o LEDGERBAL vira a âncora do saldo.
 	const accountIdByKey = new Map<string, string>();
+	const chooseAccount = options.chooseAccount ?? activeChooser;
 	for (const account of statement.accounts) {
-		const resolved = await resolveAccountForStatement(account);
+		const resolved = await resolveAccountForStatement(account, chooseAccount);
 		accountIdByKey.set(account.accountKey, resolved.id);
 	}
 
@@ -186,6 +292,34 @@ export const importOfxContent = async (
 		nextId: generateUniqueId,
 		accountIdByKey,
 	});
+
+	// O que ia para a revisão (ou entraria sozinho) e tem um lançamento digitado parecido
+	// noutra conta do mesmo tipo pergunta antes: confirmar os dois dobrava o gasto.
+	const isCardAccount = new Map((await getAccounts()).map((account) => [account.id, account.kind === 'credit_card']));
+	const claimedByPlan = new Set(linkedTransactionIds);
+	for (const item of planned) {
+		if (item.action.type === 'match_transaction') claimedByPlan.add(item.action.transactionId);
+	}
+	const ledgerSuspects = new Set<string>();
+	for (const item of planned) {
+		if (item.action.type !== 'decision') continue;
+		const decided = item.action.decision.action;
+		if (decided !== 'pending' && decided !== 'auto_confirm') continue;
+		const suspect = findLedgerSuspect(
+			item.line,
+			accountIdByKey.get(item.line.accountKey) ?? null,
+			ledger,
+			isCardAccount,
+			claimedByPlan
+		);
+		if (!suspect) continue;
+		claimedByPlan.add(suspect.id);
+		ledgerSuspects.add(item.id);
+		item.action = { type: 'decision', decision: { action: 'ask_duplicate', relatedId: suspect.id } };
+		if (decided === 'pending') summary.pending -= 1;
+		else summary.autoConfirmed -= 1;
+		summary.questions += 1;
+	}
 
 	// Tudo ou nada: um import pela metade deixaria linhas "já vistas" sem as que as
 	// justificam, e a próxima tentativa pularia as gravadas pelo FITID.
@@ -222,6 +356,8 @@ export const importOfxContent = async (
 					},
 					id
 				);
+			} else if (ledgerSuspects.has(id)) {
+				await applyDecision({ ...base, reason: STATEMENT_LEDGER_SUSPECT_REASON }, action.decision, options.categories, id);
 			} else {
 				await applyDecision(base, action.decision, options.categories, id);
 			}
@@ -264,4 +400,11 @@ export const pickAndImportOfx = async (
 	return importOfxContent(decodeOfxBytes(bytes), options);
 };
 
-export default { importOfxContent, pickAndImportOfx, StatementImportError };
+export default {
+	importOfxContent,
+	pickAndImportOfx,
+	StatementImportError,
+	withStatementAccountChooser,
+	walkStatementChoice,
+	findLedgerSuspect,
+};
