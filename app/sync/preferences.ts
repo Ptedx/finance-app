@@ -64,8 +64,9 @@ export const stampAfter = (now: string, previous: string | null | undefined): st
  *
  * - só o AsyncStorage tem: descoberta, com o carimbo de semente;
  * - os dois têm, com valores diferentes (ou a tabela tem lápide): mudou por fora, agora;
- * - só a tabela tem viva: a chave foi apagada (o "apagar meus dados", por exemplo) e
- *   vira lápide — com o último valor, que a validação do servidor exige;
+ * - só a tabela tem viva: a chave foi apagada por fora e vira lápide — com o último
+ *   valor, que a validação do servidor exige. (O "Apagar todos os dados" não passa por
+ *   aqui: desde o SPD-082 ele tira a chave das duas pontas, e não sobra diferença;)
  * - igual dos dois lados: nada.
  *
  * Só as chaves que viajam (`SYNCED_PREFERENCE_KEYS`): o resto do AsyncStorage — a

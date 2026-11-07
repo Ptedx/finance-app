@@ -204,18 +204,19 @@ describe('migração v20', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v19 roda o passo 20 (e o 21, que veio depois) e grava a versão em cada um', async () => {
+	it('um banco v19 roda o passo 20 (e o 21 e o 22, que vieram depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(19, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
 		expect(reached).toBe(SCHEMA_VERSION);
-		expect(versions).toEqual([20, 21]);
+		expect(versions).toEqual([20, 21, 22]);
 		// Só os CREATE das tabelas novas: nenhum passo anterior repetido.
 		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
 			'CREATE TABLE IF NOT EXISTS bills',
 			'CREATE TABLE IF NOT EXISTS preferences',
+			'CREATE TABLE IF NOT EXISTS seen_capture_fingerprints',
 		]);
 	});
 

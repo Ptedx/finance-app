@@ -570,14 +570,20 @@ const it = {
 			'I tuoi dati sono stati importati con successo.\n\nImportati: {{transactions}} transazioni, {{recurringTransactions}} transazioni ricorrenti.',
 		resetTitle: 'Reimposta Tutti i Dati',
 		resetMsg:
-			"Questa operazione eliminerà tutte le tue spese e categorie. L'azione non può essere annullata. Sei sicuro?",
+			'Questa operazione elimina da questo dispositivo le transazioni, i conti e le carte, le bollette, i budget, i debiti, gli obiettivi e tutto ciò che è in attesa di revisione.\n\nRestano le categorie, ciò che l’app ha imparato su ogni esercente e le impostazioni. L’azione non può essere annullata.',
+		resetMsgAccount:
+			'Questa operazione elimina le transazioni, i conti e le carte, le bollette, i budget, i debiti, gli obiettivi e tutto ciò che è in attesa di revisione — nel tuo account e su tutti i dispositivi collegati.\n\nRestano le categorie, ciò che l’app ha imparato su ogni esercente e le impostazioni. L’azione non può essere annullata.',
 		reset: 'Reimposta',
 		resetAuthMsg: 'Autenticati per reimpostare tutti i dati',
 		resetSuccess: 'Dati Reimpostati',
 		resetSuccessMsg:
-			'Tutte le transazioni, i budget e le impostazioni sono stati reimpostati con successo.',
+			'I dati sono stati eliminati da questo dispositivo. Le categorie, ciò che l’app ha imparato e le impostazioni restano.',
+		resetSuccessMsgAccount:
+			'I dati sono stati eliminati dal tuo account e da questo dispositivo. Gli altri dispositivi li eliminano alla prossima sincronizzazione. Le categorie, ciò che l’app ha imparato e le impostazioni restano.',
 		resetFailed: 'Reimpostazione Fallita',
 		resetError: 'Si è verificato un errore durante la reimpostazione dei dati. Riprova.',
+		resetServerError:
+			'Non è stato possibile eliminare i dati dal tuo account, quindi non è stato eliminato nulla. Controlla la connessione a internet e riprova.',
 		resetAuthFailed: "Per la tua sicurezza, la reimpostazione dei dati richiede l'autenticazione.",
 		aboutMsg: 'Spendr è un’app di finanza personale: legge le notifiche della banca, segue conti, carte e bollette e mostra dove vanno i tuoi soldi. I dati restano sul dispositivo e, se accedi con un account, anche sul server di Spendr, per tornare su un nuovo dispositivo.',
 		ok: 'OK',

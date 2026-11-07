@@ -356,11 +356,28 @@ export const inheritCursor = (legacy: SyncCursor, legacySchema: number): SyncCur
 	return cursor;
 };
 
+/**
+ * A chave, em `sync_state`, do último "Apagar todos os dados" da conta que este aparelho
+ * conhece (SPD-082, DEC-35): o `dataWipedAt` que o servidor devolveu ao apagar. Mora ao
+ * lado do cursor, e sai com ele quando a conta muda (`beginSessionFor`, `endSyncSession`).
+ *
+ * Vai em todo push como `knownWipeAt` — `null` quando este aparelho nunca apagou. O
+ * servidor recusa (409 `data_wiped`) o push de quem não sabe do último apagar: sem isso,
+ * o celular que ficou sem rede subiria de volta o que o outro acabou de apagar.
+ */
+export const KNOWN_WIPE_AT_KEY = 'knownWipeAt';
+
 export interface PullResponse {
 	serverTime: string;
 	cursor: SyncCursor;
 	hasMore: boolean;
 	changes: SyncChanges;
+	/**
+	 * O último "Apagar todos os dados" da conta, ou `null` se ela nunca apagou. O servidor
+	 * que está em produção ainda não manda: ausente vale como "não se sabe". Quem compara
+	 * com o `knownWipeAt` daqui é o SPD-083.
+	 */
+	dataWipedAt?: string | null;
 }
 
 /**
@@ -418,6 +435,8 @@ export interface SyncStatusResponse {
 		merchantRules?: number;
 		bills?: number;
 	};
+	/** Como em `PullResponse`: o último apagar da conta, ausente num servidor anterior. */
+	dataWipedAt?: string | null;
 }
 
 export const EMPTY_CHANGES = (): SyncChanges => ({

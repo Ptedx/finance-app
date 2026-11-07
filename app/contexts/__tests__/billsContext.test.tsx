@@ -40,9 +40,25 @@ jest.mock('../../utils/notificationUtils', () => ({
 	scheduleBillReminders: jest.fn(async () => 0),
 }));
 
-jest.mock('../../sync/queue', () => ({
-	schedule: jest.fn(),
-}));
+// O aviso de "o banco mudou por fora" (`hooks/useAfterPull.ts`) de verdade, numa fila de mentira.
+jest.mock('../../sync/queue', () => {
+	type MockState = { pulledVersion: number };
+	const listeners = new Set<(state: MockState) => void>();
+	let state: MockState = { pulledVersion: 0 };
+	return {
+		schedule: jest.fn(),
+		getState: () => state,
+		subscribe: (listener: (next: MockState) => void) => {
+			listeners.add(listener);
+			listener(state);
+			return () => listeners.delete(listener);
+		},
+		notifyDataChanged: () => {
+			state = { pulledVersion: state.pulledVersion + 1 };
+			for (const listener of listeners) listener(state);
+		},
+	};
+});
 
 jest.mock('../SyncContext', () => ({
 	useSync: () => ({ lastSyncedAt: mockLastSyncedAt }),
@@ -171,6 +187,16 @@ describe('remarca os lembretes', () => {
 		mockLastSyncedAt = '2026-10-24T13:00:00.000Z';
 		await rerender();
 		expect(lastScheduledIds()).toEqual(['plano', 'fin', 'mei']);
+	});
+
+	it('quando o banco muda por fora ("Apagar todos os dados", backup): a lista some e os lembretes também', async () => {
+		const api = await mount();
+		mockStore = [];
+		await act(async () => {
+			syncQueue.notifyDataChanged();
+		});
+		expect(api().bills).toEqual([]);
+		expect(lastScheduledIds()).toEqual([]);
 	});
 
 	it('quando o app volta para o primeiro plano', async () => {

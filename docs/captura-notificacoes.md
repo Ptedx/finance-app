@@ -105,6 +105,28 @@ aqui.
   o histórico é apagado depois de 90 dias.
 - **Texto bruto sempre à mão** em "Notificação original", para conferir o que o parser leu.
 
+## Apagar todos os dados
+
+Configurações → "Apagar todos os dados" (SPD-082, DEC-35) apaga de verdade, sem lápide:
+lançamentos, contas e cartões, contas a pagar, orçamentos, dívidas, metas e a caixa de
+entrada inteira. Ficam as categorias, as regras aprendidas por estabelecimento e as
+configurações (moeda, idioma, CDI, lembretes, biometria, avisos dispensados); saem só as
+duas preferências presas a contas (pares de contas diferentes e a conta da PJ de cada
+banco).
+
+- **Com conta**, o servidor apaga primeiro (`POST /me/wipe`) — na conta e, por ela, em
+  todos os aparelhos. Sem internet, ou se o servidor não confirmar, nada é apagado e a
+  tela pede para tentar de novo. O `dataWipedAt` que ele devolve fica em `sync_state`
+  como `knownWipeAt` e vai em todo push: o servidor recusa a remessa de um aparelho que
+  ainda não sabe do apagar. **Sem conta**, só o aparelho.
+- Da caixa de entrada sobra só a **impressão digital** de cada aviso, numa tabela local
+  (`seen_capture_fingerprints`, v22), sem texto nem valor: a notificação que o Android
+  reentregar depois não vira dinheiro de novo. A fila nativa é esvaziada antes, e o que
+  estava nela é descartado do mesmo jeito. Linhas de extrato não ficam — reimportar o
+  extrato traz o mês de volta.
+- Também saem os lembretes agendados e o diário de diagnóstico (o id da instalação fica).
+- Código: `app/utils/dataWipe.ts` (a ordem) e `wipeLocalData` em `app/database/database.ts`.
+
 ## Ligar
 
 Configurações → Captura automática → "Ler notificações do banco" abre a tela do

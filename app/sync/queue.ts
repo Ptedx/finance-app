@@ -40,6 +40,10 @@ let rerunRequested = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = RETRY_BASE_MS;
+/** A rodada em curso, para quem precisa esperá-la terminar (`runExclusive`). */
+let currentRound: Promise<void> | null = null;
+/** Quantos trabalhos exclusivos estão rodando; com algum, nenhuma rodada começa. */
+let exclusiveHolds = 0;
 
 let state: QueueState = { status: 'idle', lastError: null, pending: 0, pulledVersion: 0 };
 const listeners = new Set<Listener>();
@@ -71,7 +75,8 @@ const clearTimers = (): void => {
 };
 
 const run = async (): Promise<void> => {
-	if (!enabled) return;
+	// Durante um trabalho exclusivo o pedido não se perde: quem libera roda uma rodada.
+	if (!enabled || exclusiveHolds > 0) return;
 
 	// Single-flight: a segunda chamada não espera na fila, apenas pede uma repetição.
 	// Duas rodadas simultâneas empurrariam as mesmas linhas duas vezes.
@@ -81,6 +86,10 @@ const run = async (): Promise<void> => {
 	}
 
 	running = true;
+	let settleRound: () => void = () => {};
+	currentRound = new Promise<void>((resolve) => {
+		settleRound = resolve;
+	});
 	emit({ status: 'syncing' });
 
 	try {
@@ -121,6 +130,7 @@ const run = async (): Promise<void> => {
 		retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
 	} finally {
 		running = false;
+		settleRound();
 
 		if (rerunRequested) {
 			rerunRequested = false;
@@ -185,9 +195,42 @@ export const syncImmediately = (): void => {
 };
 
 /**
+ * Roda `work` com a fila parada: espera a rodada em curso terminar e não deixa outra
+ * começar até `work` acabar. Depois, havendo sessão, roda uma rodada — a que alguém pediu
+ * no meio, ou só a que alinha o aparelho com a conta.
+ *
+ * É o "Apagar todos os dados" (`utils/dataWipe.ts`): um pull que saiu antes do apagar e
+ * voltasse depois gravaria aqui de novo o que o servidor acabou de apagar, e um push no
+ * meio subiria o que estava sujo. Não liga nem desliga a fila — o login e o sair
+ * continuam mandando nela.
+ *
+ * Não chamar de dentro de uma rodada (o motor do sync): ela esperaria a si mesma.
+ */
+export const runExclusive = async <T>(work: () => Promise<T>): Promise<T> => {
+	exclusiveHolds += 1;
+	try {
+		while (running && currentRound) await currentRound;
+		return await work();
+	} finally {
+		exclusiveHolds -= 1;
+		if (exclusiveHolds === 0) void run();
+	}
+};
+
+/**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export
  * default e um modulo quebrado do ponto de vista dele. Este export existe so para
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { start, stop, schedule, syncImmediately, subscribe, getState, isEnabled, notifyDataChanged };
+export default {
+	start,
+	stop,
+	schedule,
+	syncImmediately,
+	subscribe,
+	getState,
+	isEnabled,
+	notifyDataChanged,
+	runExclusive,
+};

@@ -20,7 +20,15 @@ import { logSyncFailure, rejectionSummary } from '../diagnostics/sync';
 import { nowTimestamp } from '../utils/dateUtils';
 import { emitPreferencesChanged } from './preferenceEvents';
 import { chunkChanges, type Collection, COLLECTIONS, mergePages, replacementStamp, TABLE_OF, tombstonesFor } from './replace';
-import { EMPTY_CURSOR, inheritCursor, onlyKnownCollections, type RejectedRow, type SyncChanges, type SyncCursor } from './types';
+import {
+	EMPTY_CURSOR,
+	inheritCursor,
+	KNOWN_WIPE_AT_KEY,
+	onlyKnownCollections,
+	type RejectedRow,
+	type SyncChanges,
+	type SyncCursor,
+} from './types';
 
 /**
  * Quantas linhas uma remessa tem, **todas** as coleções contadas.
@@ -154,6 +162,13 @@ export const resetCursor = async (): Promise<void> => {
 
 export const getLastSyncedAt = async (): Promise<string | null> => getSyncState(LAST_SYNCED_KEY);
 
+/**
+ * O último "Apagar todos os dados" da conta que este aparelho conhece, ou `null` se nunca
+ * apagou (ver `KNOWN_WIPE_AT_KEY`). Vai em todo push: é por ele que o servidor recusa a
+ * remessa de quem ainda não sabe que a conta foi apagada.
+ */
+export const getKnownWipeAt = async (): Promise<string | null> => getSyncState(KNOWN_WIPE_AT_KEY);
+
 /** O que sobrou de uma substituição: linhas da conta que o servidor não deixou apagar. */
 export interface ReplaceResult {
 	/** Linhas da conta apagadas porque não existiam neste aparelho. */
@@ -198,11 +213,12 @@ export const replaceAccountWithDevice = async (): Promise<ReplaceResult> => {
 
 	const stamp = replacementStamp(server, nowTimestamp());
 	const tombstones = tombstonesFor(server, localIds, stamp);
+	const knownWipeAt = await getKnownWipeAt();
 
 	let removed = 0;
 	let notRemoved = 0;
 	for (const chunk of chunkChanges(tombstones, PAGE_SIZE)) {
-		const response = await api.push(chunk);
+		const response = await api.push(chunk, knownWipeAt);
 		removed += response.applied;
 		notRemoved += response.rejected.length;
 		for (const row of response.rejected) {
@@ -421,6 +437,7 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 	// significa que reenviar não resolve, e o lançamento é reancorado aqui mesmo.
 	const resentCategories = new Set<string>();
 	const known = await readServerCollections();
+	const knownWipeAt = await getKnownWipeAt();
 
 	// O que mudou no AsyncStorage por fora vira linha suja antes de ler o que está sujo.
 	await reconcilePreferencesSafely();
@@ -437,7 +454,7 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 
 		if (pending === 0) break;
 
-		const response = await api.push(changes);
+		const response = await api.push(changes, knownWipeAt);
 		stats.pages += 1;
 		countRows(stats, changes);
 		stats.rejected.push(...response.rejected);
@@ -525,4 +542,4 @@ export const syncNow = async (): Promise<SyncResult> => {
  * satisfazer essa exigencia — nada navega para ca. Mesma convencao de database.ts,
  * money.ts e dos demais utilitarios do projeto.
  */
-export default { syncNow, pullAll, pushAll, resetCursor, getLastSyncedAt };
+export default { syncNow, pullAll, pushAll, resetCursor, getLastSyncedAt, getKnownWipeAt };

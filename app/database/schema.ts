@@ -274,8 +274,12 @@ export const DATABASE_NAME = 'spendr.db';
  *     aparelho. A tabela guarda o `updatedAt`, a lápide e a marca de cada chave; o
  *     AsyncStorage continua sendo o que as telas leem (ver `sync/preferences.ts`). Só
  *     tabela nova: um app v20 abre um banco v21 e ignora a tabela.
+ * 22 — `seen_capture_fingerprints` é criada (SPD-082, DEC-35): o "Apagar todos os dados"
+ *     apaga as capturas de verdade e guarda só a impressão digital de cada aviso, para a
+ *     mesma notificação do banco não virar dinheiro de novo. Local, fora de
+ *     `SYNCED_TABLES`. Só tabela nova: um app v21 abre um banco v22 e ignora a tabela.
  */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -844,6 +848,24 @@ ${SYNC_COLUMNS_SQL}
 `;
 
 /**
+ * As impressões digitais dos avisos que o "Apagar todos os dados" levou embora (v22).
+ *
+ * Só a impressão digital e quando ela entrou aqui: nem texto, nem valor, nem
+ * estabelecimento — o DEC-35 manda apagar de verdade, e a impressão digital é um hash do
+ * aviso, não o aviso. Ela existe pelo mesmo motivo da coluna UNIQUE de `captures`: o
+ * Android reentrega e reposta notificações, e o mesmo aviso do banco não pode virar
+ * dinheiro duas vezes (`hasCaptureFingerprint` consulta as duas tabelas).
+ *
+ * **Local**, fora de `SYNCED_TABLES`: é a memória deste aparelho sobre o que ele já viu.
+ */
+export const CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS seen_capture_fingerprints (
+    fingerprint TEXT PRIMARY KEY NOT NULL,
+    seenAt TEXT NOT NULL
+  );
+`;
+
+/**
  * Queries filter by date range constantly; without these they are full scans.
  * The `dirty` indexes keep the push's "what changed?" scan off the full table.
  */
@@ -1076,5 +1098,6 @@ export default {
 	CREATE_BILLS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	CREATE_PREFERENCES_TABLE,
+	CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE,
 	DEFAULT_CATEGORIES,
 };

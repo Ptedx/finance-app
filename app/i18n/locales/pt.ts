@@ -565,13 +565,20 @@ const pt = {
 			'Seus dados foram importados.\n\nImportados: {{transactions}} lançamentos, {{recurringTransactions}} recorrências.',
 		resetTitle: 'Apagar todos os dados',
 		resetMsg:
-			'Isto vai apagar todas as suas despesas e categorias. Não dá para desfazer. Tem certeza?',
+			'Isto apaga deste aparelho os lançamentos, as contas e os cartões, as contas a pagar, os orçamentos, as dívidas, as metas e o que está para revisar.\n\nFicam as categorias, o que o app aprendeu sobre cada estabelecimento e as configurações. Não dá para desfazer.',
+		resetMsgAccount:
+			'Isto apaga os lançamentos, as contas e os cartões, as contas a pagar, os orçamentos, as dívidas, as metas e o que está para revisar — na sua conta e em todos os aparelhos conectados a ela.\n\nFicam as categorias, o que o app aprendeu sobre cada estabelecimento e as configurações. Não dá para desfazer.',
 		reset: 'Apagar',
 		resetAuthMsg: 'Autentique para apagar todos os dados',
 		resetSuccess: 'Dados apagados',
-		resetSuccessMsg: 'Todos os lançamentos, orçamentos e configurações foram apagados.',
+		resetSuccessMsg:
+			'Os dados foram apagados deste aparelho. As categorias, o que o app aprendeu e as configurações continuam aqui.',
+		resetSuccessMsgAccount:
+			'Os dados foram apagados da sua conta e deste aparelho. Os outros aparelhos apagam também na próxima vez que sincronizarem. As categorias, o que o app aprendeu e as configurações continuam.',
 		resetFailed: 'Falha ao apagar',
 		resetError: 'Houve um erro ao apagar seus dados. Tente de novo.',
+		resetServerError:
+			'Não foi possível apagar os dados da sua conta, e nada foi apagado. Confira a conexão com a internet e tente de novo.',
 		resetAuthFailed: 'Por segurança, apagar os dados exige autenticação.',
 		aboutMsg: 'O Spendr é um app de finanças pessoais: lê os avisos do banco, acompanha contas, cartões e contas a pagar e mostra para onde vai o seu dinheiro. Os dados ficam no aparelho e, se você entrar com uma conta, também no servidor do Spendr, para voltarem num aparelho novo.',
 		ok: 'OK',

@@ -33,6 +33,7 @@ import {
 	CREATE_PREFERENCES_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
+	CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE,
 	ACCOUNT_V17_COLUMNS,
 	RESERVE_GOAL_ID,
 	DEFAULT_RESERVE_MONTHS,
@@ -82,7 +83,7 @@ import {
 	CREATE_TRANSFERS_TABLE,
 	TRANSACTION_V7_COLUMNS,
 } from './schema';
-import type { SyncChanges } from '../sync/types';
+import { KNOWN_WIPE_AT_KEY, type SyncChanges } from '../sync/types';
 
 /**
  * O único handle do banco. Exportado para módulos irmãos (`captures.ts`) que têm suas
@@ -630,6 +631,7 @@ export const migrationLadder = (): MigrationStep[] => [
 	[19, migrateSyncedInbox],
 	[20, migrateBills],
 	[21, migratePreferences],
+	[22, migrateSeenCaptureFingerprints],
 ];
 
 /**
@@ -936,6 +938,14 @@ const migratePreferences = async (): Promise<void> => {
 	await db.execAsync(CREATE_PREFERENCES_TABLE);
 };
 
+/**
+ * v21 -> v22: as impressões digitais que sobrevivem ao "Apagar todos os dados" (SPD-082).
+ * Só tabela nova, local, como o v20 e o v21.
+ */
+const migrateSeenCaptureFingerprints = async (): Promise<void> => {
+	await db.execAsync(CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE);
+};
+
 /** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
 const migrateDebts = async (): Promise<void> => {
 	await db.execAsync(CREATE_DEBTS_TABLE);
@@ -1154,6 +1164,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_RESERVE_GOALS_TABLE}
       ${CREATE_BILLS_TABLE}
       ${CREATE_PREFERENCES_TABLE}
+      ${CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE}
       ${CREATE_INDEXES}
     `);
 
@@ -4236,8 +4247,9 @@ export const clearSyncedData = async (): Promise<void> => {
 };
 
 /**
- * Apaga o livro inteiro: "apagar meus dados" nas Configurações e o primeiro passo da
- * importação de um backup.
+ * Apaga o livro inteiro com lápides: o primeiro passo da importação de um backup. O
+ * "Apagar todos os dados" das Configurações usava esta mesma função até o SPD-082 e hoje
+ * tem a sua (`wipeLocalData`), que apaga de verdade; a importação ficou como estava.
  *
  * As **categorias ficam**, de propósito. Elas não são dinheiro, e a importação regrava
  * em cima das que já existem (mesmo id) — apagá-las antes deixaria todo lançamento do
@@ -4308,6 +4320,134 @@ export const resetDatabase = async (): Promise<void> => {
 		console.error('Error resetting database:', error);
 		throw error;
 	}
+};
+
+/**
+ * O que o "Apagar todos os dados" apaga, linha por linha, lápides inclusive (SPD-082,
+ * DEC-35): o dinheiro e tudo o que aponta para ele — lançamentos, recorrências,
+ * orçamentos, transferências, contas e cartões, metas, dívidas, contas a pagar e a caixa
+ * de entrada.
+ */
+export const WIPE_DELETED_TABLES = [
+	'transactions',
+	'recurring_transactions',
+	'budgets',
+	'transfers',
+	'accounts',
+	'retirement_goals',
+	'debts',
+	'reserve_goals',
+	'bills',
+	'captures',
+] as const satisfies readonly SyncedTable[];
+
+/**
+ * O que ele mantém:
+ *
+ * - `categories`: as regras aprendidas apontam para elas, e não são dinheiro.
+ * - `merchant_rules`: o que o app aprendeu por estabelecimento ("o iFood é alimentação",
+ *   "ignorar o WhatsApp"). O DEC-35 manda guardar.
+ * - `preferences`: a configuração (moeda, idioma, CDI, lembretes, avisos dispensados).
+ *   Só saem as duas chaves presas a contas, ver `ACCOUNT_TIED_PREFERENCE_KEYS`.
+ *
+ * Toda tabela de `SYNCED_TABLES` está numa das duas listas — o teste confere, para uma
+ * tabela nova não ficar de fora calada. Fora delas: `sync_state` (o cursor e a marca do
+ * apagar, que este apagar grava) e `seen_capture_fingerprints` (que ele alimenta).
+ */
+export const WIPE_KEPT_TABLES = [
+	'categories',
+	'merchant_rules',
+	'preferences',
+] as const satisfies readonly SyncedTable[];
+
+/**
+ * As preferências que apontam para contas que deixam de existir: os pares "são contas
+ * diferentes" e qual conta recebe os avisos da PJ de cada banco. Com conta, o servidor já
+ * as apagou junto (SPD-080); sem conta, não há para onde propagar.
+ */
+const ACCOUNT_TIED_PREFERENCE_KEYS = [
+	STORAGE_KEYS.distinctAccountPairs,
+	STORAGE_KEYS.businessFeeds,
+];
+
+export interface LocalWipeOptions {
+	/**
+	 * Impressões digitais de avisos que nunca viraram captura — os que estavam na fila
+	 * nativa e foram descartados. Ficam conhecidas como as das capturas apagadas.
+	 */
+	seenFingerprints?: readonly string[];
+	/**
+	 * O `dataWipedAt` que o servidor devolveu, gravado como o apagar que este aparelho
+	 * conhece (`KNOWN_WIPE_AT_KEY`). Ausente sem conta: não há apagar da conta a conhecer.
+	 */
+	knownWipeAt?: string;
+}
+
+/**
+ * "Apagar todos os dados" neste aparelho (SPD-082, DEC-35): DELETE de verdade, numa
+ * transação só.
+ *
+ * Nada de lápide. O "apagar" antigo (`resetDatabase`) punha lápide suja em tudo para a
+ * remoção subir — e o conteúdo ficava para sempre, aqui e no servidor; com o relógio do
+ * aparelho atrasado o servidor recusava as lápides e o pull seguinte ressuscitava tudo.
+ * Agora, com conta, quem apaga na conta é o servidor (`/me/wipe`), antes daqui; sem
+ * conta, não há para onde propagar. Em nenhum dos casos sobra linha suja para subir.
+ *
+ * Da caixa de entrada sobra só a impressão digital de cada aviso
+ * (`seen_capture_fingerprints`), sem texto nem valor: é o que impede o mesmo aviso de virar
+ * dinheiro de novo quando o Android o reentrega. As linhas de extrato (`ofx:`) não ficam:
+ * a impressão delas leva o id da conta, que foi apagada junto, e reimportar o extrato é o
+ * caminho de quem quer o mês de volta.
+ *
+ * A marca do apagar (`knownWipeAt`) entra na mesma transação: apagar sem a marca faria o
+ * próximo push ser recusado, e a marca sem apagar subiria o que devia ter sumido.
+ *
+ * O AsyncStorage vem depois da transação (ele não participa dela): saem as duas chaves
+ * presas a contas e a cópia antiga dos orçamentos que a migração v4 deixou para trás.
+ *
+ * Usada pelo fluxo das Configurações (`utils/dataWipe.ts`) e, no SPD-083, quando outro
+ * aparelho apagou a conta.
+ */
+export const wipeLocalData = async (options: LocalWipeOptions = {}): Promise<void> => {
+	const timestamp = nowTimestamp();
+
+	await db.withTransactionAsync(async () => {
+		await db.runAsync(
+			`INSERT OR IGNORE INTO seen_capture_fingerprints (fingerprint, seenAt)
+       SELECT fingerprint, ? FROM captures WHERE fingerprint NOT LIKE 'ofx:%'`,
+			[timestamp]
+		);
+		for (const fingerprint of options.seenFingerprints ?? []) {
+			await db.runAsync(
+				'INSERT OR IGNORE INTO seen_capture_fingerprints (fingerprint, seenAt) VALUES (?, ?)',
+				[fingerprint, timestamp]
+			);
+		}
+
+		for (const table of WIPE_DELETED_TABLES) {
+			await db.runAsync(`DELETE FROM ${table}`);
+		}
+
+		// DELETE, não lápide: com conta o servidor já as apagou, sem conta não há para onde
+		// a lápide ir. Uma lápide aqui subiria no próximo push à toa.
+		await db.runAsync(
+			`DELETE FROM preferences WHERE key IN (${ACCOUNT_TIED_PREFERENCE_KEYS.map(() => '?').join(', ')})`,
+			ACCOUNT_TIED_PREFERENCE_KEYS
+		);
+
+		if (options.knownWipeAt !== undefined) {
+			await db.runAsync(
+				'INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+				[KNOWN_WIPE_AT_KEY, options.knownWipeAt]
+			);
+		}
+	});
+
+	// Sem as linhas na tabela e sem a chave aqui, a reconciliação das preferências não tem
+	// diferença a anotar: nada vira lápide no próximo push.
+	await AsyncStorage.multiRemove([...ACCOUNT_TIED_PREFERENCE_KEYS, STORAGE_KEYS.budgets]);
+
+	console.log('Local data wiped');
 };
 
 export default {
@@ -4407,4 +4547,5 @@ export default {
 	hasFinancialData,
 	convertAllAmounts,
 	resetDatabase,
+	wipeLocalData,
 };

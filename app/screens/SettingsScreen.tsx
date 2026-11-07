@@ -28,14 +28,13 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { resetDatabase } from '../database/database';
 import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
 import * as biometricUtils from '../utils/biometricUtils';
+import { eraseAllData } from '../utils/dataWipe';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 import { StatementImportError } from '../utils/statementImport';
-import { resetAsyncStorage, STORAGE_KEYS } from '../utils/storageUtils';
 
 const SettingsScreen = () => {
 	const { t } = useTranslation();
@@ -265,8 +264,16 @@ const SettingsScreen = () => {
 		}
 	};
 
+	/**
+	 * "Apagar todos os dados" (SPD-082, DEC-35): o que sai e o que fica está em
+	 * `utils/dataWipe.ts`. Logado, apaga na conta e em todos os aparelhos — e, se o servidor
+	 * não confirmar, nada sai daqui. A configuração fica, então o destino é a tela inicial,
+	 * não o onboarding.
+	 */
 	const handleResetData = async () => {
-		Alert.alert(t('settings.resetTitle'), t('settings.resetMsg'), [
+		const signedIn = account !== null;
+		const message = t(signedIn ? 'settings.resetMsgAccount' : 'settings.resetMsg');
+		Alert.alert(t('settings.resetTitle'), message, [
 			{ text: t('settings.cancel'), style: 'cancel' },
 			{
 				text: t('settings.reset'),
@@ -277,13 +284,19 @@ const SettingsScreen = () => {
 						async () => {
 							try {
 								setIsResetting(true);
-								await resetDatabase();
-								await resetAsyncStorage(['@spendr_biometric_enabled', STORAGE_KEYS.language]);
-								await refreshAppData();
+								const result = await eraseAllData({ signedIn });
 								setIsResetting(false);
-								Alert.alert(t('settings.resetSuccess'), t('settings.resetSuccessMsg'), [
-									{ onPress: () => { router.push('/onboarding'); } },
-								]);
+								if (!result.ok) {
+									Alert.alert(t('settings.resetFailed'), t('settings.resetServerError'));
+									return;
+								}
+								// As telas releem pelo aviso do `eraseAllData`; o mês volta para o atual.
+								resetToCurrentMonth();
+								Alert.alert(
+									t('settings.resetSuccess'),
+									t(signedIn ? 'settings.resetSuccessMsgAccount' : 'settings.resetSuccessMsg'),
+									[{ text: t('settings.ok'), onPress: () => router.dismissTo('/(tabs)') }]
+								);
 							} catch (error) {
 								console.error('Error resetting data:', error);
 								setIsResetting(false);

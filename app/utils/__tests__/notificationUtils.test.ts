@@ -21,6 +21,9 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	setItem: jest.fn(async (key: string, value: string) => {
 		mockStorage.set(key, value);
 	}),
+	removeItem: jest.fn(async (key: string) => {
+		mockStorage.delete(key);
+	}),
 }));
 
 jest.mock('expo-device', () => ({ isDevice: false }));
@@ -62,6 +65,7 @@ import { getISODate } from '../dateUtils';
 import { formatCents } from '../money';
 import {
 	checkAndScheduleNotifications,
+	clearScheduledNotifications,
 	registerForPushNotificationsAsync,
 	scheduleBillReminders,
 	scheduleTransactionNotification,
@@ -173,6 +177,27 @@ describe('lembrete de recorrente (REM-02)', () => {
 		const { content } = scheduleMock.mock.calls[0][0];
 		expect(content.title).toBe('Receita amanhã');
 		expect(content.body).toBe(`Lançamento recorrente — ${formatCents(150_000)}`);
+	});
+});
+
+describe('apagar todos os dados (SPD-082)', () => {
+	it('cancela todo lembrete agendado, de recorrente e de conta a pagar, e esquece as marcas', async () => {
+		await scheduleTransactionNotification(recurring(), inDays(10));
+		await scheduleBillReminders([bill()], new Date(2026, 9, 24, 12, 0));
+		expect(mockScheduled.size).toBeGreaterThan(1);
+
+		await clearScheduledNotifications();
+
+		expect(mockScheduled.size).toBe(0);
+		expect(mockStorage.has('@spendr_scheduled_notifications')).toBe(false);
+	});
+
+	it('uma recorrente nova com o mesmo id volta a ser lembrada: a marca antiga não a esconde', async () => {
+		await scheduleTransactionNotification(recurring(), inDays(10));
+		await clearScheduledNotifications();
+
+		expect(await scheduleTransactionNotification(recurring(), inDays(10))).not.toBeNull();
+		expect(scheduleMock).toHaveBeenCalledTimes(2);
 	});
 });
 

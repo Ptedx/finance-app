@@ -571,13 +571,20 @@ const en = {
 			'Your data has been imported successfully.\n\nImported: {{transactions}} transactions, {{recurringTransactions}} recurring transactions.',
 		resetTitle: 'Reset All Data',
 		resetMsg:
-			'This will delete all your expenses and categories. This action cannot be undone. Are you sure?',
+			'This deletes from this device your transactions, accounts and cards, bills, budgets, debts, goals and everything waiting for review.\n\nYour categories, what the app learned about each merchant and your settings are kept. This cannot be undone.',
+		resetMsgAccount:
+			'This deletes your transactions, accounts and cards, bills, budgets, debts, goals and everything waiting for review — in your account and on every device signed in to it.\n\nYour categories, what the app learned about each merchant and your settings are kept. This cannot be undone.',
 		reset: 'Reset',
 		resetAuthMsg: 'Authenticate to reset all data',
 		resetSuccess: 'Data Reset',
-		resetSuccessMsg: 'All transactions, budgets, and settings have been reset successfully.',
+		resetSuccessMsg:
+			'Your data was deleted from this device. Your categories, what the app learned and your settings are still here.',
+		resetSuccessMsgAccount:
+			'Your data was deleted from your account and from this device. Your other devices delete it the next time they sync. Your categories, what the app learned and your settings are kept.',
 		resetFailed: 'Reset Failed',
 		resetError: 'There was an error resetting your data. Please try again.',
+		resetServerError:
+			"Your data couldn't be deleted from your account, so nothing was deleted. Check your internet connection and try again.",
 		resetAuthFailed: 'For your security, data reset requires authentication.',
 		aboutMsg: 'Spendr is a personal finance app: it reads your bank notifications, follows your accounts, cards and bills, and shows where your money goes. Your data stays on the device and, if you sign in, also on the Spendr server, so it comes back on a new device.',
 		ok: 'OK',

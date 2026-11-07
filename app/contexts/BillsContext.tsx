@@ -11,6 +11,7 @@ import {
 import { AppState } from 'react-native';
 import { addBill, deleteBill, getBills, initDatabase, updateBill } from '../database/database';
 import type { Bill } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { emitBillsChanged, onBillsChanged } from '../utils/billEvents';
 import {
@@ -120,6 +121,10 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 			}),
 		[refresh]
 	);
+
+	// O banco mudou por fora — "Apagar todos os dados", importar um backup, "puxar da
+	// conta" no login: a lista e os lembretes seguem o que ficou.
+	useAfterPull(refresh);
 
 	/** Grava, sobe no sync, avisa os outros e recarrega (o que remarca os lembretes). */
 	const commit = useCallback(

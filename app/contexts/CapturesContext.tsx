@@ -17,6 +17,7 @@ import {
 	pruneResolvedCaptures,
 } from '../database/captures';
 import type { Capture } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
 	answerCaptureDuplicate,
@@ -207,6 +208,12 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			native.remove();
 		};
 	}, [refresh, drainAndLoad]);
+
+	// O banco mudou por fora — o pull trouxe a caixa de entrada de outro aparelho, ou o
+	// "Apagar todos os dados" a esvaziou: a fila e a contagem da tela inicial releem.
+	useAfterPull(() =>
+		load().catch((error) => console.error('Error reloading captured notifications:', error))
+	);
 
 	// As categorias chegam depois do primeiro esvaziamento na abertura do app.
 	const hasCategories = categories.length > 0;

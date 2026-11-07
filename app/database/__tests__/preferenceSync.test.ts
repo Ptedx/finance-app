@@ -124,7 +124,9 @@ const preferenceRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
 
 describe('migração v21', () => {
 	it('a escada chega ao v21 e o passo 21 cria `preferences` com as colunas de sync', async () => {
-		expect(SCHEMA_VERSION).toBe(21);
+		// O v22 (impressões digitais do "Apagar todos os dados") veio depois; o passo 21
+		// continua no lugar dele.
+		expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(21);
 		const ladder = migrationLadder();
 		expect(ladder.map(([version]) => version)).toEqual(
 			Array.from({ length: SCHEMA_VERSION }, (_, index) => index + 1)
@@ -148,16 +150,17 @@ describe('migração v21', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v20 roda só o passo 21 e grava a versão nele', async () => {
+	it('um banco v20 roda o passo 21 (e o 22, que veio depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(20, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
-		expect(reached).toBe(21);
-		expect(versions).toEqual([21]);
-		expect(mockStatements.map((statement) => flat(statement.sql).slice(0, 40))).toEqual([
-			'CREATE TABLE IF NOT EXISTS preferences (',
+		expect(reached).toBe(SCHEMA_VERSION);
+		expect(versions).toEqual([21, 22]);
+		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
+			'CREATE TABLE IF NOT EXISTS preferences',
+			'CREATE TABLE IF NOT EXISTS seen_capture_fingerprints',
 		]);
 	});
 

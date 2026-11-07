@@ -4,6 +4,7 @@ import { useSync } from '../contexts/SyncContext';
 import { getReserveGoal, initDatabase, type ReserveGoalDraft, setReserveGoal } from '../database/database';
 import { DEFAULT_RESERVE_MONTHS } from '../database/schema';
 import * as syncQueue from '../sync/queue';
+import { useAfterPull } from './useAfterPull';
 
 /**
  * A meta da reserva de emergência, lida do banco e sincronizada.
@@ -56,6 +57,9 @@ export const useReserveGoal = (): ReserveGoalResult => {
 			subscription.remove();
 		};
 	}, [load]);
+
+	// O banco mudou por fora: "Apagar todos os dados" leva a meta, o backup a traz.
+	useAfterPull(load);
 
 	const save = useCallback(async (draft: ReserveGoalDraft) => {
 		await setReserveGoal(draft);

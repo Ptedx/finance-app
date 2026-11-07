@@ -181,11 +181,18 @@ export const restoreCapture = async (capture: Capture): Promise<void> => {
  * mesmo aviso de virar dinheiro duas vezes. Ignorar a lápide aqui faria o funil tentar
  * inserir sobre uma linha podada e estourar — e, se não estourasse, a compra entraria
  * duas vezes.
+ *
+ * E **com o que o "Apagar todos os dados" levou** (v22, SPD-082): a captura sai de vez e
+ * fica só a impressão digital em `seen_capture_fingerprints`. Sem consultar lá, a
+ * notificação que o Android reentregasse depois do apagar viraria compra de novo.
  */
 export const hasCaptureFingerprint = async (fingerprint: string): Promise<boolean> => {
-	const row = await db.getFirstAsync<{ id: string }>(
-		'SELECT id FROM captures WHERE fingerprint = ?',
-		[fingerprint]
+	const row = await db.getFirstAsync<{ seen: number }>(
+		`SELECT 1 AS seen FROM captures WHERE fingerprint = ?
+     UNION ALL
+     SELECT 1 AS seen FROM seen_capture_fingerprints WHERE fingerprint = ?
+     LIMIT 1`,
+		[fingerprint, fingerprint]
 	);
 	return row !== null;
 };

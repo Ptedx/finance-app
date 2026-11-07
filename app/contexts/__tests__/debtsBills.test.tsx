@@ -27,9 +27,25 @@ jest.mock('../../database/database', () => ({
 	}),
 }));
 
-jest.mock('../../sync/queue', () => ({
-	schedule: jest.fn(),
-}));
+// O aviso de "o banco mudou por fora" (`hooks/useAfterPull.ts`) de verdade, numa fila de mentira.
+jest.mock('../../sync/queue', () => {
+	type MockState = { pulledVersion: number };
+	const listeners = new Set<(state: MockState) => void>();
+	let state: MockState = { pulledVersion: 0 };
+	return {
+		schedule: jest.fn(),
+		getState: () => state,
+		subscribe: (listener: (next: MockState) => void) => {
+			listeners.add(listener);
+			listener(state);
+			return () => listeners.delete(listener);
+		},
+		notifyDataChanged: () => {
+			state = { pulledVersion: state.pulledVersion + 1 };
+			for (const listener of listeners) listener(state);
+		},
+	};
+});
 
 jest.mock('../SyncContext', () => ({
 	useSync: () => ({ lastSyncedAt: null }),
@@ -141,6 +157,15 @@ describe('as contas a pagar das dívidas', () => {
 		await mount();
 		expect(syncQueue.schedule).toHaveBeenCalled();
 		expect(changed).toHaveBeenCalledTimes(1);
+	});
+
+	it('o banco mudou por fora ("Apagar todos os dados", backup): a lista relê', async () => {
+		const api = await mount();
+		mockDebts = [];
+		await act(async () => {
+			syncQueue.notifyDataChanged();
+		});
+		expect(api().debts).toEqual([]);
 	});
 
 	it('nada mudou: não avisa nem suja a fila', async () => {

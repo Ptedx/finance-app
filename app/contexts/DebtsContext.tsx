@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { AppState } from 'react-native';
 import { addDebt, deleteDebt, ensureDebtBills, getBills, getDebts, initDatabase, updateBill, updateDebt } from '../database/database';
 import type { Debt, DebtDraft } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { emitBillsChanged } from '../utils/billEvents';
 import { billDraftOf, dueDatePassed, initialPaidThrough, needsInitialPaidThrough } from '../utils/billRules';
@@ -108,6 +109,9 @@ export const DebtsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 		});
 		return () => subscription.remove();
 	}, [refresh]);
+
+	// O banco mudou por fora: "Apagar todos os dados", importar um backup, "puxar da conta".
+	useAfterPull(refresh);
 
 	const createDebt = useCallback(
 		async (draft: DebtDraft) => {

@@ -532,6 +532,44 @@ export const writeUploadStamp = async (at: number): Promise<boolean> => {
 	}
 };
 
+/**
+ * Apaga o diário deste aparelho ("Apagar todos os dados", SPD-082): os arquivos, a fila na
+ * memória, a marca do que já subiu e o instante do último envio. O id da instalação fica —
+ * ele mora no AsyncStorage e identifica o aparelho, não o que aconteceu nele.
+ *
+ * Espera a gravação em curso terminar antes de apagar, senão um lote que já estava saindo
+ * reapareceria depois. Nunca lança: o que não deu para apagar fica, e o apagar dos dados
+ * não pode falhar por causa do diário.
+ */
+export const clearDiary = async (): Promise<void> => {
+	if (timer) {
+		clearTimeout(timer);
+		timer = null;
+	}
+	queue = [];
+	droppedFromQueue = 0;
+
+	try {
+		await flushing;
+	} catch {
+		// `flushDiary` não rejeita; a guarda é só para o apagar nunca depender disso.
+	}
+
+	try {
+		const dir = directory();
+		if (!dir.exists) return;
+		for (const item of dir.list()) {
+			try {
+				item.delete();
+			} catch {
+				// Fica para trás; o próximo apagar tenta de novo.
+			}
+		}
+	} catch {
+		// Pasta ilegível: nada a fazer.
+	}
+};
+
 /** Zera o estado do módulo (fila, id em memória). Só para testes. */
 export const resetDiaryForTests = (): void => {
 	if (timer) clearTimeout(timer);

@@ -323,6 +323,27 @@ export const scheduleBillReminders = (bills: Bill[], now: Date = new Date()): Pr
 };
 
 /**
+ * "Apagar todos os dados" (SPD-082): cancela todo lembrete agendado — das recorrentes
+ * (`transaction_*`) e das contas a pagar (`bill:`) — e esquece as marcas de "já agendado".
+ * Sem esquecer, uma recorrente nova que caísse na mesma marca nunca seria lembrada.
+ *
+ * Entra na fila das remarcações das contas a pagar: uma remarcação em curso não agenda de
+ * novo, depois do cancelamento, os lembretes de contas que acabaram de ser apagadas.
+ */
+export const clearScheduledNotifications = (): Promise<void> => {
+	const run = billScheduling.then(async () => {
+		await cancelAllNotifications();
+		try {
+			await AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY);
+		} catch (error) {
+			console.error('Error clearing scheduled notification marks:', error);
+		}
+	});
+	billScheduling = run.catch(() => undefined);
+	return run;
+};
+
+/**
  * Cria (ou atualiza) o canal Android dos lembretes de conta. O `registerForPushNotificationsAsync`
  * também cria, mas só roda no onboarding e ao ligar a chave nos Ajustes: quem passou por eles
  * antes da v20 não tem o canal, e aviso agendado num canal que não existe não aparece.
@@ -463,5 +484,6 @@ export default {
 	cancelTransactionNotification,
 	checkAndScheduleNotifications,
 	cancelAllNotifications,
+	clearScheduledNotifications,
 	scheduleBillReminders,
 };
