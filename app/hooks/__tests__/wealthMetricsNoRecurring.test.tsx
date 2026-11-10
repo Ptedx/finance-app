@@ -23,7 +23,7 @@ jest.mock('../../contexts/RecurringTransactionsContext', () => ({
 	useRecurringTransactions: () => ({ transactions: mockRules, refreshTransactions: jest.fn() }),
 }));
 jest.mock('../../contexts/AccountsContext', () => ({
-	useAccounts: () => ({ activeAccounts: [], overview: { cashCents: 0, savedCents: 0 } }),
+	useAccounts: () => ({ activeAccounts: [], overview: { cashCents: 0, savedCents: 0 }, creditCards: [], cardSummaries: new Map() }),
 }));
 jest.mock('../../contexts/BillsContext', () => ({
 	useBills: () => ({

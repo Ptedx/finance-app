@@ -146,7 +146,7 @@ const en = {
 			'savings-rate-healthy': 'You turned {{percent}} of your income into savings.',
 			'savings-rate-falling': 'Your savings rate has fallen for {{months}} months in a row.',
 			'fixed-cost-heavy':
-				'{{percent}} of your income ({{amount}}) is already committed to fixed costs before any choice is made.',
+				'{{percent}} of your income ({{amount}}) is already committed to fixed costs — bills, loan installments and card installments — before any choice is made.',
 			'runway-thin': 'Your balance covers about {{months}} months of fixed costs.',
 			'runway-solid': 'Your balance covers about {{months}} months of fixed costs.',
 			'needs-over-target': 'Essentials took {{percent}} of the month, above the 50% reference.',
@@ -264,10 +264,10 @@ const en = {
 			},
 			'fixed-cost': {
 				label: 'Fixed costs',
-				good: '{{percent}} of income goes to fixed bills (bills and loan installments). Below {{target}} leaves room to choose.',
-				warn: '{{percent}} of income goes to fixed bills (bills and loan installments). Above 40% the month starts tight.',
-				bad: '{{percent}} of income goes to fixed bills (bills and loan installments). More than half is committed before any choice.',
-				unknown: 'No bills or loan installments set up (or no income), so there is no fixed cost to measure.',
+				good: '{{percent}} of income goes to fixed bills (bills, loan installments and card installments). Below {{target}} leaves room to choose.',
+				warn: '{{percent}} of income goes to fixed bills (bills, loan installments and card installments). Above 40% the month starts tight.',
+				bad: '{{percent}} of income goes to fixed bills (bills, loan installments and card installments). More than half is committed before any choice.',
+				unknown: 'No bills, loan installments or card installment purchases (or no income), so there is no fixed cost to measure.',
 			},
 			'card-load': {
 				label: 'Card load',

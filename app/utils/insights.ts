@@ -76,6 +76,11 @@ export interface WealthSnapshot {
 	 */
 	bills?: BillCommitment[];
 	debtInstallmentsCents?: Cents;
+	/**
+	 * As parcelas do mês das compras parceladas nos cartões (`cardInstallmentsMonthlyCents`),
+	 * até a última (SPD-126). Também custo fixo e fôlego; ausente, conta como nada.
+	 */
+	cardInstallmentsCents?: Cents;
 	/** Despesas do período separadas pela natureza da categoria. */
 	expenseTotalsByNature: ExpenseTotalsByNature;
 	/** Totais por categoria do período e do período anterior. */
@@ -112,10 +117,12 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		: null;
 
 	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
-	// nas parcelas. As regras antigas ficaram de fora do custo fixo (SPD-122).
+	// nas parcelas — das dívidas e do cartão (SPD-126). As regras antigas ficaram de fora do
+	// custo fixo (SPD-122).
 	const monthlyFixedCents = monthlyFixedCommitmentsCents({
 		bills: snapshot.bills ?? [],
 		debtInstallmentsCents: snapshot.debtInstallmentsCents ?? 0,
+		cardInstallmentsCents: snapshot.cardInstallmentsCents ?? 0,
 	});
 	const trend = savingsRateTrend(snapshot.monthlyIncome, snapshot.monthlyExpense);
 

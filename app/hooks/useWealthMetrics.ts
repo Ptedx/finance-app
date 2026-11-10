@@ -19,7 +19,7 @@ import {
 	type WealthMetrics,
 	type WealthSnapshot,
 } from '../utils/insights';
-import type { CategoryTotal, ExpenseTotalsByNature } from '../utils/metrics';
+import { type CategoryTotal, cardInstallmentsMonthlyCents, type ExpenseTotalsByNature } from '../utils/metrics';
 
 /**
  * As métricas de riqueza do período selecionado.
@@ -54,7 +54,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 	const { periodTotals, balanceCents, monthlyData, categoryTotals, categories } = useTransactions();
 	// Com contas cadastradas, a reserva é o caixa delas (âncoras do banco + movimento),
 	// não a soma cega dos lançamentos; sem contas, o saldo do livro continua valendo.
-	const { activeAccounts, overview } = useAccounts();
+	const { activeAccounts, overview, creditCards, cardSummaries } = useAccounts();
 	// O fôlego conta com a reserva: ela fica fora do "Em caixa" porque não paga a fatura do
 	// mês, mas é exatamente o dinheiro que sustentaria os custos fixos se a renda parasse.
 	const liquidCents = activeAccounts.length > 0 ? overview.cashCents + overview.savedCents : balanceCents;
@@ -66,6 +66,13 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 	const debtInstallmentsCents = useMemo(
 		() => debtInstallmentsMonthlyCents(activeDebts.map((debt) => ({ terms: termsOf(debt) })), todayISO(), []),
 		[activeDebts]
+	);
+	// As compras parceladas no cartão também são custo fixo até a última parcela (SPD-126): a
+	// próxima parcela de cada uma das "Parcelas em andamento" dos cartões ativos — a mesma lista
+	// que a tela do cartão mostra. Quando a última cai, a compra sai da lista e do custo fixo.
+	const cardInstallmentsCents = useMemo(
+		() => cardInstallmentsMonthlyCents(creditCards.flatMap((card) => cardSummaries.get(card.id)?.installmentPlans ?? [])),
+		[creditCards, cardSummaries]
 	);
 	const { selectedMonth, selectedYear } = usePeriod();
 
@@ -145,6 +152,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			liquidCents,
 			bills,
 			debtInstallmentsCents,
+			cardInstallmentsCents,
 			expenseTotalsByNature,
 			categoryTotals: categoryTotals.expenses,
 			previousCategoryTotals: previous?.categoryTotals ?? [],
@@ -160,6 +168,7 @@ export const useWealthMetrics = (): WealthMetricsResult => {
 			liquidCents,
 			bills,
 			debtInstallmentsCents,
+			cardInstallmentsCents,
 			expenseTotalsByNature,
 			categoryTotals.expenses,
 			monthlyData.incomes,

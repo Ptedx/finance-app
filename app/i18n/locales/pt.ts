@@ -140,7 +140,7 @@ const pt = {
 			'savings-rate-healthy': 'Você transformou {{percent}} da sua receita em poupança.',
 			'savings-rate-falling': 'Sua taxa de poupança caiu por {{months}} meses seguidos.',
 			'fixed-cost-heavy':
-				'{{percent}} da sua receita ({{amount}}) já está comprometida com custos fixos antes de qualquer escolha.',
+				'{{percent}} da sua receita ({{amount}}) já está comprometida com custos fixos — contas a pagar, parcelas de dívidas e parcelas do cartão — antes de qualquer escolha.',
 			'runway-thin': 'Seu saldo cobre cerca de {{months}} meses de custos fixos.',
 			'runway-solid': 'Seu saldo cobre cerca de {{months}} meses de custos fixos.',
 			'needs-over-target': 'O essencial levou {{percent}} do mês, acima da referência de 50%.',
@@ -258,10 +258,10 @@ const pt = {
 			},
 			'fixed-cost': {
 				label: 'Custo fixo',
-				good: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Abaixo de {{target}} sobra espaço para escolher.',
-				warn: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Acima de 40% o mês começa apertado.',
-				bad: '{{percent}} da renda vai para contas fixas (contas a pagar e parcelas). Mais da metade já está comprometida antes de qualquer escolha.',
-				unknown: 'Sem contas a pagar nem parcelas cadastradas (ou sem renda), não há custo fixo para medir.',
+				good: '{{percent}} da renda vai para contas fixas (contas a pagar, parcelas de dívidas e parcelas do cartão). Abaixo de {{target}} sobra espaço para escolher.',
+				warn: '{{percent}} da renda vai para contas fixas (contas a pagar, parcelas de dívidas e parcelas do cartão). Acima de 40% o mês começa apertado.',
+				bad: '{{percent}} da renda vai para contas fixas (contas a pagar, parcelas de dívidas e parcelas do cartão). Mais da metade já está comprometida antes de qualquer escolha.',
+				unknown: 'Sem contas a pagar, parcelas de dívidas nem compras parceladas no cartão (ou sem renda), não há custo fixo para medir.',
 			},
 			'card-load': {
 				label: 'Peso do cartão',

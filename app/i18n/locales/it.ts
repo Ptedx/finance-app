@@ -145,7 +145,7 @@ const it = {
 			'savings-rate-healthy': 'Hai trasformato il {{percent}} del tuo reddito in risparmio.',
 			'savings-rate-falling': 'Il tuo tasso di risparmio è sceso per {{months}} mesi di fila.',
 			'fixed-cost-heavy':
-				'Il {{percent}} del tuo reddito ({{amount}}) è già impegnato in costi fissi prima di qualsiasi scelta.',
+				'Il {{percent}} del tuo reddito ({{amount}}) è già impegnato in costi fissi — conti da pagare, rate dei debiti e rate della carta — prima di qualsiasi scelta.',
 			'runway-thin': 'Il tuo saldo copre circa {{months}} mesi di costi fissi.',
 			'runway-solid': 'Il tuo saldo copre circa {{months}} mesi di costi fissi.',
 			'needs-over-target': "L'essenziale ha preso il {{percent}} del mese, sopra il riferimento del 50%.",
@@ -263,10 +263,10 @@ const it = {
 			},
 			'fixed-cost': {
 				label: 'Costi fissi',
-				good: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Sotto il {{target}} resta spazio per scegliere.',
-				warn: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Sopra il 40% il mese parte stretto.',
-				bad: 'Il {{percent}} del reddito va in conti fissi (conti da pagare e rate). Più della metà è impegnata prima di qualsiasi scelta.',
-				unknown: 'Nessun conto da pagare né rata registrati (o nessun reddito), quindi nessun costo fisso da misurare.',
+				good: 'Il {{percent}} del reddito va in conti fissi (conti da pagare, rate dei debiti e rate della carta). Sotto il {{target}} resta spazio per scegliere.',
+				warn: 'Il {{percent}} del reddito va in conti fissi (conti da pagare, rate dei debiti e rate della carta). Sopra il 40% il mese parte stretto.',
+				bad: 'Il {{percent}} del reddito va in conti fissi (conti da pagare, rate dei debiti e rate della carta). Più della metà è impegnata prima di qualsiasi scelta.',
+				unknown: 'Nessun conto da pagare, rata di debiti né acquisto rateizzato sulla carta (o nessun reddito), quindi nessun costo fisso da misurare.',
 			},
 			'card-load': {
 				label: 'Peso delle carte',

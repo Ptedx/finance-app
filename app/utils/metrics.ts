@@ -127,8 +127,43 @@ export const monthlyBillsCents = (bills: BillCommitment[]): Cents =>
 	);
 
 /**
- * O custo fixo do mês: as contas a pagar e as parcelas das dívidas — é onde mora o que vence
- * todo mês desde que a tela de recorrências saiu (SPD-079).
+ * Uma compra parcelada no cartão, na forma mínima que o custo fixo precisa. `InstallmentPlan`
+ * de `utils/cardMath.ts` — a lista de "Parcelas em andamento" do cartão — satisfaz.
+ */
+export interface CardInstallmentCommitment {
+	/** O `installmentGroup` da compra: a mesma compra vista duas vezes conta uma. */
+	group: string;
+	/** A próxima parcela. */
+	parcelCents: Cents;
+	/** Parcelas ainda por cair. */
+	remainingCount: number;
+}
+
+/**
+ * As parcelas das compras parceladas no cartão, por mês (SPD-126): a próxima parcela de cada
+ * compra que ainda tem parcela por cair. Quando a última cai, a compra sai da lista de
+ * `buildInstallmentPlans` e, com ela, do custo fixo.
+ *
+ * Não há o que descontar das contas a pagar nem das dívidas: estorno, ajuste e encargo do
+ * cartão nunca viram plano (não são parcela), a dívida não lança parcela no cartão e o app não
+ * tem parcelamento de fatura. O que se protege aqui é a mesma compra em dois resumos.
+ */
+export const cardInstallmentsMonthlyCents = (plans: CardInstallmentCommitment[]): Cents => {
+	const seen = new Set<string>();
+	let total = 0;
+	for (const plan of plans) {
+		if (plan.remainingCount <= 0 || seen.has(plan.group)) continue;
+		seen.add(plan.group);
+		total += Math.max(0, safeCents(plan.parcelCents));
+	}
+	return total;
+};
+
+/**
+ * O custo fixo do mês: as contas a pagar, as parcelas das dívidas e as parcelas das compras
+ * parceladas no cartão (SPD-126) — é onde mora o que vence todo mês desde que a tela de
+ * recorrências saiu (SPD-079). Cada compromisso entra por um caminho só: a conta a pagar
+ * ligada a uma dívida fica de fora (`monthlyBillsCents`), a parcela vem da dívida.
  *
  * As recorrências antigas não entram (SPD-122, DEC-37): elas não lançam mais nada desde o
  * SPD-113 e o usuário não as vê nem edita, então uma regra de R$ 120 esquecida no banco não
@@ -139,11 +174,14 @@ export const monthlyBillsCents = (bills: BillCommitment[]): Cents =>
 export const monthlyFixedCommitmentsCents = ({
 	bills,
 	debtInstallmentsCents,
+	cardInstallmentsCents = 0,
 }: {
 	bills: BillCommitment[];
 	/** `debtInstallmentsMonthlyCents`, de `utils/debt.ts`. */
 	debtInstallmentsCents: Cents;
-}): Cents => monthlyBillsCents(bills) + safeCents(debtInstallmentsCents);
+	/** `cardInstallmentsMonthlyCents`, das parcelas em andamento dos cartões. */
+	cardInstallmentsCents?: Cents;
+}): Cents => monthlyBillsCents(bills) + safeCents(debtInstallmentsCents) + safeCents(cardInstallmentsCents);
 
 export interface RunwayInput {
 	/**
@@ -411,6 +449,7 @@ export default {
 	savingsRate,
 	savingsRateDelta,
 	monthlyBillsCents,
+	cardInstallmentsMonthlyCents,
 	monthlyFixedCommitmentsCents,
 	runwayMonths,
 	fixedCostShare,
