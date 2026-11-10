@@ -44,6 +44,7 @@ import {
 	splitCardCharges,
 } from '../utils/cardMath';
 import { usageByCard } from '../utils/cardNames';
+import { findRefusedCardPayment } from '../utils/cardPaymentNotice';
 import { addDays, formatDayMonth, formatMonthLong, formatMonthShort, todayISO } from '../utils/dateUtils';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
@@ -74,6 +75,9 @@ type SheetKind = 'pay' | 'adjust' | 'installments' | 'charge' | null;
 /** Os tipos que a folha "Registrar encargo" oferece; `bank` é só do "Acertar valor". */
 const CHARGE_KINDS: CardChargeKind[] = ['interest', 'iof', 'annualFee', 'fee', 'other'];
 
+/** Quanto o aviso do "Pagar fatura" fica na tela: oito segundos, como a barra de desfazer da caixa de avisos. */
+const PAY_NOTICE_MS = 8000;
+
 const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
@@ -99,6 +103,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const [renaming, setRenaming] = useState<{ last4: string; name: string | null } | null>(null);
 	// O "Como funciona?" dos encargos: fechado, para não empurrar as faturas para baixo.
 	const [howOpen, setHowOpen] = useState(false);
+	// O resultado do "Pagar fatura" (SPD-133): a folha fecha e a frase fica na tela por alguns
+	// segundos. Cada resultado é um objeto novo: a mesma frase de novo recomeça a contagem.
+	const [payNotice, setPayNotice] = useState<{ text: string } | null>(null);
+	useEffect(() => {
+		if (!payNotice) return undefined;
+		const timer = setTimeout(() => setPayNotice(null), PAY_NOTICE_MS);
+		return () => clearTimeout(timer);
+	}, [payNotice]);
 	// O guia da tela do cartão (SPD-129): abre com o cartão carregado e sem folha aberta.
 	useScreenTour('card', { ready: Boolean(card && summary), blocked: sheet !== null || renaming !== null });
 	const tourScroll = useTourScroll('card');
@@ -760,11 +772,26 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						accounts={bankAccounts}
 						card={card}
 						onConfirm={async (fromId, cents, date) => {
+							// Recusado, o pagamento não cria outro (SPD-133): só o leitor de tela ouvia, e para
+							// quem vê parecia que nada tinha acontecido. A tela diz qual pagamento já estava —
+							// as transferências do cartão de antes e de depois do toque dizem qual foi.
+							const before = await getAccountTransfers(card.id).catch(() => null);
 							const created = await recordCardPayment(card.id, fromId, cents, date);
 							setSheet(null);
-							AccessibilityInfo.announceForAccessibility(
-								created ? t('cards.pay.done', { amount: formatCents(cents) }) : t('cards.pay.already', { amount: formatCents(cents) })
-							);
+							let text = t('cards.pay.done', { amount: formatCents(cents) });
+							if (!created) {
+								const after = before ? await getAccountTransfers(card.id).catch(() => null) : null;
+								const refused =
+									before && after ? findRefusedCardPayment(card.id, before, after, { fromAccountId: fromId, amountCents: cents, date }) : null;
+								const from = refused?.fromAccountId ? accounts.find((account) => account.id === refused.fromAccountId) : undefined;
+								const params = { amount: formatCents(refused?.amountCents ?? cents), date: refused ? formatDayMonth(refused.date) : '' };
+								if (!refused) text = t('cards.pay.already', { amount: formatCents(cents) });
+								else if (refused.kind === 'completed') text = t('cards.pay.completed', { ...params, account: from?.name ?? t('cards.pay.outside') });
+								else if (from) text = t('cards.pay.alreadyFrom', { ...params, account: from.name });
+								else text = t('cards.pay.alreadyOutside', params);
+							}
+							setPayNotice({ text });
+							AccessibilityInfo.announceForAccessibility(text);
 						}}
 					/>
 					{/* Sem fechamento não há fatura fechada para separar: o devido inteiro vai no campo da aberta, e repeti-lo no da fechada dobraria o valor do cartão. */}
@@ -817,6 +844,22 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						}}
 					/>
 				</>
+			) : null}
+
+			{payNotice ? (
+				<View style={styles.payNotice}>
+					<Ionicons name="information-circle-outline" size={20} color={ACCENT} />
+					<Text style={styles.payNoticeText}>{payNotice.text}</Text>
+					<Pressable
+						onPress={() => setPayNotice(null)}
+						accessibilityRole="button"
+						accessibilityLabel={t('cards.pay.noticeClose')}
+						hitSlop={8}
+						style={({ pressed }) => [styles.payNoticeClose, pressed && styles.pressed]}
+					>
+						<Ionicons name="close" size={20} color="#FFFFFF" />
+					</Pressable>
+				</View>
 			) : null}
 		</SafeAreaView>
 	);
@@ -1330,6 +1373,34 @@ const styles = StyleSheet.create({
 		color: '#FFFFFF',
 		padding: 24,
 		fontSize: 16,
+	},
+	payNotice: {
+		position: 'absolute',
+		left: 16,
+		right: 16,
+		bottom: 24,
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 10,
+		backgroundColor: '#2A2A2A',
+		borderRadius: 12,
+		paddingVertical: 8,
+		paddingLeft: 14,
+		paddingRight: 4,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.15)',
+	},
+	payNoticeText: {
+		flex: 1,
+		fontSize: 15,
+		lineHeight: 21,
+		color: '#FFFFFF',
+	},
+	payNoticeClose: {
+		minWidth: 44,
+		minHeight: 44,
+		alignItems: 'center',
+		justifyContent: 'center',
 	},
 	header: {
 		flexDirection: 'row',
