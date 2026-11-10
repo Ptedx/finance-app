@@ -2021,6 +2021,7 @@ account: {
 			title: 'Modifica conto da pagare',
 			name: 'Nome',
 			namePlaceholder: 'Es.: Assicurazione sanitaria',
+			cardInvoiceWarning: "Sembra l'estratto conto di una carta. Se la carta è già nell'app, non serve aggiungerlo qui: i suoi acquisti a rate sono già nei costi fissi e l'app avvisa della scadenza dell'estratto conto.",
 			dueDay: 'Giorno di scadenza',
 			dueDayHint: "Da 1 a 31. Nei mesi più corti vale l'ultimo giorno.",
 			amount: 'Importo',

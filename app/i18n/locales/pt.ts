@@ -2015,6 +2015,7 @@ const pt = {
 			title: 'Editar conta a pagar',
 			name: 'Nome',
 			namePlaceholder: 'Ex.: Plano de saúde',
+			cardInvoiceWarning: 'Parece a fatura de um cartão. Se o cartão está cadastrado no app, não precisa cadastrar aqui: as compras parceladas dele já entram no custo fixo e o app avisa o vencimento da fatura.',
 			dueDay: 'Dia do vencimento',
 			dueDayHint: 'De 1 a 31. Em mês mais curto, vale o último dia.',
 			amount: 'Valor',

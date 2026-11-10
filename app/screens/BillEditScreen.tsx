@@ -28,6 +28,7 @@ import {
 	isLockedByDebt,
 	isValidDueDay,
 } from '../utils/billRules';
+import { looksLikeCardInvoice } from '../utils/cardInvoiceBill';
 import { formatDayMonth, monthKeyOf, todayISO } from '../utils/dateUtils';
 import {
 	centsToDisplayInput,
@@ -58,7 +59,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { bills, createBill, saveBill, setBillActive, removeBill } = useBills();
-	const { bankAccounts } = useAccounts();
+	const { accounts, bankAccounts } = useAccounts();
 	const { categories } = useTransactions();
 	const existing = useMemo(() => bills.find((bill) => bill.id === billId), [bills, billId]);
 	const fromDebt = Boolean(existing?.debtId);
@@ -85,6 +86,14 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 		setCategory(existing.category);
 		setMatchHint(existing.matchHint ?? '');
 	}, [existing]);
+
+	// A fatura do cartão cadastrada aqui conta em dobro (SPD-137): as compras parceladas do cartão
+	// já entram no custo fixo e o app já avisa o vencimento da fatura. Avisa perto do nome, sem impedir.
+	const cards = useMemo(
+		() => accounts.filter((account) => account.kind === 'credit_card' && !account.archived),
+		[accounts]
+	);
+	const looksLikeCardBill = !fromDebt && looksLikeCardInvoice(name, cards);
 
 	const expenseCategories = useMemo(
 		() => categories.filter((item) => item.type === 'expense' && item.id !== 'uncategorized'),
@@ -235,6 +244,12 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 						placeholderTextColor="rgba(255,255,255,0.35)"
 						error={errors.name}
 					/>
+					{looksLikeCardBill ? (
+						<View style={[styles.note, styles.warning]} accessible accessibilityLiveRegion="polite">
+							<Ionicons name="card-outline" size={20} color="#FFD166" />
+							<Text style={styles.noteText}>{t('bills.edit.cardInvoiceWarning')}</Text>
+						</View>
+					) : null}
 
 					<Field
 						label={t('bills.edit.dueDay')}
@@ -377,6 +392,9 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		lineHeight: 20,
 		color: '#FFFFFF',
+	},
+	warning: {
+		backgroundColor: 'rgba(255,209,102,0.12)',
 	},
 	secondary: {
 		gap: 10,

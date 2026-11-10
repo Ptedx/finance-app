@@ -2018,6 +2018,7 @@ account: {
 			title: 'Edit bill',
 			name: 'Name',
 			namePlaceholder: 'E.g. Health plan',
+			cardInvoiceWarning: 'This looks like a credit card bill. If the card is set up in the app, there is no need to add it here: its installment purchases already count in fixed costs and the app reminds you when the bill is due.',
 			dueDay: 'Due day',
 			dueDayHint: 'From 1 to 31. In shorter months, the last day counts.',
 			amount: 'Amount',
