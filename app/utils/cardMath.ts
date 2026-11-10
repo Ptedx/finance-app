@@ -55,7 +55,8 @@
  * Estorno maior que as compras do ciclo deixa a fatura negativa. Como no banco, isso é
  * crédito: abate a fatura seguinte, e a próxima, até acabar (`carriedCredit`). A fatura
  * continua com o próprio valor — é o que a lista de lançamentos dela soma — e o que ela
- * cobra de verdade é esse valor menos o crédito que chegou a ela.
+ * cobra de verdade é esse valor menos o crédito que chegou a ela. O estorno que quitou um
+ * saldo anterior (rotativo) já foi usado e não chega de novo como crédito (SPD-136).
  *
  * ## Pagamento
  *
@@ -402,9 +403,23 @@ const shiftKey = (key: string, delta: number): string => {
  * adivinhá-lo pelo valor erraria. O crédito é do cartão, como no banco, e vai para as
  * próximas faturas em ordem.
  *
- * Pagamentos não entram: pagar a mais é tratado onde os pagamentos são lidos.
+ * Pagar a mais é tratado onde os pagamentos são lidos. Mas o crédito de estorno só passa se
+ * sobrou de verdade: com os pagamentos (`paid`), a fatura que já fechou e cuja janela de
+ * pagamento da anterior acabou (fim do ciclo antes de hoje) passa adiante no máximo o crédito
+ * que o cartão tinha no fim dela (`owedOn`). O estorno que quitou o saldo anterior (rotativo)
+ * já foi usado: outubro de R$ 500 com R$ 300 pagos e novembro com R$ 100 de compra e R$ 300 de
+ * estorno fecham novembro em zero, como no banco, e nada chega a dezembro — antes chegavam
+ * R$ 200, e a fatura de R$ 50 de dezembro aparecia sem nada a pagar com o cartão devendo R$ 50
+ * (SPD-136). Na aberta e nas futuras o app conta com a fechada paga inteira, que é o que ela
+ * cobra: o estorno da aberta segue para a seguinte. Sem `paid` — o gasto do mês
+ * (`invoicesClosingBetween`), que não é dívida —, o crédito anda só pelas faturas.
  */
-export const carriedCredit = (settings: CardSettings, entries: CardEntry[], rule: CycleRule): ((key: string) => number) => {
+export const carriedCredit = (
+	settings: CardSettings,
+	entries: CardEntry[],
+	rule: CycleRule,
+	paid?: { movements: CardMovement[]; today: string }
+): ((key: string) => number) => {
 	// O mesmo valor de `invoiceAmount`, somado de uma vez por fatura.
 	const amounts = new Map<string, number>();
 	const add = (key: string, cents: number) => amounts.set(key, (amounts.get(key) ?? 0) + cents);
@@ -418,11 +433,24 @@ export const carriedCredit = (settings: CardSettings, entries: CardEntry[], rule
 	const first = keys[0];
 	const into = new Map<string, number>();
 	let credit = 0;
+	// O crédito que o cartão tinha no fim da fatura `key`, quando ela já fechou e a janela de
+	// pagamento da anterior acabou; senão, nenhum teto. Antes da âncora o devido não diz nada.
+	const ceilingAt = (key: string): number => {
+		if (paid === undefined) return Number.POSITIVE_INFINITY;
+		const [year, month] = key.split('-').map(Number);
+		const cycle = invoiceClosingIn(year, month, rule);
+		if (cycle.end >= paid.today || cycle.end < settings.openingBalanceDate) return Number.POSITIVE_INFINITY;
+		return Math.max(0, 0 - owedOn(settings, entries, paid.movements, cycle.end));
+	};
 	if (first !== undefined) {
-		const last = keys[keys.length - 1];
+		const lastWithAmount = keys[keys.length - 1];
+		// Com os pagamentos, anda até a fatura de hoje: um pagamento de volta (saída do cartão)
+		// depois da última fatura com valor também pode comer o crédito.
+		const todayKey = paid !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(paid.today) ? cycleFor(paid.today, rule).key : lastWithAmount;
+		const last = todayKey > lastWithAmount ? todayKey : lastWithAmount;
 		for (let key = first; key <= last; key = shiftKey(key, 1)) {
 			into.set(key, credit);
-			credit = Math.max(0, credit - (amounts.get(key) ?? 0));
+			credit = Math.min(Math.max(0, credit - (amounts.get(key) ?? 0)), ceilingAt(key));
 		}
 	}
 	// Antes da primeira fatura com valor não há crédito; depois da última, sobra o que sobrou.
@@ -681,7 +709,8 @@ export const buildCardSummary = (
 
 	const daysToDue = daysBetween(today, closedCycle.dueDate);
 
-	const creditInto = carriedCredit(settings, entries, rule);
+	// Com os pagamentos: o estorno que quitou o saldo anterior não chega de novo como crédito (SPD-136).
+	const creditInto = carriedCredit(settings, entries, rule, { movements, today });
 	const creditApplied = (cycle: InvoiceCycle, amountCents: number): number => Math.min(creditInto(cycle.key), Math.max(0, amountCents));
 
 	// O saldo anterior de uma fatura fechada: o que o cartão devia na véspera do fechamento
