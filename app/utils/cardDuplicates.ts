@@ -1,5 +1,5 @@
 /**
- * "Provável repetido" no cartão (E2E-34, SPD-098). Puro e testado.
+ * "Provável repetido" no cartão (E2E-34, SPD-098, SPD-124). Puro e testado.
  *
  * A mesma compra pode entrar duas vezes no cartão: digitada à mão e depois trazida pelo
  * extrato OFX ou por uma notificação que o casamento não reconheceu — ou, depois de juntar
@@ -10,13 +10,12 @@
  * ## Quando dois lançamentos são provável repetido
  *
  * - mesmo cartão (quem chama passa só os lançamentos de um cartão);
- * - mesmo valor e mesma direção: compra com compra, estorno com estorno. Compra e estorno
- *   do mesmo valor se anulam de propósito;
+ * - mesma natureza: compra com compra, estorno com estorno, pagamento de fatura com
+ *   pagamento (abaixo). Compra e estorno do mesmo valor se anulam de propósito; estorno e
+ *   pagamento são créditos no cartão, mas um é dinheiro da loja e o outro do dono;
+ * - mesmo valor;
  * - no máximo um dia de diferença (`SAME_PAYMENT_DAYS`, a mesma folga do pagamento visto
  *   duas vezes e do "Parece repetido" da revisão do extrato);
- * - final do cartão compatível: dois finais conhecidos e diferentes são o físico e o
- *   virtual, duas compras. Final em branco casa com qualquer um, como a conta de origem
- *   nula em `isSameCardPayment`;
  * - nunca o ajuste com a fatura do banco (`isCardAdjustment`): é o app acertando o que não
  *   viu, não uma compra que se possa ter lançado duas vezes;
  * - parcelas: as do mesmo parcelamento nunca são par entre si. Parcelas de parcelamentos
@@ -28,8 +27,26 @@
  * ligação da captura com o lançamento, e o histórico de capturas da tela é podado. E dois
  * digitados iguais, ou duas capturas que o casamento não juntou, também são repetidos.
  *
+ * O final do cartão também não entra (SPD-124). Até o SPD-124, dois finais conhecidos e
+ * diferentes eram "o físico e o virtual", duas compras. Mas nem todo final é de plástico: o
+ * extrato OFX não diz qual cartão comprou, o cartão que ele cria leva o fim do ACCTID como
+ * final, e juntar cartões (`mergeCardInto`) dá esse final às compras que vêm sem nenhum. A
+ * padaria do aviso ("final 1111") e a mesma padaria do extrato ("final 4821") ficavam sem
+ * marca, e a fatura com as duas. Compra igual no físico e no virtual no mesmo dia é marcada,
+ * como duas iguais no mesmo plástico: o dono diz "não é repetido".
+ *
  * Encargo e compra do mesmo valor podem ser par: o IOF registrado como encargo e a linha
  * "IOF" do extrato são o mesmo dinheiro.
+ *
+ * ## Pagamento de fatura (SPD-124)
+ *
+ * O pagamento é uma transferência que entra no cartão, não um lançamento dele
+ * (`cardPaymentEntries`). O mesmo pagamento visto duas vezes **no mesmo cartão** já é casado
+ * na entrada (`isSameCardPayment`); sobra o que juntar cartões traz — o "Pagar fatura" de um
+ * e o "Pagamento recebido" do extrato no outro — e o de origens diferentes que eram o mesmo
+ * dinheiro. A regra é a da compra: mesmo valor e até um dia. A conta de origem não entra: é
+ * palpite (`findCheckingForCard`) e, para marcar, errar custa só um toque. Pagamento nunca é
+ * par de compra, estorno ou encargo.
  */
 
 import { accountPairKey } from './accountBinding';
@@ -48,8 +65,36 @@ export interface CardDuplicateEntry {
 	installmentGroup: string | null;
 	installmentIndex?: number | null;
 	installmentCount?: number | null;
-	cardLast4?: string | null;
+	/** Pagamento de fatura (`cardPaymentEntries`): só faz par com outro pagamento. */
+	isPayment?: boolean;
 }
+
+/** Uma transferência gravada, do jeito que basta para saber se paga o cartão. */
+export interface CardTransferLike {
+	id: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	date: string;
+}
+
+/**
+ * Os pagamentos de fatura do cartão, entre as transferências dele: as que **entram** nele
+ * (`inbound` do `CardMovement`). A que sai do cartão não é pagamento; a que vai para outro
+ * cartão, ou para um destino em branco, não é deste.
+ */
+export const cardPaymentEntries = (transfers: readonly CardTransferLike[], cardId: string): CardDuplicateEntry[] =>
+	transfers
+		.filter((transfer) => transfer.toAccountId === cardId && transfer.fromAccountId !== cardId)
+		.map((transfer) => ({
+			id: transfer.id,
+			amountCents: transfer.amountCents,
+			isIncome: true,
+			date: transfer.date,
+			note: null,
+			installmentGroup: null,
+			isPayment: true,
+		}));
 
 export interface CardDuplicatePair {
 	a: string;
@@ -71,13 +116,17 @@ export interface CardDuplicates<T extends CardDuplicateEntry = CardDuplicateEntr
 
 const byDateThenId = (a: CardDuplicateEntry, b: CardDuplicateEntry) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id);
 
-/** Os dois lançamentos do mesmo cartão podem ser a mesma compra lançada duas vezes? */
+/**
+ * Os dois lançamentos do mesmo cartão podem ser a mesma compra (ou o mesmo estorno, ou o
+ * mesmo pagamento de fatura) lançada duas vezes?
+ */
 export const isLikelyCardDuplicate = (a: CardDuplicateEntry, b: CardDuplicateEntry): boolean => {
 	if (a.id === b.id) return false;
+	if (Boolean(a.isPayment) !== Boolean(b.isPayment)) return false;
 	if (a.amountCents <= 0 || a.amountCents !== b.amountCents || a.isIncome !== b.isIncome) return false;
 	if (Math.abs(daysBetween(a.date, b.date)) > CARD_DUPLICATE_DAYS) return false;
+	if (a.isPayment) return true;
 	if (isCardAdjustment(a) || isCardAdjustment(b)) return false;
-	if (a.cardLast4 && b.cardLast4 && a.cardLast4 !== b.cardLast4) return false;
 	if (a.installmentGroup && b.installmentGroup) {
 		if (a.installmentGroup === b.installmentGroup) return false;
 		if (a.installmentIndex !== b.installmentIndex || a.installmentCount !== b.installmentCount) return false;
@@ -86,8 +135,9 @@ export const isLikelyCardDuplicate = (a: CardDuplicateEntry, b: CardDuplicateEnt
 };
 
 /**
- * Os prováveis repetidos entre os lançamentos de **um** cartão. Pares em `dismissed` (o
- * dono disse "não é repetido", chaves de `accountPairKey`) ficam de fora.
+ * Os prováveis repetidos entre os lançamentos de **um** cartão, e os pagamentos dele quando
+ * vêm junto (`cardPaymentEntries`). Pares em `dismissed` (o dono disse "não é repetido",
+ * chaves de `accountPairKey`) ficam de fora.
  */
 export const findCardDuplicates = <T extends CardDuplicateEntry>(
 	entries: readonly T[],
@@ -151,7 +201,12 @@ export interface CardDuplicateSummary {
 	 * Positivo = a fatura fica menor quando o dono apagar o que sobra.
 	 */
 	extraCents: number;
-	/** Os lançamentos marcados dos grupos contados. */
+	/**
+	 * Quanto foi pago a menos do que a fatura mostra, se os pagamentos marcados forem
+	 * repetidos. O valor da fatura não muda: muda o que falta pagar.
+	 */
+	paymentExtraCents: number;
+	/** Os lançamentos (e pagamentos) marcados dos grupos contados. */
 	ids: Set<string>;
 }
 
@@ -165,15 +220,18 @@ export const summarizeCardDuplicates = (
 ): CardDuplicateSummary => {
 	let count = 0;
 	let extraCents = 0;
+	let paymentExtraCents = 0;
 	const ids = new Set<string>();
 	for (const group of groups) {
 		if (shownIds && !group.some((member) => shownIds.has(member.id))) continue;
 		const extra = group.length - 1;
 		count += extra;
-		extraCents += extra * (group[0].isIncome ? -group[0].amountCents : group[0].amountCents);
+		// Um grupo é de uma natureza só (`isLikelyCardDuplicate`): o primeiro diz qual.
+		if (group[0].isPayment) paymentExtraCents += extra * group[0].amountCents;
+		else extraCents += extra * (group[0].isIncome ? -group[0].amountCents : group[0].amountCents);
 		for (const member of group) ids.add(member.id);
 	}
-	return { count, extraCents, ids };
+	return { count, extraCents, paymentExtraCents, ids };
 };
 
-export default { findCardDuplicates, isLikelyCardDuplicate, summarizeCardDuplicates };
+export default { cardPaymentEntries, findCardDuplicates, isLikelyCardDuplicate, summarizeCardDuplicates };

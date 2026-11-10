@@ -13,12 +13,13 @@ import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import TransactionItem from '../components/TransactionItem';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { getAccountTransfers } from '../database/database';
 import type { Account, Transaction } from '../database/schema';
 import { accountPairKey } from '../utils/accountBinding';
 import { findCheckingForCard } from '../utils/accountResolver';
 import { capitalizeFirst } from '../utils/capitalize';
 import { dismissCardDuplicates, getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
-import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
+import { type CardDuplicateEntry, cardPaymentEntries, findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import {
 	CARD_CHARGE_NOTE,
 	type CardChargeKind,
@@ -124,9 +125,29 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 			alive = false;
 		};
 	}, []);
+	// Os pagamentos da fatura entram na marcação (SPD-124): o "Pagar fatura" de um cartão e o
+	// "Pagamento recebido" do extrato no outro ficam os dois aqui depois de juntar. São
+	// transferências, lidas de novo a cada resumo novo do cartão (pagou, juntou, apagou).
+	const [cardPayments, setCardPayments] = useState<CardDuplicateEntry[]>([]);
+	useEffect(() => {
+		let alive = true;
+		const load = async () => {
+			if (!summary) return;
+			try {
+				const payments = cardPaymentEntries(await getAccountTransfers(cardId), cardId);
+				if (alive) setCardPayments(payments);
+			} catch {
+				// Sem ler as transferências, os pagamentos só não são marcados.
+			}
+		};
+		load();
+		return () => {
+			alive = false;
+		};
+	}, [cardId, summary]);
 	const duplicates = useMemo(
-		() => findCardDuplicates(cardTransactions, dismissedDuplicates),
-		[cardTransactions, dismissedDuplicates]
+		() => findCardDuplicates<CardDuplicateEntry>([...cardTransactions, ...cardPayments], dismissedDuplicates),
+		[cardTransactions, cardPayments, dismissedDuplicates]
 	);
 
 	// Cartão juntado ou excluído (E2E-40): o cabeçalho com voltar, como no resto da tela. Aberta
@@ -166,10 +187,16 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const selectedPending = (summary?.pendingEntries ?? []).filter((entry) => inSelected(entry.date));
 	// Os prováveis repetidos da fatura na tela: o grupo conta quando algum lançamento dele está
 	// nela — o par pode cair um de cada lado do fechamento.
+	// Os pagamentos da fatura na tela também (SPD-124); os marcados aparecem logo abaixo do
+	// aviso, que eles não estão na lista de lançamentos.
+	const selectedPayments = cardPayments.filter((payment) => inSelected(payment.date));
 	const selectedDuplicates = summarizeCardDuplicates(
 		duplicates.groups,
-		new Set([...selectedTransactions, ...beforeAnchor].map((tx) => tx.id))
+		new Set([...selectedTransactions, ...beforeAnchor, ...selectedPayments].map((entry) => entry.id))
 	);
+	const markedPayments = selectedPayments
+		.filter((payment) => duplicates.partners.has(payment.id))
+		.sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
 	const showOnlyDuplicates = onlyDuplicates && selectedDuplicates.count > 0;
 	const matchesDuplicates = (id: string) => !showOnlyDuplicates || selectedDuplicates.ids.has(id);
 	// Quem gastou nesta fatura: o físico e cada virtual. A fatura é uma só; isto é o "por cartão".
@@ -241,6 +268,25 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		}
 	};
 
+	/** A linha embaixo do marcado: com quem ele pode ser o mesmo, e o "Não é repetido". */
+	const renderDuplicateRow = (id: string, partnerIds: string[], entries: string) => (
+		<View style={styles.duplicateRow}>
+			<Ionicons name="copy-outline" size={16} color="#FFD166" />
+			<Text style={styles.duplicateText}>{t('cards.duplicates.pairWith', { entries })}</Text>
+			<Pressable
+				testID={`notDuplicate:${id}`}
+				onPress={() => dismissDuplicates(partnerIds.map((partnerId) => accountPairKey(id, partnerId)))}
+				accessibilityRole="button"
+				accessibilityLabel={t('cards.duplicates.notDuplicate')}
+				accessibilityHint={t('cards.duplicates.notDuplicateHint')}
+				hitSlop={8}
+				style={({ pressed }) => pressed && styles.pressed}
+			>
+				<Text style={styles.duplicateAction}>{t('cards.duplicates.notDuplicate')}</Text>
+			</Pressable>
+		</View>
+	);
+
 	/** Um lançamento da fatura e, quando ele tem provável par, a linha que diz com qual. */
 	const renderTransaction = (transaction: Transaction, shown: Transaction = transaction) => {
 		const partnerIds = duplicates.partners.get(transaction.id);
@@ -253,21 +299,36 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		return (
 			<View key={transaction.id}>
 				<TransactionItem transaction={shown} onPress={open} />
-				<View style={styles.duplicateRow}>
-					<Ionicons name="copy-outline" size={16} color="#FFD166" />
-					<Text style={styles.duplicateText}>{t('cards.duplicates.pairWith', { entries })}</Text>
-					<Pressable
-						testID={`notDuplicate:${transaction.id}`}
-						onPress={() => dismissDuplicates(partnerIds.map((id) => accountPairKey(transaction.id, id)))}
-						accessibilityRole="button"
-						accessibilityLabel={t('cards.duplicates.notDuplicate')}
-						accessibilityHint={t('cards.duplicates.notDuplicateHint')}
-						hitSlop={8}
-						style={({ pressed }) => pressed && styles.pressed}
-					>
-						<Text style={styles.duplicateAction}>{t('cards.duplicates.notDuplicate')}</Text>
-					</Pressable>
-				</View>
+				{renderDuplicateRow(transaction.id, partnerIds, entries)}
+			</View>
+		);
+	};
+
+	/**
+	 * Um pagamento de fatura marcado como provável repetido (SPD-124) e o par dele. Abre a
+	 * edição da transferência, que também a exclui — pagamento não tem tela de detalhe.
+	 */
+	const renderPayment = (payment: CardDuplicateEntry) => {
+		const partnerIds = duplicates.partners.get(payment.id) ?? [];
+		const label = t('cards.duplicates.paymentLabel', { date: formatDayMonth(payment.date) });
+		const entries = partnerIds
+			.flatMap((id) => cardPayments.filter((other) => other.id === id))
+			.map((partner) => t('cards.duplicates.paymentLabel', { date: formatDayMonth(partner.date) }))
+			.join('; ');
+		return (
+			<View key={payment.id}>
+				<Pressable
+					onPress={() => router.push({ pathname: '/transaction/edit/[id]', params: { id: payment.id, kind: 'transfer' } })}
+					accessibilityRole="button"
+					accessibilityLabel={`${label}, ${formatCents(payment.amountCents)}`}
+					accessibilityHint={t('cards.duplicates.paymentHint')}
+					style={({ pressed }) => [styles.anchorRow, pressed && styles.pressed]}
+				>
+					<Ionicons name="checkmark-circle-outline" size={18} color="#81C784" />
+					<Text style={styles.anchorText}>{label}</Text>
+					<Text style={[styles.anchorAmount, styles.paidAmount]}>{formatCents(payment.amountCents)}</Text>
+				</Pressable>
+				{renderDuplicateRow(payment.id, partnerIds, entries)}
 			</View>
 		);
 	};
@@ -385,10 +446,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									<DuplicatesNotice
 										count={selectedDuplicates.count}
 										extraCents={selectedDuplicates.extraCents}
+										paymentExtraCents={selectedDuplicates.paymentExtraCents}
 										onlyMarked={showOnlyDuplicates}
 										onPress={() => setOnlyDuplicates((only) => !only)}
 									/>
 								) : null}
+
+								{/* Pagamento não tem final: com o filtro por cartão, fica de fora, como na lista. */}
+								{cardFilter === undefined ? markedPayments.map(renderPayment) : null}
 
 								{selected.previousUnpaidCents > 0 ? (
 									<View
@@ -773,23 +838,26 @@ const Stat: React.FC<{ label: string; value: string; tone?: 'default' | 'danger'
  * "2 lançamentos podem estar repetidos" (E2E-34). O número é quantos sobram se forem: em cada
  * grupo de iguais, todos menos um. O toque deixa na lista só os marcados, e de novo mostra todos.
  */
-const DuplicatesNotice: React.FC<{ count: number; extraCents: number; onlyMarked: boolean; onPress: () => void }> = ({
-	count,
-	extraCents,
-	onlyMarked,
-	onPress,
-}) => {
+const DuplicatesNotice: React.FC<{
+	count: number;
+	extraCents: number;
+	paymentExtraCents: number;
+	onlyMarked: boolean;
+	onPress: () => void;
+}> = ({ count, extraCents, paymentExtraCents, onlyMarked, onPress }) => {
 	const { t } = useTranslation();
 	const title = t('cards.duplicates.notice', { count });
 	const body =
 		extraCents > 0 ? t('cards.duplicates.noticeBody', { amount: formatCents(extraCents) }) : t('cards.duplicates.noticeBodyPlain');
+	// Pagamento repetido não muda a fatura: muda o quanto dela foi pago (SPD-124).
+	const payments = paymentExtraCents > 0 ? t('cards.duplicates.noticePayments', { amount: formatCents(paymentExtraCents) }) : null;
 	const toggle = onlyMarked ? t('cards.duplicates.showAll') : t('cards.duplicates.showOnly');
 	return (
 		<Pressable
 			onPress={onPress}
 			accessibilityRole="button"
 			accessibilityState={{ selected: onlyMarked }}
-			accessibilityLabel={`${title}. ${body}`}
+			accessibilityLabel={payments ? `${title}. ${body} ${payments}` : `${title}. ${body}`}
 			accessibilityHint={onlyMarked ? t('cards.duplicates.showAllHint') : t('cards.duplicates.showOnlyHint')}
 			style={({ pressed }) => [styles.notice, styles.duplicateNotice, pressed && styles.pressed]}
 		>
@@ -797,6 +865,7 @@ const DuplicatesNotice: React.FC<{ count: number; extraCents: number; onlyMarked
 			<View style={styles.flex}>
 				<Text style={styles.noticeTitle}>{title}</Text>
 				<Text style={styles.noticeBody}>{body}</Text>
+				{payments ? <Text style={styles.noticeBody}>{payments}</Text> : null}
 				<Text style={styles.duplicateToggle}>{toggle}</Text>
 			</View>
 		</Pressable>

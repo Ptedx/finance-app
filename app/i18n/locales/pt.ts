@@ -1453,6 +1453,9 @@ const pt = {
 			notDuplicate: 'Não é repetido',
 			notDuplicateHint: 'Tira a marca deste par',
 			dismissed: 'Marca tirada',
+			noticePayments: 'Pagamento da fatura repetido: se for, foram pagos {{amount}} a menos do que a tela mostra.',
+			paymentLabel: 'Pagamento da fatura de {{date}}',
+			paymentHint: 'Abre o pagamento, onde dá para excluir o que sobrou',
 			afterMerge_one:
 				'{{count}} lançamento de {{into}} pode estar repetido: mesmo valor, com até 1 dia de diferença. Ele aparece marcado na tela do cartão; abra e apague o que sobrou.',
 			afterMerge_other:

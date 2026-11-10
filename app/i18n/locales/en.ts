@@ -1458,6 +1458,9 @@ account: {
 			notDuplicate: 'Not a repeat',
 			notDuplicateHint: 'Removes the mark from this pair',
 			dismissed: 'Mark removed',
+			noticePayments: 'Repeated bill payment: if so, {{amount}} less was paid than the screen shows.',
+			paymentLabel: 'Bill payment of {{date}}',
+			paymentHint: 'Opens the payment, where you can delete the extra one',
 			afterMerge_one:
 				'{{count}} entry on {{into}} may be a repeat: same amount, at most 1 day apart. It is marked on the card screen; open it and delete the extra one.',
 			afterMerge_other:

@@ -2,6 +2,7 @@ import { accountPairKey } from '../accountBinding';
 import {
 	CARD_DUPLICATE_DAYS,
 	type CardDuplicateEntry,
+	cardPaymentEntries,
 	findCardDuplicates,
 	isLikelyCardDuplicate,
 	summarizeCardDuplicates,
@@ -17,7 +18,10 @@ import { CARD_ADJUSTMENT_NOTE, cardChargeNote } from '../cardMath';
  * em valor com até um dia de diferença no mesmo cartão, sem apagar nada sozinho.
  */
 
-const entry = (overrides: Partial<CardDuplicateEntry> & Pick<CardDuplicateEntry, 'id'>): CardDuplicateEntry => ({
+/** O lançamento do cartão com o final do plástico, como a `Transaction` chega à tela. */
+type Entry = CardDuplicateEntry & { cardLast4: string | null };
+
+const entry = (overrides: Partial<Entry> & Pick<Entry, 'id'>): Entry => ({
 	amountCents: 0,
 	isIncome: false,
 	date: '2026-11-01',
@@ -124,8 +128,8 @@ describe('E2E-34 — provável repetido no mesmo cartão', () => {
 		expect(summary.extraCents).toBe(-2000);
 	});
 
-	it('finais diferentes (o físico e o virtual) são duas compras; final em branco casa com qualquer um', () => {
-		expect(keysOf([{ ...PADARIA_MAO, cardLast4: '2222' }, PADARIA_OFX])).toEqual([]);
+	it('final em branco ou igual: par', () => {
+		expect(keysOf([PADARIA_MAO, PADARIA_OFX])).toEqual([accountPairKey('m-padaria', 'x-padaria')]);
 		expect(keysOf([{ ...PADARIA_MAO, cardLast4: '1111' }, PADARIA_OFX])).toEqual([accountPairKey('m-padaria', 'x-padaria')]);
 	});
 
@@ -165,5 +169,141 @@ describe('E2E-34 — provável repetido no mesmo cartão', () => {
 			['m-padaria', 'x-padaria'],
 			['m-mercado', 'x-mercado'],
 		]);
+	});
+});
+
+/**
+ * SPD-124, lacuna do SPD-097: juntar dois cartões e a mesma compra fica com dois finais.
+ *
+ * O aviso do banco diz o plástico ("final 1111", ou o 7777 do virtual). O extrato OFX não
+ * diz: o cartão que ele criou leva o fim do ACCTID como final (4821 aqui), e `mergeCardInto`
+ * dá esse final às compras que vêm sem nenhum. Antes, dois finais diferentes eram "o físico
+ * e o virtual" e o par não era marcado — a fatura ficava com as duas cópias sem aviso.
+ */
+describe('SPD-124 — repetido entre cartões juntados (finais diferentes)', () => {
+	const PADARIA_AVISO = entry({ id: 'n-padaria', amountCents: 5000, date: '2026-11-01', note: 'PADARIA', cardLast4: '1111' });
+	const PADARIA_EXTRATO = entry({ id: 'x-padaria', amountCents: 5000, date: '2026-11-01', note: 'PADARIA', cardLast4: '4821' });
+	const MERCADO_VIRTUAL = entry({ id: 'n-mercado', amountCents: 10_000, date: '2026-11-07', note: 'MERCADO', cardLast4: '7777' });
+	const MERCADO_EXTRATO = entry({ id: 'x-mercado', amountCents: 10_000, date: '2026-11-08', note: 'SUPERMERCADO', cardLast4: '4821' });
+
+	it('padaria R$ 50 do aviso (final 1111) e a do extrato (final 4821) no mesmo dia: par', () => {
+		expect(isLikelyCardDuplicate(PADARIA_AVISO, PADARIA_EXTRATO)).toBe(true);
+		expect(keysOf([PADARIA_AVISO, PADARIA_EXTRATO])).toEqual([accountPairKey('n-padaria', 'x-padaria')]);
+	});
+
+	it('com o mercado R$ 100 do virtual (07/11) e o do extrato (08/11), a fatura de R$ 300 cai R$ 150', () => {
+		const juntado = [PADARIA_AVISO, PADARIA_EXTRATO, MERCADO_VIRTUAL, MERCADO_EXTRATO];
+		expect(juntado.reduce((total, item) => total + item.amountCents, 0)).toBe(30_000);
+		const summary = summarizeCardDuplicates(findCardDuplicates(juntado).groups);
+		expect(summary.count).toBe(2);
+		expect(summary.extraCents).toBe(15_000);
+	});
+
+	it('dois dias de diferença continuam não sendo par, com qualquer final', () => {
+		expect(keysOf([MERCADO_VIRTUAL, { ...MERCADO_EXTRATO, date: '2026-11-09' }])).toEqual([]);
+	});
+
+	it('compra do aviso e estorno do extrato do mesmo valor, finais diferentes: não', () => {
+		expect(keysOf([PADARIA_AVISO, { ...PADARIA_EXTRATO, isIncome: true }])).toEqual([]);
+	});
+});
+
+/**
+ * SPD-124, lacuna do SPD-098: pagamento de fatura repetido.
+ *
+ * O pagamento é uma transferência que entra no cartão, não um lançamento dele. O "Pagamento
+ * recebido" de R$ 1.234,56 em 05/11 chegou pelo aviso (ou pelo "Pagar fatura") num cartão e
+ * pelo extrato no outro; juntar os dois deixou duas transferências iguais no que ficou, e o
+ * "Pago" da fatura conta R$ 2.469,12. Pagamento só faz par com pagamento.
+ */
+describe('SPD-124 — pagamento de fatura repetido', () => {
+	const transfer = (id: string, amountCents: number, date: string, fromAccountId: string | null, toAccountId: string | null) => ({
+		id,
+		fromAccountId,
+		toAccountId,
+		amountCents,
+		date,
+	});
+	const PAGO_AVISO = transfer('t-aviso', 123_456, '2026-11-05', 'corrente', 'nubank');
+	const PAGO_EXTRATO = transfer('t-extrato', 123_456, '2026-11-05', null, 'nubank');
+	const paymentsOf = (transfers: ReturnType<typeof transfer>[]) => cardPaymentEntries(transfers, 'nubank');
+
+	it('o "Pagamento recebido" de R$ 1.234,56 pelo aviso e pelo extrato em 05/11: par', () => {
+		const found = findCardDuplicates(paymentsOf([PAGO_AVISO, PAGO_EXTRATO]));
+		expect(found.pairs.map((pair) => pair.key)).toEqual([accountPairKey('t-aviso', 't-extrato')]);
+		expect(found.partners.get('t-aviso')).toEqual(['t-extrato']);
+	});
+
+	it('se for repetido, foram pagos R$ 1.234,56 a menos do que a fatura mostra; o valor da fatura não muda', () => {
+		const summary = summarizeCardDuplicates(findCardDuplicates(paymentsOf([PAGO_AVISO, PAGO_EXTRATO])).groups);
+		expect(summary.count).toBe(1);
+		expect(summary.extraCents).toBe(0);
+		expect(summary.paymentExtraCents).toBe(123_456);
+		expect([...summary.ids].sort()).toEqual(['t-aviso', 't-extrato']);
+	});
+
+	it('05/11 e 06/11 é par; 05/11 e 07/11 não', () => {
+		expect(keysOf(paymentsOf([PAGO_AVISO, { ...PAGO_EXTRATO, date: '2026-11-06' }]))).toEqual([accountPairKey('t-aviso', 't-extrato')]);
+		expect(keysOf(paymentsOf([PAGO_AVISO, { ...PAGO_EXTRATO, date: '2026-11-07' }]))).toEqual([]);
+	});
+
+	it('R$ 1.234,56 e R$ 1.234,55: não', () => {
+		expect(keysOf(paymentsOf([PAGO_AVISO, { ...PAGO_EXTRATO, amountCents: 123_455 }]))).toEqual([]);
+	});
+
+	it('pagamentos de contas diferentes no mesmo dia também ficam marcados: o dono diz se não é', () => {
+		expect(keysOf(paymentsOf([PAGO_AVISO, { ...PAGO_EXTRATO, fromAccountId: 'inter' }]))).toEqual([accountPairKey('t-aviso', 't-extrato')]);
+	});
+
+	it('só o que entra no cartão é pagamento dele: o que sai dele e o que vai para outro cartão ficam de fora', () => {
+		const payments = paymentsOf([
+			PAGO_AVISO,
+			transfer('t-saque', 123_456, '2026-11-05', 'nubank', 'corrente'),
+			transfer('t-outro', 123_456, '2026-11-05', 'corrente', 'inter-cartao'),
+			transfer('t-aberto', 123_456, '2026-11-05', 'corrente', null),
+		]);
+		expect(payments.map((payment) => payment.id)).toEqual(['t-aviso']);
+		expect(keysOf(payments)).toEqual([]);
+	});
+
+	it('compra de R$ 1.234,56 no dia do pagamento de R$ 1.234,56: nunca par', () => {
+		const compra = entry({ id: 'compra', amountCents: 123_456, date: '2026-11-05', note: 'NOTEBOOK' });
+		expect(keysOf([compra, ...paymentsOf([PAGO_AVISO])])).toEqual([]);
+		expect(isLikelyCardDuplicate(compra, paymentsOf([PAGO_AVISO])[0])).toBe(false);
+	});
+
+	it('estorno de R$ 1.234,56 (crédito no cartão, como o pagamento) no mesmo dia: nunca par', () => {
+		const estorno = entry({ id: 'estorno', amountCents: 123_456, isIncome: true, date: '2026-11-05', note: 'ESTORNO' });
+		expect(keysOf([estorno, ...paymentsOf([PAGO_AVISO])])).toEqual([]);
+		expect(isLikelyCardDuplicate(paymentsOf([PAGO_AVISO])[0], estorno)).toBe(false);
+	});
+
+	it('com compras, estornos e pagamentos juntos, cada par é da mesma natureza', () => {
+		const compra = entry({ id: 'compra', amountCents: 123_456, date: '2026-11-05' });
+		const compra2 = entry({ id: 'compra-2', amountCents: 123_456, date: '2026-11-05' });
+		const estorno = entry({ id: 'estorno', amountCents: 123_456, isIncome: true, date: '2026-11-05' });
+		const found = findCardDuplicates([compra, estorno, compra2, ...paymentsOf([PAGO_AVISO, PAGO_EXTRATO])]);
+		expect(found.pairs.map((pair) => pair.key).sort()).toEqual(
+			[accountPairKey('compra', 'compra-2'), accountPairKey('t-aviso', 't-extrato')].sort()
+		);
+		expect(found.groups.map((group) => group.map((member) => member.id))).toEqual([
+			['compra', 'compra-2'],
+			['t-aviso', 't-extrato'],
+		]);
+		const summary = summarizeCardDuplicates(found.groups);
+		expect(summary.count).toBe(2);
+		expect(summary.extraCents).toBe(123_456);
+		expect(summary.paymentExtraCents).toBe(123_456);
+	});
+
+	it('"não é repetido" vale para o par de pagamentos, com a mesma chave dos lançamentos', () => {
+		const dismissed = new Set([accountPairKey('t-extrato', 't-aviso')]);
+		expect(findCardDuplicates(paymentsOf([PAGO_AVISO, PAGO_EXTRATO]), dismissed).pairs).toEqual([]);
+	});
+
+	it('na fatura da tela conta o grupo de pagamentos com algum deles nela', () => {
+		const groups = findCardDuplicates(paymentsOf([PAGO_AVISO, PAGO_EXTRATO])).groups;
+		expect(summarizeCardDuplicates(groups, new Set(['t-extrato'])).count).toBe(1);
+		expect(summarizeCardDuplicates(groups, new Set(['outro'])).count).toBe(0);
 	});
 });

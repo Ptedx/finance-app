@@ -1459,6 +1459,9 @@ account: {
 			notDuplicate: 'Non è ripetuto',
 			notDuplicateHint: 'Toglie il segno da questa coppia',
 			dismissed: 'Segno tolto',
+			noticePayments: "Pagamento dell'estratto conto ripetuto: se lo è, è stato pagato {{amount}} in meno di quanto mostra lo schermo.",
+			paymentLabel: "Pagamento dell'estratto conto del {{date}}",
+			paymentHint: 'Apre il pagamento, dove puoi eliminare quello in più',
 			afterMerge_one:
 				"{{count}} movimento di {{into}} potrebbe essere ripetuto: stesso importo, al massimo 1 giorno di differenza. È segnato nella schermata della carta; aprilo ed elimina quello in più.",
 			afterMerge_other:

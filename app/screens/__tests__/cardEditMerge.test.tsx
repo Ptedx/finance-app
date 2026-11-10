@@ -407,14 +407,16 @@ describe('E2E-34 — depois de juntar, os prováveis repetidos (SPD-098)', () =>
 		expect(alertSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it('o final do duplicado passa para o que vem sem final: virtual 2222 no Nubank e 1111 no duplicado não são par', async () => {
+	it('o final do duplicado passa para o que vem sem final: virtual 2222 no Nubank e 1111 no duplicado são par (SPD-124)', async () => {
 		mockAccounts.accounts = [NUBANK, DUPLICADO];
 		mockTransactions.list = [
 			tx('m-padaria', 'nubank', 5000, '2026-11-01', 'Padaria', '2222'),
-			// Sem final no duplicado: ao juntar ganha o 1111 dele, que não é o 2222.
+			// Sem final no duplicado: ao juntar ganha o 1111 dele, que não é o 2222. O final do
+			// extrato não diz o plástico: a mesma padaria continua marcada (SPD-124).
 			tx('x-padaria', 'dup', 5000, '2026-11-01', 'PADARIA'),
 		];
 		await mergeDuplicateIntoNubank();
-		expect(alertSpy).toHaveBeenCalledTimes(1);
+		expect(alertSpy).toHaveBeenCalledTimes(2);
+		expect(alertSpy.mock.calls[1][1]).toBe(`cards.duplicates.afterMerge ${JSON.stringify({ count: 1, into: NUBANK.name })}`);
 	});
 });

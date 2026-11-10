@@ -9,10 +9,11 @@
  */
 
 const mockPush = jest.fn();
-const mockData: { transactions: unknown[]; summaries: Map<string, unknown>; accounts: unknown[] } = {
+const mockData: { transactions: unknown[]; summaries: Map<string, unknown>; accounts: unknown[]; transfers: unknown[] } = {
 	transactions: [],
 	summaries: new Map(),
 	accounts: [],
+	transfers: [],
 };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -22,6 +23,8 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('../../database/database', () => ({
 	setPreference: (key: string, value: string) =>
 		require('@react-native-async-storage/async-storage/jest/async-storage-mock').setItem(key, value),
+	// Os pagamentos da fatura (SPD-124): as transferências que entram no cartão.
+	getAccountTransfers: async () => mockData.transfers,
 }));
 
 jest.mock('expo-router', () => ({
@@ -80,7 +83,7 @@ jest.mock('../../utils/dateUtils', () => ({ ...jest.requireActual('../../utils/d
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AccessibilityInfo } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import type { Account, Transaction } from '../../database/schema';
+import type { Account, Transaction, Transfer } from '../../database/schema';
 import { accountPairKey } from '../../utils/accountBinding';
 import { CARD_DUPLICATE_DISMISSED_KEY } from '../../utils/cardDuplicateDismissals';
 import { buildCardSummary } from '../../utils/cardMath';
@@ -145,8 +148,28 @@ const load = (transactions: Transaction[]) => {
 	mockData.transactions = transactions;
 	const summary = buildCardSummary(NUBANK, transactions, [], '2026-11-07');
 	mockData.summaries = new Map([['nubank', summary]]);
+	mockData.transfers = [];
 	return summary;
 };
+
+/** Os lançamentos e os pagamentos da fatura: as transferências que entram no cartão. */
+const loadWithPayments = (transactions: Transaction[], transfers: Transfer[]) => {
+	mockData.accounts = [NUBANK];
+	mockData.transactions = transactions;
+	const movements = transfers.map((transfer) => ({ amountCents: transfer.amountCents, date: transfer.date, inbound: transfer.toAccountId === 'nubank' }));
+	mockData.summaries = new Map([['nubank', buildCardSummary(NUBANK, transactions, movements, '2026-11-07')]]);
+	mockData.transfers = transfers;
+};
+
+const transfer = (id: string, amountCents: number, date: string, fromAccountId: string | null): Transfer => ({
+	id,
+	fromAccountId,
+	toAccountId: 'nubank',
+	amountCents,
+	date,
+	note: '',
+	updatedAt: '',
+});
 
 let renderer: ReactTestRenderer;
 
@@ -276,5 +299,105 @@ describe('E2E-34 — provável repetido na tela do cartão', () => {
 		await mount();
 		expect(pressablesByLabel('cards.duplicates.notice')[0].props.accessibilityLabel).toContain('{"count":1}');
 		expect(texts()).toContain(`cards.duplicates.noticeBody ${JSON.stringify({ amount: formatCents(5000) })}`);
+	});
+});
+
+/**
+ * SPD-124: o "Pagamento recebido" de R$ 1.234,56 em 05/11 duas vezes no Nubank Teste — o do
+ * "Pagar fatura" e o do extrato, que juntar os cartões trouxe. O pagamento não é lançamento da
+ * lista: os marcados aparecem logo abaixo do aviso, cada um com o par, e abrem a edição da
+ * transferência, onde se apaga.
+ */
+describe('SPD-124 — pagamento de fatura repetido na tela do cartão', () => {
+	const PAGOS = [transfer('t-pagar', 123_456, '2026-11-05', 'corrente'), transfer('t-extrato', 123_456, '2026-11-05', null)];
+	const paymentLabel = `cards.duplicates.paymentLabel ${JSON.stringify({ date: formatDayMonth('2026-11-05') })}`;
+
+	const mountAndSettle = async () => {
+		await mount();
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+	};
+
+	it('os dois pagamentos ficam marcados: o aviso conta 1 e diz que foram pagos R$ 1.234,56 a menos', async () => {
+		loadWithPayments([], PAGOS);
+		await mountAndSettle();
+
+		const notice = pressablesByLabel('cards.duplicates.notice');
+		expect(notice).toHaveLength(1);
+		expect(notice[0].props.accessibilityLabel).toContain('cards.duplicates.notice {"count":1}');
+		expect(texts()).toContain(`cards.duplicates.noticePayments ${JSON.stringify({ amount: formatCents(123_456) })}`);
+		// Nenhuma compra está repetida: o corpo não fala de valor a mais na fatura.
+		expect(texts()).toContain('cards.duplicates.noticeBodyPlain');
+
+		const marks = pressablesByLabel('cards.duplicates.notDuplicate').map((node) => node.props.testID).sort();
+		expect(marks).toEqual(['notDuplicate:t-extrato', 'notDuplicate:t-pagar']);
+		const pairs = texts().filter((text) => text.startsWith('cards.duplicates.pairWith'));
+		expect(pairs).toEqual([
+			`cards.duplicates.pairWith ${JSON.stringify({ entries: paymentLabel })}`,
+			`cards.duplicates.pairWith ${JSON.stringify({ entries: paymentLabel })}`,
+		]);
+	});
+
+	it('tocar o pagamento marcado abre a edição da transferência, onde se apaga', async () => {
+		loadWithPayments([], PAGOS);
+		await mountAndSettle();
+
+		const rows = pressablesByLabel(paymentLabel);
+		expect(rows).toHaveLength(2);
+		expect(rows[0].props.accessibilityLabel).toBe(`${paymentLabel}, ${formatCents(123_456)}`);
+		await act(async () => {
+			rows[0].props.onPress();
+		});
+		expect(mockPush).toHaveBeenCalledWith({ pathname: '/transaction/edit/[id]', params: { id: expect.any(String), kind: 'transfer' } });
+	});
+
+	it('"não é repetido" no pagamento guarda o par e tira o aviso', async () => {
+		loadWithPayments([], PAGOS);
+		await mountAndSettle();
+		const mark = pressablesByLabel('cards.duplicates.notDuplicate').find((node) => node.props.testID === 'notDuplicate:t-pagar');
+		await act(async () => {
+			await mark?.props.onPress();
+		});
+
+		expect(JSON.parse((await AsyncStorage.getItem(CARD_DUPLICATE_DISMISSED_KEY)) as string)).toEqual([
+			accountPairKey('t-pagar', 't-extrato'),
+		]);
+		expect(pressablesByLabel('cards.duplicates.notice')).toHaveLength(0);
+		expect(pressablesByLabel(paymentLabel)).toHaveLength(0);
+	});
+
+	it('com a padaria repetida e o pagamento repetido, o aviso conta 2 e cada um fica no seu lugar', async () => {
+		loadWithPayments(ACHADO.slice(0, 3), PAGOS);
+		await mountAndSettle();
+
+		expect(pressablesByLabel('cards.duplicates.notice')[0].props.accessibilityLabel).toContain('{"count":2}');
+		expect(texts()).toContain(`cards.duplicates.noticeBody ${JSON.stringify({ amount: formatCents(5000) })}`);
+		expect(pressablesByLabel('cards.duplicates.notDuplicate')).toHaveLength(4);
+		const pairs = texts().filter((text) => text.startsWith('cards.duplicates.pairWith'));
+		// A padaria aponta para a padaria; o pagamento, para o pagamento.
+		expect(pairs.filter((text) => text.includes('PADARIA') || text.includes('Padaria'))).toHaveLength(2);
+		expect(pairs.filter((text) => text.includes('paymentLabel'))).toHaveLength(2);
+	});
+
+	it('compra de R$ 1.234,56 no dia do pagamento de R$ 1.234,56: nenhum aviso, nenhuma marca', async () => {
+		loadWithPayments([tx('notebook', 123_456, '2026-11-05', 'NOTEBOOK')], [PAGOS[0]]);
+		await mountAndSettle();
+		expect(pressablesByLabel('cards.duplicates.notice')).toHaveLength(0);
+		expect(pressablesByLabel('cards.duplicates.notDuplicate')).toHaveLength(0);
+	});
+
+	it('estorno de R$ 1.234,56 no dia do pagamento de R$ 1.234,56: nenhum aviso, nenhuma marca', async () => {
+		loadWithPayments([{ ...tx('estorno', 123_456, '2026-11-05', 'ESTORNO'), isIncome: true }], [PAGOS[0]]);
+		await mountAndSettle();
+		expect(pressablesByLabel('cards.duplicates.notice')).toHaveLength(0);
+		expect(pressablesByLabel('cards.duplicates.notDuplicate')).toHaveLength(0);
+	});
+
+	it('um pagamento só não aparece na lista: o "Pago" da fatura já o mostra', async () => {
+		loadWithPayments([], [PAGOS[0]]);
+		await mountAndSettle();
+		expect(pressablesByLabel(paymentLabel)).toHaveLength(0);
 	});
 });
