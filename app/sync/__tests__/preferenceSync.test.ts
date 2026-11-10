@@ -151,6 +151,24 @@ describe('o que o AsyncStorage tem e a tabela não', () => {
 		expect(writes).toEqual([{ key: CURRENCY, value: 'x', updatedAt: NOW, deletedAt: null }]);
 	});
 
+	// SPD-127: o carimbo das preferências é o mesmo `nextStamp` das outras tabelas, que
+	// compara pelo instante. O `stampAfter` de antes comparava o texto.
+	it('linha no futuro: a mudança sai 1 ms depois dela, não com agora', () => {
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: '2026-10-26T10:00:00.000Z' })], { [CURRENCY]: 'y' }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'y', updatedAt: '2026-10-26T10:00:00.001Z', deletedAt: null }]);
+	});
+
+	it('carimbo com fuso mais novo que agora: passa dele pelo instante, não pela ordem do texto', () => {
+		// 08:00 em −03:00 é 11:00Z, uma hora depois de agora; no texto, "…T08" vem antes de "…T10".
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: '2026-10-24T08:00:00-03:00' })], { [CURRENCY]: 'y' }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'y', updatedAt: '2026-10-24T11:00:00.001Z', deletedAt: null }]);
+	});
+
+	it('carimbo ilegível na linha não derruba a reconciliação: vale como ausente e a mudança sai com agora', () => {
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: 'lixo' })], { [CURRENCY]: null }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'x', updatedAt: NOW, deletedAt: NOW }]);
+	});
+
 	it('nada mudou, nada a gravar; e o que não é sincronizado é ignorado', () => {
 		expect(
 			planPreferenceReconcile([row(CURRENCY, 'x')], { [CURRENCY]: 'x', [STORAGE_KEYS.captureAccessDismissed]: '1' }, NOW)

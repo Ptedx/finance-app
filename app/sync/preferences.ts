@@ -1,4 +1,5 @@
 import { SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
+import { nextStamp } from '../utils/syncStamp';
 
 /**
  * As preferências no sync (coleção `preferences`, v21): moeda, idioma, taxa do CDI, o
@@ -47,19 +48,6 @@ export interface PreferenceWrite {
 }
 
 /**
- * Agora, ou logo depois do carimbo que a linha já tem — o que vier por último.
- *
- * Um celular com o relógio atrasado em relação ao aparelho que gravou a linha carimbaria
- * a edição daqui como **mais antiga**: o servidor a recusaria por `stale`, o pull seguinte
- * traria a versão de lá e a escolha do usuário desfaria sozinha. Mesma ideia do carimbo
- * da substituição (`sync/replace.ts`).
- */
-export const stampAfter = (now: string, previous: string | null | undefined): string => {
-	if (!previous || previous < now) return now;
-	return new Date(new Date(previous).getTime() + 1).toISOString();
-};
-
-/**
  * O que a tabela precisa gravar para refletir o AsyncStorage, chave a chave.
  *
  * - só o AsyncStorage tem: descoberta, com o carimbo de semente;
@@ -71,6 +59,12 @@ export const stampAfter = (now: string, previous: string | null | undefined): st
  *
  * Só as chaves que viajam (`SYNCED_PREFERENCE_KEYS`): o resto do AsyncStorage — a
  * biometria, o token de push, o aviso de captura — não é da conta.
+ *
+ * O carimbo de agora é o de toda edição (`nextStamp`, SPD-107/SPD-127): agora, ou 1 ms
+ * depois do que a linha já tem. Um celular com o relógio atrasado em relação ao aparelho
+ * que gravou a linha carimbaria a mudança daqui como **mais antiga**: o servidor a
+ * recusaria por `stale`, o pull seguinte traria a versão de lá e a escolha do usuário
+ * desfaria sozinha.
  */
 export const planPreferenceReconcile = (
 	rows: PreferenceRow[],
@@ -92,13 +86,13 @@ export const planPreferenceReconcile = (
 		const alive = !row.deletedAt;
 		if (value === null) {
 			if (!alive) continue;
-			const stamp = stampAfter(now, row.updatedAt);
+			const stamp = nextStamp(row.updatedAt, now);
 			writes.push({ key, value: row.value, updatedAt: stamp, deletedAt: stamp });
 			continue;
 		}
 
 		if (alive && row.value === value) continue;
-		writes.push({ key, value, updatedAt: stampAfter(now, row.updatedAt), deletedAt: null });
+		writes.push({ key, value, updatedAt: nextStamp(row.updatedAt, now), deletedAt: null });
 	}
 
 	return writes;
@@ -112,4 +106,4 @@ export const isMirroredPreference = (key: string): boolean => SYNCED_PREFERENCE_
  * default é um módulo quebrado do ponto de vista dele. Este export existe só para
  * satisfazer essa exigência — nada navega para cá.
  */
-export default { planPreferenceReconcile, stampAfter, isMirroredPreference };
+export default { planPreferenceReconcile, isMirroredPreference };

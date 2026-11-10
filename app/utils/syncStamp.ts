@@ -10,8 +10,21 @@
  *
  * Por isso toda edição, lápide ou operação em lote carimba `max(agora, anterior + 1 ms)`:
  * sempre mais nova que a versão que a linha tinha — que é a do servidor quando ela
- * acabou de descer. Linha nova continua com agora. A mesma ideia de `stampAfter`
- * (`sync/preferences.ts`) e do carimbo da substituição (`sync/replace.ts`).
+ * acabou de descer. Linha nova continua com agora. As preferências (`sync/preferences.ts`)
+ * usam esta mesma função desde o SPD-127; o carimbo da substituição (`sync/replace.ts`)
+ * segue a mesma ideia.
+ *
+ * **Carimbo no futuro** (SPD-127). Quando a linha chega com o `updatedAt` adiantado (um
+ * aparelho com o relógio 2 dias à frente), as edições seguintes saem do carimbo dela + 1 ms
+ * e a linha fica "no futuro" até o relógio alcançá-lo. Isso não faz ninguém perder: o
+ * servidor só recusa (`stale`) o que chega mais velho que o que ele guarda, e quem editou
+ * depois de puxar a versão de lá sempre carimba acima dela — com o relógio certo ou não. O
+ * que perde é a edição feita em cima de uma versão velha (um aparelho offline) enquanto o
+ * carimbo adiantado ainda está à frente do relógio dele; mas isso vem do carimbo adiantado,
+ * não daqui: sem o +1 ms ela perderia igual, e a edição de quem puxou também. Limitar o
+ * anterior (ex.: a agora + 1 dia) só traria de volta o `stale` silencioso do SPD-107,
+ * porque o servidor continuaria com o carimbo adiantado. Impedir o carimbo adiantado de
+ * entrar é coisa do servidor (que tem o relógio de referência), não do aparelho.
  */
 
 /**

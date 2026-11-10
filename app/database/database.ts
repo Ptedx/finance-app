@@ -9,7 +9,7 @@ import { addDays, nowTimestamp, todayISO } from '../utils/dateUtils';
 import { firstDueOnOrAfter, nextDueAfterEdit, type RecurrenceRule } from '../utils/recurrence';
 import { STORAGE_KEYS, SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
 import { nextStamp, nextStampSql } from '../utils/syncStamp';
-import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile, stampAfter } from '../sync/preferences';
+import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile } from '../sync/preferences';
 import {
 	type Budget,
 	type Capture,
@@ -4349,7 +4349,7 @@ export const setPreference = async (key: string, value: string | null): Promise<
 		);
 		if (value === null && !current) return;
 
-		const stamp = stampAfter(nowTimestamp(), current?.updatedAt);
+		const stamp = nextStamp(current?.updatedAt, nowTimestamp());
 		await db.runAsync(UPSERT_DIRTY_PREFERENCE, [
 			key,
 			value ?? (current as { value: string }).value,

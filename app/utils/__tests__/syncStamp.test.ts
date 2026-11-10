@@ -43,3 +43,49 @@ describe('nextStamp', () => {
 		expect(nextStamp('2026-11-12T03:20:05Z', NOW)).toBe('2026-11-12T03:20:05.001Z');
 	});
 });
+
+/**
+ * Carimbo no futuro (SPD-127): uma linha que chegou de um aparelho com o relógio 2 dias à
+ * frente. O "servidor" daqui é a regra de `isStale` do backend (`sync.controller.ts`):
+ * recusa só o que chega mais velho que o guardado; empate vence quem envia.
+ */
+describe('linha com carimbo adiantado por outro aparelho', () => {
+	const push = (server: { updatedAt: string }, incoming: string): 'aplicada' | 'stale' => {
+		if (Date.parse(server.updatedAt) > Date.parse(incoming)) return 'stale';
+		server.updatedAt = incoming;
+		return 'aplicada';
+	};
+
+	it('quem edita depois de puxar sempre vence, com o relógio certo ou não; a linha só sai do futuro quando o relógio alcança', () => {
+		// B (relógio +2 dias) grava às 10:00 do dia 9: o carimbo diz dia 11.
+		const server = { updatedAt: '2026-11-11T10:00:00.000Z' };
+
+		// A, com o relógio certo, puxa e edita às 11:00 do dia 9.
+		const a1 = nextStamp(server.updatedAt, '2026-11-09T11:00:00.000Z');
+		expect(a1).toBe('2026-11-11T10:00:00.001Z');
+		expect(push(server, a1)).toBe('aplicada');
+
+		// C, também certo, puxa a de A e edita às 12:00.
+		const c1 = nextStamp(server.updatedAt, '2026-11-09T12:00:00.000Z');
+		expect(push(server, c1)).toBe('aplicada');
+		expect(server.updatedAt).toBe('2026-11-11T10:00:00.002Z');
+
+		// B puxa e edita de novo (13:00 do dia 9 = dia 11 no relógio dele); A responde às 14:00.
+		expect(push(server, nextStamp(server.updatedAt, '2026-11-11T13:00:00.000Z'))).toBe('aplicada');
+		expect(push(server, nextStamp(server.updatedAt, '2026-11-09T14:00:00.000Z'))).toBe('aplicada');
+		expect(server.updatedAt).toBe('2026-11-11T13:00:00.001Z');
+
+		// Quando o relógio passa do carimbo, a edição volta a sair com agora.
+		expect(nextStamp(server.updatedAt, '2026-11-11T15:00:00.000Z')).toBe('2026-11-11T15:00:00.000Z');
+	});
+
+	it('o que perde é a edição sobre uma versão velha, e perderia igual sem o +1 ms: o culpado é o carimbo adiantado', () => {
+		const server = { updatedAt: '2026-11-11T10:00:00.000Z' };
+		// D estava offline com a versão do dia 8 e edita às 15:00 do dia 9, depois de B.
+		const d = nextStamp('2026-11-08T09:00:00.000Z', '2026-11-09T15:00:00.000Z');
+		expect(d).toBe('2026-11-09T15:00:00.000Z');
+		expect(push(server, d)).toBe('stale');
+		// Limitar o anterior (a agora, ou agora + margem) não salva D e faria A perder também.
+		expect(push({ updatedAt: '2026-11-11T10:00:00.000Z' }, '2026-11-09T11:00:00.000Z')).toBe('stale');
+	});
+});

@@ -371,6 +371,24 @@ describe('gravar uma preferência', () => {
 		expect(flat(written.sql)).toContain(', 1)');
 	});
 
+	it('carimbo ilegível na linha não impede de marcar para subir: vale como ausente (SPD-127)', async () => {
+		mockOnFirst = (sql) => (sql.includes('FROM preferences') ? { value: BRL, updatedAt: 'lixo' } : null);
+
+		await setPreference(CURRENCY, USD);
+
+		const [written] = matching('INSERT INTO preferences');
+		expect(written?.params[1]).toBe(USD);
+		expect(Number.isFinite(Date.parse(written?.params[2] as string))).toBe(true);
+	});
+
+	it('linha no futuro: o carimbo passa 1 ms dela (SPD-127, o mesmo `nextStamp` das outras tabelas)', async () => {
+		mockOnFirst = (sql) => (sql.includes('FROM preferences') ? { value: BRL, updatedAt: '2999-01-01T00:00:00.000Z' } : null);
+
+		await setPreference(CURRENCY, USD);
+
+		expect(matching('INSERT INTO preferences')[0].params[2]).toBe('2999-01-01T00:00:00.001Z');
+	});
+
 	it('nulo apaga: sai do AsyncStorage e vira lápide', async () => {
 		mockStorage.set(CURRENCY, USD);
 		mockOnFirst = (sql) => (sql.includes('FROM preferences') ? { value: USD, updatedAt: '2026-10-01T00:00:00.000Z' } : null);
