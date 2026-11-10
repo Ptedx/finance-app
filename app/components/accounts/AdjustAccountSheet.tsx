@@ -7,6 +7,7 @@ import { counterpartCents } from '../../utils/accountMath';
 import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../../utils/money';
 import { Button, Field } from '../cards/formParts';
 import Sheet from '../cards/Sheet';
+import { useTour } from '../tour/TourContext';
 
 /**
  * Acertar uma conta com o app do banco, na primeira vez.
@@ -54,6 +55,17 @@ const AdjustAccountSheet: React.FC<{
 	// Os campos que o usuário já digitou: nesses o app não escreve mais.
 	const [typed, setTyped] = useState({ spent: false, balance: false });
 	const [error, setError] = useState<string | undefined>();
+	// O "?" do acertar (SPD-129): fecha a folha e abre "Primeiros passos: contas e saldo".
+	const tour = useTour();
+	const help = tour
+		? {
+				label: t('tutorial.help'),
+				onPress: () => {
+					onClose();
+					tour.openTopic('accounts');
+				},
+			}
+		: undefined;
 
 	useEffect(() => {
 		if (!visible) return;
@@ -114,6 +126,7 @@ const AdjustAccountSheet: React.FC<{
 			visible={visible}
 			onClose={onClose}
 			confirmDiscard={typed.spent || typed.balance}
+			help={help}
 			title={t('accounts.adjust.title', { account: account.name })}
 			subtitle={balanceOnly ? t('accounts.adjust.subtitleBalanceOnly') : t('accounts.adjust.subtitle')}
 		>

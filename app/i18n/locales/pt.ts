@@ -759,16 +759,272 @@ const pt = {
 		failedMsg: 'Não foi possível gerar o arquivo de diagnóstico. Tente de novo.',
 	},
 
+	// As boas-vindas da primeira abertura (SPD-129): quatro telas com "Pular".
 	welcome: {
-		title: 'Bem-vindo ao Spendr',
-		subtitle: 'Seus gastos entram pelos avisos do banco, e você vê para onde vai o dinheiro do mês.',
-		trackExpenses: 'Gastos que entram sozinhos',
-		trackExpensesDesc: 'Compras, Pix e transferências dos avisos do banco',
-		manageBudget: 'Contas, cartões e faturas',
-		manageBudgetDesc: 'O saldo de cada conta e quanto sobra depois das faturas',
-		insightfulReports: 'Relatórios úteis',
-		insightfulReportsDesc: 'Para onde vai o seu dinheiro, mês a mês',
-		getStarted: 'Começar',
+		skip: 'Pular',
+		skipHint: 'Passa as boas-vindas',
+		next: 'Próximo',
+		start: 'Começar',
+		page: 'Tela {{current}} de {{total}}',
+		slides: {
+			money: {
+				title: 'Seu dinheiro como o banco mostra',
+				body: 'Contas, cartões e contas a pagar num lugar só. O saldo e a fatura do app batem com os do banco.',
+			},
+			capture: {
+				title: 'O app lança para você',
+				body: 'No Android, o Spendr lê os avisos do banco e lança compras, Pix e transferências sozinho. Quando tiver dúvida, ele pergunta antes de lançar.',
+			},
+			cards: {
+				title: 'Cartão com a fatura de verdade',
+				body: 'Você informa o dia em que a fatura fecha e o dia em que vence. O app mostra a fatura atual, as próximas e avisa antes do vencimento.',
+			},
+			plan: {
+				title: 'Saiba para onde vai e o que fazer',
+				body: 'Patrimônio mostra o que você tem e o que deve. Relatórios mostram se você está no caminho certo. Para rever tudo isto: Ajustes › Como usar.',
+			},
+		},
+	},
+
+	// O guia na tela (SPD-129): o balão que aponta cada botão, o aviso único de quem atualizou,
+	// Ajustes › Como usar e o "?" das telas.
+	tutorial: {
+		next: 'Próximo',
+		skip: 'Pular',
+		skipHint: 'Fecha o guia desta tela. Dá para rever em Ajustes › Como usar.',
+		done: 'Entendi',
+		counter: '{{current}} de {{total}}',
+		counterLabel: 'Passo {{current}} de {{total}}',
+		help: 'Como usar esta tela',
+		helpHint: 'Mostra o que cada botão desta tela faz',
+		helpTopicHint: 'Abre a explicação em Ajustes › Como usar',
+		notice: {
+			title: 'Novo: Como usar o Spendr',
+			body: 'Um guia curto de cada função.',
+			see: 'Ver',
+			seeHint: 'Começa o guia da tela inicial',
+			later: 'Agora não',
+		},
+		howTo: {
+			settingsItem: 'Como usar',
+			title: 'Como usar',
+			back: 'Voltar',
+			showOnScreen: 'Mostrar na tela',
+			showOnScreenHint: 'Abre a tela e aponta cada botão',
+			reviewWelcome: 'Rever as boas-vindas',
+		},
+		topics: {
+			accounts: {
+				title: 'Primeiros passos: contas e saldo',
+				body: 'Cadastre cada conta do banco em Ajustes › Contas e informe quanto tem nela hoje. Se o saldo do app ficar diferente do banco, abra a conta e use "Acertar": diga quanto já gastou no mês e quanto ainda tem, e o app corrige sem inventar gasto.',
+			},
+			add: {
+				title: 'Lançar gastos, receitas e transferências',
+				body: 'Toque no "+". Escolha Despesa ou Receita, o valor, a categoria e a conta ou o cartão. Compra parcelada: informe o número de parcelas, e cada uma cai na fatura certa. Dinheiro que vai de uma conta sua para outra é "Transferência entre minhas contas": não conta como gasto.',
+			},
+			capture: {
+				title: 'Captura automática dos avisos do banco',
+				body: 'Ative em Ajustes › Captura automática e permita o acesso às notificações. O app lança sozinho o que reconhece. O que ele não tem certeza aparece em "Revisar", no topo da tela inicial: confirme, corrija a conta ou o valor, ou descarte. Quando você corrige um caso, o app aprende e faz igual da próxima vez. Dica: em Ajustes › Seu nome no banco, escreva seu nome como aparece nos Pix, para o app reconhecer o dinheiro que vai entre as suas próprias contas.',
+			},
+			cards: {
+				title: 'Cartões: cadastro e fatura',
+				body: 'Em Ajustes › Cartões, toque em Adicionar cartão. Informe o banco, o final do cartão (é por ele que os avisos acham o cartão), o limite, o dia em que a fatura fecha e o dia em que vence — os dois estão na fatura, no app ou no site do banco. Na tela do cartão: a fatura atual, as próximas, "Falta pagar", parcelas em andamento e o melhor dia de compra.',
+			},
+			invoice: {
+				title: 'Fatura: pagar, acertar e o que o banco cobra',
+				body: '• Pagar fatura: registra o pagamento e de qual conta ele saiu.\n• Acertar valor: a fatura do app ficou diferente da do banco? Informe o valor do banco; a diferença vira encargo.\n• Parcela antiga: uma compra parcelada feita antes de cadastrar o cartão.\n• Registrar encargo: juros, IOF, anuidade e tarifas que o banco cobrou.\n• Provável repetido: o mesmo valor duas vezes perto da mesma data fica marcado. Apague o que sobrou, ou toque em "Não é repetido".',
+			},
+			bills: {
+				title: 'Contas a pagar e lembretes',
+				body: 'Em Ajustes › Contas a pagar, cadastre aluguel, internet, escola, com o valor e o dia do vencimento. O app avisa antes e no dia, e mostra tudo em "Contas do mês" na tela inicial. Pagou? Toque em "Já paguei", e a saída vai para a conta escolhida.',
+			},
+			debts: {
+				title: 'Dívidas',
+				body: 'Em Patrimônio, cadastre financiamentos e empréstimos com o saldo devedor, a parcela e quantas faltam. O app mostra quando termina, quanto de juros você paga e se "vale a pena amortizar" comparado ao que o dinheiro renderia (CDI).',
+			},
+			reserve: {
+				title: 'Reserva de emergência e "Por onde começar"',
+				body: 'A reserva cobre imprevistos: o app calcula quantos meses ela cobre do seu custo essencial. "Por onde começar", em Patrimônio, diz o que fazer com o próximo real que sobrar, nesta ordem: reserva mínima, dívidas caras, reserva cheia, aposentadoria.',
+			},
+			budget: {
+				title: 'Orçamento',
+				body: 'Na tela inicial, no card "Este mês", defina quanto quer gastar no mês. O orçamento vale para os meses seguintes até você mudar. O app mostra quanto já foi e quanto falta.',
+			},
+			reports: {
+				title: 'Relatórios',
+				body: 'Saúde financeira responde cinco perguntas: quanto você poupa, quantos meses a reserva cobre, quanto da renda já está comprometido (contas, parcelas de dívidas e do cartão), o peso do cartão e mais. Liberdade financeira: diga quanto quer receber por mês sem trabalhar, e o app calcula o capital e o prazo no ritmo de hoje.',
+			},
+			ofx: {
+				title: 'Extrato do banco (OFX)',
+				body: 'Baixe o extrato em OFX no app ou no site do banco e importe em Ajustes › Importar extrato do banco (OFX). O app junta com o que já foi lançado, sem repetir, confirma o que estava pendente e oferece as parcelas que faltam.',
+			},
+			backup: {
+				title: 'Conta, backup e privacidade',
+				body: 'Sem conta, tudo fica só no aparelho. Com conta (Ajustes › Conta), os dados ficam salvos e voltam iguais num aparelho novo. Exportar dados gera um arquivo de backup; Importar dados restaura. Seus dados não são vendidos nem usados para anúncio: veja a Política de privacidade.',
+			},
+		},
+		steps: {
+			home: {
+				add: {
+					title: 'Lançar',
+					body: 'Toque no "+" para lançar um gasto, uma receita ou uma transferência entre as suas contas.',
+				},
+				review: {
+					title: 'Revisar',
+					body: 'O que o app leu nos avisos do banco e não teve certeza fica aqui. Confirme, corrija ou descarte.',
+				},
+				bills: {
+					title: 'Contas do mês',
+					body: 'Aluguel, internet, escola: o que vence no mês. Pagou? Toque em "Já paguei", e a saída vai para a conta escolhida.',
+				},
+				month: {
+					title: 'Este mês',
+					body: 'Defina quanto quer gastar no mês. O orçamento vale para os meses seguintes até você mudar, e o app mostra quanto já foi e quanto falta.',
+				},
+				settings: {
+					title: 'Ajustes',
+					body: 'Contas, cartões, contas a pagar, captura automática e backup. Em Ajustes › Como usar você revê este guia.',
+				},
+				tabs: {
+					title: 'As abas',
+					body: 'Lançamentos guarda o histórico. Patrimônio mostra o que você tem e o que deve. Relatórios mostram se você está no caminho certo.',
+				},
+			},
+			add: {
+				type: {
+					title: 'Despesa ou receita',
+					body: 'Escolha se o dinheiro saiu ou entrou.',
+				},
+				transfer: {
+					title: 'Transferência entre minhas contas',
+					body: 'Dinheiro que vai de uma conta sua para outra. Não conta como gasto.',
+				},
+				amount: {
+					title: 'Valor',
+					body: 'Digite o valor. Logo abaixo, escolha a categoria.',
+				},
+				account: {
+					title: 'Conta ou cartão',
+					body: 'De onde o dinheiro saiu, ou para onde entrou. Escolhendo um cartão de crédito, aparece o campo das parcelas.',
+				},
+				installments: {
+					title: 'Parcelas',
+					body: 'Compra parcelada: informe o número de parcelas, e cada uma cai na fatura certa.',
+				},
+			},
+			card: {
+				face: {
+					title: 'A fatura atual',
+					body: 'O cartão mostra a fatura aberta, quando ela fecha e vence, e o limite que sobra. Mais abaixo, cada fatura diz quanto falta pagar.',
+				},
+				pay: {
+					title: 'Pagar fatura',
+					body: 'Registra o pagamento e de qual conta ele saiu.',
+				},
+				adjust: {
+					title: 'Acertar valor',
+					body: 'A fatura do app ficou diferente da do banco? Informe o valor do banco; a diferença vira encargo.',
+				},
+				installments: {
+					title: 'Parcela antiga',
+					body: 'Uma compra parcelada feita antes de cadastrar o cartão.',
+				},
+				charge: {
+					title: 'Registrar encargo',
+					body: 'Juros, IOF, anuidade e tarifas que o banco cobrou.',
+				},
+				invoices: {
+					title: 'Faturas por mês',
+					body: 'Uma aba por mês, com o valor na própria aba. Toque numa para ver os lançamentos daquela fatura e quanto falta pagar.',
+				},
+				duplicates: {
+					title: 'Provável repetido',
+					body: 'O mesmo valor duas vezes perto da mesma data fica marcado. Apague o que sobrou, ou toque em "Não é repetido".',
+				},
+			},
+			cardEdit: {
+				last4: {
+					title: 'Final do cartão',
+					body: 'Os últimos 4 números. É por eles que os avisos do banco acham o cartão.',
+				},
+				days: {
+					title: 'Fechamento e vencimento',
+					body: 'O dia em que a fatura fecha e o dia em que vence. Os dois estão na fatura, no app ou no site do banco.',
+				},
+			},
+			inbox: {
+				card: {
+					title: 'Para revisar',
+					body: 'Um aviso do banco que o app não teve certeza de como lançar. Ele pergunta antes.',
+				},
+				actions: {
+					title: 'Confirmar, corrigir ou descartar',
+					body: 'Confira o valor e a conta. Confirme, corrija o que estiver errado, ou descarte.',
+				},
+				learned: {
+					title: 'O app aprende',
+					body: 'Quando você corrige um caso, o app aprende e faz igual da próxima vez.',
+				},
+			},
+			wealth: {
+				networth: {
+					title: 'Patrimônio líquido',
+					body: 'O que você tem menos o que deve: contas, reserva e investimentos, menos cartões e dívidas.',
+				},
+				priorities: {
+					title: 'Por onde começar',
+					body: 'O que fazer com o próximo real que sobrar, nesta ordem: reserva mínima, dívidas caras, reserva cheia, aposentadoria.',
+				},
+				reserve: {
+					title: 'Reserva de emergência',
+					body: 'Cobre imprevistos. O app calcula quantos meses ela cobre do seu custo essencial.',
+				},
+				debts: {
+					title: 'Dívidas',
+					body: 'Cadastre financiamentos e empréstimos. O app mostra quando terminam, quanto de juros você paga e se vale a pena amortizar.',
+				},
+			},
+			reports: {
+				freedom: {
+					title: 'Liberdade financeira',
+					body: 'Diga quanto quer receber por mês sem trabalhar, e o app calcula o capital e o prazo no ritmo de hoje.',
+				},
+				health: {
+					title: 'Saúde financeira',
+					body: 'Quanto você poupa, quantos meses a reserva cobre, quanto da renda já está comprometido e o peso do cartão.',
+				},
+			},
+			settings: {
+				accounts: {
+					title: 'Contas',
+					body: 'Cadastre cada conta do banco e informe quanto tem nela hoje. Saldo diferente do banco? Abra a conta e use "Acertar".',
+				},
+				cards: {
+					title: 'Cartões',
+					body: 'Cada cartão com o final, o limite e os dias em que a fatura fecha e vence.',
+				},
+				bills: {
+					title: 'Contas a pagar',
+					body: 'Aluguel, internet, escola, com o valor e o dia do vencimento. O app avisa antes e no dia.',
+				},
+				capture: {
+					title: 'Captura automática',
+					body: 'Permita o acesso às notificações, e o app lança sozinho o que reconhece nos avisos do banco.',
+				},
+				ownName: {
+					title: 'Seu nome no banco',
+					body: 'Escreva seu nome como aparece nos Pix, para o app reconhecer o dinheiro que vai entre as suas próprias contas.',
+				},
+				ofx: {
+					title: 'Importar extrato (OFX)',
+					body: 'Importe o extrato baixado do banco. O app junta com o que já foi lançado, sem repetir.',
+				},
+				backup: {
+					title: 'Conta e backup',
+					body: 'Com conta, os dados ficam salvos e voltam iguais num aparelho novo. Exportar dados gera um arquivo de backup.',
+				},
+			},
+		},
 	},
 
 	info: {

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import DebtsPanel from '../components/wealth/DebtsPanel';
 import NetWorthCard from '../components/wealth/NetWorthCard';
 import PrioritiesCard from '../components/wealth/PrioritiesCard';
@@ -40,9 +41,12 @@ const WealthScreen = () => {
 	// cascata da reserva, o capital e o saldo das dívidas são os de hoje —, e as médias
 	// precisam terminar no mesmo lugar. Com o mês selecionado, escolher dezembro mudava a
 	// meta da reserva, o "em quantos meses enche" e a data da aposentadoria.
-	const { reserve, reserveComputedCostCents, priorities, refresh: refreshReports } = useReportsData(3, goal, 'today');
+	const { reserve, reserveComputedCostCents, priorities, isLoading, refresh: refreshReports } = useReportsData(3, goal, 'today');
 	const [editingReserve, setEditingReserve] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
+	// O guia do Patrimônio (SPD-129): abre carregado e sem a folha da reserva aberta.
+	useScreenTour('wealth', { ready: !isLoading, blocked: editingReserve });
+	const tourScroll = useTourScroll('wealth');
 
 	const cardsCents = useMemo(() => {
 		let total = 0;
@@ -88,14 +92,23 @@ const WealthScreen = () => {
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#15E8FE" colors={['#15E8FE']} />}
 			>
-				<NetWorthCard worth={worth} parts={parts} />
-				<PrioritiesCard items={priorities} reserveMonths={reserve.targetMonths} />
-				<ReserveCard reserve={reserve} onEdit={() => setEditingReserve(true)} />
-				<DebtsPanel debts={debts} summary={summary} verdictOf={verdictOf} />
+				<TourTarget id="wealth.networth">
+					<NetWorthCard worth={worth} parts={parts} />
+				</TourTarget>
+				<TourTarget id="wealth.priorities">
+					<PrioritiesCard items={priorities} reserveMonths={reserve.targetMonths} />
+				</TourTarget>
+				<TourTarget id="wealth.reserve">
+					<ReserveCard reserve={reserve} onEdit={() => setEditingReserve(true)} />
+				</TourTarget>
+				<TourTarget id="wealth.debts">
+					<DebtsPanel debts={debts} summary={summary} verdictOf={verdictOf} />
+				</TourTarget>
 			</ScrollView>
 
 			<ReserveSheet

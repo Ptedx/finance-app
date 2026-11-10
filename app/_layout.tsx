@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
 import RootStack from './components/RootStack';
+import TourProvider from './components/tour/TourProvider';
 import { AuthProvider } from './contexts/AuthContext';
 import { BillsProvider } from './contexts/BillsContext';
 import { BudgetProvider } from './contexts/BudgetContext';
@@ -219,7 +220,10 @@ export default function RootLayout() {
 								    DebtsProvider dá quando as contas das dívidas mudam. */}
 								<BillsProvider>
 									<StatusBar style="light" />
-									<RootStack />
+									{/* O guia na tela (SPD-129) desenha por cima da pilha; parado enquanto a trava por biometria está aberta. */}
+									<TourProvider paused={showBiometricAuth}>
+										<RootStack />
+									</TourProvider>
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
 								</BillsProvider>
 								</DebtsProvider>

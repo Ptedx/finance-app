@@ -14,6 +14,7 @@ import {
 	parseStalledDismissedAt,
 } from '../utils/captureHealth';
 import { STORAGE_KEYS } from '../utils/storageUtils';
+import { useTourTarget } from './tour/TourContext';
 
 /**
  * "3 lançamentos para revisar" no topo da tela inicial.
@@ -77,6 +78,8 @@ const CaptureReviewBanner: React.FC = () => {
 	const { activeAccounts } = useAccounts();
 	// Nulo até a primeira leitura: nenhum aviso pisca antes de saber se foi dispensado.
 	const [dismissals, setDismissals] = useState<Dismissals | null>(null);
+	// O "Revisar" é um passo do guia da tela inicial (SPD-129), quando aparece.
+	const reviewTarget = useTourTarget('home.review');
 
 	// A dispensa é relida ao ganhar foco e ao voltar ao primeiro plano, não só ao montar:
 	// o primeiro login num aparelho a apaga (`AuthContext`) com a Home montada por baixo, e
@@ -164,6 +167,7 @@ const CaptureReviewBanner: React.FC = () => {
 
 	return (
 		<Pressable
+			{...reviewTarget}
 			onPress={() => router.push('/inbox')}
 			accessibilityRole="button"
 			accessibilityLabel={label}

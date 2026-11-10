@@ -37,6 +37,7 @@ import AccountPicker from './AccountPicker';
 import CategoryPicker from './CategoryPicker';
 import DatePickerModal from './DatePickerModal';
 import TransferForm from './TransferForm';
+import { TourTarget, useTourScroll, useTourTarget } from './tour/TourContext';
 
 /** O que o "+" lança: despesa, receita ou transferência entre contas suas (E2E-28). */
 type EntryKind = 'expense' | 'income' | 'transfer';
@@ -166,6 +167,12 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const [showDateModal, setShowDateModal] = useState(false);
 
 	const scrollRef = useRef<ScrollView>(null);
+	// O guia do "+" (SPD-129): os alvos de cada passo e a rolagem até eles.
+	const tourScroll = useTourScroll('add', scrollRef);
+	const typeTarget = useTourTarget('add.type');
+	const transferTarget = useTourTarget('add.transfer');
+	const amountTarget = useTourTarget('add.amount');
+	const installmentsTarget = useTourTarget('add.installments');
 	// Onde cada campo começa dentro da rolagem, medido no layout.
 	const fieldY = useRef<Partial<Record<keyof FormErrors, number>>>({});
 
@@ -376,6 +383,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 		return (
 			<Pressable
 				key={kind}
+				{...(kind === 'transfer' ? transferTarget : {})}
 				testID={`transaction-form-type-${kind}`}
 				onPress={() => chooseType(kind)}
 				accessibilityRole="radio"
@@ -398,7 +406,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const typeSelector = (
 		<View style={styles.typeToggleContainer}>
 			<Text style={styles.label}>{t('transactionForm.type')}</Text>
-			<View style={styles.toggleRow} accessibilityRole="radiogroup" accessibilityLabel={t('transactionForm.type')}>
+			<View {...typeTarget} style={styles.toggleRow} accessibilityRole="radiogroup" accessibilityLabel={t('transactionForm.type')}>
 				{typeOption('expense', t('transactionForm.expense'))}
 				{typeOption('income', t('transactionForm.income'))}
 				{isEditing ? null : typeOption('transfer', t('transactionForm.transfer.type'))}
@@ -415,7 +423,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 			behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 			style={styles.container}
 		>
-			<ScrollView ref={scrollRef} testID="transaction-form-scroll" keyboardShouldPersistTaps="handled">
+			<ScrollView ref={tourScroll} testID="transaction-form-scroll" keyboardShouldPersistTaps="handled">
 				{editingInstallment ? (
 					<Text style={styles.installmentNotice} testID="transaction-form-editing-installment">
 						{editingInstallment}
@@ -424,7 +432,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 
 				{typeSelector}
 
-				<View style={styles.formGroup} onLayout={measure('amount')} testID="transaction-form-amount-group">
+				<View {...amountTarget} style={styles.formGroup} onLayout={measure('amount')} testID="transaction-form-amount-group">
 					<Text style={styles.label}>{t('transactionForm.amount')}</Text>
 					<View style={styles.amountInputContainer}>
 						<Text style={styles.currencySymbol}>{currentCurrency.symbol}</Text>
@@ -462,10 +470,12 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					{errors.category ? <Text style={styles.errorText}>{errors.category}</Text> : null}
 				</View>
 
-				<AccountPicker selectedAccountId={accountId} onSelect={setAccountId} selectedLast4={cardLast4} onSelectLast4={setCardLast4} />
+				<TourTarget id="add.account">
+					<AccountPicker selectedAccountId={accountId} onSelect={setAccountId} selectedLast4={cardLast4} onSelectLast4={setCardLast4} />
+				</TourTarget>
 
 				{offersInstallments ? (
-					<View style={styles.formGroup} onLayout={measure('installments')}>
+					<View {...installmentsTarget} style={styles.formGroup} onLayout={measure('installments')}>
 						<Text style={styles.label}>{t('transactionForm.installments')}</Text>
 						<Text style={styles.hint}>{t('transactionForm.installmentsHint', { max: MAX_INSTALLMENTS })}</Text>
 						<View style={styles.stepperRow}>

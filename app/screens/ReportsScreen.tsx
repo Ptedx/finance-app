@@ -16,6 +16,7 @@ import RangeChips from '../components/reports/RangeChips';
 import { ACCENT, reportStyles } from '../components/reports/reportStyles';
 import SourceRanking from '../components/reports/SourceRanking';
 import TrendBars from '../components/reports/TrendBars';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { type TrendRange, useReportsData } from '../hooks/useReportsData';
@@ -46,6 +47,9 @@ const ReportsScreen = () => {
 	const [refreshing, setRefreshing] = useState(false);
 
 	const data = useReportsData(range, goal);
+	// O guia dos Relatórios (SPD-129): abre carregado e sem a folha da meta aberta.
+	useScreenTour('reports', { ready: !data.isLoading, blocked: goalSheetOpen });
+	const tourScroll = useTourScroll('reports');
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
@@ -90,6 +94,7 @@ const ReportsScreen = () => {
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.scrollContent}
 				showsVerticalScrollIndicator={false}
 				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />}
@@ -98,9 +103,13 @@ const ReportsScreen = () => {
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} reserveCents={data.reserve.split.reserveCents} />
+						<TourTarget id="reports.freedom">
+							<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} reserveCents={data.reserve.split.reserveCents} />
+						</TourTarget>
 
-						<HealthGrid indicators={data.health} />
+						<TourTarget id="reports.health">
+							<HealthGrid indicators={data.health} />
+						</TourTarget>
 
 						<DebtsSection summary={data.debts.summary} items={data.debts.items} />
 

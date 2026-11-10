@@ -59,6 +59,11 @@ export const STORAGE_KEYS = {
 	 * estabelecimentos.
 	 */
 	captureChoices: '@spendr_capture_choices',
+	/**
+	 * O guia na tela (`utils/tour.ts`, SPD-129): instalação nova ou atualização, os guias já
+	 * vistos e o aviso único. É deste aparelho: não viaja no backup nem no sync.
+	 */
+	tutorial: '@spendr_tutorial',
 } as const;
 
 /**

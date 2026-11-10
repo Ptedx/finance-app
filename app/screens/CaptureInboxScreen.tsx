@@ -15,6 +15,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AccountPicker from '../components/AccountPicker';
 import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -705,6 +707,9 @@ const CaptureInboxScreen = () => {
 
 	const [refreshing, setRefreshing] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
+	// O guia da revisão (SPD-129): o primeiro cartão e o "o app aprende".
+	useScreenTour('inbox', { ready: !isLoading });
+	const tourScroll = useTourScroll('inbox');
 	// As pendentes que um extrato importado casou (SPD-117), relidas quando a fila muda.
 	const [claimedByStatement, setClaimedByStatement] = useState<ReadonlySet<string>>(() => new Set());
 	const pendingIds = useMemo(() => pending.map((capture) => capture.id).join(','), [pending]);
@@ -869,9 +874,11 @@ const CaptureInboxScreen = () => {
 				<Text style={styles.headerCount} accessibilityLabel={t('captures.pendingCount', { count: pending.length })}>
 					{pending.length > 0 ? pending.length : ''}
 				</Text>
+				<HelpButton screen="inbox" />
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={
@@ -909,7 +916,8 @@ const CaptureInboxScreen = () => {
 					</View>
 				)}
 
-				{pending.map((capture) => (
+				{pending.map((capture, index) => (
+					<TourTarget key={capture.id} id={index === 0 ? 'inbox.card' : undefined}>
 					<CaptureCard
 						key={capture.id}
 						capture={capture}
@@ -925,9 +933,14 @@ const CaptureInboxScreen = () => {
 						onAnswerDirection={handleAnswerDirection}
 						onResolveInvoice={handleResolveInvoice}
 					/>
+					</TourTarget>
 				))}
 
-				{pending.length > 0 && <Text style={styles.learned}>{t('captures.learned')}</Text>}
+				{pending.length > 0 && (
+					<TourTarget id="inbox.learned">
+						<Text style={styles.learned}>{t('captures.learned')}</Text>
+					</TourTarget>
+				)}
 
 				{autoApproved.length > 0 && (
 					<View style={styles.section}>

@@ -8,6 +8,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
 import MergeTargetSheet from '../components/MergeTargetSheet';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, AccountDraft } from '../database/schema';
@@ -126,6 +128,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [saving, setSaving] = useState(false);
 	// A folha de "Juntar com outro cartão" aberta.
 	const [merging, setMerging] = useState(false);
+	// O guia do cadastro do cartão (SPD-129): o final e os dias da fatura.
+	useScreenTour('cardEdit', { blocked: merging });
+	const tourScroll = useTourScroll('cardEdit');
 
 	useEffect(() => {
 		if (!existing) return;
@@ -422,9 +427,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 						{existing ? t('cards.edit.title') : t('cards.edit.newTitle')}
 					</Text>
+					<HelpButton screen="cardEdit" />
 				</View>
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					<View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
 						<CardFace card={preview} summary={undefined} />
 					</View>
@@ -499,6 +505,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						hint={t('cards.edit.nicknameHint')}
 					/>
 
+					<TourTarget id="cardEdit.last4">
 					<Field
 						label={t('cards.edit.last4')}
 						optionalLabel={t('cards.edit.optional')}
@@ -509,6 +516,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						hint={t('cards.edit.last4Hint')}
 						error={errors.last4}
 					/>
+					</TourTarget>
 
 					<ChipGroup
 						label={t('cards.edit.network')}
@@ -527,7 +535,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						error={errors.limit}
 					/>
 
-					<View style={styles.twoColumns}>
+					<TourTarget id="cardEdit.days" style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
 								label={t('cards.edit.closingDay')}
@@ -548,7 +556,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								error={errors.due}
 							/>
 						</View>
-					</View>
+					</TourTarget>
 					<Text style={styles.explain}>{t('cards.edit.cycleHint')}</Text>
 					{cyclePreview ? (
 						<Text style={styles.cyclePreview} accessibilityLiveRegion="polite">

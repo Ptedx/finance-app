@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TransactionForm from '../components/TransactionForm';
+import { useScreenTour } from '../components/tour/TourContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 
@@ -15,6 +16,8 @@ const AddTransactionScreen = () => {
 	const [initialTransaction, setInitialTransaction] = useState<Transaction | undefined>(undefined);
 	const [defaultIsIncome, setDefaultIsIncome] = useState<boolean | undefined>(undefined);
 	const isMounted = useRef(true);
+	// O guia do "+" (SPD-129), só no lançamento novo.
+	useScreenTour('add', { ready: !params.transactionId });
 
 	// Clear initial transaction when component mounts/unmounts
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect

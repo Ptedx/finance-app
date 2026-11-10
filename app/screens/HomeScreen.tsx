@@ -10,6 +10,8 @@ import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import TourNotice from '../components/tour/TourNotice';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useSync } from '../contexts/SyncContext';
@@ -37,11 +39,16 @@ const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
-	const { refreshData } = useTransactions();
-	const { refresh: refreshAccounts } = useAccounts();
+	const { refreshData, isLoading: transactionsLoading } = useTransactions();
+	const { refresh: refreshAccounts, isLoading: accountsLoading } = useAccounts();
 	const { refresh: refreshBills } = useBills();
 	const { syncNow } = useSync();
 	const [refreshing, setRefreshing] = useState(false);
+	// O guia da tela inicial (SPD-129): abre depois de carregar; os alvos estão marcados abaixo
+	// e na barra de abas.
+	useScreenTour('home', { ready: !transactionsLoading && !accountsLoading });
+	const tourScroll = useTourScroll('home');
+	const settingsTarget = useTourTarget('home.settings');
 
 	// Abrir ou puxar a Início não lança mais as recorrências antigas (SPD-113): o `[Auto]`
 	// virava gasto dobrado quando a cobrança de verdade chegava.
@@ -69,6 +76,7 @@ const HomeScreen = () => {
 					{t('home.title')}
 				</Text>
 				<Pressable
+					{...settingsTarget}
 					onPress={() => router.push({ pathname: '/settings' })}
 					accessibilityRole="button"
 					accessibilityLabel={t('tabs.settings')}
@@ -79,16 +87,22 @@ const HomeScreen = () => {
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={
 					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#15E8FE" colors={['#15E8FE']} />
 				}
 			>
+				<TourNotice />
 				<AccountReminderBanner />
 				<CaptureReviewBanner />
-				<BillsMonthCard />
-				<MonthOverviewCard />
+				<TourTarget id="home.bills">
+					<BillsMonthCard />
+				</TourTarget>
+				<TourTarget id="home.month">
+					<MonthOverviewCard />
+				</TourTarget>
 				<CardsSection />
 				<AccountsOverview />
 			</ScrollView>

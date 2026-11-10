@@ -53,6 +53,8 @@ interface SheetProps {
 	onClose: () => void;
 	/** Há algo digitado e não salvo: fechar pergunta antes de descartar. */
 	confirmDiscard?: boolean;
+	/** Um "?" ao lado do X (SPD-129): o rótulo e o que ele abre. */
+	help?: { label: string; onPress: () => void };
 	children: React.ReactNode;
 }
 
@@ -69,7 +71,7 @@ const keyboardOpen = (focusedAtOpen: unknown): boolean => {
 	return focused != null && focused !== focusedAtOpen;
 };
 
-const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confirmDiscard = false, children }) => {
+const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confirmDiscard = false, help, children }) => {
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
 	// O campo com o foco quando a folha abre, olhado de novo a cada abertura.
@@ -120,6 +122,16 @@ const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confir
 							</Text>
 							{subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
 						</View>
+						{help ? (
+							<Pressable
+								onPress={help.onPress}
+								accessibilityRole="button"
+								accessibilityLabel={help.label}
+								style={({ pressed }) => [styles.close, pressed && styles.pressed]}
+							>
+								<Ionicons name="help-circle-outline" size={24} color="#FFFFFF" />
+							</Pressable>
+						) : null}
 						<Pressable
 							onPress={requestClose}
 							accessibilityRole="button"

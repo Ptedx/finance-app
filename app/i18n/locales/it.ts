@@ -765,16 +765,272 @@ const it = {
 		failedMsg: 'Impossibile creare il file di diagnostica. Riprova.',
 	},
 
+	// Il benvenuto della prima apertura (SPD-129): quattro schermate con "Salta".
 	welcome: {
-		title: 'Benvenuto su Spendr',
-		subtitle: 'Le tue spese arrivano dalle notifiche della banca, e vedi dove vanno i soldi del mese.',
-		trackExpenses: 'Spese che si registrano da sole',
-		trackExpensesDesc: 'Acquisti, Pix e bonifici dalle notifiche della banca',
-		manageBudget: 'Conti, carte e fatture',
-		manageBudgetDesc: 'Il saldo di ogni conto e quanto resta dopo le fatture',
-		insightfulReports: 'Report Dettagliati',
-		insightfulReportsDesc: 'Dove vanno i tuoi soldi, mese per mese',
-		getStarted: 'Inizia',
+		skip: 'Salta',
+		skipHint: 'Salta le schermate di benvenuto',
+		next: 'Avanti',
+		start: 'Inizia',
+		page: 'Schermata {{current}} di {{total}}',
+		slides: {
+			money: {
+				title: 'I tuoi soldi come li mostra la banca',
+				body: 'Conti, carte e conti da pagare in un unico posto. Il saldo e l\'estratto della carta nell\'app coincidono con quelli della banca.',
+			},
+			capture: {
+				title: 'L\'app registra per te',
+				body: 'Su Android, Spendr legge le notifiche della banca e registra da sola acquisti, Pix e trasferimenti. Quando ha un dubbio, chiede prima di registrare.',
+			},
+			cards: {
+				title: 'La carta con l\'estratto vero',
+				body: 'Indichi il giorno in cui l\'estratto chiude e quello in cui scade. L\'app mostra l\'estratto attuale, i prossimi e ti avvisa prima della scadenza.',
+			},
+			plan: {
+				title: 'Scopri dove vanno i soldi e cosa fare',
+				body: 'Patrimonio mostra ciò che hai e ciò che devi. I report mostrano se sei sulla strada giusta. Per rivedere tutto questo: Impostazioni › Come si usa.',
+			},
+		},
+	},
+
+	// La guida sullo schermo (SPD-129): il fumetto che indica ogni pulsante, l'avviso unico per
+	// chi ha aggiornato, Impostazioni › Come si usa e il "?" delle schermate.
+	tutorial: {
+		next: 'Avanti',
+		skip: 'Salta',
+		skipHint: 'Chiude la guida di questa schermata. Puoi rivederla in Impostazioni › Come si usa.',
+		done: 'Ho capito',
+		counter: '{{current}} di {{total}}',
+		counterLabel: 'Passo {{current}} di {{total}}',
+		help: 'Come usare questa schermata',
+		helpHint: 'Mostra cosa fa ogni pulsante di questa schermata',
+		helpTopicHint: 'Apre la spiegazione in Impostazioni › Come si usa',
+		notice: {
+			title: 'Novità: Come si usa Spendr',
+			body: 'Una breve guida a ogni funzione.',
+			see: 'Vedi',
+			seeHint: 'Avvia la guida della schermata iniziale',
+			later: 'Non ora',
+		},
+		howTo: {
+			settingsItem: 'Come si usa',
+			title: 'Come si usa',
+			back: 'Indietro',
+			showOnScreen: 'Mostra sullo schermo',
+			showOnScreenHint: 'Apre la schermata e indica ogni pulsante',
+			reviewWelcome: 'Rivedi il benvenuto',
+		},
+		topics: {
+			accounts: {
+				title: 'Primi passi: conti e saldo',
+				body: 'Aggiungi ogni conto bancario in Impostazioni › Conti e indica quanto c\'è oggi. Se il saldo dell\'app non coincide con la banca, apri il conto e usa "Allinea con la banca": di\' quanto hai già speso nel mese e quanto ti resta, e l\'app corregge senza inventare spese.',
+			},
+			add: {
+				title: 'Registrare spese, entrate e trasferimenti',
+				body: 'Tocca "+". Scegli Spesa o Entrata, l\'importo, la categoria e il conto o la carta. Acquisto a rate: indica il numero di rate, e ognuna finisce nell\'estratto giusto. I soldi che passano da un tuo conto a un altro sono un "Trasferimento": non contano come spesa.',
+			},
+			capture: {
+				title: 'Cattura automatica dalle notifiche della banca',
+				body: 'Attivala in Impostazioni › Cattura automatica e consenti l\'accesso alle notifiche. L\'app registra da sola ciò che riconosce. Quello di cui non è sicura compare in "Rivedi", in cima alla schermata iniziale: conferma, correggi il conto o l\'importo, oppure ignora. Quando correggi un caso, l\'app impara e la volta dopo fa lo stesso. Consiglio: in Impostazioni › Il tuo nome in banca, scrivi il tuo nome come appare nei Pix, così l\'app riconosce i soldi che passano tra i tuoi conti.',
+			},
+			cards: {
+				title: 'Carte: registrazione ed estratto',
+				body: 'In Impostazioni › Carte, tocca Aggiungi carta. Indica la banca, le ultime cifre della carta (è da queste che le notifiche trovano la carta), il limite, il giorno in cui l\'estratto chiude e quello in cui scade — li trovi entrambi sull\'estratto, nell\'app o sul sito della banca. Nella schermata della carta: l\'estratto attuale, i prossimi, "Ancora da pagare", le rate in corso e il giorno migliore per comprare.',
+			},
+			invoice: {
+				title: 'Estratto: pagare, allineare e ciò che la banca addebita',
+				body: '• Paga estratto: registra il pagamento e da quale conto è uscito.\n• Allinea: l\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca; la differenza diventa un onere.\n• Rata vecchia: un acquisto a rate fatto prima di registrare la carta.\n• Registra onere: interessi, IOF, canone annuo e commissioni addebitati dalla banca.\n• Probabile ripetuto: lo stesso importo due volte vicino alla stessa data viene segnalato. Cancella quello in più, oppure tocca "Non è ripetuto".',
+			},
+			bills: {
+				title: 'Conti da pagare e promemoria',
+				body: 'In Impostazioni › Conti da pagare, aggiungi affitto, internet, scuola, con l\'importo e il giorno di scadenza. L\'app ti avvisa prima e il giorno stesso, e mostra tutto in "Scadenze del mese" nella schermata iniziale. Hai pagato? Tocca "Già pagato", e l\'uscita va sul conto scelto.',
+			},
+			debts: {
+				title: 'Debiti',
+				body: 'In Patrimonio, aggiungi finanziamenti e prestiti con il debito residuo, la rata e quante ne mancano. L\'app mostra quando finisce, quanti interessi paghi e se "conviene estinguere prima" rispetto a quanto renderebbero i soldi (CDI).',
+			},
+			reserve: {
+				title: 'Riserva di emergenza e "Da dove iniziare"',
+				body: 'La riserva copre gli imprevisti: l\'app calcola quanti mesi del tuo costo essenziale copre. "Da dove iniziare", in Patrimonio, dice cosa fare con il prossimo real avanzato, in questo ordine: riserva minima, debiti cari, riserva piena, pensione.',
+			},
+			budget: {
+				title: 'Budget',
+				body: 'Nella schermata iniziale, nella scheda "Questo mese", imposta quanto vuoi spendere nel mese. Il budget vale per i mesi successivi finché non lo cambi. L\'app mostra quanto è già andato e quanto manca.',
+			},
+			reports: {
+				title: 'Report',
+				body: 'Salute finanziaria risponde a cinque domande: quanto risparmi, quanti mesi copre la riserva, quanta parte del reddito è già impegnata (conti, rate dei debiti e della carta), il peso della carta e altro. Libertà finanziaria: indica quanto vuoi ricevere al mese senza lavorare, e l\'app calcola il capitale e il tempo al ritmo di oggi.',
+			},
+			ofx: {
+				title: 'Estratto conto della banca (OFX)',
+				body: 'Scarica l\'estratto conto in OFX dall\'app o dal sito della banca e importalo in Impostazioni › Importa estratto conto (OFX). L\'app lo unisce a ciò che è già registrato, senza ripetere, conferma ciò che era in sospeso e propone le rate mancanti.',
+			},
+			backup: {
+				title: 'Account, backup e privacy',
+				body: 'Senza account, tutto resta solo sul dispositivo. Con un account (Impostazioni › Account), i dati sono salvati e tornano uguali su un dispositivo nuovo. Esporta Dati crea un file di backup; Importa Dati lo ripristina. I tuoi dati non vengono venduti né usati per la pubblicità: vedi l\'Informativa sulla Privacy.',
+			},
+		},
+		steps: {
+			home: {
+				add: {
+					title: 'Registra',
+					body: 'Tocca "+" per registrare una spesa, un\'entrata o un trasferimento tra i tuoi conti.',
+				},
+				review: {
+					title: 'Rivedi',
+					body: 'Ciò che l\'app ha letto nelle notifiche della banca senza esserne sicura aspetta qui. Conferma, correggi o ignora.',
+				},
+				bills: {
+					title: 'Scadenze del mese',
+					body: 'Affitto, internet, scuola: ciò che scade nel mese. Hai pagato? Tocca "Già pagato", e l\'uscita va sul conto scelto.',
+				},
+				month: {
+					title: 'Questo mese',
+					body: 'Imposta quanto vuoi spendere nel mese. Il budget vale per i mesi successivi finché non lo cambi, e l\'app mostra quanto è già andato e quanto manca.',
+				},
+				settings: {
+					title: 'Impostazioni',
+					body: 'Conti, carte, conti da pagare, cattura automatica e backup. In Impostazioni › Come si usa ritrovi questa guida.',
+				},
+				tabs: {
+					title: 'Le schede',
+					body: 'Movimenti conserva lo storico. Patrimonio mostra ciò che hai e ciò che devi. I report mostrano se sei sulla strada giusta.',
+				},
+			},
+			add: {
+				type: {
+					title: 'Spesa o entrata',
+					body: 'Scegli se i soldi sono usciti o entrati.',
+				},
+				transfer: {
+					title: 'Trasferimento tra i miei conti',
+					body: 'Soldi che passano da un tuo conto a un altro. Non contano come spesa.',
+				},
+				amount: {
+					title: 'Importo',
+					body: 'Scrivi l\'importo. Subito sotto, scegli la categoria.',
+				},
+				account: {
+					title: 'Conto o carta',
+					body: 'Da dove sono usciti i soldi, o dove sono entrati. Scegliendo una carta di credito, compare il campo delle rate.',
+				},
+				installments: {
+					title: 'Rate',
+					body: 'Acquisto a rate: indica il numero di rate, e ognuna finisce nell\'estratto giusto.',
+				},
+			},
+			card: {
+				face: {
+					title: 'L\'estratto attuale',
+					body: 'La carta mostra l\'estratto aperto, quando chiude e scade, e il limite che resta. Più in basso, ogni estratto dice quanto resta da pagare.',
+				},
+				pay: {
+					title: 'Paga estratto',
+					body: 'Registra il pagamento e da quale conto è uscito.',
+				},
+				adjust: {
+					title: 'Allinea',
+					body: 'L\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca; la differenza diventa un onere.',
+				},
+				installments: {
+					title: 'Rata vecchia',
+					body: 'Un acquisto a rate fatto prima di registrare la carta.',
+				},
+				charge: {
+					title: 'Registra onere',
+					body: 'Interessi, IOF, canone annuo e commissioni addebitati dalla banca.',
+				},
+				invoices: {
+					title: 'Estratti per mese',
+					body: 'Una scheda per mese, con l\'importo sulla scheda. Toccane una per vedere i movimenti di quell\'estratto e quanto resta da pagare.',
+				},
+				duplicates: {
+					title: 'Probabile ripetuto',
+					body: 'Lo stesso importo due volte vicino alla stessa data viene segnalato. Cancella quello in più, oppure tocca "Non è ripetuto".',
+				},
+			},
+			cardEdit: {
+				last4: {
+					title: 'Ultime cifre della carta',
+					body: 'Le ultime 4 cifre. È da queste che le notifiche della banca trovano la carta.',
+				},
+				days: {
+					title: 'Chiusura e scadenza',
+					body: 'Il giorno in cui l\'estratto chiude e quello in cui scade. Li trovi sull\'estratto, nell\'app o sul sito della banca.',
+				},
+			},
+			inbox: {
+				card: {
+					title: 'Da rivedere',
+					body: 'Una notifica della banca che l\'app non sapeva bene come registrare. Prima chiede.',
+				},
+				actions: {
+					title: 'Conferma, correggi o ignora',
+					body: 'Controlla l\'importo e il conto. Conferma, correggi ciò che è sbagliato, oppure ignora.',
+				},
+				learned: {
+					title: 'L\'app impara',
+					body: 'Quando correggi un caso, l\'app impara e la volta dopo fa lo stesso.',
+				},
+			},
+			wealth: {
+				networth: {
+					title: 'Patrimonio netto',
+					body: 'Ciò che hai meno ciò che devi: conti, riserva e investimenti, meno carte e debiti.',
+				},
+				priorities: {
+					title: 'Da dove iniziare',
+					body: 'Cosa fare con il prossimo real avanzato, in questo ordine: riserva minima, debiti cari, riserva piena, pensione.',
+				},
+				reserve: {
+					title: 'Riserva di emergenza',
+					body: 'Copre gli imprevisti. L\'app calcola quanti mesi del tuo costo essenziale copre.',
+				},
+				debts: {
+					title: 'Debiti',
+					body: 'Aggiungi finanziamenti e prestiti. L\'app mostra quando finiscono, quanti interessi paghi e se conviene estinguere prima.',
+				},
+			},
+			reports: {
+				freedom: {
+					title: 'Libertà finanziaria',
+					body: 'Indica quanto vuoi ricevere al mese senza lavorare, e l\'app calcola il capitale e il tempo al ritmo di oggi.',
+				},
+				health: {
+					title: 'Salute finanziaria',
+					body: 'Quanto risparmi, quanti mesi copre la riserva, quanta parte del reddito è già impegnata e il peso della carta.',
+				},
+			},
+			settings: {
+				accounts: {
+					title: 'Conti',
+					body: 'Aggiungi ogni conto bancario e indica quanto c\'è oggi. Saldo diverso dalla banca? Apri il conto e usa "Allinea con la banca".',
+				},
+				cards: {
+					title: 'Carte',
+					body: 'Ogni carta con le ultime cifre, il limite e i giorni in cui l\'estratto chiude e scade.',
+				},
+				bills: {
+					title: 'Conti da pagare',
+					body: 'Affitto, internet, scuola, con l\'importo e il giorno di scadenza. L\'app ti avvisa prima e il giorno stesso.',
+				},
+				capture: {
+					title: 'Cattura automatica',
+					body: 'Consenti l\'accesso alle notifiche, e l\'app registra da sola ciò che riconosce nelle notifiche della banca.',
+				},
+				ownName: {
+					title: 'Il tuo nome in banca',
+					body: 'Scrivi il tuo nome come appare nei Pix, così l\'app riconosce i soldi che passano tra i tuoi conti.',
+				},
+				ofx: {
+					title: 'Importa estratto conto (OFX)',
+					body: 'Importa l\'estratto conto scaricato dalla banca. L\'app lo unisce a ciò che è già registrato, senza ripetere.',
+				},
+				backup: {
+					title: 'Account e backup',
+					body: 'Con un account, i dati sono salvati e tornano uguali su un dispositivo nuovo. Esporta Dati crea un file di backup.',
+				},
+			},
+		},
 	},
 
 	info: {

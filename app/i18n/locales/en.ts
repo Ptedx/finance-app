@@ -765,16 +765,272 @@ const en = {
 		failedMsg: 'Could not create the diagnostics file. Please try again.',
 	},
 
+	// The first-launch welcome (SPD-129): four screens with "Skip".
 	welcome: {
-		title: 'Welcome to Spendr',
-		subtitle: 'Your spending comes in from your bank notifications, and you see where the month’s money goes.',
-		trackExpenses: 'Spending that logs itself',
-		trackExpensesDesc: 'Purchases, Pix and transfers from your bank notifications',
-		manageBudget: 'Accounts, cards and bills',
-		manageBudgetDesc: 'Each account’s balance and what is left after card bills',
-		insightfulReports: 'Insightful Reports',
-		insightfulReportsDesc: 'Where your money goes, month by month',
-		getStarted: 'Get Started',
+		skip: 'Skip',
+		skipHint: 'Skips the welcome screens',
+		next: 'Next',
+		start: 'Get started',
+		page: 'Screen {{current}} of {{total}}',
+		slides: {
+			money: {
+				title: 'Your money, the way your bank shows it',
+				body: 'Accounts, cards and bills in one place. Balances and card bills in the app match the ones at your bank.',
+			},
+			capture: {
+				title: 'The app logs it for you',
+				body: 'On Android, Spendr reads your bank notifications and logs purchases, Pix and transfers by itself. When it is not sure, it asks before logging anything.',
+			},
+			cards: {
+				title: 'Cards with the real bill',
+				body: 'Tell the app the day your bill closes and the day it is due. It shows the current bill, the next ones, and reminds you before the due date.',
+			},
+			plan: {
+				title: 'See where it goes and what to do',
+				body: 'Net worth shows what you own and what you owe. Reports show whether you are on track. To see all this again: Settings › How to use.',
+			},
+		},
+	},
+
+	// The on-screen guide (SPD-129): the bubble that points at each button, the one-time notice
+	// for people who updated, Settings › How to use and the "?" on screens.
+	tutorial: {
+		next: 'Next',
+		skip: 'Skip',
+		skipHint: 'Closes the guide for this screen. You can see it again in Settings › How to use.',
+		done: 'Got it',
+		counter: '{{current}} of {{total}}',
+		counterLabel: 'Step {{current}} of {{total}}',
+		help: 'How to use this screen',
+		helpHint: 'Shows what each button on this screen does',
+		helpTopicHint: 'Opens the explanation in Settings › How to use',
+		notice: {
+			title: 'New: How to use Spendr',
+			body: 'A short guide to each feature.',
+			see: 'Show me',
+			seeHint: 'Starts the guide for the home screen',
+			later: 'Not now',
+		},
+		howTo: {
+			settingsItem: 'How to use',
+			title: 'How to use',
+			back: 'Back',
+			showOnScreen: 'Show me on screen',
+			showOnScreenHint: 'Opens the screen and points at each button',
+			reviewWelcome: 'See the welcome screens again',
+		},
+		topics: {
+			accounts: {
+				title: 'First steps: accounts and balance',
+				body: 'Add each bank account in Settings › Accounts and enter how much is in it today. If the balance in the app drifts from the bank, open the account and use "Match the bank": say how much you have spent this month and how much is left, and the app corrects it without making up any spending.',
+			},
+			add: {
+				title: 'Logging spending, income and transfers',
+				body: 'Tap "+". Pick Expense or Income, the amount, the category and the account or card. Paying in installments: enter how many, and each one lands on the right card bill. Money moving from one of your accounts to another is a "Transfer": it does not count as spending.',
+			},
+			capture: {
+				title: 'Automatic capture from bank notifications',
+				body: 'Turn it on in Settings › Automatic capture and allow notification access. The app logs what it recognizes by itself. Anything it is unsure about shows up under "Review" at the top of the home screen: confirm it, fix the account or the amount, or dismiss it. When you correct a case, the app learns and does the same next time. Tip: in Settings › Your name at the bank, type your name as it appears on Pix transfers, so the app recognizes money moving between your own accounts.',
+			},
+			cards: {
+				title: 'Cards: setup and bills',
+				body: 'In Settings › Cards, tap Add card. Enter the bank, the card ending (bank notifications find the card by it), the limit, the day the bill closes and the day it is due — both are on the bill, in the bank app or on its website. On the card screen: the current bill, the next ones, "Left to pay", installments in progress and the best day to buy.',
+			},
+			invoice: {
+				title: 'Card bill: paying, matching and bank charges',
+				body: '• Pay bill: records the payment and which account it came from.\n• Match bank: the bill in the app differs from the bank? Enter the bank amount; the difference becomes a charge.\n• Old installment: an installment purchase made before you added the card.\n• Add a card charge: interest, IOF tax, annual fee and other fees the bank charged.\n• Probable repeat: the same amount twice around the same date gets flagged. Delete the extra one, or tap "Not a repeat".',
+			},
+			bills: {
+				title: 'Bills and reminders',
+				body: 'In Settings › Bills, add rent, internet, school, with the amount and the due day. The app reminds you before and on the day, and lists everything under "Bills this month" on the home screen. Paid it? Tap "I paid it", and the payment comes out of the account you chose.',
+			},
+			debts: {
+				title: 'Debts',
+				body: 'In Net worth, add loans and financing with the balance owed, the installment and how many are left. The app shows when it ends, how much interest you pay and whether it is "worth paying off early" compared with what the money would earn (CDI).',
+			},
+			reserve: {
+				title: 'Emergency reserve and "Where to start"',
+				body: 'The reserve covers the unexpected: the app works out how many months of your essential costs it covers. "Where to start", in Net worth, says what to do with the next spare real, in this order: minimum reserve, expensive debts, full reserve, retirement.',
+			},
+			budget: {
+				title: 'Budget',
+				body: 'On the home screen, in the "This month" card, set how much you want to spend in the month. The budget carries over to the following months until you change it. The app shows how much is gone and how much is left.',
+			},
+			reports: {
+				title: 'Reports',
+				body: 'Financial health answers five questions: how much you save, how many months the reserve covers, how much of your income is already committed (bills, debt and card installments), how heavy the card is, and more. Financial freedom: say how much you want to receive each month without working, and the app works out the capital and how long it takes at today\'s pace.',
+			},
+			ofx: {
+				title: 'Bank statement (OFX)',
+				body: 'Download the statement as OFX from the bank app or website and import it in Settings › Import bank statement (OFX). The app merges it with what is already logged, without duplicates, confirms what was pending and offers the remaining installments.',
+			},
+			backup: {
+				title: 'Account, backup and privacy',
+				body: 'Without an account, everything stays on this device only. With an account (Settings › Account), your data is saved and comes back the same on a new device. Export Data creates a backup file; Import Data restores it. Your data is not sold or used for ads: see the Privacy Policy.',
+			},
+		},
+		steps: {
+			home: {
+				add: {
+					title: 'Log an entry',
+					body: 'Tap "+" to log spending, income or a transfer between your accounts.',
+				},
+				review: {
+					title: 'Review',
+					body: 'What the app read in bank notifications and was not sure about waits here. Confirm, fix or dismiss it.',
+				},
+				bills: {
+					title: 'Bills this month',
+					body: 'Rent, internet, school: what is due this month. Paid it? Tap "I paid it", and the payment comes out of the account you chose.',
+				},
+				month: {
+					title: 'This month',
+					body: 'Set how much you want to spend in the month. The budget carries over to the following months until you change it, and the app shows how much is gone and how much is left.',
+				},
+				settings: {
+					title: 'Settings',
+					body: 'Accounts, cards, bills, automatic capture and backup. Settings › How to use brings this guide back.',
+				},
+				tabs: {
+					title: 'The tabs',
+					body: 'Transactions keeps the history. Net worth shows what you own and what you owe. Reports show whether you are on track.',
+				},
+			},
+			add: {
+				type: {
+					title: 'Expense or income',
+					body: 'Choose whether the money went out or came in.',
+				},
+				transfer: {
+					title: 'Transfer between my accounts',
+					body: 'Money moving from one of your accounts to another. It does not count as spending.',
+				},
+				amount: {
+					title: 'Amount',
+					body: 'Type the amount. Just below, pick the category.',
+				},
+				account: {
+					title: 'Account or card',
+					body: 'Where the money came from, or where it went. Pick a credit card and the installments field shows up.',
+				},
+				installments: {
+					title: 'Installments',
+					body: 'Paying in installments: enter how many, and each one lands on the right card bill.',
+				},
+			},
+			card: {
+				face: {
+					title: 'The current bill',
+					body: 'The card shows the open bill, when it closes and is due, and the limit left. Further down, each bill says how much is left to pay.',
+				},
+				pay: {
+					title: 'Pay bill',
+					body: 'Records the payment and which account it came from.',
+				},
+				adjust: {
+					title: 'Match bank',
+					body: 'The bill in the app differs from the bank? Enter the bank amount; the difference becomes a charge.',
+				},
+				installments: {
+					title: 'Old installment',
+					body: 'An installment purchase made before you added the card.',
+				},
+				charge: {
+					title: 'Add a card charge',
+					body: 'Interest, IOF tax, annual fee and other fees the bank charged.',
+				},
+				invoices: {
+					title: 'Bills by month',
+					body: 'One tab per month, with the amount on the tab. Tap one to see that bill\'s entries and how much is left to pay.',
+				},
+				duplicates: {
+					title: 'Probable repeat',
+					body: 'The same amount twice around the same date gets flagged. Delete the extra one, or tap "Not a repeat".',
+				},
+			},
+			cardEdit: {
+				last4: {
+					title: 'Card ending',
+					body: 'The last 4 digits. Bank notifications find the card by them.',
+				},
+				days: {
+					title: 'Closing and due day',
+					body: 'The day the bill closes and the day it is due. Both are on the bill, in the bank app or on its website.',
+				},
+			},
+			inbox: {
+				card: {
+					title: 'To review',
+					body: 'A bank notification the app was not sure how to log. It asks first.',
+				},
+				actions: {
+					title: 'Confirm, fix or dismiss',
+					body: 'Check the amount and the account. Confirm it, fix what is wrong, or dismiss it.',
+				},
+				learned: {
+					title: 'The app learns',
+					body: 'When you correct a case, the app learns and does the same next time.',
+				},
+			},
+			wealth: {
+				networth: {
+					title: 'Net worth',
+					body: 'What you own minus what you owe: accounts, reserve and investments, minus cards and debts.',
+				},
+				priorities: {
+					title: 'Where to start',
+					body: 'What to do with the next spare real, in this order: minimum reserve, expensive debts, full reserve, retirement.',
+				},
+				reserve: {
+					title: 'Emergency reserve',
+					body: 'It covers the unexpected. The app works out how many months of your essential costs it covers.',
+				},
+				debts: {
+					title: 'Debts',
+					body: 'Add loans and financing. The app shows when they end, how much interest you pay and whether paying off early is worth it.',
+				},
+			},
+			reports: {
+				freedom: {
+					title: 'Financial freedom',
+					body: 'Say how much you want to receive each month without working, and the app works out the capital and how long it takes at today\'s pace.',
+				},
+				health: {
+					title: 'Financial health',
+					body: 'How much you save, how many months the reserve covers, how much of your income is already committed and how heavy the card is.',
+				},
+			},
+			settings: {
+				accounts: {
+					title: 'Accounts',
+					body: 'Add each bank account and enter how much is in it today. Balance differs from the bank? Open the account and use "Match the bank".',
+				},
+				cards: {
+					title: 'Cards',
+					body: 'Each card with its ending, its limit and the days the bill closes and is due.',
+				},
+				bills: {
+					title: 'Bills',
+					body: 'Rent, internet, school, with the amount and the due day. The app reminds you before and on the day.',
+				},
+				capture: {
+					title: 'Automatic capture',
+					body: 'Allow notification access, and the app logs what it recognizes in bank notifications by itself.',
+				},
+				ownName: {
+					title: 'Your name at the bank',
+					body: 'Type your name as it appears on Pix transfers, so the app recognizes money moving between your own accounts.',
+				},
+				ofx: {
+					title: 'Import statement (OFX)',
+					body: 'Import the statement downloaded from your bank. The app merges it with what is already logged, without duplicates.',
+				},
+				backup: {
+					title: 'Account and backup',
+					body: 'With an account, your data is saved and comes back the same on a new device. Export Data creates a backup file.',
+				},
+			},
+		},
 	},
 
 	info: {

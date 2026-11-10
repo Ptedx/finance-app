@@ -22,6 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import OwnNameSheet from '../components/OwnNameSheet';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useBills } from '../contexts/BillsContext';
 import { useCaptures } from '../contexts/CapturesContext';
@@ -249,6 +250,9 @@ const SettingsScreen = () => {
 	// diferentes. Só aparece com a captura (a linha mora na seção dela).
 	const [ownBankName, setOwnBankNameState] = useState<string | null>(null);
 	const [showOwnNameSheet, setShowOwnNameSheet] = useState(false);
+	// O guia dos Ajustes (SPD-129): abre sem seletor nem folha por cima.
+	useScreenTour('settings', { blocked: showCurrencySelector || showLanguageSelector || showOwnNameSheet });
+	const tourScroll = useTourScroll('settings');
 
 	useEffect(() => {
 		getOwnBankName().then(setOwnBankNameState);
@@ -476,12 +480,15 @@ const SettingsScreen = () => {
 		setBiometricEnabled(next);
 	};
 
+	// `tourId`: o passo do guia dos Ajustes que aponta este item (SPD-129).
 	const renderSettingsItem = (
 		icon: string,
 		title: string,
 		onPress: () => void,
-		rightElement?: React.ReactNode
+		rightElement?: React.ReactNode,
+		tourId?: string
 	) => (
+		<TourTarget id={tourId}>
 		<TouchableOpacity style={styles.settingItem} onPress={onPress}>
 			<View style={styles.settingLeft}>
 				{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
@@ -494,6 +501,7 @@ const SettingsScreen = () => {
 				<Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" />
 			)}
 		</TouchableOpacity>
+		</TourTarget>
 	);
 
 	return (
@@ -522,7 +530,7 @@ const SettingsScreen = () => {
 				</Text>
 			</View>
 
-			<ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} style={styles.content} showsVerticalScrollIndicator={false}>
 				{/* Account. Escondida quando a build não tem API configurada: oferecer uma
 				    tela que falharia em toda tentativa é pior do que não oferecer nada. */}
 				{isAuthAvailable && (
@@ -534,7 +542,8 @@ const SettingsScreen = () => {
 							() => router.push('/account'),
 							<Text style={styles.accountStatus}>
 								{account ? t(syncShort.key, { count: syncShort.count }) : ''}
-							</Text>
+							</Text>,
+							'settings.account'
 						)}
 					</View>
 				)}
@@ -559,9 +568,9 @@ const SettingsScreen = () => {
 							/>
 						)
 					)}
-					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts'))}
-					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'))}
-					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills'))}
+					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts'), undefined, 'settings.accounts')}
+					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'), undefined, 'settings.cards')}
+					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills'), undefined, 'settings.bills')}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),
@@ -613,7 +622,8 @@ const SettingsScreen = () => {
 						'download-outline',
 						t('settings.exportData'),
 						handleExportData,
-						isExporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+						isExporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined,
+						'settings.backup'
 					)}
 					{renderSettingsItem(
 						'cloud-upload-outline',
@@ -625,7 +635,8 @@ const SettingsScreen = () => {
 						'document-text-outline',
 						t('captures.import.item'),
 						handleImportStatement,
-						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined,
+						'settings.ofx'
 					)}
 					{renderSettingsItem(
 						'trash-outline',
@@ -646,7 +657,8 @@ const SettingsScreen = () => {
 							openCaptureSettings,
 							<Text style={captureEnabled ? styles.accountStatus : styles.settingUnavailableText}>
 								{captureEnabled ? t('captures.statusOn') : t('captures.statusOff')}
-							</Text>
+							</Text>,
+							'settings.capture'
 						)}
 						{renderSettingsItem(
 							'checkmark-done-outline',
@@ -665,7 +677,8 @@ const SettingsScreen = () => {
 								numberOfLines={1}
 							>
 								{ownBankName ?? t('ownName.notSet')}
-							</Text>
+							</Text>,
+							'settings.ownName'
 						)}
 					</View>
 				)}
@@ -673,6 +686,8 @@ const SettingsScreen = () => {
 				{/* About */}
 				<View style={styles.section}>
 					<Text style={styles.sectionTitle}>{t('settings.about')}</Text>
+					{/* Ajustes › Como usar (SPD-129): os tópicos para ler e o guia de cada tela. */}
+					{renderSettingsItem('help-circle-outline', t('tutorial.howTo.settingsItem'), () => router.push('/howto'))}
 					{renderSettingsItem('information-circle-outline', t('settings.aboutSpendr'), handleAbout)}
 					{renderSettingsItem(
 						'bug-outline',

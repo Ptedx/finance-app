@@ -11,6 +11,8 @@ import RenameCardSheet from '../components/cards/RenameCardSheet';
 import Sheet from '../components/cards/Sheet';
 import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
 import TransactionItem from '../components/TransactionItem';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { getAccountTransfers } from '../database/database';
@@ -97,6 +99,9 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	const [renaming, setRenaming] = useState<{ last4: string; name: string | null } | null>(null);
 	// O "Como funciona?" dos encargos: fechado, para não empurrar as faturas para baixo.
 	const [howOpen, setHowOpen] = useState(false);
+	// O guia da tela do cartão (SPD-129): abre com o cartão carregado e sem folha aberta.
+	useScreenTour('card', { ready: Boolean(card && summary), blocked: sheet !== null || renaming !== null });
+	const tourScroll = useTourScroll('card');
 
 	// Abre na fatura atual, e volta para ela quando a escolhida some da lista (virou o
 	// ciclo, ou uma fatura futura zerou) — senão o painel sumiria.
@@ -368,6 +373,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 					{card.name}
 				</Text>
+				<HelpButton screen="card" />
 				<Pressable
 					onPress={() => router.push({ pathname: '/cards/edit/[id]', params: { id: card.id } })}
 					accessibilityRole="button"
@@ -378,14 +384,16 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				</Pressable>
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-				<CardFace card={card} summary={summary} />
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+				<TourTarget id="card.face">
+					<CardFace card={card} summary={summary} />
+				</TourTarget>
 
 				<View style={styles.actions}>
-					<ActionTile icon="cash-outline" label={t('cards.actions.pay')} onPress={() => setSheet('pay')} />
-					<ActionTile icon="scale-outline" label={t('cards.actions.adjust')} onPress={() => setSheet('adjust')} />
-					<ActionTile icon="layers-outline" label={t('cards.actions.installments')} onPress={() => setSheet('installments')} />
-					<ActionTile icon="receipt-outline" label={t('cards.charges.action')} onPress={() => setSheet('charge')} />
+					<ActionTile tourId="card.pay" icon="cash-outline" label={t('cards.actions.pay')} onPress={() => setSheet('pay')} />
+					<ActionTile tourId="card.adjust" icon="scale-outline" label={t('cards.actions.adjust')} onPress={() => setSheet('adjust')} />
+					<ActionTile tourId="card.installments" icon="layers-outline" label={t('cards.actions.installments')} onPress={() => setSheet('installments')} />
+					<ActionTile tourId="card.charge" icon="receipt-outline" label={t('cards.charges.action')} onPress={() => setSheet('charge')} />
 				</View>
 
 				{summary && !summary.configured ? (
@@ -409,6 +417,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('cards.invoice.title')}
 						</Text>
+						<TourTarget id="card.invoices">
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>
 							{summary.invoices.map((invoice) => {
 								const isSelected = invoice.cycle.key === selectedKey;
@@ -432,6 +441,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								);
 							})}
 						</ScrollView>
+						</TourTarget>
 
 						{selected ? (
 							<View style={styles.panel}>
@@ -443,6 +453,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								</Text>
 
 								{selectedDuplicates.count > 0 ? (
+									<TourTarget id="card.duplicates">
 									<DuplicatesNotice
 										count={selectedDuplicates.count}
 										extraCents={selectedDuplicates.extraCents}
@@ -450,6 +461,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 										onlyMarked={showOnlyDuplicates}
 										onPress={() => setOnlyDuplicates((only) => !only)}
 									/>
+									</TourTarget>
 								) : null}
 
 								{/* Pagamento não tem final: com o filtro por cartão, fica de fora, como na lista. */}
@@ -814,18 +826,23 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 // Peças
 // ---------------------------------------------------------------------------
 
-const ActionTile: React.FC<{ icon: React.ComponentProps<typeof Ionicons>['name']; label: string; onPress: () => void }> = ({
+/** `tourId`: o passo do guia da tela que aponta este botão (SPD-129). */
+const ActionTile: React.FC<{ icon: React.ComponentProps<typeof Ionicons>['name']; label: string; onPress: () => void; tourId?: string }> = ({
 	icon,
 	label,
 	onPress,
-}) => (
-	<Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
-		<View style={styles.actionIcon}>
-			<Ionicons name={icon} size={22} color={ACCENT} />
-		</View>
-		<Text style={styles.actionLabel}>{label}</Text>
-	</Pressable>
-);
+	tourId,
+}) => {
+	const target = useTourTarget(tourId);
+	return (
+		<Pressable {...target} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
+			<View style={styles.actionIcon}>
+				<Ionicons name={icon} size={22} color={ACCENT} />
+			</View>
+			<Text style={styles.actionLabel}>{label}</Text>
+		</Pressable>
+	);
+};
 
 const Stat: React.FC<{ label: string; value: string; tone?: 'default' | 'danger' }> = ({ label, value, tone = 'default' }) => (
 	<View style={styles.stat} accessible accessibilityLabel={`${label}, ${value}`}>
