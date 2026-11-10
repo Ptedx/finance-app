@@ -1,14 +1,17 @@
 /**
- * As recorrências antigas não lembram mais nada (SPD-122, DEC-37).
+ * As recorrências antigas não lembram mais nada (SPD-122, DEC-37), e na abertura do app sai o
+ * que versões anteriores deixaram (SPD-138).
  *
- * A tela de recorrências saiu no SPD-079 e as regras pararam de lançar `[Auto]` no SPD-113,
- * mas o contexto seguia agendando "X vence amanhã" para cada regra ativa — ao abrir o app, ao
- * criar e ao editar. Agora ele não agenda, e na abertura cancela o que versões anteriores
- * deixaram agendado (`transaction_<id>`). Os lembretes das Contas do mês (`bill:`) e das
- * faturas (`card:`) ficam como estão.
+ * A tela de recorrências saiu no SPD-079 e as regras pararam de lançar `[Auto]` no SPD-113.
+ * O contexto das recorrências (`RecurringTransactionsProvider`) só sobrava para reler uma
+ * lista que nenhuma tela mostrava e para cancelar, ao abrir, os "X vence amanhã" antigos
+ * (`transaction_<id>`). Saiu no SPD-138: o cancelamento agora roda no `_layout` da raiz, uma
+ * vez por abertura, e também apaga o canal Android `recurring-transactions`, que nenhum aviso
+ * usa. Os lembretes das Contas do mês (`bill:`) e das faturas (`card:`) ficam como estão.
  *
- * O banco é um dublê (só a lista das regras); o `notificationUtils` é o de verdade, sobre um
- * `expo-notifications` de mentira que guarda os agendados.
+ * Aqui o `_layout` é o de verdade, com os providers e a pilha trocados por dublês que só
+ * repassam os filhos. O banco é um dublê; o `notificationUtils` é o de verdade, sobre um
+ * `expo-notifications` de mentira que guarda os agendados e os canais.
  */
 
 const mockStorage = new Map<string, string>();
@@ -16,7 +19,7 @@ const mockScheduled = new Map<
 	string,
 	{ content: Record<string, unknown>; trigger: Record<string, unknown> }
 >();
-const mockRules: Array<Record<string, unknown>> = [];
+const mockChannels = new Set<string>();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
 	getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
@@ -34,7 +37,13 @@ jest.mock('expo-notifications', () => ({
 	AndroidImportance: { MAX: 5, HIGH: 4, DEFAULT: 3 },
 	SchedulableTriggerInputTypes: { DATE: 'date' },
 	setNotificationHandler: jest.fn(),
-	setNotificationChannelAsync: jest.fn(async () => null),
+	setNotificationChannelAsync: jest.fn(async (id: string) => {
+		mockChannels.add(id);
+		return null;
+	}),
+	deleteNotificationChannelAsync: jest.fn(async (id: string) => {
+		mockChannels.delete(id);
+	}),
 	getPermissionsAsync: jest.fn(async () => ({ status: 'granted' })),
 	requestPermissionsAsync: jest.fn(async () => ({ status: 'granted' })),
 	getExpoPushTokenAsync: jest.fn(async () => ({ data: null })),
@@ -59,44 +68,71 @@ jest.mock('expo-notifications', () => ({
 	),
 }));
 
+// A lista das regras: ninguém deve mais lê-la na abertura.
 jest.mock('../../database/database', () => ({
 	initDatabase: jest.fn(async () => undefined),
-	getRecurringTransactions: jest.fn(async () => mockRules.map((rule) => ({ ...rule }))),
+	getRecurringTransactions: jest.fn(async () => []),
 }));
 
+jest.mock('../../i18n', () => ({}));
+jest.mock('react-native-get-random-values', () => ({}));
+jest.mock('expo-font', () => ({ useFonts: () => [true] }));
+jest.mock('expo-router', () => ({
+	useRouter: () => ({ replace: jest.fn() }),
+	SplashScreen: { preventAutoHideAsync: jest.fn(async () => true), hideAsync: jest.fn(async () => true) },
+}));
+jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: () => undefined }));
+jest.mock('../../diagnostics/lifecycle', () => ({ startDiagnostics: () => () => undefined }));
+jest.mock('../../utils/onboardingUtils', () => ({ isOnboardingCompleted: jest.fn(async () => true) }));
+jest.mock('../../utils/biometricUtils', () => ({
+	__esModule: true,
+	default: {
+		isBiometricAvailable: jest.fn(async () => false),
+		isBiometricEnabled: jest.fn(async () => false),
+	},
+}));
+jest.mock('../../components/RootStack', () => () => null);
+jest.mock('../../components/BiometricAuthScreen', () => () => null);
+jest.mock('../../components/tour/TourProvider', () => ({
+	__esModule: true,
+	default: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+// Os providers da raiz só repassam os filhos: o que importa é o que o `_layout` faz ao abrir.
+jest.mock('../../contexts/AuthContext', () => ({ AuthProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/SyncContext', () => ({ SyncProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/LanguageContext', () => ({
+	LanguageProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('../../contexts/CurrencyContext', () => ({
+	CurrencyProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('../../contexts/PeriodContext', () => ({ PeriodProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/BudgetContext', () => ({ BudgetProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/TransactionsContext', () => ({
+	TransactionsProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('../../contexts/AccountsContext', () => ({
+	AccountsProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('../../contexts/CapturesContext', () => ({
+	CapturesProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('../../contexts/DebtsContext', () => ({ DebtsProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/BillsContext', () => ({ BillsProvider: ({ children }: { children: React.ReactNode }) => children }));
 
 import * as Notifications from 'expo-notifications';
+import type React from 'react';
+import { Platform } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import type { Bill, RecurringTransaction } from '../../database/schema';
+import RootLayout from '../../_layout';
+import { getRecurringTransactions } from '../../database/database';
+import type { Bill } from '../../database/schema';
 import { buildCardSummary, type CardSettings } from '../../utils/cardMath';
-import { getISODate } from '../../utils/dateUtils';
 import { scheduleBillReminders, scheduleCardReminders } from '../../utils/notificationUtils';
-import { RecurringTransactionsProvider, useRecurringTransactions } from '../RecurringTransactionsContext';
 
 const scheduleMock = Notifications.scheduleNotificationAsync as jest.Mock;
-
-const inDays = (days: number): Date => {
-	const date = new Date();
-	date.setHours(0, 0, 0, 0);
-	date.setDate(date.getDate() + days);
-	return date;
-};
-
-/** Aluguel de R$ 1.500, ativo, vencendo daqui a 10 dias: antes, virava lembrete na véspera. */
-const rule = (overrides: Partial<RecurringTransaction> = {}): RecurringTransaction => ({
-	id: 'aluguel',
-	amountCents: 150_000,
-	isIncome: false,
-	note: 'Aluguel',
-	category: 'housing',
-	recurrenceType: 'monthly',
-	day: 10,
-	active: true,
-	nextDue: getISODate(inDays(10)),
-	updatedAt: '2026-10-01T00:00:00.000Z',
-	...overrides,
-});
 
 const bill = (overrides: Partial<Bill> = {}): Bill => ({
 	id: 'internet',
@@ -124,21 +160,14 @@ const CARD: CardSettings = {
 };
 
 let renderer: ReactTestRenderer | null = null;
-let context: ReturnType<typeof useRecurringTransactions> | null = null;
 
-const Probe = () => {
-	context = useRecurringTransactions();
-	return null;
-};
-
-/** Abre o app: monta o provider e espera a carga (e o cancelamento) terminar. */
+/** Abre o app: monta o `_layout` da raiz e espera o arranque (e o cancelamento) terminar. */
 const open = async () => {
 	await act(async () => {
-		renderer = create(
-			<RecurringTransactionsProvider>
-				<Probe />
-			</RecurringTransactionsProvider>
-		);
+		renderer = create(<RootLayout />);
+	});
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -153,9 +182,7 @@ const recurringScheduleCalls = (): unknown[] =>
 beforeEach(() => {
 	mockStorage.clear();
 	mockScheduled.clear();
-	mockRules.length = 0;
-	mockRules.push({ ...rule() });
-	context = null;
+	mockChannels.clear();
 	jest.clearAllMocks();
 });
 
@@ -164,19 +191,13 @@ afterEach(() => {
 	renderer = null;
 });
 
-describe('regra ativa não agenda lembrete', () => {
-	it('ao abrir o app, com o aluguel ativo vencendo em 10 dias: nada é agendado', async () => {
+describe('a abertura não passa mais pelas regras', () => {
+	it('abrir o app não lê a lista das recorrências nem agenda lembrete delas', async () => {
 		await open();
 
-		expect(context?.transactions).toHaveLength(1);
+		expect(getRecurringTransactions).not.toHaveBeenCalled();
 		expect(recurringScheduleCalls()).toHaveLength(0);
 		expect(ids('transaction_')).toEqual([]);
-	});
-
-	it('o contexto não oferece mais criar, editar nem apagar uma regra (SPD-128)', async () => {
-		await open();
-
-		expect(Object.keys(context ?? {}).sort()).toEqual(['refreshTransactions', 'transactions']);
 	});
 });
 
@@ -203,6 +224,40 @@ describe('na abertura, os lembretes já agendados das regras são cancelados', (
 		await open();
 
 		expect(ids('transaction_')).toEqual([]);
+	});
+
+	it('roda uma vez por abertura', async () => {
+		await open();
+
+		expect(Notifications.getAllScheduledNotificationsAsync).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('na abertura, sai o canal Android das recorrências', () => {
+	it('no Android, o canal recurring-transactions é apagado; o bills fica', async () => {
+		mockChannels.add('default');
+		mockChannels.add('bills');
+		mockChannels.add('recurring-transactions');
+		const os = jest.replaceProperty(Platform, 'OS', 'android');
+		try {
+			await open();
+		} finally {
+			os.restore();
+		}
+
+		expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('recurring-transactions');
+		expect(Array.from(mockChannels).sort()).toEqual(['bills', 'default']);
+	});
+
+	it('no iOS (sem canais) não tenta apagar nada', async () => {
+		const os = jest.replaceProperty(Platform, 'OS', 'ios');
+		try {
+			await open();
+		} finally {
+			os.restore();
+		}
+
+		expect(Notifications.deleteNotificationChannelAsync).not.toHaveBeenCalled();
 	});
 });
 

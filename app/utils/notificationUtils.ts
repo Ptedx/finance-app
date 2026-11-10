@@ -83,7 +83,8 @@ export const registerForPushNotificationsAsync = async (): Promise<string | null
 			});
 
 			// O canal `recurring-transactions` saiu (SPD-128): nenhum aviso usa mais desde que as
-			// recorrências pararam de lembrar (SPD-122). Quem já o tem segue com ele, vazio.
+			// recorrências pararam de lembrar (SPD-122). Quem já o tinha perde-o na abertura
+			// (`cancelRecurringReminders`, SPD-138).
 			await ensureBillsChannel(Notifications);
 		}
 
@@ -152,18 +153,37 @@ export const setNotificationsEnabled = async (enabled: boolean): Promise<void> =
  */
 const RECURRING_IDENTIFIER_PREFIX = 'transaction_';
 
+/** Canal Android que versões anteriores criavam para os lembretes das recorrências. */
+const RECURRING_CHANNEL_ID = 'recurring-transactions';
+
+/**
+ * Apaga o canal Android das recorrências antigas (SPD-138): nenhum aviso usa desde o SPD-122,
+ * e ele seguia em Configurações › Notificações do aparelho. Apagar um canal que não existe
+ * não faz nada; no iOS não há canal. Uma falha aqui não impede o resto da limpeza.
+ */
+const deleteRecurringChannel = async (Notifications: NotificationsModule): Promise<void> => {
+	if (Platform.OS !== 'android') return;
+	try {
+		await Notifications.deleteNotificationChannelAsync(RECURRING_CHANNEL_ID);
+	} catch (error) {
+		console.warn('Error deleting the recurring reminders channel:', error);
+	}
+};
+
 /**
  * Cancela os lembretes das recorrências antigas que versões anteriores deixaram agendados
- * (`transaction_<id>`) e esquece as marcas de "já agendado" deles. Os das Contas do mês
- * (`bill:`) e das faturas (`card:`) não são tocados.
+ * (`transaction_<id>`), esquece as marcas de "já agendado" deles e, no Android, apaga o canal
+ * que eles usavam. Os das Contas do mês (`bill:`) e das faturas (`card:`) não são tocados.
  *
- * Chamada na abertura do app (`RecurringTransactionsProvider`); sem nada agendado, só lê a
- * agenda. Cancela mesmo com as notificações desligadas. No Expo Go não faz nada. Devolve
- * quantos cancelou.
+ * Chamada uma vez por abertura do app, pelo `_layout` da raiz (SPD-138); sem nada agendado,
+ * só lê a agenda. Cancela mesmo com as notificações desligadas. No Expo Go não faz nada.
+ * Devolve quantos cancelou.
  */
 export const cancelRecurringReminders = async (): Promise<number> => {
 	const Notifications = getNotifications();
 	if (!Notifications) return 0;
+
+	await deleteRecurringChannel(Notifications);
 
 	try {
 		let cancelled = 0;

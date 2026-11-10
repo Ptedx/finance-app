@@ -8,19 +8,15 @@
  *
  *  - Internet: conta a pagar de R$ 80 por mês.
  *  - Financiamento: parcela de R$ 1.500 (Price, sem juros, 12 parcelas).
- *  - Regras antigas ativas: R$ 120 por mês e R$ 1.500 por mês (a do mesmo valor da parcela).
+ *  - Regras antigas (R$ 120 e R$ 1.500 por mês, a segunda do valor da parcela): o hook não
+ *    as lê, e desde o SPD-138 nem há mais o contexto que as entregava às telas.
  *
  * Antes: 120 + 1.500 (regras) + 80 (conta) + 0 (a parcela "já estava" na regra) = R$ 1.700.
  * Agora: 80 + 1.500 = R$ 1.580 — as regras não mudam nada.
  */
 
-const mockRules: Array<Record<string, unknown>> = [];
-
 jest.mock('../../contexts/PeriodContext', () => ({
 	usePeriod: () => ({ selectedMonth: 11, selectedYear: 2026 }),
-}));
-jest.mock('../../contexts/RecurringTransactionsContext', () => ({
-	useRecurringTransactions: () => ({ transactions: mockRules, refreshTransactions: jest.fn() }),
 }));
 jest.mock('../../contexts/AccountsContext', () => ({
 	useAccounts: () => ({ activeAccounts: [], overview: { cashCents: 0, savedCents: 0 }, creditCards: [], cardSummaries: new Map() }),
@@ -98,20 +94,7 @@ const render = async () => {
 	});
 };
 
-const rule = (id: string, amountCents: number) => ({
-	id,
-	amountCents,
-	isIncome: false,
-	note: id,
-	category: 'housing',
-	recurrenceType: 'monthly',
-	day: 10,
-	active: true,
-	updatedAt: '2026-10-01T00:00:00.000Z',
-});
-
 beforeEach(() => {
-	mockRules.length = 0;
 	result = null;
 });
 
@@ -120,14 +103,13 @@ afterEach(() => {
 	renderer = null;
 });
 
-it('sem regra nenhuma: R$ 80 da internet + R$ 1.500 da parcela = R$ 1.580', async () => {
+it('custo fixo: R$ 80 da internet + R$ 1.500 da parcela = R$ 1.580', async () => {
 	await render();
 
 	expect(result?.metrics.monthlyFixedCents).toBe(1_580_00);
 });
 
-it('com as regras de R$ 120 e de R$ 1.500 ativas, o custo fixo continua R$ 1.580', async () => {
-	mockRules.push(rule('academia', 120_00), rule('carro-antigo', 1_500_00));
+it('R$ 1.580 de custo fixo contra R$ 8.000 de receita e R$ 15.800 de caixa', async () => {
 	await render();
 
 	expect(result?.metrics.monthlyFixedCents).toBe(1_580_00);
@@ -137,8 +119,7 @@ it('com as regras de R$ 120 e de R$ 1.500 ativas, o custo fixo continua R$ 1.580
 	expect(result?.metrics.runwayMonths).toBe(10);
 });
 
-it('uma regra de receita (salário de R$ 8.000) também não vira renda recorrente', async () => {
-	mockRules.push({ ...rule('salario', 8_000_00), isIncome: true });
+it('não há renda recorrente vinda das regras antigas', async () => {
 	await render();
 
 	expect(result?.metrics.monthlyFixedCents).toBe(1_580_00);

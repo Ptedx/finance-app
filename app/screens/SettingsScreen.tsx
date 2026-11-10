@@ -29,7 +29,6 @@ import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { usePeriod } from '../contexts/PeriodContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { exportDiagnostics } from '../diagnostics/export';
@@ -70,7 +69,6 @@ const SettingsScreen = () => {
 	// tela entregava `transactions`/`categories` daqui, e um contexto que ainda não
 	// carregou (ou que falhou) virava um arquivo válido e vazio.
 	const { refreshData } = useTransactions();
-	const { refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { rescheduleReminders: rescheduleBillReminders } = useBills();
 	const { authenticate } = useBiometricAuth();
@@ -272,7 +270,6 @@ const SettingsScreen = () => {
 		try {
 			resetToCurrentMonth();
 			await refreshData();
-			await refreshTransactions();
 		} catch (error) {
 			console.error('Error refreshing app data:', error);
 		}

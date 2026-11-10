@@ -18,12 +18,12 @@ import { CurrencyProvider } from './contexts/CurrencyContext';
 import { DebtsProvider } from './contexts/DebtsContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { PeriodProvider } from './contexts/PeriodContext';
-import { RecurringTransactionsProvider } from './contexts/RecurringTransactionsContext';
 import { SyncProvider } from './contexts/SyncContext';
 import { TransactionsProvider } from './contexts/TransactionsContext';
 import { initDatabase } from './database/database';
 import { startDiagnostics } from './diagnostics/lifecycle';
 import biometricUtils from './utils/biometricUtils';
+import { cancelRecurringReminders } from './utils/notificationUtils';
 import { isOnboardingCompleted } from './utils/onboardingUtils';
 
 // Prevent the splash screen from auto-hiding
@@ -43,6 +43,14 @@ export default function RootLayout() {
 
 	// Diário de diagnóstico: `app_start`, `app_foreground` e o que o serviço nativo anotou.
 	useEffect(() => startDiagnostics(), []);
+
+	// As recorrências antigas não lembram mais nada (SPD-122): uma vez por abertura, depois do
+	// arranque do banco (e da migração das chaves antigas do AsyncStorage), saem os "X vence
+	// amanhã" que versões anteriores deixaram agendados e o canal Android deles. Era o
+	// `RecurringTransactionsProvider` que fazia isso; ele saiu no SPD-138.
+	useEffect(() => {
+		if (isDbInitialized) cancelRecurringReminders();
+	}, [isDbInitialized]);
 
 	const handleBiometricSuccess = () => {
 		setShowBiometricAuth(false);
@@ -209,7 +217,6 @@ export default function RootLayout() {
 			<PeriodProvider>
 				<BudgetProvider>
 					<TransactionsProvider>
-						<RecurringTransactionsProvider>
 							{/* Depende de TransactionsProvider (categorias, recarga) e de AuthProvider
 							    (o nome do usuário reconhece transferências para si mesmo). */}
 							<AccountsProvider>
@@ -229,7 +236,6 @@ export default function RootLayout() {
 								</DebtsProvider>
 								</CapturesProvider>
 							</AccountsProvider>
-						</RecurringTransactionsProvider>
 					</TransactionsProvider>
 				</BudgetProvider>
 			</PeriodProvider>

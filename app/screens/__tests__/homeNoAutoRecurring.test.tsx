@@ -4,10 +4,10 @@
  * A tela de lançamentos recorrentes saiu no SPD-079, mas as regras antigas ficaram no
  * banco e a Início seguia lançando um `[Auto]` a cada vencimento; quando a cobrança de
  * verdade chegava (pela captura ou à mão), o mês ficava com o gasto dobrado. Aqui o banco é
- * o SQLite **de verdade** (`node:sqlite`, como em `accountSql.test.ts`) e o contexto das
- * recorrências é o de verdade: com uma regra vencida há meses, abrir a Início e puxar para
- * atualizar não cria lançamento nenhum, e a regra continua lá como estava (é dado do
- * usuário e segue no sync).
+ * o SQLite **de verdade** (`node:sqlite`, como em `accountSql.test.ts`); o contexto das
+ * recorrências, que montava junto, saiu no SPD-138. Com uma regra vencida há meses, abrir a
+ * Início e puxar para atualizar não cria lançamento nenhum, e a regra continua lá como estava
+ * (é dado do usuário e segue no sync).
  *
  * Precisa de `NODE_OPTIONS=--experimental-sqlite` no Node 22.12; sem a flag é pulado.
  */
@@ -66,12 +66,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 	multiRemove: jest.fn(async () => undefined),
 }));
 
-jest.mock('../../utils/notificationUtils', () => ({
-	cancelRecurringReminders: jest.fn(async () => 0),
-}));
-
 jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
-jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: () => undefined }));
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ push: jest.fn(), back: jest.fn() }),
@@ -107,7 +102,6 @@ jest.mock('../../contexts/SyncContext', () => ({
 }));
 
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { RecurringTransactionsProvider } from '../../contexts/RecurringTransactionsContext';
 import { addRecurringTransaction, db, initDatabase } from '../../database/database';
 import { todayISO } from '../../utils/dateUtils';
 import HomeScreen from '../HomeScreen';
@@ -162,11 +156,7 @@ describeSql('Início com recorrência antiga vencida no banco', () => {
 
 	it('abrir a Início não cria [Auto]', async () => {
 		await act(async () => {
-			renderer = create(
-				<RecurringTransactionsProvider>
-					<HomeScreen />
-				</RecurringTransactionsProvider>
-			);
+			renderer = create(<HomeScreen />);
 		});
 		await settle();
 
@@ -175,11 +165,7 @@ describeSql('Início com recorrência antiga vencida no banco', () => {
 
 	it('puxar para atualizar também não cria [Auto]', async () => {
 		await act(async () => {
-			renderer = create(
-				<RecurringTransactionsProvider>
-					<HomeScreen />
-				</RecurringTransactionsProvider>
-			);
+			renderer = create(<HomeScreen />);
 		});
 		await settle();
 

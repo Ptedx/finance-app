@@ -66,9 +66,6 @@ jest.mock('../../contexts/LanguageContext', () => ({
 jest.mock('../../contexts/PeriodContext', () => ({
 	usePeriod: () => ({ resetToCurrentMonth: jest.fn() }),
 }));
-jest.mock('../../contexts/RecurringTransactionsContext', () => ({
-	useRecurringTransactions: () => ({ transactions: [], refreshTransactions: jest.fn() }),
-}));
 jest.mock('../../contexts/SyncContext', () => ({
 	// O estado "tudo salvo" (`describeSync` está testado em `syncContext.test.tsx`).
 	describeSync: () => ({

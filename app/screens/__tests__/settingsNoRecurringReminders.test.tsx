@@ -4,6 +4,7 @@
  * A chave de notificações chamava `checkAndScheduleNotifications` com as regras antigas, e o
  * "Aluguel vence amanhã" voltava mesmo sem a tela das recorrências existir. Agora ligar a
  * chave só remarca as Contas do mês e as faturas (`rescheduleReminders` do `BillsContext`).
+ * Desde o SPD-138 a tela nem enxerga as regras: o contexto das recorrências saiu.
  *
  * O `notificationUtils` é o de verdade, sobre um `expo-notifications` de mentira; o resto da
  * tela é dublê, como em `settingsBiometric.test.tsx`.
@@ -12,7 +13,6 @@
 const mockStorage = new Map<string, string>();
 const mockScheduled = new Map<string, Record<string, unknown>>();
 const mockRescheduleBills = jest.fn(async () => undefined);
-const mockRules: Array<Record<string, unknown>> = [];
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
 	getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
@@ -94,9 +94,6 @@ jest.mock('../../contexts/LanguageContext', () => ({
 jest.mock('../../contexts/PeriodContext', () => ({
 	usePeriod: () => ({ resetToCurrentMonth: jest.fn() }),
 }));
-jest.mock('../../contexts/RecurringTransactionsContext', () => ({
-	useRecurringTransactions: () => ({ transactions: mockRules, refreshTransactions: jest.fn() }),
-}));
 jest.mock('../../contexts/SyncContext', () => ({
 	describeSync: () => ({
 		tone: 'ok',
@@ -137,20 +134,12 @@ jest.mock('../../utils/statementImport', () => ({
 import * as Notifications from 'expo-notifications';
 import { Switch } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { getISODate } from '../../utils/dateUtils';
 import SettingsScreen from '../SettingsScreen';
 
 // A primeira montagem carrega a tela inteira; com a suíte toda rodando junto, passa dos 5 s.
 jest.setTimeout(20_000);
 
 const scheduleMock = Notifications.scheduleNotificationAsync as jest.Mock;
-
-const inDays = (days: number): Date => {
-	const date = new Date();
-	date.setHours(0, 0, 0, 0);
-	date.setDate(date.getDate() + days);
-	return date;
-};
 
 let renderer: ReactTestRenderer;
 
@@ -170,20 +159,6 @@ const notificationsSwitch = (): ReactTestInstance => {
 beforeEach(() => {
 	mockStorage.clear();
 	mockScheduled.clear();
-	mockRules.length = 0;
-	// Aluguel de R$ 1.500, ativo, vencendo daqui a 10 dias.
-	mockRules.push({
-		id: 'aluguel',
-		amountCents: 150_000,
-		isIncome: false,
-		note: 'Aluguel',
-		category: 'housing',
-		recurrenceType: 'monthly',
-		day: 10,
-		active: true,
-		nextDue: getISODate(inDays(10)),
-		updatedAt: '2026-10-01T00:00:00.000Z',
-	});
 	mockStorage.set('@spendr_notifications_enabled', 'false');
 	jest.clearAllMocks();
 });
@@ -192,7 +167,7 @@ afterEach(() => {
 	act(() => renderer?.unmount());
 });
 
-it('ligar os lembretes com uma regra ativa: nenhum lembrete de recorrência, e as contas são remarcadas', async () => {
+it('ligar os lembretes: nenhum lembrete de recorrência, e as contas são remarcadas', async () => {
 	await act(async () => {
 		renderer = create(<SettingsScreen />);
 	});

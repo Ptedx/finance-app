@@ -64,8 +64,8 @@ export const BudgetProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
 	const reload = async () => {
 		try {
-			// Mesma razão do `RecurringTransactionsContext`: este provider lê o banco no
-			// mount, antes do efeito do pai. `initDatabase` é single-flight.
+			// Este provider lê o banco no mount, antes do efeito do pai (o `_layout`):
+			// `initDatabase` é single-flight, e aqui ela só espera a inicialização em curso.
 			await initDatabase();
 			setBudgets(await getBudgets());
 		} catch (error) {

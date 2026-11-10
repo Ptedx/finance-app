@@ -14,7 +14,6 @@ import {
 import { useBudget } from '../contexts/BudgetContext';
 import type { Currency } from '../contexts/CurrencyContext';
 import { AVAILABLE_CURRENCIES, useCurrency } from '../contexts/CurrencyContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { convertAllAmounts, hasFinancialData } from '../database/database';
 import { isValidRate, parseDecimalInput } from '../utils/money';
@@ -28,7 +27,6 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 	const { currentCurrency, setCurrency } = useCurrency();
 	const { convertBudgets } = useBudget();
 	const { refreshData } = useTransactions();
-	const { refreshTransactions } = useRecurringTransactions();
 
 	const [pendingCurrency, setPendingCurrency] = useState<Currency | null>(null);
 	const [rateInput, setRateInput] = useState('');
@@ -72,7 +70,6 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 
 			await setCurrency(currency);
 			await refreshData();
-			await refreshTransactions();
 
 			setPendingCurrency(null);
 			onClose();

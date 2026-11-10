@@ -33,6 +33,7 @@ jest.mock('expo-notifications', () => ({
 	SchedulableTriggerInputTypes: { DATE: 'date' },
 	setNotificationHandler: jest.fn(),
 	setNotificationChannelAsync: jest.fn(async () => null),
+	deleteNotificationChannelAsync: jest.fn(async () => undefined),
 	getPermissionsAsync: jest.fn(async () => ({ status: 'granted' })),
 	requestPermissionsAsync: jest.fn(async () => ({ status: 'granted' })),
 	getExpoPushTokenAsync: jest.fn(async () => ({ data: null })),
@@ -141,6 +142,44 @@ describe('lembretes das recorrências antigas (SPD-122)', () => {
 		const exported = Object.keys(notificationUtils);
 		expect(exported).not.toContain('scheduleTransactionNotification');
 		expect(exported).not.toContain('checkAndScheduleNotifications');
+	});
+
+	// O canal que versões anteriores criavam para eles (SPD-138): nenhum aviso usa mais.
+	it('no Android, apaga o canal recurring-transactions, mesmo sem lembrete agendado', async () => {
+		const os = jest.replaceProperty(Platform, 'OS', 'android');
+		try {
+			expect(await cancelRecurringReminders()).toBe(0);
+		} finally {
+			os.restore();
+		}
+
+		expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledTimes(1);
+		expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('recurring-transactions');
+	});
+
+	it('se apagar o canal falha, os lembretes antigos saem do mesmo jeito', async () => {
+		seedOld();
+		(Notifications.deleteNotificationChannelAsync as jest.Mock).mockRejectedValueOnce(new Error('sem canal'));
+		const os = jest.replaceProperty(Platform, 'OS', 'android');
+		try {
+			expect(await cancelRecurringReminders()).toBe(2);
+		} finally {
+			os.restore();
+		}
+
+		expect(Array.from(mockScheduled.keys()).filter((id) => id.startsWith('transaction_'))).toEqual([]);
+		expect(mockStorage.has('@spendr_scheduled_notifications')).toBe(false);
+	});
+
+	it('no iOS, que não tem canal, não tenta apagar', async () => {
+		const os = jest.replaceProperty(Platform, 'OS', 'ios');
+		try {
+			await cancelRecurringReminders();
+		} finally {
+			os.restore();
+		}
+
+		expect(Notifications.deleteNotificationChannelAsync).not.toHaveBeenCalled();
 	});
 });
 
