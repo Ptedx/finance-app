@@ -1033,22 +1033,6 @@ const en = {
 		},
 	},
 
-	info: {
-		screenTitle: 'How It Works',
-		addTransactions: 'Your entries',
-		addTransactionsDesc: 'Purchases, Pix and transfers arrive from your bank notifications for you to confirm with one tap. Anything without a notification you add by hand.',
-		accountsCards: 'Accounts and cards',
-		accountsCardsDesc: 'Each account shows its balance and each card shows its bill. The app adds it all up and tells you what is left after paying the cards.',
-		bills: 'Bills to pay',
-		billsDesc: 'Add the month’s fixed bills. The app reminds you before they are due and marks them paid when it sees the payment.',
-		monthlyBudget: 'Monthly budget',
-		monthlyBudgetDesc: 'Set how much you want to spend this month and follow how much of it is gone on the home screen.',
-		insightfulReports: 'Insightful Reports',
-		insightfulReportsDesc:
-			'Visualize your spending patterns through customized reports. Understand where your money goes with beautiful charts.',
-		continue: 'Continue',
-	},
-
 	onboardingCaptures: {
 		screenTitle: 'Automatic Capture',
 		title: 'Your Spending Logs Itself',

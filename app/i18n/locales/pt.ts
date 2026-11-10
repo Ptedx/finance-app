@@ -1027,22 +1027,6 @@ const pt = {
 		},
 	},
 
-	info: {
-		screenTitle: 'Como funciona',
-		addTransactions: 'Seus lançamentos',
-		addTransactionsDesc: 'Compras, Pix e transferências chegam pelos avisos do banco para você confirmar com um toque. O que não vier por aviso você lança à mão.',
-		accountsCards: 'Contas e cartões',
-		accountsCardsDesc: 'Cada conta mostra o saldo e cada cartão mostra a fatura. O app soma tudo e diz quanto sobra depois de pagar as faturas.',
-		bills: 'Contas a pagar',
-		billsDesc: 'Cadastre as contas fixas do mês. O app lembra antes do vencimento e dá baixa sozinho quando vê o pagamento.',
-		monthlyBudget: 'Orçamento do mês',
-		monthlyBudgetDesc: 'Defina quanto quer gastar no mês e acompanhe na tela inicial quanto dele já foi.',
-		insightfulReports: 'Relatórios úteis',
-		insightfulReportsDesc:
-			'Visualize seus padrões de gastos em relatórios personalizados. Entenda para onde vai o seu dinheiro.',
-		continue: 'Continuar',
-	},
-
 	onboardingCaptures: {
 		screenTitle: 'Captura automática',
 		title: 'Seus gastos entram sozinhos',

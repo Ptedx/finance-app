@@ -1,11 +1,18 @@
 /**
  * As boas-vindas da primeira abertura (SPD-129): as quatro telas aprovadas, "Pular" em todas
- * menos a última, e depois o onboarding segue como era. Revistas por Ajustes › Como usar
- * (`?review=1`), "Pular" e "Começar" só voltam. As chaves de tradução aparecem cruas.
+ * menos a última, e depois o onboarding segue direto para a captura (SPD-134: a tela antiga
+ * "Como funciona" saiu, repetia as boas-vindas); sem o serviço nativo (iOS, Expo Go), para as
+ * preferências. Revistas por Ajustes › Como usar (`?review=1`), "Pular" e "Começar" só
+ * voltam. As chaves de tradução aparecem cruas.
  */
 
 const mockRouter = { push: jest.fn(), back: jest.fn() };
 const mockParams: { review?: string } = {};
+const mockCaptures = { supported: true };
+
+jest.mock('../../../modules/spendr-captures', () => ({
+	isCaptureSupported: () => mockCaptures.supported,
+}));
 
 jest.mock('expo-router', () => ({
 	useRouter: () => mockRouter,
@@ -56,6 +63,7 @@ beforeEach(async () => {
 	mockRouter.push.mockClear();
 	mockRouter.back.mockClear();
 	delete mockParams.review;
+	mockCaptures.supported = true;
 });
 
 afterEach(() => {
@@ -85,16 +93,31 @@ it('as quatro telas aprovadas, uma de cada vez, e "Começar" na última segue o 
 	expect(mockRouter.push).not.toHaveBeenCalled();
 
 	await pressNext();
-	expect(mockRouter.push).toHaveBeenCalledWith('/onboarding/info');
+	expect(mockRouter.push).toHaveBeenCalledTimes(1);
+	expect(mockRouter.push).toHaveBeenCalledWith('/onboarding/captures');
+	expect(mockRouter.push).not.toHaveBeenCalledWith('/onboarding/info');
 });
 
-it('"Pular" passa as boas-vindas e segue o onboarding', async () => {
+it('"Pular" passa as boas-vindas e segue direto para a captura', async () => {
 	await mount();
 
 	expect(texts()).toContain('welcome.skip');
 	await pressSkip();
 
-	expect(mockRouter.push).toHaveBeenCalledWith('/onboarding/info');
+	expect(mockRouter.push).toHaveBeenCalledTimes(1);
+	expect(mockRouter.push).toHaveBeenCalledWith('/onboarding/captures');
+	expect(mockRouter.push).not.toHaveBeenCalledWith('/onboarding/info');
+});
+
+it('sem o serviço nativo (iOS, Expo Go), segue direto para as preferências', async () => {
+	mockCaptures.supported = false;
+	await mount();
+
+	for (let i = 0; i < 3; i++) await pressNext();
+	await pressNext();
+
+	expect(mockRouter.push).toHaveBeenCalledTimes(1);
+	expect(mockRouter.push).toHaveBeenCalledWith('/onboarding/security');
 });
 
 it('revistas pelos Ajustes, "Pular" volta sem refazer o onboarding', async () => {
@@ -102,6 +125,18 @@ it('revistas pelos Ajustes, "Pular" volta sem refazer o onboarding', async () =>
 	await mount();
 
 	await pressSkip();
+
+	expect(mockRouter.back).toHaveBeenCalledTimes(1);
+	expect(mockRouter.push).not.toHaveBeenCalled();
+});
+
+it('revistas pelos Ajustes, "Começar" na última também só volta', async () => {
+	mockParams.review = '1';
+	await mount();
+
+	for (let i = 0; i < 3; i++) await pressNext();
+	expect(texts()).toContain('welcome.start');
+	await pressNext();
 
 	expect(mockRouter.back).toHaveBeenCalledTimes(1);
 	expect(mockRouter.push).not.toHaveBeenCalled();

@@ -6,11 +6,12 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { isCaptureSupported } from '../../modules/spendr-captures';
 
 /**
  * As boas-vindas da primeira abertura (SPD-129): quatro telas curtas com o que o app faz
- * hoje, com "Pular" em todas menos a última. Depois delas o onboarding segue como era (como
- * funciona, captura, segurança).
+ * hoje, com "Pular" em todas menos a última. Depois delas o onboarding segue para a captura
+ * e a segurança (a tela antiga "Como funciona" saiu no SPD-134: repetia as boas-vindas).
  *
  * Aberta por Ajustes › Como usar › "Rever as boas-vindas" (`?review=1`), é só para ler:
  * "Pular" e "Começar" voltam para onde o usuário estava.
@@ -33,9 +34,11 @@ export default function WelcomeScreen() {
 	const slide = SLIDES[index];
 	const isLast = index === SLIDES.length - 1;
 
+	// No Android com o serviço nativo, a etapa da captura vem antes das preferências
+	// (SPD-021); no iOS e no Expo Go ela não existe.
 	const leave = () => {
 		if (review === '1') router.back();
-		else router.push('/onboarding/info');
+		else router.push(isCaptureSupported() ? '/onboarding/captures' : '/onboarding/security');
 	};
 
 	const next = () => {

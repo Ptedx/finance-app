@@ -1033,22 +1033,6 @@ const it = {
 		},
 	},
 
-	info: {
-		screenTitle: 'Come Funziona',
-		addTransactions: 'Le tue voci',
-		addTransactionsDesc: 'Acquisti, Pix e bonifici arrivano dalle notifiche della banca da confermare con un tocco. Quello che non ha una notifica lo aggiungi a mano.',
-		accountsCards: 'Conti e carte',
-		accountsCardsDesc: 'Ogni conto mostra il saldo e ogni carta la fattura. L’app somma tutto e ti dice quanto resta dopo aver pagato le carte.',
-		bills: 'Bollette da pagare',
-		billsDesc: 'Aggiungi le spese fisse del mese. L’app te le ricorda prima della scadenza e le segna pagate quando vede il pagamento.',
-		monthlyBudget: 'Budget del mese',
-		monthlyBudgetDesc: 'Decidi quanto vuoi spendere nel mese e segui nella schermata iniziale quanto ne hai già usato.',
-		insightfulReports: 'Report Dettagliati',
-		insightfulReportsDesc:
-			'Visualizza le tue abitudini di spesa attraverso report personalizzati. Scopri dove vanno i tuoi soldi con grafici dettagliati.',
-		continue: 'Continua',
-	},
-
 	onboardingCaptures: {
 		screenTitle: 'Cattura Automatica',
 		title: 'Le Tue Spese si Registrano da Sole',
