@@ -20,8 +20,10 @@ import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { getStatementClaimedCaptureIds } from '../database/captures';
 import type { Account, Capture, Category, Transaction } from '../database/schema';
+import { ambiguityOfReason } from '../utils/ambiguityReasons';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage, STATEMENT_LEDGER_SUSPECT_REASON } from '../utils/captureMatcher';
+import type { CaptureDirection } from '../utils/captureParser';
 import { formatDate, getISODate } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { formatCents } from '../utils/money';
@@ -178,6 +180,40 @@ export const resolvedReasonLabel = (
 	return t(`captures.reason.${capture.reason}`, { defaultValue: '', app: capture.appLabel });
 };
 
+/**
+ * A linha que explica por que o aviso ambíguo está na revisão (SPD-123) — sem o final do
+ * cartão, final desconhecido, débito ou crédito, entrou ou saiu, de qual conta saiu o
+ * pagamento da fatura — ou que a escolha anterior do usuário decidiu por ele. Vazio quando o
+ * item não é um aviso ambíguo. `remember`: só na pergunta, o aviso de que a resposta fica
+ * guardada.
+ */
+export const ambiguityLine = (
+	capture: Pick<Capture, 'reason' | 'cardLast4'>,
+	t: (key: string, options?: Record<string, unknown>) => string
+): { text: string; remember: string } => {
+	const ambiguity = ambiguityOfReason(capture.reason);
+	if (!ambiguity) return { text: '', remember: '' };
+	if (ambiguity.learned) return { text: t('captures.ambiguity.learned'), remember: '' };
+	return {
+		text: t(`captures.ambiguity.${ambiguity.case}`, { last4: capture.cardLast4 ?? '' }),
+		remember: t('captures.ambiguity.remember'),
+	};
+};
+
+/**
+ * O detalhe de um item do histórico: a categoria do confirmado, o porquê do resto. O que a
+ * regra aprendida num aviso ambíguo lançou diz as duas coisas (SPD-123): é por esse porquê
+ * que o usuário acha o lançamento a corrigir.
+ */
+export const resolvedDetail = (
+	capture: Pick<Capture, 'status' | 'reason'>,
+	categoryName: string | null,
+	reason: string
+): string => {
+	if (capture.status !== 'confirmed' || !categoryName) return reason;
+	return reason && ambiguityOfReason(capture.reason)?.learned ? `${categoryName} · ${reason}` : categoryName;
+};
+
 /** A categoria mostrada quando a sugerida não existe: o nome vem da tradução, não fixo em inglês. */
 export const fallbackCategory = (
 	t: (key: string, options?: Record<string, unknown>) => string
@@ -195,14 +231,17 @@ interface ActionButtonProps {
 	onPress: () => void;
 	primary?: boolean;
 	danger?: boolean;
+	/** A resposta que vale agora, numa pergunta de escolha (SPD-123). */
+	selected?: boolean;
 }
 
-const ActionButton: React.FC<ActionButtonProps> = ({ label, hint, icon, onPress, primary, danger }) => (
+const ActionButton: React.FC<ActionButtonProps> = ({ label, hint, icon, onPress, primary, danger, selected }) => (
 	<Pressable
 		onPress={onPress}
 		accessibilityRole="button"
 		accessibilityLabel={label}
 		accessibilityHint={hint}
+		accessibilityState={selected === undefined ? undefined : { selected }}
 		style={({ pressed }) => [
 			styles.button,
 			primary && styles.buttonPrimary,
@@ -229,6 +268,10 @@ interface CaptureCardProps {
 	onTransfer: (capture: Capture) => void;
 	onAnswerDuplicate: (capture: Capture, same: boolean) => void;
 	onAnswerTransfer: (capture: Capture, isTransfer: boolean) => void;
+	/** Entrou ou saiu, no aviso que fala das duas coisas (SPD-123). */
+	onAnswerDirection: (capture: Capture, direction: CaptureDirection) => void;
+	/** De qual conta saiu o pagamento da fatura, ou `null` para não lançar (SPD-123). */
+	onResolveInvoice: (capture: Capture, fromAccountId: string | null) => void;
 }
 
 const CaptureCard: React.FC<CaptureCardProps> = ({
@@ -242,6 +285,8 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onTransfer,
 	onAnswerDuplicate,
 	onAnswerTransfer,
+	onAnswerDirection,
+	onResolveInvoice,
 }) => {
 	const { t } = useTranslation();
 	const ledgerSuspect = isLedgerSuspect(capture);
@@ -250,6 +295,16 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const [categoryId, setCategoryId] = useState(() =>
 		resolveCategoryId(capture.suggestedCategory, capture.direction, categories)
 	);
+	// A resposta "entrou/saiu" troca a direção do item: a categoria sugerida passa a ser a do
+	// outro lado (receita × despesa), senão a confirmação levaria uma categoria de despesa.
+	const [shownDirection, setShownDirection] = useState(capture.direction);
+	if (shownDirection !== capture.direction) {
+		setShownDirection(capture.direction);
+		setCategoryId(resolveCategoryId(capture.suggestedCategory, capture.direction, categories));
+	}
+	const ambiguity = ambiguityOfReason(capture.reason);
+	const askedCase = ambiguity && !ambiguity.learned ? ambiguity.case : null;
+	const explained = ambiguityLine(capture, t);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [rawOpen, setRawOpen] = useState(false);
 	// A conta escolhida aqui (SPD-111). `undefined` enquanto o usuário não mexe: vale a do
@@ -272,7 +327,19 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	}, ${t('captures.inAccount', { account: destination })}${installments ? `, ${installments}` : ''}, ${t(
 		'captures.from',
 		{ app: capture.appLabel, time: whenLabelFor(capture) }
-	)}${warning ? `. ${warning}` : ''}${confirmedByStatement ? `. ${confirmedByStatement}` : ''}`;
+	)}${warning ? `. ${warning}` : ''}${confirmedByStatement ? `. ${confirmedByStatement}` : ''}${
+		explained.text ? `. ${explained.text}` : ''
+	}`;
+	const isInvoiceQuestion = askedCase === 'invoice_payment';
+
+	const payInvoice = () => {
+		// Sem conta escolhida, o botão abre o seletor: é a pergunta que falta responder.
+		if (!accountId) {
+			setAccountPickerOpen(true);
+			return;
+		}
+		onResolveInvoice(capture, accountId);
+	};
 
 	return (
 		<View style={styles.card}>
@@ -303,6 +370,18 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					<View style={styles.statementConfirmed}>
 						<Ionicons name="checkmark-circle-outline" size={16} color={ACCENT} />
 						<Text style={styles.statementConfirmedText}>{confirmedByStatement}</Text>
+					</View>
+				)}
+				{/* Por que o aviso ambíguo está aqui, ou que a escolha anterior decidiu (SPD-123).
+				    Ícone e texto, dentro do resumo que o leitor de tela lê. */}
+				{explained.text !== '' && (
+					<View style={styles.ambiguity}>
+						<Ionicons
+							name={ambiguity?.learned ? 'school-outline' : 'help-circle-outline'}
+							size={16}
+							color={ACCENT}
+						/>
+						<Text style={styles.ambiguityText}>{explained.text}</Text>
 					</View>
 				)}
 			</View>
@@ -403,57 +482,112 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 				</View>
 			)}
 
-			<Pressable
-				onPress={() => setPickerOpen((open) => !open)}
-				accessibilityRole="button"
-				accessibilityLabel={t('captures.categoryLabel', { category: category.name })}
-				accessibilityHint={t('captures.changeCategoryHint')}
-				accessibilityState={{ expanded: pickerOpen }}
-				style={({ pressed }) => [styles.categoryChip, pressed && styles.buttonPressed]}
-			>
-				<View style={[styles.categoryDot, { backgroundColor: category.color }]}>
-					{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
-					<Ionicons name={category.icon as any} size={14} color="#000000" />
-				</View>
-				<Text style={styles.categoryName}>{category.name}</Text>
-				<Ionicons name={pickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color="rgba(255,255,255,0.7)" />
-			</Pressable>
-
-			{pickerOpen && (
-				<View style={styles.pickerWrap}>
-					<HorizontalCategoryPicker
-						categories={categories}
-						selectedCategoryId={categoryId}
-						onSelectCategory={(id) => {
-							setCategoryId(id);
-							setPickerOpen(false);
-						}}
-						isIncome={isIncome}
-					/>
+			{askedCase === 'pix_direction' && (
+				<View style={styles.question} accessibilityLiveRegion="polite">
+					<Text style={styles.questionTitle}>{t('captures.directionQuestionTitle')}</Text>
+					<Text style={styles.questionBody}>{explained.remember}</Text>
+					<View style={styles.questionActions}>
+						<ActionButton
+							label={t('captures.directionIn')}
+							hint={t('captures.directionInHint')}
+							icon="arrow-down"
+							onPress={() => onAnswerDirection(capture, 'in')}
+							primary={isIncome}
+							selected={isIncome}
+						/>
+						<ActionButton
+							label={t('captures.directionOut')}
+							hint={t('captures.directionOutHint')}
+							icon="arrow-up"
+							onPress={() => onAnswerDirection(capture, 'out')}
+							primary={!isIncome}
+							selected={!isIncome}
+						/>
+					</View>
 				</View>
 			)}
 
-			<View style={styles.actions}>
-				<ActionButton
-					label={t('captures.confirm')}
-					hint={t('captures.confirmHint', { category: category.name })}
-					icon="checkmark"
-					onPress={() => onConfirm(capture, categoryId, chosenAccountId)}
-					primary
-				/>
-				<ActionButton
-					label={t('captures.transfer')}
-					hint={t('captures.transferHint')}
-					icon="swap-horizontal"
-					onPress={() => onTransfer(capture)}
-				/>
-				<ActionButton
-					label={t('captures.dismiss')}
-					hint={t('captures.dismissHint')}
-					icon="close"
-					onPress={() => onDismiss(capture)}
-				/>
-			</View>
+			{/* "Recebemos o pagamento da fatura" sem dizer de onde (X-2): de qual conta saiu,
+			    escolhida no seletor acima, ou não lançar. Categoria e "confirmar" não cabem. */}
+			{isInvoiceQuestion && (
+				<View style={styles.question} accessibilityLiveRegion="polite">
+					<Text style={styles.questionTitle}>{t('captures.invoiceQuestionTitle')}</Text>
+					<Text style={styles.questionBody}>
+						{accountId ? explained.remember : t('captures.invoiceChooseAccount')}
+					</Text>
+					<View style={styles.questionActions}>
+						<ActionButton
+							label={t('captures.invoicePay')}
+							hint={accountId ? t('captures.invoicePayHint') : t('captures.invoiceChooseAccount')}
+							icon="swap-horizontal"
+							onPress={payInvoice}
+							primary
+						/>
+						<ActionButton
+							label={t('captures.invoiceSkip')}
+							hint={t('captures.invoiceSkipHint')}
+							icon="close"
+							onPress={() => onResolveInvoice(capture, null)}
+						/>
+					</View>
+				</View>
+			)}
+
+			{!isInvoiceQuestion && (
+				<>
+					<Pressable
+						onPress={() => setPickerOpen((open) => !open)}
+						accessibilityRole="button"
+						accessibilityLabel={t('captures.categoryLabel', { category: category.name })}
+						accessibilityHint={t('captures.changeCategoryHint')}
+						accessibilityState={{ expanded: pickerOpen }}
+						style={({ pressed }) => [styles.categoryChip, pressed && styles.buttonPressed]}
+					>
+						<View style={[styles.categoryDot, { backgroundColor: category.color }]}>
+							{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
+							<Ionicons name={category.icon as any} size={14} color="#000000" />
+						</View>
+						<Text style={styles.categoryName}>{category.name}</Text>
+						<Ionicons name={pickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color="rgba(255,255,255,0.7)" />
+					</Pressable>
+
+					{pickerOpen && (
+						<View style={styles.pickerWrap}>
+							<HorizontalCategoryPicker
+								categories={categories}
+								selectedCategoryId={categoryId}
+								onSelectCategory={(id) => {
+									setCategoryId(id);
+									setPickerOpen(false);
+								}}
+								isIncome={isIncome}
+							/>
+						</View>
+					)}
+
+					<View style={styles.actions}>
+						<ActionButton
+							label={t('captures.confirm')}
+							hint={t('captures.confirmHint', { category: category.name })}
+							icon="checkmark"
+							onPress={() => onConfirm(capture, categoryId, chosenAccountId)}
+							primary
+						/>
+						<ActionButton
+							label={t('captures.transfer')}
+							hint={t('captures.transferHint')}
+							icon="swap-horizontal"
+							onPress={() => onTransfer(capture)}
+						/>
+						<ActionButton
+							label={t('captures.dismiss')}
+							hint={t('captures.dismissHint')}
+							icon="close"
+							onPress={() => onDismiss(capture)}
+						/>
+					</View>
+				</>
+			)}
 
 			<Pressable
 				onPress={() => setRawOpen((open) => !open)}
@@ -487,7 +621,7 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert
 	const category = categories.find((c) => c.id === capture.suggestedCategory);
 	const status = t(`captures.status.${capture.status}`, { defaultValue: capture.status });
 	const reason = resolvedReasonLabel(capture, t);
-	const detail = capture.status === 'confirmed' && category ? category.name : reason;
+	const detail = resolvedDetail(capture, category?.name ?? null, reason);
 	const summary = `${status}. ${isIncome ? '+' : '−'} ${formatCents(capture.amountCents)}, ${
 		capture.counterparty ?? capture.appLabel
 	}. ${detail}`;
@@ -561,6 +695,8 @@ const CaptureInboxScreen = () => {
 		markTransfer,
 		answerDuplicate,
 		answerTransfer,
+		answerDirection,
+		resolveInvoicePayment,
 		revert,
 		unignoreApp,
 		undo,
@@ -672,6 +808,24 @@ const CaptureInboxScreen = () => {
 		[answerTransfer, announce, t]
 	);
 
+	const handleAnswerDirection = useCallback(
+		async (capture: Capture, direction: CaptureDirection) => {
+			await answerDirection(capture.id, direction);
+			announce(direction === 'in' ? t('captures.announceDirectionIn') : t('captures.announceDirectionOut'));
+		},
+		[answerDirection, announce, t]
+	);
+
+	const handleResolveInvoice = useCallback(
+		async (capture: Capture, fromAccountId: string | null) => {
+			const done = await resolveInvoicePayment(capture.id, fromAccountId);
+			// Recusado: a conta escolhida é um cartão (ou o item já saiu da fila).
+			if (!done) announce(t('captures.invoiceChooseAccount'));
+			else announce(fromAccountId ? t('captures.announceInvoicePaid') : t('captures.announceDismissed'));
+		},
+		[resolveInvoicePayment, announce, t]
+	);
+
 	const handleRevert = useCallback(
 		async (capture: Capture) => {
 			await revert(capture.id);
@@ -768,6 +922,8 @@ const CaptureInboxScreen = () => {
 						onTransfer={handleTransfer}
 						onAnswerDuplicate={handleAnswerDuplicate}
 						onAnswerTransfer={handleAnswerTransfer}
+						onAnswerDirection={handleAnswerDirection}
+						onResolveInvoice={handleResolveInvoice}
 					/>
 				))}
 
@@ -1036,6 +1192,18 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		lineHeight: 20,
 		color: ACCENT,
+	},
+	ambiguity: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: 6,
+		marginBottom: 12,
+	},
+	ambiguityText: {
+		flex: 1,
+		fontSize: 14,
+		lineHeight: 20,
+		color: '#FFFFFF',
 	},
 	question: {
 		backgroundColor: 'rgba(21, 232, 254, 0.08)',

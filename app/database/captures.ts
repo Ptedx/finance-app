@@ -281,6 +281,9 @@ export type CapturePatch = Partial<
 		| 'accountId'
 		| 'transferId'
 		| 'installments'
+		// "Entrou" ou "Saiu" na revisão (SPD-123): a direção do aviso era um palpite do parser.
+		| 'direction'
+		| 'kind'
 	>
 >;
 

@@ -898,6 +898,13 @@ describe('compra em moeda estrangeira vai para revisão (SPD-037)', () => {
 		postedAt: '2026-10-14T12:00:00.000Z',
 	});
 
+	// O cartão é o do final do aviso. Sem ele, com os dois cartões do Nubank deste teste, a
+	// compra cairia na dúvida de qual cartão (SPD-123) e nunca entraria sozinha — e o teste
+	// é sobre a moeda.
+	beforeEach(() => {
+		mockAccounts.set(CARD.id, { ...CARD, last4: '1534' });
+	});
+
 	const ONLY_DOLLAR = notification('Compra de US$ 15,99 APROVADA em NETFLIX.COM para o cartão com final 1534.');
 	const WITH_REAIS = notification('Compra de US$ 15,99 (R$ 87,10) APROVADA em NETFLIX.COM para o cartão com final 1534.');
 

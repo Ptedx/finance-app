@@ -10,6 +10,7 @@
  */
 
 import type { AccountResolution, DestinationResolution } from '../utils/accountResolver';
+import type { AmbiguityCase } from '../utils/ambiguityReasons';
 import { brandFor } from '../utils/bankBrands';
 import type { Decision } from '../utils/captureMatcher';
 import type { ParsedCapture, RawCapture } from '../utils/captureParser';
@@ -33,10 +34,11 @@ export type CaptureStep =
 			decision: Decision;
 			/**
 			 * Por que a ingestão trocou a decisão do motor: a outra perna já confirmada
-			 * (`transfer` virou `ask_transfer`), ou a moeda estrangeira (`auto_confirm`
-			 * virou `pending`).
+			 * (`transfer` virou `ask_transfer`), a moeda estrangeira (`auto_confirm` virou
+			 * `pending`), ou o aviso ambíguo sem regra aprendida (SPD-123: `auto_confirm`,
+			 * `transfer` ou o pagamento da fatura viraram `pending`).
 			 */
-			overridden?: 'confirmed_leg' | 'foreign_currency';
+			overridden?: 'confirmed_leg' | 'foreign_currency' | 'ambiguity';
 			/** Moeda estrangeira sem o valor em reais: o item pendente leva esse motivo. */
 			currencyReview?: boolean;
 			account: AccountResolution | 'none';
@@ -48,6 +50,16 @@ export type CaptureStep =
 			 * lado da transferência foi achado (SPD-023). Nunca qual conta.
 			 */
 			destination?: DestinationResolution;
+			/**
+			 * O aviso ambíguo (SPD-123): qual caso, se a revisão vai perguntar (`asked`) ou se a
+			 * regra aprendida decidiu (`learned`), e se havia regra mas a conta dela sumiu. Nunca
+			 * a chave da regra, o final do cartão nem a conta.
+			 */
+			ambiguity?: AmbiguityCase;
+			choice?: 'asked' | 'learned';
+			staleChoice?: boolean;
+			/** O motivo que o item gravou, quando não é o que a decisão sozinha diria. */
+			reason?: string | null;
 	  }
 	/**
 	 * Uma linha do extrato casou com o aviso ainda pendente (SPD-117): confirmado sozinho
@@ -135,6 +147,8 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			data.currency = parsed.foreign.currency;
 			data.currencyInBrl = parsed.foreign.inBrl;
 		}
+		// Pista de entrada e de saída no mesmo aviso (SPD-123). Que viu, não quais palavras.
+		if (parsed.ambiguousDirection) data.directionAmbiguous = true;
 	}
 
 	switch (outcome.step) {
@@ -170,6 +184,13 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			if ((outcome.decision.action === 'duplicate' || outcome.decision.action === 'ask_duplicate') && outcome.decision.pair) {
 				data.pair = outcome.decision.pair;
 			}
+			// O aviso ambíguo (SPD-123): o caso e a escolha, e o motivo que o item gravou de fato.
+			if (outcome.ambiguity) {
+				data.ambiguity = outcome.ambiguity;
+				if (outcome.choice) data.choice = outcome.choice;
+				if (outcome.staleChoice) data.staleChoice = true;
+			}
+			if (outcome.reason !== undefined) data.reason = outcome.reason;
 			break;
 		}
 		case 'statement_match':

@@ -52,6 +52,13 @@ export const STORAGE_KEYS = {
 	 * Viaja com a conta e no backup; o "Apagar todos os dados" o mantém, como o nome da conta.
 	 */
 	ownBankName: '@spendr_own_bank_name',
+	/**
+	 * O que a captura aprendeu com as respostas da revisão nos avisos ambíguos (SPD-123): qual
+	 * conta ou cartão, para que lado, de qual conta saiu o pagamento da fatura
+	 * (`utils/captureChoicePreference.ts`). Viaja com a conta e no backup, como as regras dos
+	 * estabelecimentos.
+	 */
+	captureChoices: '@spendr_capture_choices',
 } as const;
 
 /**
@@ -80,6 +87,7 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.businessFeeds,
 	STORAGE_KEYS.cardDuplicateDismissed,
 	STORAGE_KEYS.ownBankName,
+	STORAGE_KEYS.captureChoices,
 ];
 
 /**
@@ -103,6 +111,7 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.businessFeeds,
 	STORAGE_KEYS.cardDuplicateDismissed,
 	STORAGE_KEYS.ownBankName,
+	STORAGE_KEYS.captureChoices,
 ];
 
 /**

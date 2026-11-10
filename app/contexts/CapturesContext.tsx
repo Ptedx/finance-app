@@ -21,16 +21,20 @@ import type { Capture } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
+	answerCaptureDirection,
 	answerCaptureDuplicate,
 	answerCaptureTransfer,
 	confirmCapture,
 	dismissCapture,
 	ingestRawCaptures,
 	markCaptureTransfer,
+	resolveInvoicePaymentCapture,
 	revertCapture,
 	stopIgnoringApp,
 } from '../utils/captureActions';
+import { captureChoiceStore, getCaptureChoices } from '../utils/captureChoicePreference';
 import { APP_IGNORE_THRESHOLD } from '../utils/captureMatcher';
+import type { CaptureDirection } from '../utils/captureParser';
 import { ownNamesOf } from '../utils/ownName';
 import { getOwnBankName } from '../utils/ownNamePreference';
 import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
@@ -83,6 +87,13 @@ interface CapturesContextType {
 	markTransfer: (id: string) => Promise<void>;
 	answerDuplicate: (id: string, same: boolean) => Promise<void>;
 	answerTransfer: (id: string, isTransfer: boolean) => Promise<void>;
+	/** O aviso com pista de entrada e de saída (SPD-123): o usuário diz qual foi. */
+	answerDirection: (id: string, direction: CaptureDirection) => Promise<void>;
+	/**
+	 * "Recebemos o pagamento da fatura" (SPD-123): de qual conta saiu, ou `null` para não
+	 * lançar. `false` quando o item não é mais essa pergunta.
+	 */
+	resolveInvoicePayment: (id: string, fromAccountId: string | null) => Promise<boolean>;
 	revert: (id: string) => Promise<void>;
 	/** Os avisos daquele app voltam para a revisão. */
 	unignoreApp: (packageName: string) => Promise<void>;
@@ -178,6 +189,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 						categories: categoriesRef.current,
 						// Lida a cada lote: a escolha pode ter mudado agora, ou chegado pelo sync.
 						businessFeeds: await getBusinessFeeds(),
+						// As escolhas aprendidas nos avisos ambíguos (SPD-123), idem.
+						captureChoices: await getCaptureChoices(),
 					});
 					// Qualquer item novo muda cartões e contas: a compra pendente já aparece na fatura
 					// como "a revisar", e uma conta ou cartão pode ter nascido agora.
@@ -244,7 +257,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const confirm = useCallback(
 		async (id: string, categoryId: string, accountId?: string | null) => {
-			const result = await confirmCapture(id, categoryId, categoriesRef.current, accountId);
+			const result = await confirmCapture(id, categoryId, categoriesRef.current, accountId, captureChoiceStore);
 			if (result) remember('confirm', [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
@@ -288,6 +301,25 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await Promise.all([load(), reloadLedger()]);
 		},
 		[pending, load, reloadLedger, remember]
+	);
+
+	const answerDirection = useCallback(
+		async (id: string, direction: CaptureDirection) => {
+			await answerCaptureDirection(id, direction, captureChoiceStore);
+			// O item continua na revisão; a direção mexe no provisório da conta.
+			await Promise.all([load(), refreshAccountsRef.current()]);
+		},
+		[load]
+	);
+
+	const resolveInvoicePayment = useCallback(
+		async (id: string, fromAccountId: string | null) => {
+			const done = await resolveInvoicePaymentCapture(id, fromAccountId, captureChoiceStore);
+			if (done) remember(fromAccountId ? 'transfer' : 'dismiss', [id]);
+			await Promise.all([load(), reloadLedger()]);
+			return done;
+		},
+		[load, reloadLedger, remember]
 	);
 
 	const revert = useCallback(
@@ -347,6 +379,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			markTransfer,
 			answerDuplicate,
 			answerTransfer,
+			answerDirection,
+			resolveInvoicePayment,
 			revert,
 			unignoreApp,
 			undo,
@@ -369,6 +403,8 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			markTransfer,
 			answerDuplicate,
 			answerTransfer,
+			answerDirection,
+			resolveInvoicePayment,
 			revert,
 			unignoreApp,
 			undo,

@@ -71,6 +71,14 @@ export interface ParsedCapture {
 	 * que não é real e não pode virar lançamento sem alguém olhar.
 	 */
 	foreign?: ForeignAmount;
+	/**
+	 * Presente só quando o Pix ou a transferência tem pista de entrada **e** de saída ("Pix
+	 * recebido — Ana te enviou R$ 20,00"): `direction` é então um palpite (saída, como
+	 * sempre foi), e o aviso vai para a revisão perguntar (SPD-123, NOTIF-11). O valor são as
+	 * duas pistas que o parser achou ("recebido/enviou"), do vocabulário dele — nunca o nome
+	 * nem o valor do aviso: entra na chave da regra aprendida.
+	 */
+	ambiguousDirection?: string;
 }
 
 export interface ForeignAmount {
@@ -386,14 +394,67 @@ const SCHEDULED_DONE_PHRASES = [
 	' foi transferid',
 ];
 
+/** As pistas de dinheiro entrando. A primeira achada nomeia a dúvida (`ambiguousDirection`). */
+const INCOMING_CUES = [
+	'recebeu',
+	'recebido',
+	'recebida',
+	'entrou na sua conta',
+	'entrada de',
+	'creditado',
+	'credito de',
+	'credito em conta',
+	'deposito',
+	'depositado',
+	'caiu na sua conta',
+	'transferencia recebida',
+	'pix recebido',
+	'voce tem um pix',
+];
+
+/** As pistas de dinheiro saindo. Idem. */
+const OUTGOING_CUES = [
+	'compra',
+	'pagamento',
+	'pagou',
+	'enviou',
+	'enviado',
+	'enviada',
+	'transferencia enviada',
+	'pix enviado',
+	'debito',
+	'debitado',
+	'saque',
+	'saida de',
+	'aprovada',
+	'aprovado',
+	'cobranca',
+	'assinatura',
+];
+
+/**
+ * Fatura fechada, ou que vence, dita sem a palavra "fatura" (AUTO-07, SPD-123): "Seu cartão
+ * fechou: total de R$ 1.100,00 com vencimento em 12/12. Débito automático ativo." O "débito"
+ * do débito automático fazia disso uma compra. Fechou **e** vence no mesmo aviso é aviso de
+ * fatura; compra não fecha nem vence.
+ */
+const isStatementNotice = (text: string): boolean =>
+	has(text, 'fechou', 'fechada', 'fechamento') && has(text, 'vence', 'vencimento', ' venc ');
+
+interface Classified {
+	direction: CaptureDirection;
+	kind: CaptureKind;
+	neutral: boolean;
+	/** Ver `ParsedCapture.ambiguousDirection`. */
+	ambiguousDirection?: string;
+}
+
 /**
  * Decide o que a notificação descreve. A ordem importa: "pagamento da fatura" tem a
  * palavra "pagamento", mas não é uma compra; "estorno de compra" tem "compra", mas é
  * dinheiro voltando.
  */
-const classify = (
-	text: string
-): { direction: CaptureDirection; kind: CaptureKind; neutral: boolean } | null => {
+const classify = (text: string): Classified | null => {
 	if (isDeclined(text)) return null;
 	if (has(text, 'fatura')) {
 		// Aviso sobre a fatura (fechou, vence, está disponível) não é dinheiro saindo.
@@ -418,6 +479,8 @@ const classify = (
 		if (has(text, 'pagamento', 'fechou', 'fechada', 'fechamento', 'vence', 'vencimento', 'disponivel', 'em aberto', 'lembrete')) {
 			return null;
 		}
+	} else if (isStatementNotice(text)) {
+		return null;
 	}
 	// Só o movimento feito, nunca o substantivo solto: "resgate seu dinheiro quando
 	// quiser" é propaganda, "resgate de R$ 300,00 concluído" é dinheiro trocando de bolso.
@@ -454,55 +517,26 @@ const classify = (
 		return { direction: 'in', kind: 'refund', neutral: false };
 	}
 
-	const incoming = has(
-		text,
-		'recebeu',
-		'recebido',
-		'recebida',
-		'entrou na sua conta',
-		'entrada de',
-		'creditado',
-		'credito de',
-		'credito em conta',
-		'deposito',
-		'depositado',
-		'caiu na sua conta',
-		'transferencia recebida',
-		'pix recebido',
-		'voce tem um pix'
-	);
-	const outgoing = has(
-		text,
-		'compra',
-		'pagamento',
-		'pagou',
-		'enviou',
-		'enviado',
-		'enviada',
-		'transferencia enviada',
-		'pix enviado',
-		'debito',
-		'debitado',
-		'saque',
-		'saida de',
-		'aprovada',
-		'aprovado',
-		'cobranca',
-		'assinatura'
-	);
+	const incomingCue = INCOMING_CUES.find((cue) => text.includes(cue));
+	const outgoingCue = OUTGOING_CUES.find((cue) => text.includes(cue));
+	const incoming = incomingCue !== undefined;
+	const outgoing = outgoingCue !== undefined;
 
 	if (SCHEDULED_PATTERN.test(text) && !(incoming && !outgoing) && !has(text, ...SCHEDULED_DONE_PHRASES)) {
 		return null;
 	}
 
+	// Pix e transferência com as duas pistas ("Pix recebido — Ana te enviou R$ 20,00"): a
+	// saída continua sendo o palpite, mas marcado, para a revisão perguntar (NOTIF-11).
+	const both = incoming && outgoing ? { ambiguousDirection: `${incomingCue}/${outgoingCue}` } : {};
 	if (has(text, 'pix')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'pix_in', neutral: false };
-		if (outgoing) return { direction: 'out', kind: 'pix_out', neutral: false };
+		if (outgoing) return { direction: 'out', kind: 'pix_out', neutral: false, ...both };
 		return null;
 	}
 	if (has(text, 'transferencia', 'transferiu', ' ted ', ' doc ')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'transfer_in', neutral: false };
-		if (outgoing) return { direction: 'out', kind: 'transfer_out', neutral: false };
+		if (outgoing) return { direction: 'out', kind: 'transfer_out', neutral: false, ...both };
 		return null;
 	}
 	if (has(text, 'saque')) return { direction: 'out', kind: 'withdrawal', neutral: false };
@@ -714,7 +748,29 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 		...(amount.foreign
 			? { foreign: amount.foreign.inBrl ? amount.foreign : { ...amount.foreign, amountCents: totalCents } }
 			: {}),
+		// Idem: só quando a direção é um palpite (SPD-123).
+		...(classified.ambiguousDirection ? { ambiguousDirection: classified.ambiguousDirection } : {}),
 	};
+};
+
+/**
+ * O tipo de movimento que o texto descreve, sem exigir valor nem olhar propaganda: o que
+ * `parseCapture` diria do mesmo título e texto. Para quem só tem o aviso e precisa saber se
+ * é uma compra (`pickNotificationTarget`): "crédito em conta" não é compra no crédito.
+ */
+export const kindOfNotice = (raw: Pick<RawCapture, 'title' | 'text'>): CaptureKind | null =>
+	classify(` ${normalizeText(`${raw.title} ${raw.text}`.replace(/\s+/g, ' ').trim())} `)?.kind ?? null;
+
+/** O movimento do Pix ou da transferência visto do outro lado: entrada vira saída e vice-versa. */
+export const withDirection = <T extends Pick<ParsedCapture, 'direction' | 'kind'>>(parsed: T, direction: CaptureDirection): T => {
+	if (parsed.direction === direction) return parsed;
+	const flipped: Partial<Record<CaptureKind, CaptureKind>> = {
+		pix_in: 'pix_out',
+		pix_out: 'pix_in',
+		transfer_in: 'transfer_out',
+		transfer_out: 'transfer_in',
+	};
+	return { ...parsed, direction, kind: flipped[parsed.kind] ?? parsed.kind };
 };
 
 /**

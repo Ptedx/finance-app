@@ -40,13 +40,14 @@ import {
 	deleteTransfer,
 	findLiveTransfer,
 	getAccount,
+	getAccounts,
 	getBills,
 	getTransfer,
 	reassignCaptureLedger,
 	updateBill,
 	updateTransfer,
 } from '../database/database';
-import type { Capture, Category, Transfer } from '../database/schema';
+import type { Account, Capture, Category, Transfer } from '../database/schema';
 import { logCaptureDecision, logCaptureFailure } from '../diagnostics/capture';
 import type { DiagnosticValue } from '../diagnostics/contract';
 import { log } from '../diagnostics/log';
@@ -63,9 +64,20 @@ import {
 	isNoBankNotice,
 	resolveAccountForNotification,
 } from './accountResolver';
+import { type AmbiguityCase, ambiguityOfReason, ambiguousReason, learnedReason, TARGET_CASES } from './ambiguityReasons';
 import type { BusinessFeeds } from './businessFeed';
 import { emitBillsChanged } from './billEvents';
 import { type BillMatch, type BillMovement, billPaymentPatch, billPaymentUndo, matchBillPayment } from './billMatcher';
+import {
+	type CaptureChoiceStore,
+	type CaptureChoices,
+	choiceKeyOf,
+	detectAmbiguity,
+	invoiceCardFor,
+	lookupChoice,
+	rememberChoice,
+	SKIP_CHOICE,
+} from './captureChoices';
 import {
 	appRuleKeyOf,
 	candidateFrom,
@@ -82,12 +94,14 @@ import {
 	type MerchantRule,
 } from './captureMatcher';
 import {
+	type CaptureDirection,
 	type CaptureKind,
 	guessCategory,
 	isWalletPackage,
 	type ParsedCapture,
 	parseCapture,
 	type RawCapture,
+	withDirection,
 } from './captureParser';
 import { generateUniqueId } from './categoryEditUtils';
 import { addDays, getISODate } from './dateUtils';
@@ -118,6 +132,8 @@ export interface IngestOptions {
 	autoConfirmThreshold?: number;
 	/** Qual conta recebe os avisos da PJ de cada app ("da conta Nu Empresas", SPD-074). */
 	businessFeeds?: BusinessFeeds;
+	/** O que o app aprendeu com as respostas da revisão nos avisos ambíguos (SPD-123). */
+	captureChoices?: CaptureChoices;
 }
 
 export interface IngestSummary {
@@ -472,6 +488,47 @@ interface NeutralMove {
  * Senão o lado fica nulo, e as duas vistas ainda se reconhecem pelo valor e pela data. Final
  * citado que não é de cartão nenhum não cai no valor: o aviso disse qual era, e não é este.
  */
+/**
+ * Grava o pagamento da fatura de `cardId` saindo de `from` (qualquer dos dois pode ser
+ * nulo: o lado que não se sabe fica em branco).
+ *
+ * O mesmo pagamento chega por caminhos diferentes — o aviso da conta, o aviso do cartão, o
+ * botão "Pagar fatura", o extrato — e cada um pode achar uma conta de origem diferente. Quem
+ * diz se dois são o mesmo pagamento é `isSameCardPayment`: mesmo valor, no máximo um dia de
+ * diferença e a mesma origem (origem em branco casa com qualquer uma). Casar só por valor
+ * numa janela de cinco dias fundia pagamentos distintos.
+ */
+const payIntoCard = async (
+	capture: Pick<Capture, 'amountCents' | 'postedAt' | 'counterparty' | 'appLabel'>,
+	cardId: string | null,
+	from: string | null
+): Promise<string> => {
+	const date = localDateOf(capture.postedAt);
+	if (cardId) {
+		const live = await findLiveTransfer({
+			amountCents: capture.amountCents,
+			fromAccountId: null,
+			toAccountId: cardId,
+			dateFrom: addDays(date, -SAME_MOVEMENT_DAYS),
+			dateTo: addDays(date, SAME_MOVEMENT_DAYS),
+		});
+		if (
+			live &&
+			isSameCardPayment(
+				{ fromAccountId: live.fromAccountId, amountCents: live.amountCents, date: live.date },
+				{ fromAccountId: from, amountCents: capture.amountCents, date }
+			)
+		) {
+			if (live.fromAccountId === null && from) {
+				await updateTransfer({ ...live, fromAccountId: from });
+				syncQueue.schedule();
+			}
+			return live.id;
+		}
+	}
+	return recordTransfer(capture, from, cardId, null);
+};
+
 const recordInvoicePayment = async (
 	capture: Pick<
 		Capture,
@@ -483,37 +540,7 @@ const recordInvoicePayment = async (
 	const account = await getAccount(capture.accountId);
 	if (!account) return nothing;
 	const date = localDateOf(capture.postedAt);
-
-	// O mesmo pagamento chega por caminhos diferentes — o aviso da conta, o aviso do
-	// cartão, o botão "Pagar fatura", o extrato — e cada um pode achar uma conta de origem
-	// diferente. Quem diz se dois são o mesmo pagamento é `isSameCardPayment`: mesmo valor,
-	// no máximo um dia de diferença e a mesma origem (origem em branco casa com qualquer
-	// uma). Casar só por valor numa janela de cinco dias fundia pagamentos distintos.
-	const payInto = async (cardId: string | null, from: string | null): Promise<string> => {
-		if (cardId) {
-			const live = await findLiveTransfer({
-				amountCents: capture.amountCents,
-				fromAccountId: null,
-				toAccountId: cardId,
-				dateFrom: addDays(date, -SAME_MOVEMENT_DAYS),
-				dateTo: addDays(date, SAME_MOVEMENT_DAYS),
-			});
-			if (
-				live &&
-				isSameCardPayment(
-					{ fromAccountId: live.fromAccountId, amountCents: live.amountCents, date: live.date },
-					{ fromAccountId: from, amountCents: capture.amountCents, date }
-				)
-			) {
-				if (live.fromAccountId === null && from) {
-					await updateTransfer({ ...live, fromAccountId: from });
-					syncQueue.schedule();
-				}
-				return live.id;
-			}
-		}
-		return recordTransfer(capture, from, cardId, null);
-	};
+	const payInto = (cardId: string | null, from: string | null): Promise<string> => payIntoCard(capture, cardId, from);
 
 	if (account.kind === 'credit_card') {
 		// Visto pelo cartão, o aviso de pagamento às vezes vem como "saída" do parser.
@@ -600,7 +627,9 @@ export const applyDecision = async (
 	base: CaptureDraft,
 	decision: Decision,
 	categories: Category[],
-	explicitId?: string
+	explicitId?: string,
+	/** O motivo do lançamento automático, quando não é só a regra do estabelecimento (SPD-123). */
+	autoReason?: string
 ): Promise<{ id: string; autoConfirmed: boolean; destination?: DestinationResolution }> => {
 	const id = explicitId ?? generateUniqueId();
 
@@ -706,7 +735,7 @@ export const applyDecision = async (
 					suggestedCategory: categoryId,
 					transactionId,
 					autoConfirmed: true,
-					reason: 'rule',
+					reason: autoReason ?? 'rule',
 				},
 				id
 			);
@@ -760,6 +789,46 @@ const neutralizeExternalLeg = async (
 const needsCurrencyReview = (parsed: Pick<ParsedCapture, 'foreign'>): boolean =>
 	parsed.foreign !== undefined && !parsed.foreign.inBrl;
 
+/**
+ * O pagamento da fatura que o cartão recebeu, com a conta de origem que a regra aprendida diz
+ * (SPD-123, X-2): sai dela para o cartão do aviso, e o item fica guardado, como o pagamento
+ * de sempre, com o motivo da regra.
+ */
+const recordLearnedInvoicePayment = async (
+	base: CaptureDraft,
+	from: Account,
+	accounts: Account[]
+): Promise<{ id: string; autoConfirmed: boolean; destination?: DestinationResolution }> => {
+	const id = generateUniqueId();
+	const card = invoiceCardFor(accounts, base);
+	const transferId = await payIntoCard(base, card?.id ?? null, from.id);
+	await insertCapture(
+		{ ...base, accountId: from.id, status: 'ignored', reason: learnedReason('invoice_payment'), transferId },
+		id
+	);
+	return { id, autoConfirmed: false };
+};
+
+/** O motivo que o item ficou gravando, para o diário (SPD-123). */
+const storedReasonOf = (
+	decision: Decision,
+	pendingReason: string | null,
+	autoReason: string | undefined,
+	learnedInvoice: boolean
+): string | null => {
+	if (learnedInvoice) return learnedReason('invoice_payment');
+	switch (decision.action) {
+		case 'pending':
+		case 'ask_duplicate':
+		case 'ask_transfer':
+			return pendingReason;
+		case 'auto_confirm':
+			return autoReason ?? 'rule';
+		default:
+			return decision.reason;
+	}
+};
+
 export const ingestRawCaptures = async (
 	raws: RawCapture[],
 	options: IngestOptions
@@ -805,9 +874,27 @@ export const ingestRawCaptures = async (
 
 		stage = 'account';
 		const accountTrace: { how?: AccountResolution } = {};
-		const account = await resolveAccountForNotification(raw, parsed, accountTrace, options.businessFeeds);
+		const resolved = await resolveAccountForNotification(raw, parsed, accountTrace, options.businessFeeds);
+
+		// O aviso diz o bastante para o app decidir sozinho (SPD-123)? Se não diz, a regra
+		// aprendida com uma resposta anterior decide; sem ela (ou com a conta dela sumida), o
+		// aviso não é lançado sozinho: vai para a revisão com o motivo do caso.
+		stage = 'ambiguity';
+		const accounts = await getAccounts();
+		const ambiguity = detectAmbiguity(accounts, raw, parsed);
+		const choice = ambiguity ? lookupChoice(options.captureChoices ?? {}, ambiguity, accounts) : null;
+		const learned = choice?.state === 'applied' ? choice : null;
+		const invoiceAmbiguity = ambiguity?.case === 'invoice_payment';
+		// A direção aprendida vale antes de tudo: muda o tipo, a categoria e a decisão.
+		const read = learned && 'direction' in learned ? withDirection(parsed, learned.direction) : parsed;
+		// A conta (ou o cartão) aprendido, na compra. O pagamento da fatura é à parte, abaixo.
+		const account =
+			ambiguity && TARGET_CASES.includes(ambiguity.case) && learned && 'account' in learned
+				? learned.account
+				: resolved;
+
 		stage = 'decide';
-		const candidate = candidateFrom(raw, parsed, account?.id ?? null);
+		const candidate = candidateFrom(raw, read, account?.id ?? null);
 		const since = new Date(new Date(raw.postedAt).getTime() - LOOKBACK_MS).toISOString();
 		const recent = (await getRecentCaptures(since)).map(toKnownCapture);
 		const rule = candidate.merchantKey ? toMerchantRule(await getMerchantRule(candidate.merchantKey)) : undefined;
@@ -816,12 +903,12 @@ export const ingestRawCaptures = async (
 		const appRule = canLearnToIgnore(raw)
 			? toMerchantRule(await getMerchantRule(appRuleKeyOf(raw.packageName)))
 			: undefined;
-		const fallbackCategoryId = resolveCategoryId(guessCategory(parsed), parsed.direction, options.categories);
+		const fallbackCategoryId = resolveCategoryId(guessCategory(read), read.direction, options.categories);
 		// Estorno e devolução têm a chave da compra que desfazem (SPD-043), mas a categoria
 		// da regra é a da compra, de despesa: na volta do dinheiro ela virava "outras
 		// receitas". O estorno é sempre estorno; a regra só decide se entra sozinho.
 		const refundCategoryId =
-			parsed.kind === 'refund' ? resolveCategoryId('refund', parsed.direction, options.categories) : null;
+			read.kind === 'refund' ? resolveCategoryId('refund', read.direction, options.categories) : null;
 
 		const externalIncome = isExternalIncomeRule(rule, options.categories);
 
@@ -840,7 +927,7 @@ export const ingestRawCaptures = async (
 			decision = { ...decision, categoryId: refundCategoryId };
 		}
 
-		let overridden: 'confirmed_leg' | 'foreign_currency' | undefined;
+		let overridden: 'confirmed_leg' | 'foreign_currency' | 'ambiguity' | undefined;
 
 		// Uma transferência "certa" cuja outra perna o usuário já confirmou como
 		// lançamento não desfaz a confirmação sozinha: vira pergunta. Apagar uma
@@ -857,10 +944,46 @@ export const ingestRawCaptures = async (
 		// Moeda estrangeira sem o valor em reais nunca entra sozinha no livro: a regra
 		// aprendida acerta a categoria, não o valor. Fica pendente com a categoria que a
 		// decisão sugeriu, e o porquê vai no item para a tela avisar.
-		const currencyReview = needsCurrencyReview(parsed);
+		const currencyReview = needsCurrencyReview(read);
 		if (currencyReview && decision.action === 'auto_confirm') {
 			decision = { action: 'pending', categoryId: decision.categoryId };
 			overridden = 'foreign_currency';
+		}
+
+		// O que fica pendente guarda o porquê: a moeda, a dúvida do aviso (a revisão a explica
+		// e faz a pergunta) ou a regra aprendida que decidiu por ele.
+		let reason: string | null = currencyReview ? 'foreign_currency' : null;
+		let autoReason: string | undefined;
+		let invoiceFrom: Account | null = null;
+		if (ambiguity && invoiceAmbiguity) {
+			// O pagamento da fatura que o cartão recebeu: de qual conta saiu (X-2). Sem resposta,
+			// nada de transferência — nem da conta do mesmo banco, que pode não ter pago nada.
+			if (decision.action === 'neutral') {
+				if (!learned) {
+					decision = { action: 'pending', categoryId: null };
+					overridden = 'ambiguity';
+					reason = ambiguousReason(ambiguity.case);
+				} else if ('skip' in learned) {
+					decision = { action: 'ignore', reason: learnedReason(ambiguity.case) };
+				} else if ('account' in learned) {
+					invoiceFrom = learned.account;
+				}
+			}
+		} else if (ambiguity && !learned) {
+			// Nada entra sozinho no livro, nem vira transferência com a direção trocada.
+			if (decision.action === 'auto_confirm' || decision.action === 'transfer') {
+				decision = {
+					action: 'pending',
+					categoryId: decision.action === 'auto_confirm' ? decision.categoryId : fallbackCategoryId,
+				};
+				overridden = 'ambiguity';
+			}
+			// A moeda fica com o motivo, se for o caso: o valor errado é o que mais custa, e a
+			// conta em branco já abre o seletor na revisão (só não vira regra).
+			if (!currencyReview) reason = ambiguousReason(ambiguity.case);
+		} else if (ambiguity) {
+			autoReason = learnedReason(ambiguity.case);
+			if (!currencyReview) reason = autoReason;
 		}
 
 		const base: CaptureDraft = {
@@ -870,12 +993,12 @@ export const ingestRawCaptures = async (
 			title: raw.title,
 			text: raw.text,
 			postedAt: raw.postedAt,
-			amountCents: parsed.amountCents,
-			direction: parsed.direction,
-			kind: parsed.kind,
-			counterparty: parsed.counterparty,
+			amountCents: read.amountCents,
+			direction: read.direction,
+			kind: read.kind,
+			counterparty: read.counterparty,
 			merchantKey: candidate.merchantKey,
-			cardLast4: parsed.cardLast4,
+			cardLast4: read.cardLast4,
 			status: 'pending',
 			question: null,
 			relatedId: null,
@@ -884,20 +1007,23 @@ export const ingestRawCaptures = async (
 			autoConfirmed: false,
 			// Só os itens que ficam pendentes o guardam: duplicata, transferência e ignorado
 			// gravam o próprio porquê por cima.
-			reason: currencyReview ? 'foreign_currency' : null,
-			// Sem conta quando o aviso não é de banco: o usuário atribui em "Sem conta".
-			accountId: account?.id ?? null,
+			reason,
+			// Sem conta quando o aviso não é de banco: o usuário atribui em "Sem conta". O
+			// pagamento de fatura em dúvida também: a conta do aviso não é a que pagou.
+			accountId: invoiceAmbiguity && decision.action === 'pending' ? null : (account?.id ?? null),
 			transferId: null,
-			installments: parsed.installments,
+			installments: read.installments,
 		};
 
 		stage = 'write';
-		const result = await applyDecision(base, decision, options.categories);
+		const result = invoiceFrom
+			? await recordLearnedInvoicePayment(base, invoiceFrom, accounts)
+			: await applyDecision(base, decision, options.categories, undefined, autoReason);
 		if (result.autoConfirmed) summary.autoConfirmed += 1;
 		summary.inserted += 1;
 
 		stage = 'external_leg';
-		const externalLeg = externalIncome && parsed.direction === 'in' ? await neutralizeExternalLeg(base) : false;
+		const externalLeg = externalIncome && read.direction === 'in' ? await neutralizeExternalLeg(base) : false;
 
 		logCaptureDecision({
 			raw,
@@ -912,6 +1038,14 @@ export const ingestRawCaptures = async (
 				captureId: result.id,
 				externalLeg,
 				destination: result.destination,
+				...(ambiguity
+					? {
+							ambiguity: ambiguity.case,
+							choice: learned ? ('learned' as const) : ('asked' as const),
+							staleChoice: choice?.state === 'stale' ? true : undefined,
+							reason: storedReasonOf(decision, base.reason, autoReason, invoiceFrom !== null),
+						}
+					: {}),
 			},
 		});
 		} catch (error) {
@@ -987,18 +1121,51 @@ const removePostedTransactions = async (capture: Capture): Promise<void> => {
 };
 
 /**
+ * A resposta do usuário a um aviso ambíguo vira a regra do caso (SPD-123): a mesma chave
+ * (`choiceKeyOf`) que a ingestão procura. Sem lugar para gravar (`store`), ou com a mesma
+ * escolha de antes, não grava nada. Devolve se a regra mudou.
+ */
+const learnChoice = async (
+	notice: Pick<Capture, 'packageName' | 'appLabel' | 'title' | 'text' | 'cardLast4'>,
+	ambiguity: AmbiguityCase,
+	value: string,
+	store: CaptureChoiceStore | undefined
+): Promise<boolean> => {
+	if (!store) return false;
+	const key = choiceKeyOf(notice, ambiguity);
+	const current = await store.read();
+	if (current[key] === value) return false;
+	await store.write(rememberChoice(current, key, value));
+	return true;
+};
+
+/**
+ * O motivo que o item resolvido guarda: o do caso ambíguo continua (a resposta foi do
+ * usuário), e é por ele que reverter devolve a pergunta e o conserto das compras antigas
+ * não mexe na conta escolhida. Qualquer outro sai, como sempre.
+ */
+const answeredReason = (reason: string | null): string | null => {
+	const ambiguity = ambiguityOfReason(reason);
+	return ambiguity ? ambiguousReason(ambiguity.case) : null;
+};
+
+/**
  * Vira transação (ou parcelas) com a categoria escolhida, e o app aprende o estabelecimento.
  *
  * `accountId` é a conta escolhida na revisão (SPD-111): sem ela (`undefined`), fica a do
  * aviso; `null` é "Sem conta". O lançamento nasce nela e a captura passa a apontar para ela,
  * então o "Desfazer" devolve o item à revisão já com a conta escolhida. Num cartão, as
  * parcelas seguem o ciclo dele (`postTransaction`), como qualquer compra do cartão.
+ *
+ * No aviso ambíguo (SPD-123) confirmar também é a resposta: a conta ou o cartão escolhido,
+ * ou a direção que está na tela, vira a regra do caso (`choices`, onde ela mora).
  */
 export const confirmCapture = async (
 	id: string,
 	categoryId: string,
 	categories: Category[],
-	accountId?: string | null
+	accountId?: string | null,
+	choices?: CaptureChoiceStore
 ): Promise<Capture | null> => {
 	const found = await getCapture(id);
 	if (!found || found.status !== 'pending') {
@@ -1007,6 +1174,7 @@ export const confirmCapture = async (
 	}
 	const accountChanged = accountId !== undefined && accountId !== found.accountId;
 	const capture = accountChanged ? { ...found, accountId } : found;
+	const ambiguity = ambiguityOfReason(found.reason);
 
 	const resolved = resolveCategoryId(categoryId, capture.direction, categories);
 	const transactionId = await postTransaction(capture, resolved, capture.id);
@@ -1015,10 +1183,18 @@ export const confirmCapture = async (
 		question: null,
 		suggestedCategory: resolved,
 		transactionId,
-		reason: null,
+		// A regra que decidiu e o usuário manteve continua dizendo que foi ela.
+		reason: ambiguity?.learned && !accountChanged ? found.reason : answeredReason(found.reason),
 		accountId: accountChanged ? accountId : undefined,
 	});
 	await learnCategory(capture, resolved);
+
+	let learnedChoice = false;
+	if (ambiguity && TARGET_CASES.includes(ambiguity.case) && capture.accountId) {
+		learnedChoice = await learnChoice(capture, ambiguity.case, capture.accountId, choices);
+	} else if (ambiguity?.case === 'pix_direction') {
+		learnedChoice = await learnChoice(capture, ambiguity.case, capture.direction, choices);
+	}
 
 	// Confirmar um recebimento como receita é o que ensina que a fonte é externa; a
 	// saída que a PJ avisou pelo mesmo app, se já virou transferência, deixa de ser.
@@ -1041,9 +1217,81 @@ export const confirmCapture = async (
 		// Se o usuário trocou a conta do aviso, e se o app tinha achado uma. Nunca qual.
 		accountChoice: !accountChanged ? 'kept' : accountId === null ? 'cleared' : 'chosen',
 		hadAccount: found.accountId !== null,
+		// O aviso ambíguo (SPD-123): se a resposta mudou a regra do caso. Nunca a chave.
+		...(ambiguity ? { ambiguity: ambiguity.case, choiceLearned: learnedChoice } : {}),
 	});
 
 	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };
+};
+
+/**
+ * "Entrou" ou "Saiu", no aviso em que a direção é um palpite (SPD-123, NOTIF-11): o item
+ * passa a ser da direção respondida — o tipo, a categoria sugerida e o lado do saldo vêm
+ * junto —, continua na revisão para confirmar, e a resposta vira a regra do caso.
+ */
+export const answerCaptureDirection = async (
+	id: string,
+	direction: CaptureDirection,
+	choices?: CaptureChoiceStore
+): Promise<void> => {
+	const capture = await getCapture(id);
+	if (!capture || capture.status !== 'pending') {
+		logReviewSkipped('direction', id, capture);
+		return;
+	}
+	const ambiguity = ambiguityOfReason(capture.reason);
+	const answered = withDirection({ direction: capture.direction, kind: capture.kind as CaptureKind }, direction);
+	await updateCapture(id, {
+		direction: answered.direction,
+		kind: answered.kind,
+		suggestedCategory: guessCategory({ ...answered, counterparty: capture.counterparty }),
+		reason: ambiguity ? ambiguousReason(ambiguity.case) : capture.reason,
+	});
+	const learned =
+		ambiguity?.case === 'pix_direction' ? await learnChoice(capture, ambiguity.case, direction, choices) : false;
+	log('capture', 'capture_answered', {
+		data: { captureId: id, question: 'direction', answer: direction, changed: direction !== capture.direction, learned },
+	});
+};
+
+/**
+ * De qual conta saiu o pagamento da fatura que o cartão avisou ter recebido (SPD-123, X-2).
+ * Com a conta, grava o pagamento dela para o cartão do aviso; com `null` ("Não lançar"),
+ * guarda o aviso sem mexer em saldo nenhum. Os dois viram a regra do caso.
+ *
+ * Um cartão não paga a fatura de outro: escolher um cartão como origem não faz nada.
+ */
+export const resolveInvoicePaymentCapture = async (
+	id: string,
+	fromAccountId: string | null,
+	choices?: CaptureChoiceStore
+): Promise<boolean> => {
+	const capture = await getCapture(id);
+	if (!capture || capture.status !== 'pending' || ambiguityOfReason(capture.reason)?.case !== 'invoice_payment') {
+		logReviewSkipped('invoice_payment', id, capture);
+		return false;
+	}
+	const reason = ambiguousReason('invoice_payment');
+
+	if (fromAccountId === null) {
+		await updateCapture(id, { status: 'ignored', question: null, reason, accountId: null });
+		const learned = await learnChoice(capture, 'invoice_payment', SKIP_CHOICE, choices);
+		logReview('capture_invoice_resolved', capture, { answer: 'skip', learned });
+		return true;
+	}
+
+	const accounts = await getAccounts();
+	const from = accounts.find((account) => account.id === fromAccountId && !account.deletedAt);
+	if (!from || from.kind === 'credit_card') {
+		logReviewSkipped('invoice_payment', id, capture);
+		return false;
+	}
+	const card = invoiceCardFor(accounts, capture);
+	const transferId = await payIntoCard(capture, card?.id ?? null, from.id);
+	await updateCapture(id, { status: 'ignored', question: null, reason, accountId: from.id, transferId });
+	const learned = await learnChoice(capture, 'invoice_payment', from.id, choices);
+	logReview('capture_invoice_resolved', capture, { answer: 'account', card: card !== null, learned });
+	return true;
 };
 
 /**
@@ -1230,14 +1478,19 @@ export const revertCapture = async (id: string): Promise<void> => {
 		}
 	}
 
+	// O aviso ambíguo volta com a pergunta (SPD-123): é respondendo de novo que se corrige o
+	// que a regra aprendida (ou a resposta anterior) fez, e a regra se atualiza. O pagamento
+	// da fatura volta sem conta: a de origem é justamente o que está sendo perguntado.
+	const ambiguity = ambiguityOfReason(capture.reason);
 	await updateCapture(id, {
 		status: 'pending',
 		question: null,
 		relatedId: null,
 		transactionId: null,
 		autoConfirmed: false,
-		reason: null,
+		reason: answeredReason(capture.reason),
 		transferId: null,
+		...(ambiguity?.case === 'invoice_payment' ? { accountId: null } : {}),
 	});
 
 	logReview('capture_reverted', capture, undone);
@@ -1253,6 +1506,8 @@ export default {
 	markCaptureTransfer,
 	answerCaptureDuplicate,
 	answerCaptureTransfer,
+	answerCaptureDirection,
+	resolveInvoicePaymentCapture,
 	revertCapture,
 	settleBillPayment,
 	undoBillPayment,
