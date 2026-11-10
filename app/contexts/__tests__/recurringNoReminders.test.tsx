@@ -62,18 +62,8 @@ jest.mock('expo-notifications', () => ({
 jest.mock('../../database/database', () => ({
 	initDatabase: jest.fn(async () => undefined),
 	getRecurringTransactions: jest.fn(async () => mockRules.map((rule) => ({ ...rule }))),
-	addRecurringTransaction: jest.fn(async (draft: Record<string, unknown>) => {
-		mockRules.push({ ...draft, id: 'nova', nextDue: mockRules[0]?.nextDue, updatedAt: '2026-11-07T00:00:00.000Z' });
-		return 'nova';
-	}),
-	updateRecurringTransaction: jest.fn(async (edit: Record<string, unknown>) => {
-		const index = mockRules.findIndex((rule) => rule.id === edit.id);
-		if (index >= 0) mockRules[index] = { ...mockRules[index], ...edit };
-	}),
-	deleteRecurringTransaction: jest.fn(async () => undefined),
 }));
 
-jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
 jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: () => undefined }));
 
 import * as Notifications from 'expo-notifications';
@@ -183,28 +173,10 @@ describe('regra ativa não agenda lembrete', () => {
 		expect(ids('transaction_')).toEqual([]);
 	});
 
-	it('ao criar e ao editar uma regra ativa: nada é agendado', async () => {
+	it('o contexto não oferece mais criar, editar nem apagar uma regra (SPD-128)', async () => {
 		await open();
 
-		await act(async () => {
-			await context?.addTransaction({
-				amountCents: 12_000,
-				isIncome: false,
-				note: 'Academia',
-				category: 'health',
-				recurrenceType: 'monthly',
-				day: 15,
-				active: true,
-			} as Parameters<NonNullable<typeof context>['addTransaction']>[0]);
-		});
-		await act(async () => {
-			await context?.updateTransaction({ ...rule(), amountCents: 160_000 } as Parameters<
-				NonNullable<typeof context>['updateTransaction']
-			>[0]);
-		});
-
-		expect(recurringScheduleCalls()).toHaveLength(0);
-		expect(ids('transaction_')).toEqual([]);
+		expect(Object.keys(context ?? {}).sort()).toEqual(['refreshTransactions', 'transactions']);
 	});
 });
 

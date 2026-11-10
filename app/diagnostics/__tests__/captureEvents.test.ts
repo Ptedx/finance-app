@@ -112,6 +112,15 @@ const logged = (): Logged[] =>
 
 const decisions = (): Logged[] => logged().filter((entry) => entry.event === 'capture_decision');
 
+/**
+ * O `data` sem os ids, para procurar vazamento no texto dele. O `captureId` é um uuid
+ * aleatório e a impressão digital é um hash: um "41" ou um "230" no meio deles é
+ * coincidência, não o valor do aviso — e era o que fazia este arquivo falhar de vez em
+ * quando (SPD-128). Os ids são conferidos à parte, como na varredura do fim do arquivo.
+ */
+const withoutIds = (data: Record<string, DiagnosticValue>): Record<string, DiagnosticValue> =>
+	Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'captureId' && key !== 'fingerprint'));
+
 const categories = [
 	{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
 	{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
@@ -250,7 +259,7 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		await ingest(raw('com.picpay', 'Carteira digital', 'Pix enviado', 'Você enviou um Pix de R$ 41,70 para JOAO PEREIRA'));
 
 		expect(decisions()[0].data).toMatchObject({ pkg: 'com.picpay', knownBank: true, bankFromPackage: true, account: 'created' });
-		expect(JSON.stringify(decisions()[0].data)).not.toMatch(/Carteira|PicPay|JOAO|41/);
+		expect(JSON.stringify(withoutIds(decisions()[0].data))).not.toMatch(/Carteira|PicPay|JOAO|41/);
 	});
 
 	it('com o nome de sempre na tela, o diário não marca nada', async () => {
@@ -344,7 +353,9 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		// Nenhum cartão para escolher: o destino fica em branco, e o diário diz.
 		expect(invoice.data).toMatchObject({ kind: 'invoice_payment', reason: 'invoice_payment', destination: 'none' });
 		expect(bought.data.destination).toBeUndefined();
-		expect(JSON.stringify(decisions())).not.toMatch(new RegExp(`${reserve.id}|Caixinha|50000|150000`));
+		expect(JSON.stringify(decisions().map((entry) => ({ ...entry, data: withoutIds(entry.data) })))).not.toMatch(
+			new RegExp(`${reserve.id}|Caixinha|50000|150000`)
+		);
 	});
 });
 
@@ -357,7 +368,7 @@ describe('capture_decision: o nome salvo em Ajustes (SPD-115)', () => {
 
 		const [entry] = decisions();
 		expect(entry.data).toMatchObject({ action: 'transfer', outcome: 'transfer', reason: 'own_bank_name' });
-		expect(JSON.stringify(entry.data).toLowerCase()).not.toMatch(/maria|souza|oliveira|230/);
+		expect(JSON.stringify(withoutIds(entry.data)).toLowerCase()).not.toMatch(/maria|souza|oliveira|230/);
 	});
 
 	it('sem nome salvo, o mesmo Pix fica para a revisão, sem o motivo do nome', async () => {

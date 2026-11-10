@@ -462,9 +462,9 @@ describe('canal Android', () => {
 		const channels = (Notifications.setNotificationChannelAsync as jest.Mock).mock.calls.map(
 			([id]) => id
 		);
-		expect(channels).toEqual(
-			expect.arrayContaining(['default', 'recurring-transactions', 'bills'])
-		);
+		expect(channels).toEqual(expect.arrayContaining(['default', 'bills']));
+		// O das recorrências antigas não é mais criado: nenhum aviso usa (SPD-128).
+		expect(channels).not.toContain('recurring-transactions');
 	});
 });
 

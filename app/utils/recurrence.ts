@@ -2,14 +2,16 @@
  * Recurrence scheduling for Spendr.
  *
  * Pure calendar arithmetic, deliberately free of database and React Native imports so
- * the rules can be tested directly. Two properties matter and were both broken before:
+ * the rules can be tested directly. A series is always regenerated from
+ * `(year, month, preferredDay)`, never by stepping the previously clamped date. Stepping
+ * loses the intent: a bill due on the 31st, clamped to 28 February, must return to
+ * 31 March — not stay on the 28th.
  *
- *  1. A series is always regenerated from `(year, month, preferredDay)`, never by
- *     stepping the previously clamped date. Stepping loses the intent: a bill due on
- *     the 31st, clamped to 28 February, must return to 31 March — not stay on the 28th.
- *
- *  2. Occurrences are enumerated over an interval rather than advanced once. If the app
- *     is not opened for three months, three months of rent are due — not one.
+ * As recorrências antigas não lançam mais nada (SPD-113) e saíram do custo fixo (SPD-122).
+ * O que sobra aqui é o que o `database.ts` ainda usa para gravar o `nextDue` de uma regra
+ * (`firstDueOnOrAfter`, `nextDueAfterEdit`) e o id derivado que as Contas do mês usam na
+ * baixa (`occurrenceId`). A varredura de ocorrências atrasadas e o "equivalente mensal"
+ * saíram no SPD-128, sem uso.
  */
 
 import { addDays, buildClampedDate, parseISODate } from './dateUtils';
@@ -25,12 +27,6 @@ export interface RecurrenceRule {
 	/** 1 = Monday … 7 = Sunday. Weekly rules only. */
 	weekday?: number;
 }
-
-/**
- * Ceiling on how many occurrences a single catch-up may generate, so a corrupt rule or
- * an absurd device clock cannot flood the ledger. Weekly over ten years is ~520.
- */
-export const MAX_CATCH_UP_OCCURRENCES = 750;
 
 const clamp = (value: number | undefined, min: number, max: number, fallback: number): number => {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
@@ -87,10 +83,6 @@ export const firstDueOnOrAfter = (rule: RecurrenceRule, fromDate: string): strin
 	}
 };
 
-/** The first occurrence strictly after `afterDate`. */
-export const nextDueAfter = (rule: RecurrenceRule, afterDate: string): string =>
-	firstDueOnOrAfter(rule, addDays(afterDate, 1));
-
 /**
  * O primeiro dia do ciclo seguinte ao que contém `lastProcessed`.
  *
@@ -131,8 +123,7 @@ export const nextCycleStart = (rule: RecurrenceRule, lastProcessed: string): str
  *
  * Mover a data para **mais tarde no mesmo ciclo** também não cobra duas vezes: o
  * ciclo já foi cobrado. Mover para **mais cedo** no ciclo seguinte cobra na nova data
- * sem pular nenhum mês — é o que `processRecurringTransactions` espera ao usar
- * `nextDue` como piso da janela de varredura.
+ * sem pular nenhum mês.
  */
 export const nextDueAfterEdit = (
 	rule: RecurrenceRule,
@@ -141,31 +132,6 @@ export const nextDueAfterEdit = (
 ): string => {
 	const anchor = lastProcessed ? nextCycleStart(rule, lastProcessed) : today;
 	return firstDueOnOrAfter(rule, anchor);
-};
-
-/**
- * Every occurrence in `[fromDate, toDate]`, oldest first.
- *
- * This is what makes catch-up correct: opening the app after a long absence posts one
- * transaction per missed due date, each carrying its own date, instead of collapsing
- * them into a single entry stamped today.
- */
-export const occurrencesBetween = (
-	rule: RecurrenceRule,
-	fromDate: string,
-	toDate: string
-): string[] => {
-	if (fromDate > toDate) return [];
-
-	const occurrences: string[] = [];
-	let current = firstDueOnOrAfter(rule, fromDate);
-
-	while (current <= toDate && occurrences.length < MAX_CATCH_UP_OCCURRENCES) {
-		occurrences.push(current);
-		current = nextDueAfter(rule, current);
-	}
-
-	return occurrences;
 };
 
 /**
@@ -211,33 +177,10 @@ export const occurrenceId = (recurringId: string, dueDate: string): string => {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${version}-${variant}-${hex.slice(20, 32)}`;
 };
 
-/**
- * Describes a rule in terms of a monthly equivalent, so weekly, monthly and yearly
- * commitments can be summed into a meaningful "per month" figure.
- *
- * Summing them raw — as the home screen did — treats a R$ 3.000 annual insurance
- * premium as R$ 3.000 of monthly cost and a R$ 150 weekly expense as R$ 150.
- */
-export const monthlyEquivalentCents = (rule: RecurrenceRule, amountCents: number): number => {
-	switch (rule.recurrenceType) {
-		case 'weekly':
-			// 52 weeks a year, not 4 weeks a month: 4x undercounts by about 8%.
-			return Math.round((amountCents * 52) / 12);
-		case 'yearly':
-			return Math.round(amountCents / 12);
-		default:
-			return amountCents;
-	}
-};
-
 export default {
 	weekdayOf,
 	firstDueOnOrAfter,
-	nextDueAfter,
 	nextCycleStart,
 	nextDueAfterEdit,
-	occurrencesBetween,
 	occurrenceId,
-	monthlyEquivalentCents,
-	MAX_CATCH_UP_OCCURRENCES,
 };

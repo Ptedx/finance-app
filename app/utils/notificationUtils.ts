@@ -82,14 +82,8 @@ export const registerForPushNotificationsAsync = async (): Promise<string | null
 				lightColor: '#15E8FE',
 			});
 
-			await Notifications.setNotificationChannelAsync('recurring-transactions', {
-				name: 'Recurring Transactions',
-				description: 'Notifications for upcoming recurring transactions',
-				importance: Notifications.AndroidImportance.HIGH,
-				vibrationPattern: [0, 250, 250, 250],
-				lightColor: '#15E8FE',
-			});
-
+			// O canal `recurring-transactions` saiu (SPD-128): nenhum aviso usa mais desde que as
+			// recorrências pararam de lembrar (SPD-122). Quem já o tem segue com ele, vazio.
 			await ensureBillsChannel(Notifications);
 		}
 
