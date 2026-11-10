@@ -4556,7 +4556,7 @@ export const WIPE_DELETED_TABLES = [
  * - `merchant_rules`: o que o app aprendeu por estabelecimento ("o iFood é alimentação",
  *   "ignorar o WhatsApp"). O DEC-35 manda guardar.
  * - `preferences`: a configuração (moeda, idioma, CDI, lembretes, avisos dispensados).
- *   Só saem as duas chaves presas a contas, ver `ACCOUNT_TIED_PREFERENCE_KEYS`.
+ *   Só saem as chaves presas a contas, ver `ACCOUNT_TIED_PREFERENCE_KEYS`.
  *
  * Toda tabela de `SYNCED_TABLES` está numa das duas listas — o teste confere, para uma
  * tabela nova não ficar de fora calada. Fora delas: `sync_state` (o cursor e a marca do
@@ -4570,12 +4570,15 @@ export const WIPE_KEPT_TABLES = [
 
 /**
  * As preferências que apontam para contas que deixam de existir: os pares "são contas
- * diferentes" e qual conta recebe os avisos da PJ de cada banco. Com conta, o servidor já
- * as apagou junto (SPD-080); sem conta, não há para onde propagar.
+ * diferentes", qual conta recebe os avisos da PJ de cada banco e as escolhas aprendidas nos
+ * avisos ambíguos (SPD-123), que guardam o id da conta ou do cartão escolhido (SPD-132). Com
+ * conta, o servidor já apagou as duas primeiras junto (SPD-080); sem conta, não há para onde
+ * propagar.
  */
 const ACCOUNT_TIED_PREFERENCE_KEYS = [
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
+	STORAGE_KEYS.captureChoices,
 ];
 
 export interface LocalWipeOptions {
@@ -4610,7 +4613,7 @@ export interface LocalWipeOptions {
  * A marca do apagar (`knownWipeAt`) entra na mesma transação: apagar sem a marca faria o
  * próximo push ser recusado, e a marca sem apagar subiria o que devia ter sumido.
  *
- * O AsyncStorage vem depois da transação (ele não participa dela): saem as duas chaves
+ * O AsyncStorage vem depois da transação (ele não participa dela): saem as chaves
  * presas a contas e a cópia antiga dos orçamentos que a migração v4 deixou para trás.
  *
  * Usada pelo fluxo das Configurações (`utils/dataWipe.ts`) e, no SPD-083, quando outro

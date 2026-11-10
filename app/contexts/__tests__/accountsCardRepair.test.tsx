@@ -210,7 +210,11 @@ const posted = (overrides: Partial<Transaction>): Transaction => ({
 	...overrides,
 });
 
-/** O cartão como a tela de cartão manda: banco escolhido, sem app ligado. */
+/**
+ * O cartão como a tela de cartão manda: banco escolhido, sem app ligado. Com o final das
+ * compras: um final que não é dele, com a conta do Nubank no app, hoje seria perguntado, e o
+ * conserto não o chuta para o cartão (SPD-132).
+ */
 const cardDraft = (overrides: Partial<AccountDraft> = {}): AccountDraft => {
 	const {
 		id: _id,
@@ -221,7 +225,7 @@ const cardDraft = (overrides: Partial<AccountDraft> = {}): AccountDraft => {
 		kind: 'credit_card',
 		role: 'card',
 		bankName: 'Nubank',
-		last4: '1534',
+		last4: '6422',
 		closingDay: 25,
 		closingDaysBefore: 7,
 		openingBalanceDate: '2026-09-30',
@@ -284,6 +288,19 @@ describe('AccountsContext — criar ou editar cartão conserta o livro', () => {
 		expect(api().cardLedgerRepair).toBeNull();
 	});
 
+	// SPD-132: "Compra aprovada" com um final que não é do cartão, e a conta do Nubank no app,
+	// é o virtual do Nubank ou um débito: um aviso igual hoje vai para a revisão.
+	it('criar o cartão com outro final não puxa a compra que hoje seria perguntada', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().createAccount(cardDraft({ last4: '1534' }));
+		});
+		expect(captureById('c')?.accountId).toBe('nu-pf');
+		expect(txById('tx-c')?.accountId).toBe('nu-pf');
+		expect(reassignCaptureLedger).not.toHaveBeenCalled();
+		expect(api().cardLedgerRepair).toBeNull();
+	});
+
 	it('criar uma conta (não cartão) não mexe em compra nenhuma', async () => {
 		const api = await mount();
 		await act(async () => {
@@ -327,6 +344,7 @@ describe('AccountsContext — criar ou editar cartão conserta o livro', () => {
 				kind: 'credit_card',
 				role: 'card',
 				bankName: 'Inter',
+				last4: '6422',
 				closingDay: 5,
 			})
 		);

@@ -188,11 +188,16 @@ describe('NOTIF-16: débito com um final desconhecido', () => {
 			createdAt: '',
 			updatedAt: '',
 		};
-		// Compra antiga (antes do SPD-123): o conserto segue movendo como sempre moveu.
-		expect(planLedgerRepair([interPF, interCard], [base]).moveCaptures).toHaveLength(1);
-		// Escolhida na revisão ou pela regra aprendida: fica onde o usuário pôs.
+		// Compra antiga (antes do SPD-123): ia para o cartão, mas hoje um aviso igual vai para a
+		// revisão — o conserto também não chuta e a deixa na conta (SPD-132).
+		expect(planLedgerRepair([interPF, interCard], [base]).moveCaptures).toEqual([]);
+		// Com o final nomeado depois no cartão, as regras de hoje dizem "cartão", sem dúvida: a
+		// antiga vai para ele. A escolhida na revisão ou pela regra aprendida fica onde o
+		// usuário pôs.
+		const namedLater = { ...interCard, cardNames: '{"0443":"Virtual"}' };
+		expect(planLedgerRepair([interPF, namedLater], [base]).moveCaptures).toHaveLength(1);
 		for (const reason of [ambiguousReason('debit_unknown_last4'), learnedReason('debit_unknown_last4')]) {
-			expect(planLedgerRepair([interPF, interCard], [{ ...base, reason }]).moveCaptures).toEqual([]);
+			expect(planLedgerRepair([interPF, namedLater], [{ ...base, reason }]).moveCaptures).toEqual([]);
 		}
 	});
 });

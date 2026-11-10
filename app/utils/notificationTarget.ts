@@ -184,8 +184,8 @@ export type NotificationTarget =
  *    nenhum deles — a conta corrente ou um dos cartões (NOTIF-15);
  *  - `debit_unknown_last4`: nem "crédito" nem "débito", um cartão do banco com outro final e
  *    a conta do banco no app — o virtual do Nubank ou o débito do Inter, que se escrevem
- *    igual (NOTIF-16). `card` é o palpite de antes, que só o conserto das compras antigas
- *    (`planLedgerRepair`) ainda usa.
+ *    igual (NOTIF-16). `card` é o palpite de antes; desde o SPD-132 nem o conserto das
+ *    compras antigas (`planLedgerRepair`) o usa.
  */
 export type TargetAmbiguity =
 	| { case: 'credit_no_last4' }
@@ -348,7 +348,8 @@ export interface LedgerRepairPlan {
  * - Cartão criado sozinho (nome "· final 1234", sem fechamento nem limite) é juntado ao
  *   único cartão configurado do mesmo banco, quando há exatamente um.
  * - Captura com final de cartão, confirmada ou pendente, numa conta que não é cartão, vai
- *   para o cartão que as regras de hoje escolheriam.
+ *   para o cartão que as regras de hoje escolheriam. Quando elas não respondem (a compra
+ *   iria para a revisão), a captura fica onde está, sem mover nem apagar (SPD-132).
  */
 export const planLedgerRepair = (accounts: Account[], captures: Capture[]): LedgerRepairPlan => {
 	const live = accounts.filter((account) => !account.deletedAt);
@@ -389,17 +390,13 @@ export const planLedgerRepair = (accounts: Account[], captures: Capture[]): Ledg
 		const current = byId.get(capture.accountId);
 		if (!current || current.kind === 'credit_card') continue;
 
-		// O que a captura antiga era: a compra "aprovada" sem "crédito" que hoje fica em
-		// dúvida (NOTIF-16) o conserto ainda leva para o único cartão, como sempre levou.
+		// Só o que as regras de hoje põem num cartão sem dúvida. A compra que um aviso igual
+		// mandaria para a revisão (`unknown`, SPD-123) — "aprovada" sem "crédito" com a conta
+		// do banco no app (NOTIF-16), um final que não é de nenhum dos cartões — não é chutada
+		// aqui também (SPD-132): fica onde está.
 		const decided = pickNotificationTarget(realAccounts, { ...capture, kind: capture.kind as CaptureKind });
-		const card =
-			decided.type === 'card'
-				? decided.account
-				: decided.type === 'unknown' && decided.ambiguity?.case === 'debit_unknown_last4'
-					? decided.ambiguity.card
-					: null;
-		if (card && card.id !== capture.accountId) {
-			moveCaptures.push({ captureId: capture.id, transactionId: capture.transactionId, toId: card.id });
+		if (decided.type === 'card' && decided.account.id !== capture.accountId) {
+			moveCaptures.push({ captureId: capture.id, transactionId: capture.transactionId, toId: decided.account.id });
 		}
 	}
 

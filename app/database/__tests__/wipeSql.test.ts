@@ -170,7 +170,8 @@ const seedLedger = async () => {
       VALUES ('${STORAGE_KEYS.selectedCurrency}', 'BRL', '${T}', NULL, 0),
              ('${STORAGE_KEYS.language}', 'pt', '${T}', NULL, 0),
              ('${STORAGE_KEYS.distinctAccountPairs}', '[["a1","a0"]]', '${T}', NULL, 0),
-             ('${STORAGE_KEYS.businessFeeds}', '{"com.nu.production":"a1"}', '${T}', NULL, 1);
+             ('${STORAGE_KEYS.businessFeeds}', '{"com.nu.production":"a1"}', '${T}', NULL, 1),
+             ('${STORAGE_KEYS.captureChoices}', '{"com.nu.production|debit_unknown_last4|6422":"a1"}', '${T}', NULL, 0);
   `);
 	// O que sobra de categoria e regra já subiu: só o que o apagar mexer pode ficar sujo.
 	await db.execAsync('UPDATE categories SET dirty = 0;');
@@ -321,7 +322,9 @@ describeSql('apagar todos os dados, SQL de verdade (SPD-082)', () => {
 		).toEqual({ count: 1 });
 	});
 
-	it('preferências: saem só as duas presas a contas, sem lápide; a configuração fica', async () => {
+	// SPD-132: as escolhas aprendidas nos avisos ambíguos (SPD-123) também guardam ids de
+	// contas, que este apagar some com elas.
+	it('preferências: saem só as três presas a contas, sem lápide; a configuração fica', async () => {
 		await wipeLocalData();
 
 		const rows = await db.getAllAsync<{ key: string; deletedAt: string | null }>(
@@ -332,7 +335,11 @@ describeSql('apagar todos os dados, SQL de verdade (SPD-082)', () => {
 			{ key: STORAGE_KEYS.selectedCurrency, deletedAt: null },
 		]);
 		expect(AsyncStorage.multiRemove).toHaveBeenCalledWith(
-			expect.arrayContaining([STORAGE_KEYS.distinctAccountPairs, STORAGE_KEYS.businessFeeds])
+			expect.arrayContaining([
+				STORAGE_KEYS.distinctAccountPairs,
+				STORAGE_KEYS.businessFeeds,
+				STORAGE_KEYS.captureChoices,
+			])
 		);
 		const removed = (AsyncStorage.multiRemove as jest.Mock).mock.calls.flat(2) as string[];
 		for (const kept of [
@@ -352,7 +359,7 @@ describeSql('apagar todos os dados, SQL de verdade (SPD-082)', () => {
 
 	it('depois do apagar, a conferência das preferências não inventa lápide para as chaves que saíram', async () => {
 		await wipeLocalData();
-		// O AsyncStorage depois do apagar: a configuração continua lá, as duas chaves saíram.
+		// O AsyncStorage depois do apagar: a configuração continua lá, as três chaves saíram.
 		const left: Record<string, string> = {
 			[STORAGE_KEYS.selectedCurrency]: 'BRL',
 			[STORAGE_KEYS.language]: 'pt',

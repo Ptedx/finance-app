@@ -72,14 +72,15 @@ const capture = (overrides: Partial<Capture>): Capture => ({
 	packageName: NUBANK,
 	appLabel: 'Nubank',
 	title: 'Compra aprovada',
-	text: 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 6422.',
+	// O final do próprio cartão: sem dúvida de que a compra é dele (SPD-132).
+	text: 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 1534.',
 	postedAt: POSTED,
 	amountCents: 2938,
 	direction: 'out',
 	kind: 'purchase',
 	counterparty: 'IFOOD',
 	merchantKey: 'ifood',
-	cardLast4: '6422',
+	cardLast4: '1534',
 	status: 'confirmed',
 	question: null,
 	relatedId: null,
@@ -107,7 +108,7 @@ const posted = (overrides: Partial<Transaction>): Transaction => ({
 	installmentGroup: null,
 	installmentIndex: null,
 	installmentCount: null,
-	cardLast4: '6422',
+	cardLast4: '1534',
 	updatedAt: '',
 	...overrides,
 });
@@ -258,6 +259,27 @@ describe('planCardLedgerRepair — o cartão novo recebe as compras que caíram 
 				planCardLedgerRepair('nu-card', [card, nubankPF], [capture({})], [posted({})]).moves
 			).toEqual([]);
 		}
+	});
+
+	// SPD-132: "Compra aprovada" com um final que não é do cartão, e a conta do banco no app,
+	// é o débito do Inter e também o virtual do Nubank (NOTIF-16). Um aviso igual hoje vai
+	// para a revisão; o cartão novo não puxa a antiga para si. Nomeado o final no cartão, ela
+	// é dele sem dúvida, e vai.
+	it('a compra com final desconhecido que hoje seria perguntada fica na conta, até o final ser nomeado no cartão', () => {
+		const virtualFinal = capture({
+			text: 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 6422.',
+			cardLast4: '6422',
+		});
+		const ledger = [posted({ cardLast4: '6422' })];
+		expect(planCardLedgerRepair('nu-card', accounts, [virtualFinal], ledger)).toEqual({
+			moves: [],
+			keptEdited: [],
+		});
+
+		const named = { ...nubankCard, cardNames: '{"6422":"iFood"}' };
+		expect(
+			planCardLedgerRepair('nu-card', [named, nubankPF], [virtualFinal], ledger).moves
+		).toEqual([{ captureId: 'c', transactionId: 'tx-c', transactionIds: ['tx-c'], toId: 'nu-card' }]);
 	});
 });
 
