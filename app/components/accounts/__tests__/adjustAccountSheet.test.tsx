@@ -20,10 +20,11 @@ jest.mock('react-i18next', () => ({
 	}),
 }));
 
-import { AccessibilityInfo, Alert } from 'react-native';
+import { AccessibilityInfo, Alert, type AlertButton } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { Account } from '../../../database/schema';
 import { configureMoney, formatCents } from '../../../utils/money';
+import { TourContext, type TourContextValue } from '../../tour/TourContext';
 import AdjustAccountSheet from '../AdjustAccountSheet';
 
 const account: Account = {
@@ -262,5 +263,160 @@ describe('E2E-05 — fechar a folha com um valor digitado pergunta antes', () =>
 
 		expect(alert).not.toHaveBeenCalled();
 		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem perguntar', () => {
+	const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+	const openTopic = jest.fn();
+	const tour: TourContextValue = {
+		report: jest.fn(),
+		startTour: jest.fn(),
+		openTopic,
+		noticeVisible: false,
+		answerNotice: jest.fn(),
+	};
+
+	/** A folha com o guia por perto, como no app (o `TourProvider` do `_layout` raiz). */
+	const openWithTour = async (known: Known, balanceOnly = false) => {
+		await act(async () => {
+			renderer = create(
+				<TourContext.Provider value={tour}>
+					<AdjustAccountSheet
+						visible
+						account={account}
+						spentCents={known.spentCents}
+						monthLabel="novembro"
+						balanceCents={known.balanceCents}
+						targetCents={known.targetCents}
+						isEnvelope={false}
+						balanceOnly={balanceOnly}
+						onClose={onClose}
+						onConfirm={onConfirm}
+					/>
+				</TourContext.Provider>
+			);
+		});
+	};
+
+	const pressWhere = async (predicate: (node: ReactTestInstance) => boolean) => {
+		const target = renderer.root.findAll((node) => typeof node.props.onPress === 'function' && predicate(node))[0];
+		if (!target) throw new Error('botão não encontrado');
+		await act(async () => {
+			target.props.onPress();
+		});
+	};
+
+	const pressHelp = () => pressWhere((node) => node.props.accessibilityLabel === 'tutorial.help');
+	const pressFullGuide = () => pressWhere((node) => node.props.accessibilityLabel === 'tutorial.tip.fullGuide');
+	const tipShown = () => texts().includes('accounts.adjust.helpTip');
+
+	/** Os botões da última pergunta feita. */
+	const lastButtons = (): AlertButton[] => alert.mock.calls[alert.mock.calls.length - 1][2] ?? [];
+
+	it('tocar no "?" mostra a dica dentro da folha, sem fechar nada; tocar de novo esconde', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		expect(tipShown()).toBe(false);
+
+		await pressHelp();
+
+		expect(tipShown()).toBe(true);
+		expect(texts()).toContain('tutorial.tip.fullGuide');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(openTopic).not.toHaveBeenCalled();
+		// O leitor de tela lê a dica quando ela abre.
+		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith('accounts.adjust.helpTip');
+
+		await pressHelp();
+		expect(tipShown()).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('tocar fora da dica a fecha: no fundo escurecido ou sobre os campos, sem fechar a folha', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		await typeInto('accounts.adjust.spent', '1200');
+		await pressHelp();
+
+		await pressWhere((node) => node.props.importantForAccessibility === 'no-hide-descendants');
+		expect(tipShown()).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(alert).not.toHaveBeenCalled();
+
+		await pressHelp();
+		await pressWhere((node) => node.props.testID === 'sheet-tip-dismiss');
+		expect(tipShown()).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shown('accounts.adjust.spent')).toBe('1.200,00');
+	});
+
+	it('o voltar do Android com a dica aberta fecha só a dica', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		await pressHelp();
+
+		const modal = renderer.root.find((node) => typeof node.props.onRequestClose === 'function');
+		await act(async () => {
+			modal.props.onRequestClose();
+		});
+
+		expect(tipShown()).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('numa reserva, a dica fala do saldo de hoje, não do gasto do mês', async () => {
+		await openWithTour(NEW_ACCOUNT, true);
+		await pressHelp();
+
+		expect(texts()).toContain('accounts.adjust.helpTipBalanceOnly');
+		expect(tipShown()).toBe(false);
+	});
+
+	it('"Ver o guia completo" sem nada digitado fecha a folha e abre o tópico direto', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		await pressHelp();
+		await pressFullGuide();
+
+		expect(alert).not.toHaveBeenCalled();
+		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(openTopic).toHaveBeenCalledWith('accounts');
+	});
+
+	it('"Ver o guia completo" com algo digitado pergunta antes; "Continuar editando" mantém os valores', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		await typeInto('accounts.adjust.spent', '1200');
+		await typeInto('accounts.adjust.balance', '5000');
+		await pressHelp();
+		await pressFullGuide();
+
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect(alert.mock.calls[0][0]).toBe('tutorial.tip.leaveTitle');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(openTopic).not.toHaveBeenCalled();
+
+		const stay = lastButtons().find((button) => button.style === 'cancel');
+		expect(stay?.text).toBe('tutorial.tip.stay');
+		await act(async () => {
+			stay?.onPress?.();
+		});
+
+		expect(onClose).not.toHaveBeenCalled();
+		expect(openTopic).not.toHaveBeenCalled();
+		expect(shown('accounts.adjust.spent')).toBe('1.200,00');
+		expect(shown('accounts.adjust.balance')).toBe('5.000,00');
+	});
+
+	it('com algo digitado, "Sair" fecha a folha e abre o tópico', async () => {
+		await openWithTour(NEW_ACCOUNT);
+		await typeInto('accounts.adjust.spent', '1200');
+		await pressHelp();
+		await pressFullGuide();
+
+		const leave = lastButtons().find((button) => button.style === 'destructive');
+		expect(leave?.text).toBe('tutorial.tip.leave');
+		await act(async () => {
+			leave?.onPress?.();
+		});
+
+		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(openTopic).toHaveBeenCalledWith('accounts');
 	});
 });

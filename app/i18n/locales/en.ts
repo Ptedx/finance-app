@@ -804,6 +804,14 @@ const en = {
 		help: 'How to use this screen',
 		helpHint: 'Shows what each button on this screen does',
 		helpTopicHint: 'Opens the explanation in Settings › How to use',
+		tip: {
+			fullGuide: 'See the full guide',
+			toggleHint: 'Shows or hides a quick tip',
+			leaveTitle: 'Leave and lose what you typed?',
+			leaveBody: 'The values you typed have not been saved yet.',
+			leave: 'Leave',
+			stay: 'Keep editing',
+		},
 		notice: {
 			title: 'New: How to use Spendr',
 			body: 'A short guide to each feature.',
@@ -1254,6 +1262,8 @@ account: {
 			previewBalanceOnly: 'The account will be at {{balance}}. No expense is recorded.',
 			confirm: 'Match',
 			done: 'Account matched',
+			helpTip: 'Use it when the balance in the app drifts from the bank: say how much you have spent this month and how much is left, and the app corrects it without making up any spending.',
+			helpTipBalanceOnly: 'Use it when the balance in the app drifts from the bank: enter the balance the bank shows today, including yield. The app counts from here, without recording any expense.',
 		},
 		duplicate: {
 			title: 'Two accounts at the same bank',

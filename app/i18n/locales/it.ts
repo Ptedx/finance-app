@@ -804,6 +804,14 @@ const it = {
 		help: 'Come usare questa schermata',
 		helpHint: 'Mostra cosa fa ogni pulsante di questa schermata',
 		helpTopicHint: 'Apre la spiegazione in Impostazioni › Come si usa',
+		tip: {
+			fullGuide: 'Vedi la guida completa',
+			toggleHint: 'Mostra o nasconde un suggerimento rapido',
+			leaveTitle: 'Uscire e perdere quello che hai digitato?',
+			leaveBody: 'I valori digitati non sono ancora stati salvati.',
+			leave: 'Esci',
+			stay: 'Continua a modificare',
+		},
 		notice: {
 			title: 'Novità: Come si usa Spendr',
 			body: 'Una breve guida a ogni funzione.',
@@ -1255,6 +1263,8 @@ account: {
 			previewBalanceOnly: 'Il conto sarà a {{balance}}. Nessuna spesa viene registrata.',
 			confirm: 'Allinea',
 			done: 'Conto allineato',
+			helpTip: "Usalo quando il saldo dell'app non coincide con la banca: di' quanto hai già speso nel mese e quanto ti resta, e l'app corregge senza inventare spese.",
+			helpTipBalanceOnly: "Usalo quando il saldo dell'app non coincide con la banca: indica il saldo che la banca mostra oggi, con il rendimento. L'app conta da qui, senza registrare spese.",
 		},
 		duplicate: {
 			title: 'Due conti della stessa banca',

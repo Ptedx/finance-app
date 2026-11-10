@@ -55,6 +55,15 @@ const buttonPaths = [
 	'tutorial.howTo.showOnScreen',
 	'tutorial.howTo.showOnScreenHint',
 	'tutorial.howTo.reviewWelcome',
+	// A dica rápida do "?" (SPD-135).
+	'tutorial.tip.fullGuide',
+	'tutorial.tip.toggleHint',
+	'tutorial.tip.leaveTitle',
+	'tutorial.tip.leaveBody',
+	'tutorial.tip.leave',
+	'tutorial.tip.stay',
+	'accounts.adjust.helpTip',
+	'accounts.adjust.helpTipBalanceOnly',
 ];
 
 describe('textos do guia na tela', () => {

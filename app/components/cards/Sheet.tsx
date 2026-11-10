@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	Alert,
 	Keyboard,
 	KeyboardAvoidingView,
+	type LayoutChangeEvent,
 	Modal,
 	Platform,
 	Pressable,
@@ -16,6 +17,7 @@ import {
 	View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import HelpTip from '../tour/HelpTip';
 
 /**
  * Folha que sobe do rodapé, para ações curtas sobre um cartão.
@@ -41,6 +43,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
  * Com `confirmDiscard`, fechar (voltar, X ou toque fora) pergunta antes de descartar o que
  * foi digitado.
  *
+ * O "?" (`help`): sem `tip`, faz `onPress` direto. Com `tip` (SPD-135), mostra a dica rápida
+ * (`HelpTip`) logo abaixo do título, e o `onPress` passa a ser o link "Ver o guia completo",
+ * que pergunta antes de sair quando há algo digitado (`confirmDiscard`). Tocar de novo no "?"
+ * ou fora da dica (no fundo, sobre os campos, ou o voltar) fecha só a dica: a folha fica.
+ *
  * Acessibilidade: `accessibilityViewIsModal` prende o leitor de tela dentro da folha; o
  * título é o primeiro elemento e é cabeçalho; o X tem 48 pontos e rótulo; o fundo que
  * fecha ao toque é escondido do leitor de tela para não virar um botão sem nome.
@@ -53,8 +60,11 @@ interface SheetProps {
 	onClose: () => void;
 	/** Há algo digitado e não salvo: fechar pergunta antes de descartar. */
 	confirmDiscard?: boolean;
-	/** Um "?" ao lado do X (SPD-129): o rótulo e o que ele abre. */
-	help?: { label: string; onPress: () => void };
+	/**
+	 * Um "?" ao lado do X (SPD-129): o rótulo e o que ele abre. Com `tip` (SPD-135), o "?"
+	 * mostra a dica e o `onPress` é o link dela para o guia completo.
+	 */
+	help?: { label: string; onPress: () => void; tip?: string };
 	children: React.ReactNode;
 }
 
@@ -79,6 +89,22 @@ const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confir
 	const focusedAtOpen = useRef<unknown>(null);
 	if (visible && !wasVisible.current) focusedAtOpen.current = focusedInput();
 	wasVisible.current = visible;
+	// A dica do "?" e onde a área dos campos começa (abaixo do título e da dica), para o toque
+	// sobre os campos fechar a dica.
+	const [tipOpen, setTipOpen] = useState(false);
+	const [tipBottom, setTipBottom] = useState(0);
+	const tipText = help?.tip;
+
+	useEffect(() => {
+		if (!visible) setTipOpen(false);
+	}, [visible]);
+
+	const closeTip = () => setTipOpen(false);
+
+	const onHeaderLayout = (event: LayoutChangeEvent) => {
+		const { y, height } = event.nativeEvent.layout;
+		setTipBottom(y + height);
+	};
 
 	const requestClose = () => {
 		if (!confirmDiscard) {
@@ -101,6 +127,10 @@ const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confir
 			Keyboard.dismiss();
 			return;
 		}
+		if (tipOpen) {
+			closeTip();
+			return;
+		}
 		requestClose();
 	};
 
@@ -109,41 +139,59 @@ const Sheet: React.FC<SheetProps> = ({ visible, title, subtitle, onClose, confir
 			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 				<Pressable
 					style={styles.backdrop}
-					onPress={requestClose}
+					onPress={tipOpen ? closeTip : requestClose}
 					accessible={false}
 					importantForAccessibility="no-hide-descendants"
 				/>
 				<View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]} accessibilityViewIsModal>
 					<View style={styles.handle} accessible={false} />
-					<View style={styles.header}>
-						<View style={styles.titles}>
-							<Text style={styles.title} accessibilityRole="header">
-								{title}
-							</Text>
-							{subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
-						</View>
-						{help ? (
+					<View onLayout={onHeaderLayout}>
+						<View style={styles.header}>
+							<View style={styles.titles}>
+								<Text style={styles.title} accessibilityRole="header">
+									{title}
+								</Text>
+								{subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+							</View>
+							{help ? (
+								<Pressable
+									onPress={tipText ? () => setTipOpen((open) => !open) : help.onPress}
+									accessibilityRole="button"
+									accessibilityLabel={help.label}
+									accessibilityHint={tipText ? t('tutorial.tip.toggleHint') : undefined}
+									accessibilityState={tipText ? { expanded: tipOpen } : undefined}
+									style={({ pressed }) => [styles.close, pressed && styles.pressed]}
+								>
+									<Ionicons name="help-circle-outline" size={24} color="#FFFFFF" />
+								</Pressable>
+							) : null}
 							<Pressable
-								onPress={help.onPress}
+								onPress={requestClose}
 								accessibilityRole="button"
-								accessibilityLabel={help.label}
+								accessibilityLabel={t('cards.close')}
 								style={({ pressed }) => [styles.close, pressed && styles.pressed]}
 							>
-								<Ionicons name="help-circle-outline" size={24} color="#FFFFFF" />
+								<Ionicons name="close" size={24} color="#FFFFFF" />
 							</Pressable>
+						</View>
+						{help && tipText && tipOpen ? (
+							<HelpTip text={tipText} onOpenGuide={help.onPress} confirmLeave={confirmDiscard} />
 						) : null}
-						<Pressable
-							onPress={requestClose}
-							accessibilityRole="button"
-							accessibilityLabel={t('cards.close')}
-							style={({ pressed }) => [styles.close, pressed && styles.pressed]}
-						>
-							<Ionicons name="close" size={24} color="#FFFFFF" />
-						</Pressable>
 					</View>
 					<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.body}>
 						{children}
 					</ScrollView>
+					{tipOpen ? (
+						// Por cima dos campos enquanto a dica está aberta: o toque fecha a dica e não
+						// chega ao campo (a dica some e os campos sobem, o toque cairia em outro lugar).
+						<Pressable
+							testID="sheet-tip-dismiss"
+							style={[styles.tipDismiss, { top: tipBottom }]}
+							onPress={closeTip}
+							accessible={false}
+							importantForAccessibility="no"
+						/>
+					) : null}
 				</View>
 			</KeyboardAvoidingView>
 		</Modal>
@@ -209,6 +257,12 @@ const styles = StyleSheet.create({
 	body: {
 		gap: 14,
 		paddingBottom: 8,
+	},
+	tipDismiss: {
+		position: 'absolute',
+		left: 0,
+		right: 0,
+		bottom: 0,
 	},
 });
 

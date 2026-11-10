@@ -55,11 +55,14 @@ const AdjustAccountSheet: React.FC<{
 	// Os campos que o usuário já digitou: nesses o app não escreve mais.
 	const [typed, setTyped] = useState({ spent: false, balance: false });
 	const [error, setError] = useState<string | undefined>();
-	// O "?" do acertar (SPD-129): fecha a folha e abre "Primeiros passos: contas e saldo".
+	// O "?" do acertar (SPD-129): mostra uma dica rápida dentro da folha (SPD-135), e o link
+	// dela fecha a folha e abre "Primeiros passos: contas e saldo" — perguntando antes, se
+	// algo foi digitado (`confirmDiscard`).
 	const tour = useTour();
 	const help = tour
 		? {
 				label: t('tutorial.help'),
+				tip: balanceOnly ? t('accounts.adjust.helpTipBalanceOnly') : t('accounts.adjust.helpTip'),
 				onPress: () => {
 					onClose();
 					tour.openTopic('accounts');

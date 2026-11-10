@@ -798,6 +798,14 @@ const pt = {
 		help: 'Como usar esta tela',
 		helpHint: 'Mostra o que cada botão desta tela faz',
 		helpTopicHint: 'Abre a explicação em Ajustes › Como usar',
+		tip: {
+			fullGuide: 'Ver o guia completo',
+			toggleHint: 'Mostra ou esconde uma dica rápida',
+			leaveTitle: 'Sair e perder o que você digitou?',
+			leaveBody: 'Os valores digitados ainda não foram salvos.',
+			leave: 'Sair',
+			stay: 'Continuar editando',
+		},
 		notice: {
 			title: 'Novo: Como usar o Spendr',
 			body: 'Um guia curto de cada função.',
@@ -1249,6 +1257,8 @@ const pt = {
 			previewBalanceOnly: 'A conta vai ficar com {{balance}}. Nenhum gasto é lançado.',
 			confirm: 'Acertar',
 			done: 'Conta acertada',
+			helpTip: 'Use quando o saldo do app ficar diferente do banco: diga quanto já gastou no mês e quanto ainda tem, e o app corrige sem inventar gasto.',
+			helpTipBalanceOnly: 'Use quando o saldo do app ficar diferente do banco: diga o saldo que o banco mostra hoje, com o rendimento. O app passa a contar daqui, sem lançar gasto.',
 		},
 		duplicate: {
 			title: 'Duas contas do mesmo banco',
