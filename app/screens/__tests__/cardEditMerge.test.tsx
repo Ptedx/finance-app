@@ -320,6 +320,16 @@ describe('E2E-40 — a pilha não guarda a tela do cartão que sumiu', () => {
 		await act(async () => {
 			pressables('cards.edit.debit')[0].props.onPress();
 		});
+		// A conta do débito é uma lista que abre do campo (SPD-130): tocar o campo, depois a conta.
+		const [debitField] = renderer.root.findAll(
+			(node) =>
+				typeof node.props.onPress === 'function' &&
+				typeof node.props.accessibilityLabel === 'string' &&
+				node.props.accessibilityLabel.startsWith('cards.edit.debitAccount, ')
+		);
+		await act(async () => {
+			debitField.props.onPress();
+		});
 		await act(async () => {
 			pressables('Corrente')[0].props.onPress();
 		});

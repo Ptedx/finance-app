@@ -2019,7 +2019,6 @@ account: {
 			amountHint: 'Leave blank if the amount changes every month (a phone bill, for example).',
 			optional: 'optional',
 			account: 'Paid from',
-			accountHint: 'Tap again to clear.',
 			category: 'Category',
 			matchHint: 'How it shows at the bank',
 			matchHintHint: 'Words of the payment in the bank notification or statement, separated by commas (e.g. tim, unimed). Blank uses the name.',
@@ -2117,6 +2116,9 @@ account: {
 		amountRequired: 'Please enter a valid amount greater than 0',
 		category: 'Category',
 		editCategories: 'Edit Categories',
+		categoryPlaceholder: 'Choose a category',
+		categoryMostUsed: 'Most used',
+		categoryAll: 'All',
 		categoryRequired: 'Please select a category',
 		installments: 'Installments',
 		installmentsHint: '1 means paid in full. Up to {{max}}, one per statement.',
@@ -2159,6 +2161,14 @@ account: {
 			deleteCancel: 'Cancel',
 			deleteConfirm: 'Delete',
 		},
+	},
+	// O campo que abre a lista de opções (SPD-130).
+	select: {
+		placeholder: 'Choose',
+		none: 'None',
+		search: 'Search',
+		searchLabel: 'Search {{field}}',
+		noResults: 'Nothing found',
 	},
 } as const;
 

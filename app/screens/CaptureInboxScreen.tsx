@@ -13,8 +13,9 @@ import {
 	View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AccountPicker from '../components/AccountPicker';
-import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
+import { accountSelectOptions } from '../components/AccountPicker';
+import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
+import { SelectSheet } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -307,15 +308,17 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const ambiguity = ambiguityOfReason(capture.reason);
 	const askedCase = ambiguity && !ambiguity.learned ? ambiguity.case : null;
 	const explained = ambiguityLine(capture, t);
+	// As listas de categoria e de conta, que abrem de baixo (SPD-130).
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [rawOpen, setRawOpen] = useState(false);
 	// A conta escolhida aqui (SPD-111). `undefined` enquanto o usuário não mexe: vale a do
 	// aviso, inclusive se ela mudar por fora (o pull trouxe a decisão de outro aparelho).
 	const [chosenAccountId, setChosenAccountId] = useState<string | null | undefined>(undefined);
 	const accountId = chosenAccountId === undefined ? capture.accountId : chosenAccountId;
-	// "Sem conta" já abre o seletor: era a única saída, e ficava para depois da confirmação.
-	const [accountPickerOpen, setAccountPickerOpen] = useState(() => !capture.accountId);
+	// A linha da conta abre a lista das contas; "Sem conta" vem destacada na linha (SPD-111).
+	const [accountPickerOpen, setAccountPickerOpen] = useState(false);
 	const canPickAccount = activeAccounts.length > 0;
+	const categoryList = useMemo(() => categoryChoices(categories, isIncome, transactions), [categories, isIncome, transactions]);
 
 	const category = categories.find((c) => c.id === categoryId) ?? fallbackCategory(t);
 	const amount = formatCents(capture.amountCents);
@@ -392,7 +395,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			    com todas as letras quando o app não soube de onde saiu o dinheiro. Fora do
 			    resumo (que já diz a conta) porque é um controle: abre o seletor (SPD-111). */}
 			<Pressable
-				onPress={() => setAccountPickerOpen((open) => !open)}
+				onPress={() => setAccountPickerOpen(true)}
 				disabled={!canPickAccount}
 				accessibilityRole="button"
 				accessibilityLabel={t('captures.inAccount', { account: destination })}
@@ -405,27 +408,22 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 					{t('captures.inAccount', { account: destination })}
 				</Text>
 				{installments && <Text style={styles.installments}>{installments}</Text>}
-				{canPickAccount && (
-					<Ionicons
-						name={accountPickerOpen ? 'chevron-up' : 'chevron-down'}
-						size={18}
-						color="rgba(255,255,255,0.7)"
-					/>
-				)}
+				{canPickAccount && <Ionicons name="chevron-down" size={18} color="rgba(255,255,255,0.7)" />}
 			</Pressable>
 
-			{/* O mesmo seletor do formulário de lançamento. Num cartão, a confirmação segue as
-			    regras do cartão (parcelas no ciclo dele); o final do cartão é o que o aviso disse. */}
-			{accountPickerOpen && canPickAccount && (
-				<View style={styles.pickerWrap}>
-					<AccountPicker
-						selectedAccountId={accountId}
-						onSelect={(id) => {
-							setChosenAccountId(id);
-							if (id !== null) setAccountPickerOpen(false);
-						}}
-					/>
-				</View>
+			{/* A mesma lista de contas do formulário de lançamento. Num cartão, a confirmação segue
+			    as regras do cartão (parcelas no ciclo dele); o final do cartão é o que o aviso disse. */}
+			{canPickAccount && (
+				<SelectSheet
+					visible={accountPickerOpen}
+					title={t('accounts.picker.label')}
+					options={accountSelectOptions(activeAccounts)}
+					selected={accountId}
+					onSelect={(id) => setChosenAccountId(id)}
+					clearLabel={t('accounts.picker.none')}
+					onClear={() => setChosenAccountId(null)}
+					onClose={() => setAccountPickerOpen(false)}
+				/>
 			)}
 
 			{capture.question === 'duplicate' && (
@@ -538,7 +536,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			{!isInvoiceQuestion && (
 				<>
 					<Pressable
-						onPress={() => setPickerOpen((open) => !open)}
+						onPress={() => setPickerOpen(true)}
 						accessibilityRole="button"
 						accessibilityLabel={t('captures.categoryLabel', { category: category.name })}
 						accessibilityHint={t('captures.changeCategoryHint')}
@@ -550,22 +548,19 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 							<Ionicons name={category.icon as any} size={14} color="#000000" />
 						</View>
 						<Text style={styles.categoryName}>{category.name}</Text>
-						<Ionicons name={pickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color="rgba(255,255,255,0.7)" />
+						<Ionicons name="chevron-down" size={18} color="rgba(255,255,255,0.7)" />
 					</Pressable>
 
-					{pickerOpen && (
-						<View style={styles.pickerWrap}>
-							<HorizontalCategoryPicker
-								categories={categories}
-								selectedCategoryId={categoryId}
-								onSelectCategory={(id) => {
-									setCategoryId(id);
-									setPickerOpen(false);
-								}}
-								isIncome={isIncome}
-							/>
-						</View>
-					)}
+					{/* Corrigir a categoria não confirma: o "Confirmar" continua sendo o passo seguinte. */}
+					<SelectSheet
+						visible={pickerOpen}
+						title={t('transactionForm.category')}
+						options={categoryList.options}
+						featured={mostUsedSection(categoryList.mostUsed, t)}
+						selected={categoryId}
+						onSelect={setCategoryId}
+						onClose={() => setPickerOpen(false)}
+					/>
 
 					<View style={styles.actions}>
 						<ActionButton
@@ -1262,9 +1257,6 @@ const styles = StyleSheet.create({
 		flex: 1,
 		fontSize: 16,
 		color: '#FFFFFF',
-	},
-	pickerWrap: {
-		marginBottom: 12,
 	},
 	actions: {
 		gap: 8,

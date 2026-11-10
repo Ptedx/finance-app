@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import { Button, ChipGroup, Field } from '../components/cards/formParts';
+import { SelectField } from '../components/SelectField';
 import { useAccounts } from '../contexts/AccountsContext';
 import { draftOf, useDebts } from '../contexts/DebtsContext';
 import type { AmortizationSystem, DebtDraft, DebtKind } from '../database/schema';
@@ -422,12 +424,14 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					) : null}
 
 					{bankAccounts.length > 0 ? (
-						<ChipGroup<string>
+						<SelectField
 							label={t('debts.edit.account')}
 							hint={t('debts.edit.accountHint')}
-							options={bankAccounts.map((account) => ({ value: account.id, label: account.name, color: account.color }))}
+							options={accountSelectOptions(bankAccounts)}
 							selected={accountId}
-							onSelect={(value) => setAccountId(value === accountId ? null : value)}
+							onSelect={setAccountId}
+							clearLabel={t('select.none')}
+							onClear={() => setAccountId(null)}
 						/>
 					) : null}
 

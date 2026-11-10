@@ -43,7 +43,6 @@ jest.mock('react-i18next', () => ({
 jest.mock('../../components/cards/CardFace', () => () => null);
 jest.mock('../../components/cards/RenameCardSheet', () => () => null);
 jest.mock('../../components/cards/Sheet', () => () => null);
-jest.mock('../../components/HorizontalCategoryPicker', () => () => null);
 jest.mock('../../utils/accountResolver', () => ({ findCheckingForCard: () => null }));
 
 jest.mock('../../components/TransactionItem', () => {

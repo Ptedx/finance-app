@@ -130,7 +130,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	defaultIsIncome,
 }) => {
 	const { t } = useTranslation();
-	const { categories, addNewTransaction, updateExistingTransaction, refreshData } = useTransactions();
+	const { categories, transactions, addNewTransaction, updateExistingTransaction, refreshData } = useTransactions();
 	const { currentCurrency } = useCurrency();
 	const { activeAccounts } = useAccounts();
 
@@ -466,8 +466,9 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 						selectedCategoryId={category}
 						onSelectCategory={handleSelectCategory}
 						isIncome={isIncome}
+						transactions={transactions}
+						error={errors.category}
 					/>
-					{errors.category ? <Text style={styles.errorText}>{errors.category}</Text> : null}
 				</View>
 
 				<TourTarget id="add.account">

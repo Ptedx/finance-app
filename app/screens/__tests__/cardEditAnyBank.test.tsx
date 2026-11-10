@@ -168,23 +168,52 @@ const type = async (labelKey: string, text: string) => {
 	});
 };
 
-/** Os chips de banco marcados como escolhidos. */
-const chosenBanks = (): string[] => {
-	const bankGroup = mockT('cards.edit.bank');
-	const [group] = root().findAll((node) => node.props.accessibilityRole === 'radiogroup' && node.props.accessibilityLabel === bankGroup);
-	if (!group) throw new Error('sem a lista de bancos');
-	return group
-		.findAll((node) => node.props.accessibilityRole === 'radio' && node.props.accessibilityState?.selected === true && typeof node.props.onPress === 'function')
-		.map((node) => node.props.accessibilityLabel as string)
-		.filter((label, index, all) => all.indexOf(label) === index);
-};
-
 const press = async (label: string) => {
 	const [found] = root().findAll((node) => typeof node.props.onPress === 'function' && node.props.accessibilityLabel === label);
 	if (!found) throw new Error(`sem o botão ${label}`);
 	await act(async () => {
 		await found.props.onPress();
 	});
+};
+
+/** O campo do banco: um botão com o nome do campo e o banco escolhido (SPD-130). */
+const bankField = (): ReactTestInstance => {
+	const prefix = `${mockT('cards.edit.bank')}, `;
+	const [found] = root().findAll(
+		(node) =>
+			node.props.accessibilityRole === 'button' &&
+			typeof node.props.accessibilityLabel === 'string' &&
+			node.props.accessibilityLabel.startsWith(prefix) &&
+			typeof node.props.onPress === 'function'
+	);
+	if (!found) throw new Error('sem o campo do banco');
+	return found;
+};
+
+const openBanks = async () => {
+	await act(async () => {
+		bankField().props.onPress();
+	});
+};
+
+/** Os bancos marcados como escolhidos na lista (abre a lista, lê e fecha). */
+const chosenBanks = async (): Promise<string[]> => {
+	await openBanks();
+	const bankGroup = mockT('cards.edit.bank');
+	const [group] = root().findAll((node) => node.props.accessibilityRole === 'radiogroup' && node.props.accessibilityLabel === bankGroup);
+	if (!group) throw new Error('sem a lista de bancos');
+	const chosen = group
+		.findAll((node) => node.props.accessibilityRole === 'radio' && node.props.accessibilityState?.selected === true && typeof node.props.onPress === 'function')
+		.map((node) => node.props.accessibilityLabel as string)
+		.filter((label, index, all) => all.indexOf(label) === index);
+	await press(mockT('cards.close'));
+	return chosen;
+};
+
+/** Escolhe o banco: toca o campo e o banco na lista. */
+const pickBank = async (name: string) => {
+	await openBanks();
+	await press(name);
 };
 
 const save = () => press(mockT('cards.edit.save'));
@@ -238,7 +267,7 @@ describe('nenhum texto do formulário supõe um banco', () => {
 describe('o banco do cartão', () => {
 	it('cartão novo começa sem banco escolhido', async () => {
 		await mount();
-		expect(chosenBanks()).toEqual([]);
+		expect(await chosenBanks()).toEqual([]);
 	});
 
 	it('salvar sem banco não cria o cartão e diz que falta o banco', async () => {
@@ -250,8 +279,14 @@ describe('o banco do cartão', () => {
 
 	it('escolhido o C6, cria com o C6', async () => {
 		await mount();
-		await press('C6 Bank');
-		expect(chosenBanks()).toEqual(['C6 Bank']);
+		// Fechado, o campo não mostra lista nenhuma: só o convite.
+		expect(root().findAll((node) => node.props.accessibilityRole === 'radiogroup' && node.props.accessibilityLabel === mockT('cards.edit.bank'))).toHaveLength(0);
+		expect(bankField().props.accessibilityLabel).toBe(`${mockT('cards.edit.bank')}, ${mockT('select.placeholder')}`);
+		await pickBank('C6 Bank');
+		// Escolher fecha a lista e o campo mostra o banco.
+		expect(root().findAll((node) => node.props.accessibilityRole === 'radiogroup' && node.props.accessibilityLabel === mockT('cards.edit.bank'))).toHaveLength(0);
+		expect(bankField().props.accessibilityLabel).toBe(`${mockT('cards.edit.bank')}, C6 Bank`);
+		expect(await chosenBanks()).toEqual(['C6 Bank']);
 		await save();
 		expect(mockCreateAccount).toHaveBeenCalledTimes(1);
 		expect(mockCreateAccount.mock.calls[0][0]).toMatchObject({ bankName: 'C6 Bank', color: '#242424', closingDay: null, closingDaysBefore: null, dueDay: null });
@@ -260,13 +295,13 @@ describe('o banco do cartão', () => {
 	it('cartão existente continua com o banco dele', async () => {
 		mockAccounts.accounts = [C6];
 		await mount('c6');
-		expect(chosenBanks()).toEqual(['C6 Bank']);
+		expect(await chosenBanks()).toEqual(['C6 Bank']);
 	});
 
 	it('cartão existente sem banco gravado não ganha o Nubank: fica sem escolha até o dono escolher', async () => {
 		mockAccounts.accounts = [{ ...C6, bankName: null }];
 		await mount('c6');
-		expect(chosenBanks()).toEqual([]);
+		expect(await chosenBanks()).toEqual([]);
 		await save();
 		expect(mockSaveAccount).not.toHaveBeenCalled();
 	});
@@ -313,7 +348,7 @@ describe('prazo entre fechamento e vencimento, pelo dia do vencimento da fatura'
 	it('fecha 28 e vence 5 em outubro: grava 8 dias e o dia 5, e a prévia mostra 28/10 e 05/11', async () => {
 		mockToday.value = '2026-10-10';
 		await mount();
-		await press('C6 Bank');
+		await pickBank('C6 Bank');
 		await type('cards.edit.closingDay', '28');
 		await type('cards.edit.dueDay', '5');
 		expect(visibleTexts()).toContain(mockT('cards.edit.cyclePreview', { month: 'outubro', closing: '28/10', due: '05/11' }));
@@ -351,7 +386,7 @@ describe('prazo entre fechamento e vencimento, pelo dia do vencimento da fatura'
 
 	it('vence no mesmo dia em que fecha: prazo longo demais, não salva e diz o porquê', async () => {
 		await mount();
-		await press('C6 Bank');
+		await pickBank('C6 Bank');
 		await type('cards.edit.closingDay', '28');
 		await type('cards.edit.dueDay', '28');
 		await save();
@@ -361,7 +396,7 @@ describe('prazo entre fechamento e vencimento, pelo dia do vencimento da fatura'
 
 	it('fechamento sem vencimento: pede o vencimento', async () => {
 		await mount();
-		await press('C6 Bank');
+		await pickBank('C6 Bank');
 		await type('cards.edit.closingDay', '28');
 		await save();
 		expect(mockCreateAccount).not.toHaveBeenCalled();
@@ -370,7 +405,7 @@ describe('prazo entre fechamento e vencimento, pelo dia do vencimento da fatura'
 
 	it('vencimento sem fechamento: pede o fechamento', async () => {
 		await mount();
-		await press('C6 Bank');
+		await pickBank('C6 Bank');
 		await type('cards.edit.dueDay', '5');
 		await save();
 		expect(mockCreateAccount).not.toHaveBeenCalled();

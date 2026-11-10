@@ -15,7 +15,10 @@ import {
 	View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, ChipGroup, Field } from '../components/cards/formParts';
+import { accountSelectOptions } from '../components/AccountPicker';
+import { categoryChoices } from '../components/CategoryPicker';
+import { Button, Field } from '../components/cards/formParts';
+import { SelectField } from '../components/SelectField';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -276,30 +279,26 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					/>
 
 					{bankAccounts.length > 0 && !fromDebt ? (
-						<ChipGroup<string>
-							label={`${t('bills.edit.account')} · ${t('bills.edit.optional')}`}
-							hint={t('bills.edit.accountHint')}
-							options={bankAccounts.map((account) => ({
-								value: account.id,
-								label: account.name,
-								color: account.color,
-							}))}
+						<SelectField
+							label={t('bills.edit.account')}
+							optionalLabel={t('bills.edit.optional')}
+							options={accountSelectOptions(bankAccounts)}
 							selected={accountId}
-							onSelect={(value) => setAccountId(value === accountId ? null : value)}
+							onSelect={setAccountId}
+							clearLabel={t('select.none')}
+							onClear={() => setAccountId(null)}
 						/>
 					) : null}
 
 					{expenseCategories.length > 0 ? (
-						<ChipGroup<string>
-							label={`${t('bills.edit.category')} · ${t('bills.edit.optional')}`}
-							hint={t('bills.edit.accountHint')}
-							options={expenseCategories.map((item) => ({
-								value: item.id,
-								label: item.name,
-								color: item.color,
-							}))}
+						<SelectField
+							label={t('bills.edit.category')}
+							optionalLabel={t('bills.edit.optional')}
+							options={categoryChoices(expenseCategories, false).options}
 							selected={category}
-							onSelect={(value) => setCategory(value === category ? null : value)}
+							onSelect={setCategory}
+							clearLabel={t('select.none')}
+							onClear={() => setCategory(null)}
 						/>
 					) : null}
 

@@ -7,7 +7,6 @@ import {
 	Alert,
 	KeyboardAvoidingView,
 	Platform,
-	Pressable,
 	ScrollView,
 	StyleSheet,
 	Text,
@@ -27,13 +26,17 @@ import {
 	isValidAmountInput,
 	parseAmountToCents,
 } from '../utils/money';
-import { ACCOUNT_KIND_ICONS } from './AccountPicker';
+import { accountSelectOptions } from './AccountPicker';
 import DatePickerModal from './DatePickerModal';
+import { SelectField, type SelectOption } from './SelectField';
 
 /** Cor da transferência: nem o vermelho da despesa, nem o verde da receita. */
 const ACCENT = '#15E8FE';
 
 type Side = Pick<Transfer, 'fromAccountId' | 'toAccountId'>;
+
+/** A ponta "fora do app" na lista: o `null` da transferência que já era assim. */
+const OUTSIDE = 'outside';
 
 /**
  * As contas que cada ponta oferece. Arquivadas e apagadas ficam fora; cartão de crédito
@@ -207,45 +210,29 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 		]);
 	};
 
-	const chip = (side: 'from' | 'to', account: Account | null) => {
-		const selectedId = side === 'from' ? fromAccountId : toAccountId;
-		const value = account?.id ?? null;
-		const selected = selectedId === value;
-		const color = account?.color ?? ACCENT;
-		const label = account?.name ?? t('transactionForm.transfer.outside');
-		return (
-			<Pressable
-				key={value ?? 'outside'}
-				testID={`transfer-${side}-${value ?? 'outside'}`}
-				onPress={() => pick(side, value)}
-				accessibilityRole="radio"
-				accessibilityState={{ selected }}
-				accessibilityLabel={label}
-				style={({ pressed }) => [styles.chip, selected && { borderColor: color, backgroundColor: `${color}22` }, pressed && styles.pressed]}
-			>
-				<Ionicons
-					name={selected ? 'checkmark-circle' : account ? ACCOUNT_KIND_ICONS[account.kind] : 'globe-outline'}
-					size={18}
-					color={selected ? color : 'rgba(255,255,255,0.8)'}
-				/>
-				<Text style={[styles.chipLabel, selected && { color }]} numberOfLines={1}>
-					{label}
-				</Text>
-			</Pressable>
-		);
-	};
-
+	/**
+	 * De ou Para: um campo que abre a lista das contas (SPD-130; antes, uma linha de fichas).
+	 * "Fora do app" só aparece na edição de uma transferência que já tinha essa ponta.
+	 */
 	const sideGroup = (side: 'from' | 'to', options: Account[], outside: boolean) => {
 		const label = t(side === 'from' ? 'transactionForm.transfer.from' : 'transactionForm.transfer.to');
 		const error = errors[side];
+		const selectedId = side === 'from' ? fromAccountId : toAccountId;
+		const choices: SelectOption<string>[] = [
+			...(outside ? [{ value: OUTSIDE, label: t('transactionForm.transfer.outside'), icon: 'globe-outline' as const }] : []),
+			...accountSelectOptions(options),
+		];
 		return (
-			<View style={styles.formGroup} accessibilityRole="radiogroup" accessibilityLabel={label} testID={`transfer-form-${side}`}>
-				<Text style={styles.label}>{label}</Text>
-				<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow} keyboardShouldPersistTaps="handled">
-					{outside ? chip(side, null) : null}
-					{options.map((account) => chip(side, account))}
-				</ScrollView>
-				{error ? <Text style={styles.errorText}>{messageOf(error)}</Text> : null}
+			<View style={styles.formGroup}>
+				<SelectField
+					testID={`transfer-form-${side}`}
+					optionTestID={`transfer-${side}-`}
+					label={label}
+					options={choices}
+					selected={selectedId ?? (outside ? OUTSIDE : null)}
+					onSelect={(value) => pick(side, value === OUTSIDE ? null : value)}
+					error={error ? messageOf(error) : undefined}
+				/>
 			</View>
 		);
 	};
@@ -408,29 +395,6 @@ const styles = StyleSheet.create({
 		borderRadius: 8,
 		padding: 12,
 		marginBottom: 16,
-	},
-	chipRow: {
-		gap: 8,
-		paddingVertical: 2,
-	},
-	chip: {
-		flexDirection: 'row',
-		alignItems: 'center',
-		gap: 6,
-		minHeight: 48,
-		paddingHorizontal: 14,
-		borderRadius: 24,
-		borderWidth: 1,
-		borderColor: 'rgba(255, 255, 255, 0.2)',
-		backgroundColor: 'rgba(255, 255, 255, 0.06)',
-	},
-	chipLabel: {
-		fontSize: 15,
-		color: '#ffffff',
-		maxWidth: 160,
-	},
-	pressed: {
-		opacity: 0.7,
 	},
 	amountInputContainer: {
 		flexDirection: 'row',

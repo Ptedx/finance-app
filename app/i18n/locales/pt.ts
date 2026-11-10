@@ -2016,7 +2016,6 @@ const pt = {
 			amountHint: 'Em branco se o valor muda todo mês (conta de celular, por exemplo).',
 			optional: 'opcional',
 			account: 'Conta que paga',
-			accountHint: 'Toque de novo para tirar.',
 			category: 'Categoria',
 			matchHint: 'Como aparece no banco',
 			matchHintHint: 'Palavras do pagamento no aviso do banco ou no extrato, separadas por vírgula (ex.: tim, unimed). Em branco, usa o nome.',
@@ -2114,6 +2113,9 @@ const pt = {
 		amountRequired: 'Digite um valor maior que zero',
 		category: 'Categoria',
 		editCategories: 'Editar categorias',
+		categoryPlaceholder: 'Escolha a categoria',
+		categoryMostUsed: 'Mais usadas',
+		categoryAll: 'Todas',
 		categoryRequired: 'Escolha uma categoria',
 		installments: 'Parcelas',
 		installmentsHint: '1 é à vista. Até {{max}}, uma por fatura.',
@@ -2156,6 +2158,14 @@ const pt = {
 			deleteCancel: 'Cancelar',
 			deleteConfirm: 'Excluir',
 		},
+	},
+	// O campo que abre a lista de opções (SPD-130).
+	select: {
+		placeholder: 'Escolher',
+		none: 'Nenhuma',
+		search: 'Buscar',
+		searchLabel: 'Buscar em {{field}}',
+		noResults: 'Nada encontrado',
 	},
 } as const;
 

@@ -152,6 +152,8 @@ it('categoria em uso: diz quantos lançamentos e move para outra do mesmo tipo a
 	expect(alertSpy).not.toHaveBeenCalled();
 	expect(texts()).toContain('categoryManagement.deleteInUse|1|Shopping');
 
+	// O destino é uma lista que abre do campo "Mover para" (SPD-130).
+	await pressLabel('categoryManagement.moveTo, select.placeholder');
 	const targets = renderer.root
 		.findAll((node) => node.props.accessibilityRole === 'radio' && typeof node.props.onPress === 'function')
 		.map((node) => node.props.accessibilityLabel);

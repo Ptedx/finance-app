@@ -5,9 +5,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
 import MergeTargetSheet from '../components/MergeTargetSheet';
+import { SelectField } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -451,9 +453,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 							{existing ? (
 								bankAccounts.length > 0 ? (
 									<>
-										<ChipGroup
+										<SelectField
 											label={t('cards.edit.debitAccount')}
-											options={bankAccounts.map((account) => ({ value: account.id, label: account.name, color: account.color }))}
+											options={accountSelectOptions(bankAccounts)}
 											selected={chosenDebitAccount?.id ?? null}
 											onSelect={(value) => setDebitAccountId(value)}
 										/>
@@ -475,17 +477,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 					{cardType === 'credit' ? (
 					<>
-					<ChipGroup
+					{/* Lista que abre de baixo (SPD-130): 11 bancos em botões ocupavam meia tela. */}
+					<SelectField
 						label={t('cards.edit.bank')}
 						options={bankOptions}
 						selected={bankId}
 						onSelect={(value) => setBankId(value)}
+						error={bankId !== OTHER ? errors.bank : undefined}
 					/>
-					{errors.bank && bankId !== OTHER ? (
-						<Text style={styles.error} accessibilityLiveRegion="polite">
-							{errors.bank}
-						</Text>
-					) : null}
 					{bankId === OTHER ? (
 						<Field
 							label={t('cards.edit.bankName')}
@@ -681,11 +680,6 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 16,
 		paddingBottom: 60,
 		gap: 18,
-	},
-	error: {
-		fontSize: 13,
-		color: '#FF8A80',
-		marginTop: -10,
 	},
 	twoColumns: {
 		flexDirection: 'row',

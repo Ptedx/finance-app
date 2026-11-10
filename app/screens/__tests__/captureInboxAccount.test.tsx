@@ -2,9 +2,11 @@
  * Escolher a conta na revisão da captura (SPD-111, AUTO-11).
  *
  * A captura que caiu em "Sem conta" só mostrava o texto no cartão da revisão, e a única
- * saída era confirmar e depois mover tudo de uma vez em "Lançamentos sem conta". Agora o
- * seletor de conta já aparece aberto nela, e confirmar leva a conta escolhida. O resto da
- * tela é dublê; as chaves de tradução aparecem cruas.
+ * saída era confirmar e depois mover tudo de uma vez em "Lançamentos sem conta". Agora a
+ * linha da conta abre a lista das contas, e confirmar leva a conta escolhida. A lista abre
+ * de baixo (SPD-130): antes eram fichas abertas no cartão. A categoria também é uma lista que
+ * abre do chip, e corrigi-la não confirma. O resto da tela é dublê; as chaves de tradução
+ * aparecem cruas.
  */
 
 const mockConfirm = jest.fn(async (..._args: unknown[]) => undefined);
@@ -42,7 +44,6 @@ jest.mock('react-i18next', () => ({
 	}),
 }));
 
-jest.mock('../../components/HorizontalCategoryPicker', () => () => null);
 
 jest.mock('../../contexts/AccountsContext', () => ({
 	useAccounts: () => ({ accounts: mockData.accounts, activeAccounts: mockData.accounts }),
@@ -51,7 +52,11 @@ jest.mock('../../contexts/AccountsContext', () => ({
 jest.mock('../../contexts/TransactionsContext', () => ({
 	useTransactions: () => ({
 		transactions: [],
-		categories: [{ id: 'food', name: 'Alimentação', type: 'expense', color: '#fff', icon: 'pizza' }],
+		categories: [
+			{ id: 'food', name: 'Alimentação', type: 'expense', color: '#fff', icon: 'pizza' },
+			{ id: 'market', name: 'Mercado', type: 'expense', color: '#0f0', icon: 'cart' },
+			{ id: 'salary', name: 'Salário', type: 'income', color: '#00f', icon: 'cash' },
+		],
 	}),
 }));
 
@@ -176,19 +181,26 @@ afterEach(() => {
 	act(() => renderer.unmount());
 });
 
+const NO_ACCOUNT_ROW = `captures.inAccount ${JSON.stringify({ account: 'captures.noAccount' })}`;
+
 describe('a captura "Sem conta" escolhe a conta na revisão', () => {
-	it('mostra o seletor de conta já aberto', async () => {
+	it('a linha diz "Sem conta" e abre a lista com as contas, "Sem conta" marcada', async () => {
 		await mount(capture());
 
+		expect(accountPickerShown()).toBe(false);
+		await press(NO_ACCOUNT_ROW);
 		expect(accountPickerShown()).toBe(true);
 		expect(pressable(CHECKING.name)).toBeDefined();
 		expect(pressable(CARD.name)).toBeDefined();
+		expect(pressable('accounts.picker.none')?.props.accessibilityState).toEqual({ selected: true });
 	});
 
-	it('escolhendo uma conta, confirmar leva essa conta', async () => {
+	it('escolhendo uma conta, a lista fecha e confirmar leva essa conta', async () => {
 		await mount(capture());
 
+		await press(NO_ACCOUNT_ROW);
 		await press(CARD.name);
+		expect(accountPickerShown()).toBe(false);
 		await press('captures.confirm');
 
 		expect(mockConfirm).toHaveBeenCalledTimes(1);
@@ -217,5 +229,36 @@ describe('a captura com conta pode trocá-la', () => {
 
 		expect(mockConfirm.mock.calls[0].slice(0, 2)).toEqual(['cap-1', 'food']);
 		expect(mockConfirm.mock.calls[0][2]).toBeUndefined();
+	});
+});
+
+describe('a categoria da captura abre numa lista (SPD-130)', () => {
+	const categoryShown = (): boolean =>
+		renderer.root.findAll((node) => node.props.accessibilityRole === 'radiogroup' && node.props.accessibilityLabel === 'transactionForm.category')
+			.length > 0;
+
+	it('o chip abre a lista só com as categorias do lado da captura, a sugerida marcada', async () => {
+		await mount(capture({ accountId: CHECKING.id }));
+
+		expect(categoryShown()).toBe(false);
+		await press(`captures.categoryLabel ${JSON.stringify({ category: 'Alimentação' })}`);
+		expect(categoryShown()).toBe(true);
+		expect(pressable('Alimentação')?.props.accessibilityState).toEqual({ selected: true });
+		expect(pressable('Mercado')?.props.accessibilityState).toEqual({ selected: false });
+		// Despesa não oferece categoria de receita.
+		expect(pressable('Salário')).toBeUndefined();
+	});
+
+	it('corrigir a categoria fecha a lista e não confirma; confirmar leva a corrigida', async () => {
+		await mount(capture({ accountId: CHECKING.id }));
+
+		await press(`captures.categoryLabel ${JSON.stringify({ category: 'Alimentação' })}`);
+		await press('Mercado');
+		expect(categoryShown()).toBe(false);
+		expect(mockConfirm).not.toHaveBeenCalled();
+		expect(pressable(`captures.categoryLabel ${JSON.stringify({ category: 'Mercado' })}`)).toBeDefined();
+
+		await press('captures.confirm');
+		expect(mockConfirm.mock.calls[0].slice(0, 2)).toEqual(['cap-1', 'market']);
 	});
 });

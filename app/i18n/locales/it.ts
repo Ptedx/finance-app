@@ -2022,7 +2022,6 @@ account: {
 			amountHint: "Vuoto se l'importo cambia ogni mese (la bolletta del telefono, per esempio).",
 			optional: 'facoltativo',
 			account: 'Conto che paga',
-			accountHint: 'Tocca di nuovo per togliere.',
 			category: 'Categoria',
 			matchHint: 'Come appare in banca',
 			matchHintHint: "Parole del pagamento nella notifica della banca o nell'estratto, separate da virgola (es.: tim, unimed). Vuoto usa il nome.",
@@ -2120,6 +2119,9 @@ account: {
 		amountRequired: 'Inserisci un importo maggiore di zero',
 		category: 'Categoria',
 		editCategories: 'Modifica categorie',
+		categoryPlaceholder: 'Scegli la categoria',
+		categoryMostUsed: 'Più usate',
+		categoryAll: 'Tutte',
 		categoryRequired: 'Scegli una categoria',
 		installments: 'Rate',
 		installmentsHint: '1 è in un’unica soluzione. Fino a {{max}}, una per estratto conto.',
@@ -2162,6 +2164,14 @@ account: {
 			deleteCancel: 'Annulla',
 			deleteConfirm: 'Elimina',
 		},
+	},
+	// O campo que abre a lista de opções (SPD-130).
+	select: {
+		placeholder: 'Scegli',
+		none: 'Nessuna',
+		search: 'Cerca',
+		searchLabel: 'Cerca in {{field}}',
+		noResults: 'Nessun risultato',
 	},
 } as const;
 

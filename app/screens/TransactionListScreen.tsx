@@ -2,9 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, RefreshControl, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import PeriodSelector from '../components/PeriodSelector';
+import { SelectField } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import TransferItem from '../components/TransferItem';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -272,35 +274,17 @@ const TransactionListScreen = () => {
 				})}
 			</View>
 
+			{/* A conta numa lista que abre de baixo (SPD-130): a rolagem de lado escondia as contas do fim. */}
 			{accountOptions.length > 1 ? (
-				<ScrollView
-					horizontal
-					showsHorizontalScrollIndicator={false}
-					contentContainerStyle={styles.accountChips}
-					accessibilityRole="radiogroup"
-					accessibilityLabel={t('transactionsList.accountLabel')}
-				>
-					{[{ id: null as string | null, name: t('transactionsList.allAccounts'), color: ACCENT }, ...accountOptions].map(
-						(account) => {
-							const selected = accountId === account.id;
-							return (
-								<Pressable
-									key={account.id ?? 'all'}
-									onPress={() => setAccountId(account.id)}
-									accessibilityRole="radio"
-									accessibilityState={{ checked: selected }}
-									accessibilityLabel={account.name}
-									style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
-								>
-									<View style={[styles.dot, { backgroundColor: account.color }]} />
-									<Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
-										{account.name}
-									</Text>
-								</Pressable>
-							);
-						}
-					)}
-				</ScrollView>
+				<SelectField
+					compact
+					label={t('transactionsList.accountLabel')}
+					options={accountSelectOptions(accountOptions)}
+					selected={accountId}
+					onSelect={setAccountId}
+					clearLabel={t('transactionsList.allAccounts')}
+					onClear={() => setAccountId(null)}
+				/>
 			) : null}
 
 			<Text style={styles.count} accessibilityLiveRegion="polite">
@@ -453,10 +437,6 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		gap: 8,
 	},
-	accountChips: {
-		gap: 8,
-		paddingRight: 16,
-	},
 	chip: {
 		flexDirection: 'row',
 		alignItems: 'center',
@@ -480,11 +460,6 @@ const styles = StyleSheet.create({
 	chipTextSelected: {
 		color: ACCENT,
 		fontWeight: '600',
-	},
-	dot: {
-		width: 10,
-		height: 10,
-		borderRadius: 5,
 	},
 	pressed: {
 		opacity: 0.85,

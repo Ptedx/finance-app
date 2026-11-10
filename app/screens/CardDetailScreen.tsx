@@ -6,10 +6,12 @@ import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
-import { ACCENT, Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
+import { ACCENT, Button, ChipGroup, Field } from '../components/cards/formParts';
 import RenameCardSheet from '../components/cards/RenameCardSheet';
 import Sheet from '../components/cards/Sheet';
-import HorizontalCategoryPicker from '../components/HorizontalCategoryPicker';
+import { accountSelectOptions } from '../components/AccountPicker';
+import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
+import { SelectField, type SelectOption } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
@@ -837,6 +839,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 						card={card}
 						currentCovered={openInvoiceInformed(card, cardTransactions, today)}
 						categories={categories}
+						transactions={transactions}
 						onConfirm={async (input) => {
 							const created = await addExistingInstallments({ ...input, cardId: card.id });
 							setSheet(null);
@@ -999,15 +1002,15 @@ const PaySheet: React.FC<{
 		};
 	}, [visible, suggestedCents, card.id]);
 
-	const options: ChipOption<string>[] = [
-		...accounts.map((account) => ({ value: account.id, label: account.name, color: account.color })),
-		{ value: 'outside', label: t('cards.pay.outside') },
+	const options: SelectOption<string>[] = [
+		...accountSelectOptions(accounts),
+		{ value: 'outside', label: t('cards.pay.outside'), icon: 'globe-outline' },
 	];
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.pay.title')} subtitle={t('cards.pay.subtitle')}>
 			<Field label={t('cards.pay.amount')} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" error={error} />
-			<ChipGroup
+			<SelectField
 				label={t('cards.pay.from')}
 				options={options}
 				selected={from}
@@ -1191,7 +1194,7 @@ const ChargeSheet: React.FC<{
 
 	return (
 		<Sheet visible={visible} onClose={onClose} title={t('cards.charges.title')} subtitle={t('cards.charges.subtitle')}>
-			<ChipGroup
+			<SelectField
 				label={t('cards.charges.kind')}
 				options={CHARGE_KINDS.map((value) => ({ value, label: t(`cards.charges.kinds.${value}`) }))}
 				selected={kind}
@@ -1248,9 +1251,12 @@ const InstallmentsSheet: React.FC<{
 	/** A fatura aberta já tem o valor do banco: a parcela atual já está nela (`openInvoiceInformed`). */
 	currentCovered: boolean;
 	categories: ReturnType<typeof useTransactions>['categories'];
+	/** Os lançamentos, para as categorias "Mais usadas" no topo da lista. */
+	transactions: Transaction[];
 	onConfirm: (input: { note: string; category: string; parcelCents: number; currentIndex: number; totalCount: number }) => Promise<void>;
-}> = ({ visible, onClose, card, currentCovered, categories, onConfirm }) => {
+}> = ({ visible, onClose, card, currentCovered, categories, transactions, onConfirm }) => {
 	const { t } = useTranslation();
+	const categoryList = useMemo(() => categoryChoices(categories, false, transactions), [categories, transactions]);
 	const [note, setNote] = useState('');
 	const [parcel, setParcel] = useState('');
 	const [current, setCurrent] = useState('');
@@ -1312,15 +1318,14 @@ const InstallmentsSheet: React.FC<{
 					/>
 				</View>
 			</View>
-			<View style={{ gap: 6 }}>
-				<Text style={styles.fieldLabel}>{t('cards.installments.category')}</Text>
-				<HorizontalCategoryPicker categories={categories} selectedCategoryId={category} onSelectCategory={setCategory} isIncome={false} />
-				{errors.category ? (
-					<Text style={styles.errorText} accessibilityLiveRegion="polite">
-						{errors.category}
-					</Text>
-				) : null}
-			</View>
+			<SelectField
+				label={t('cards.installments.category')}
+				options={categoryList.options}
+				featured={mostUsedSection(categoryList.mostUsed, t)}
+				selected={category}
+				onSelect={setCategory}
+				error={errors.category}
+			/>
 			{dates.length > 0 && parcelCents ? (
 				<Text style={styles.preview} accessibilityLiveRegion="polite">
 					{currentCovered
@@ -1819,15 +1824,6 @@ const styles = StyleSheet.create({
 	twoColumns: {
 		flexDirection: 'row',
 		gap: 12,
-	},
-	fieldLabel: {
-		fontSize: 14,
-		fontWeight: '600',
-		color: 'rgba(255,255,255,0.85)',
-	},
-	errorText: {
-		fontSize: 13,
-		color: '#FF8A80',
 	},
 });
 

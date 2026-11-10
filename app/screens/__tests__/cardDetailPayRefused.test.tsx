@@ -59,7 +59,6 @@ jest.mock('../../components/cards/Sheet', () => {
 	const { View } = require('react-native');
 	return ({ visible, children }: { visible: boolean; children: React.ReactNode }) => (visible ? <View>{children}</View> : null);
 });
-jest.mock('../../components/HorizontalCategoryPicker', () => () => null);
 // "Pago com" já vem marcado com a corrente do banco do cartão: o teste não toca no seletor.
 jest.mock('../../utils/accountResolver', () => ({ findCheckingForCard: async () => ({ id: 'corrente' }) }));
 

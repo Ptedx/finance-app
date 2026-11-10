@@ -7,7 +7,8 @@
  * cartão de crédito é o pagamento de fatura (`saveTransfer` manda para `recordCardPayment`).
  *
  * As traduções aparecem como chave crua; o contexto de contas é dublê — a conta do saldo
- * e do mês está em `accountsTransferSql.test.tsx`.
+ * e do mês está em `accountsTransferSql.test.tsx`. De e Para são listas que abrem de baixo
+ * (SPD-130): escolher é tocar no campo e depois na conta.
  */
 
 const mockSaveTransfer = jest.fn(async (_input: unknown): Promise<boolean> => true);
@@ -20,6 +21,10 @@ const mockAccounts = {
 };
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+
+jest.mock('react-native-safe-area-context', () => ({
+	useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
 
 jest.mock('react-i18next', () => ({
 	useTranslation: () => ({
@@ -41,6 +46,9 @@ import type { Account, Transfer } from '../../database/schema';
 import { configureDateLocale } from '../../utils/dateUtils';
 import { configureMoney } from '../../utils/money';
 import TransferForm, { transferChoices, validateTransfer } from '../TransferForm';
+
+// A primeira lista aberta carrega a folha (Modal): com a suíte inteira rodando, passa dos 5 s.
+jest.setTimeout(20_000);
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'x',
@@ -102,11 +110,48 @@ const byTestId = (tree: ReactTestRenderer, testID: string): ReactTestInstance =>
 	return found;
 };
 
+/** O controle tocável com o testID (o campo de lista também leva o testID, sem toque). */
+const control = (tree: ReactTestRenderer, testID: string): ReactTestInstance => {
+	const [found] = tree.root.findAll((node) => node.props.testID === testID && typeof node.props.onPress === 'function');
+	if (!found) throw new Error(`${testID} não está na tela`);
+	return found;
+};
+
 const press = async (tree: ReactTestRenderer, testID: string) => {
 	await act(async () => {
-		await byTestId(tree, testID).props.onPress();
+		await control(tree, testID).props.onPress();
 	});
 };
+
+const closeList = async (tree: ReactTestRenderer) => {
+	const [close] = tree.root.findAll((node) => node.props.accessibilityLabel === 'cards.close' && typeof node.props.onPress === 'function');
+	await act(async () => {
+		close.props.onPress();
+	});
+};
+
+/** As contas da lista de De ou Para: abre o campo, lê as linhas e fecha. */
+const listed = async (tree: ReactTestRenderer, side: 'from' | 'to'): Promise<string[]> => {
+	await press(tree, `transfer-form-${side}`);
+	const ids = [
+		...new Set(
+			tree.root
+				.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith(`transfer-${side}-`))
+				.map((node) => node.props.testID.slice(`transfer-${side}-`.length))
+		),
+	];
+	await closeList(tree);
+	return ids;
+};
+
+/** Escolhe a conta em De ou Para: toca o campo e a linha. */
+const choose = async (tree: ReactTestRenderer, side: 'from' | 'to', id: string) => {
+	await press(tree, `transfer-form-${side}`);
+	await press(tree, `transfer-${side}-${id}`);
+};
+
+/** O que o campo De ou Para mostra (o rótulo do botão: nome do campo e valor). */
+const shown = (tree: ReactTestRenderer, side: 'from' | 'to'): string => control(tree, `transfer-form-${side}`).props.accessibilityLabel;
 
 const typeAmount = async (tree: ReactTestRenderer, text: string) => {
 	await act(async () => {
@@ -198,28 +243,25 @@ describe('validateTransfer', () => {
 describe('TransferForm — nova transferência', () => {
 	it('conta arquivada não aparece; cartão de crédito não é origem', async () => {
 		const tree = await render();
-		expect(queryTestId(tree, 'transfer-from-antiga')).toHaveLength(0);
-		expect(queryTestId(tree, 'transfer-to-antiga')).toHaveLength(0);
-		expect(queryTestId(tree, 'transfer-from-nubank')).toHaveLength(0);
-		expect(queryTestId(tree, 'transfer-to-nubank').length).toBeGreaterThan(0);
 		// Sem "fora do app" na nova: é entre contas suas.
-		expect(queryTestId(tree, 'transfer-from-outside')).toHaveLength(0);
+		expect(await listed(tree, 'from')).toEqual(['corrente', 'reserva']);
+		expect(await listed(tree, 'to')).toEqual(['corrente', 'reserva', 'nubank']);
 	});
 
 	it('escolher a origem a tira de Para: De e Para iguais nem são oferecidos', async () => {
 		const tree = await render();
-		expect(queryTestId(tree, 'transfer-to-corrente').length).toBeGreaterThan(0);
-		await press(tree, 'transfer-from-corrente');
-		expect(queryTestId(tree, 'transfer-to-corrente')).toHaveLength(0);
-		expect(queryTestId(tree, 'transfer-to-reserva').length).toBeGreaterThan(0);
+		expect(await listed(tree, 'to')).toContain('corrente');
+		await choose(tree, 'from', 'corrente');
+		expect(await listed(tree, 'to')).toEqual(['reserva', 'nubank']);
 	});
 
 	it('Para já escolhido e a mesma conta em De: Para fica vazio, pede de novo e nada é gravado', async () => {
 		const onSubmit = jest.fn();
 		const tree = await render({ onSubmit });
-		await press(tree, 'transfer-to-reserva');
-		await press(tree, 'transfer-from-reserva');
-		expect(queryTestId(tree, 'transfer-to-reserva')).toHaveLength(0);
+		await choose(tree, 'to', 'reserva');
+		await choose(tree, 'from', 'reserva');
+		expect(await listed(tree, 'to')).not.toContain('reserva');
+		expect(shown(tree, 'to')).toBe('transactionForm.transfer.to, select.placeholder');
 		await typeAmount(tree, '1000');
 		await press(tree, 'transfer-form-save');
 
@@ -241,8 +283,8 @@ describe('TransferForm — nova transferência', () => {
 	it('R$ 1.000 da Corrente para a Reserva em 07/11 vai para saveTransfer e fecha a tela', async () => {
 		const onSubmit = jest.fn();
 		const tree = await render({ onSubmit });
-		await press(tree, 'transfer-from-corrente');
-		await press(tree, 'transfer-to-reserva');
+		await choose(tree, 'from', 'corrente');
+		await choose(tree, 'to', 'reserva');
 		await typeAmount(tree, '1000');
 		await act(async () => {
 			byTestId(tree, 'transfer-form-note').props.onChangeText('Caixinha');
@@ -266,8 +308,8 @@ describe('TransferForm — nova transferência', () => {
 		mockSaveTransfer.mockImplementation(async () => false);
 		const onSubmit = jest.fn();
 		const tree = await render({ onSubmit });
-		await press(tree, 'transfer-from-corrente');
-		await press(tree, 'transfer-to-nubank');
+		await choose(tree, 'from', 'corrente');
+		await choose(tree, 'to', 'nubank');
 		expect(queryTestId(tree, 'transfer-form-card-payment')).toHaveLength(1);
 		// O pagamento de fatura não guarda descrição: o campo some em vez de ser ignorado.
 		expect(queryTestId(tree, 'transfer-form-note')).toHaveLength(0);
@@ -286,8 +328,8 @@ describe('TransferForm — nova transferência', () => {
 		});
 		jest.spyOn(console, 'error').mockImplementation(() => undefined);
 		const tree = await render();
-		await press(tree, 'transfer-from-corrente');
-		await press(tree, 'transfer-to-reserva');
+		await choose(tree, 'from', 'corrente');
+		await choose(tree, 'to', 'reserva');
 		await typeAmount(tree, '1000');
 		await press(tree, 'transfer-form-save');
 		expect(summary(tree)).toBe('transactionForm.saveFailed');
@@ -299,8 +341,8 @@ describe('TransferForm — editar e apagar a partir de Lançamentos', () => {
 		const onSubmit = jest.fn();
 		const tree = await render({ initialTransfer: transfer(), onSubmit });
 		expect(byTestId(tree, 'transfer-form-amount').props.value).toBe('1.000,00');
-		expect(byTestId(tree, 'transfer-from-corrente').props.accessibilityState).toEqual({ selected: true });
-		expect(byTestId(tree, 'transfer-to-reserva').props.accessibilityState).toEqual({ selected: true });
+		expect(shown(tree, 'from')).toBe('transactionForm.transfer.from, Corrente');
+		expect(shown(tree, 'to')).toBe('transactionForm.transfer.to, Reserva');
 
 		await typeAmount(tree, '500');
 		await press(tree, 'transfer-form-save');
@@ -317,17 +359,19 @@ describe('TransferForm — editar e apagar a partir de Lançamentos', () => {
 
 	it('E2E-42: a conta de origem não aparece em Para, como na criação', async () => {
 		const tree = await render({ initialTransfer: transfer() });
-		expect(byTestId(tree, 'transfer-from-corrente').props.accessibilityState).toEqual({ selected: true });
-		expect(queryTestId(tree, 'transfer-to-corrente')).toHaveLength(0);
-		expect(byTestId(tree, 'transfer-to-reserva').props.accessibilityState).toEqual({ selected: true });
-		expect(queryTestId(tree, 'transfer-to-nubank').length).toBeGreaterThan(0);
+		expect(shown(tree, 'from')).toBe('transactionForm.transfer.from, Corrente');
+		expect(await listed(tree, 'to')).toEqual(['reserva', 'nubank']);
+		// Na lista aberta, a de destino vem marcada.
+		await press(tree, 'transfer-form-to');
+		expect(control(tree, 'transfer-to-reserva').props.accessibilityState).toEqual({ selected: true });
+		expect(control(tree, 'transfer-to-nubank').props.accessibilityState).toEqual({ selected: false });
 	});
 
 	it('trocar a origem pela conta de destino esvazia Para, e a origem antiga volta a ser destino', async () => {
 		const tree = await render({ initialTransfer: transfer() });
-		await press(tree, 'transfer-from-reserva');
-		expect(queryTestId(tree, 'transfer-to-reserva')).toHaveLength(0);
-		expect(byTestId(tree, 'transfer-to-corrente').props.accessibilityState).toEqual({ selected: false });
+		await choose(tree, 'from', 'reserva');
+		expect(shown(tree, 'to')).toBe('transactionForm.transfer.to, select.placeholder');
+		expect(await listed(tree, 'to')).toEqual(['corrente', 'nubank']);
 		await press(tree, 'transfer-form-save');
 		expect(summary(tree)).toBe('transactionForm.transfer.toRequired');
 		expect(mockSaveTransfer).not.toHaveBeenCalled();
@@ -353,7 +397,10 @@ describe('TransferForm — editar e apagar a partir de Lançamentos', () => {
 
 	it('transferência que a captura gravou com uma ponta fora do app: a ponta continua "fora do app"', async () => {
 		const tree = await render({ initialTransfer: transfer({ fromAccountId: null }) });
-		expect(byTestId(tree, 'transfer-from-outside').props.accessibilityState).toEqual({ selected: true });
+		expect(shown(tree, 'from')).toBe('transactionForm.transfer.from, transactionForm.transfer.outside');
+		await press(tree, 'transfer-form-from');
+		expect(control(tree, 'transfer-from-outside').props.accessibilityState).toEqual({ selected: true });
+		await closeList(tree);
 		await press(tree, 'transfer-form-save');
 		expect(mockSaveTransfer).toHaveBeenCalledWith(expect.objectContaining({ id: 't-1', fromAccountId: null, toAccountId: 'reserva' }));
 	});

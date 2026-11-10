@@ -44,7 +44,6 @@ jest.mock('react-i18next', () => ({
 	}),
 }));
 
-jest.mock('../../components/HorizontalCategoryPicker', () => () => null);
 
 jest.mock('../../contexts/AccountsContext', () => ({
 	useAccounts: () => ({ accounts: mockData.accounts, activeAccounts: mockData.accounts }),

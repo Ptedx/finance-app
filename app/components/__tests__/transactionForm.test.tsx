@@ -11,7 +11,8 @@
  *   que somam o total, nota com "(1/N)" — o mesmo que confirmar uma captura parcelada.
  *
  * Contextos e banco são dublês; o formulário, o seletor de conta e o de categoria rodam de
- * verdade.
+ * verdade. Conta e categoria são listas que abrem de baixo (SPD-130): escolher é tocar no campo
+ * e depois na linha.
  */
 
 const mockAddNewTransaction = jest.fn(async (_draft: unknown) => 'tx-1');
@@ -33,6 +34,9 @@ jest.mock('expo-blur', () => {
 	return { BlurView: View };
 });
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: jest.fn() }) }));
+jest.mock('react-native-safe-area-context', () => ({
+	useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
 
 // A chave e, quando há, as opções: o teste vê qual texto e com quais números.
 jest.mock('react-i18next', () => ({
@@ -161,13 +165,31 @@ const typeAmount = async (tree: ReactTestRenderer, text: string) => {
 	});
 };
 
+/** Toca o campo (o botão cujo rótulo começa pelo nome dele) e abre a lista. */
+const openField = async (tree: ReactTestRenderer, label: string) => {
+	const [field] = tree.root.findAll(
+		(node) =>
+			node.props.accessibilityRole === 'button' &&
+			typeof node.props.accessibilityLabel === 'string' &&
+			node.props.accessibilityLabel.startsWith(`${label}, `) &&
+			typeof node.props.onPress === 'function'
+	);
+	if (!field) throw new Error(`campo ${label} não está na tela`);
+	await press(field);
+};
+
+/** A linha da lista aberta com aquele nome. */
+const pickRow = async (tree: ReactTestRenderer, name: string) => {
+	const [row] = tree.root.findAll(
+		(node) => node.props.accessibilityRole === 'radio' && node.props.accessibilityLabel === name && typeof node.props.onPress === 'function'
+	);
+	if (!row) throw new Error(`${name} não está na lista`);
+	await press(row);
+};
+
 const pickCategory = async (tree: ReactTestRenderer, name: string) => {
-	const label = ofType(tree.root, Text).find((node) => textOf(node) === name);
-	if (!label) throw new Error(`categoria ${name} não está na tela`);
-	let node: ReactTestInstance | null = label;
-	while (node && typeof node.props.onPress !== 'function') node = node.parent;
-	if (!node) throw new Error('categoria sem toque');
-	await press(node);
+	await openField(tree, 'transactionForm.category');
+	await pickRow(tree, name);
 };
 
 /** Toca um dos tipos (Despesa, Receita, Transferência) no topo do formulário. */
@@ -178,8 +200,8 @@ const pressType = async (tree: ReactTestRenderer, kind: 'expense' | 'income' | '
 };
 
 const pickAccount = async (tree: ReactTestRenderer, name: string) => {
-	const chip = tree.root.find((node) => node.props.accessibilityRole === 'radio' && node.props.accessibilityLabel === name && typeof node.props.onPress === 'function');
-	await press(chip);
+	await openField(tree, 'accounts.picker.label');
+	await pickRow(tree, name);
 };
 
 beforeAll(() => {
@@ -459,18 +481,32 @@ function transaction(overrides: Partial<Transaction> = {}): Transaction {
 describe('TransactionForm — transferência entre contas (E2E-28)', () => {
 	const RESERVE = { id: 'reserva', name: 'Reserva', kind: 'savings', color: '#00A86B', last4: null, cardNames: null, closingDay: null, closingDaysBefore: null, archived: false };
 
-	const transferIds = (tree: ReactTestRenderer, side: 'from' | 'to'): string[] => [
-		...new Set(
-			tree.root
-				.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith(`transfer-${side}-`))
-				.map((node) => node.props.testID.slice(`transfer-${side}-`.length))
-		),
-	];
-
 	const pressId = async (tree: ReactTestRenderer, testID: string) => {
-		const [node] = queryTestId(tree, testID);
+		// O campo de lista também leva o testID; o tocável é o botão dentro dele.
+		const [node] = queryTestId(tree, testID).filter((found) => typeof found.props.onPress === 'function');
 		if (!node) throw new Error(`${testID} não está na tela`);
 		await press(node);
+	};
+
+	/** As contas da lista de De ou Para: abre o campo, lê as linhas e fecha. */
+	const transferIds = async (tree: ReactTestRenderer, side: 'from' | 'to'): Promise<string[]> => {
+		await pressId(tree, `transfer-form-${side}`);
+		const ids = [
+			...new Set(
+				tree.root
+					.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith(`transfer-${side}-`))
+					.map((node) => node.props.testID.slice(`transfer-${side}-`.length))
+			),
+		];
+		const [close] = tree.root.findAll((node) => node.props.accessibilityLabel === 'cards.close' && typeof node.props.onPress === 'function');
+		await press(close);
+		return ids;
+	};
+
+	/** Escolhe a conta em De ou Para pela lista que abre do campo. */
+	const pickSide = async (tree: ReactTestRenderer, side: 'from' | 'to', id: string) => {
+		await pressId(tree, `transfer-form-${side}`);
+		await pressId(tree, `transfer-${side}-${id}`);
 	};
 
 	beforeEach(() => {
@@ -496,8 +532,8 @@ describe('TransactionForm — transferência entre contas (E2E-28)', () => {
 		const texts = allTexts(tree);
 		for (const key of ['transfer.from', 'transfer.to', 'amount', 'date', 'note']) expect(texts).toContain(`transactionForm.${key}`);
 		// O cartão de crédito é destino (pagar a fatura), nunca origem.
-		expect(transferIds(tree, 'from')).toEqual(['inter', 'reserva']);
-		expect(transferIds(tree, 'to')).toEqual(['nubank', 'inter', 'reserva']);
+		expect(await transferIds(tree, 'from')).toEqual(['inter', 'reserva']);
+		expect(await transferIds(tree, 'to')).toEqual(['nubank', 'inter', 'reserva']);
 		// O tipo continua escolhível: voltar para Despesa traz o formulário de antes.
 		await pressType(tree, 'expense');
 		expect(queryTestId(tree, 'transfer-form')).toHaveLength(0);
@@ -507,17 +543,16 @@ describe('TransactionForm — transferência entre contas (E2E-28)', () => {
 	it('a conta escolhida em De sai de Para (E2E-42)', async () => {
 		const tree = await render();
 		await pressType(tree, 'transfer');
-		await pressId(tree, 'transfer-from-inter');
-		expect(queryTestId(tree, 'transfer-to-inter')).toHaveLength(0);
-		expect(queryTestId(tree, 'transfer-to-reserva').length).toBeGreaterThan(0);
+		await pickSide(tree, 'from', 'inter');
+		expect(await transferIds(tree, 'to')).toEqual(['nubank', 'reserva']);
 	});
 
 	it('R$ 1.000 do Inter para a Reserva em 07/11 é transferência, não lançamento', async () => {
 		const onSubmit = jest.fn();
 		const tree = await render({ onSubmit });
 		await pressType(tree, 'transfer');
-		await pressId(tree, 'transfer-from-inter');
-		await pressId(tree, 'transfer-to-reserva');
+		await pickSide(tree, 'from', 'inter');
+		await pickSide(tree, 'to', 'reserva');
 		await act(async () => {
 			queryTestId(tree, 'transfer-form-amount')[0].props.onChangeText('1000');
 		});

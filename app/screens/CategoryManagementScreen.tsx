@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { type ComponentProps, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	Alert,
@@ -14,9 +14,10 @@ import {
 // status e o "Adicionar categoria", para baixo da barra de gestos.
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import CategoryEditorModal from '../components/CategoryEditorModal';
-import { Button, ChipGroup } from '../components/cards/formParts';
+import { Button } from '../components/cards/formParts';
 import Sheet from '../components/cards/Sheet';
 import ScreenTopBar from '../components/ScreenTopBar';
+import { SelectField, type SelectOption } from '../components/SelectField';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { CATEGORY_NATURES, type Category, type CategoryDraft } from '../database/schema';
 
@@ -120,10 +121,10 @@ const CategoryManagementScreen = () => {
 	};
 
 	// Para onde os lançamentos podem ir: outra categoria do mesmo tipo, nunca a própria.
-	const moveOptions = deleting
+	const moveOptions: SelectOption<string>[] = deleting
 		? categories
 				.filter((c) => c.type === deleting.category.type && c.id !== deleting.category.id)
-				.map((c) => ({ value: c.id, label: c.name, color: c.color }))
+				.map((c) => ({ value: c.id, label: c.name, color: c.color, icon: c.icon as ComponentProps<typeof Ionicons>['name'] }))
 		: [];
 
 	const renderCategoryItem = ({ item }: { item: Category }) => (
@@ -266,7 +267,7 @@ const CategoryManagementScreen = () => {
 			>
 				{deleting && moveOptions.length > 0 ? (
 					<>
-						<ChipGroup
+						<SelectField
 							label={t('categoryManagement.moveTo')}
 							options={moveOptions}
 							selected={moveTarget}
