@@ -363,6 +363,24 @@ export const invoiceAmount = (
 	return total + 0;
 };
 
+/**
+ * O que uma fatura cobrou antes de estornos e créditos: compras, encargos e ajustes datados no
+ * ciclo depois da âncora, mais a própria âncora quando ela é dívida e cai no ciclo. É o que
+ * separa a fatura quitada ("Paga") da que não teve o que pagar ("fechada"), ver `invoiceStatusOf`.
+ */
+const invoiceDebits = (cycle: InvoiceCycle, settings: CardSettings, entries: CardEntry[]): number => {
+	let total = 0;
+	for (const entry of entries) {
+		if (entry.isIncome || entry.date < cycle.start || entry.date > cycle.end) continue;
+		if (inInformedValue(settings, entry.date)) continue;
+		total += entry.amountCents;
+	}
+	if (settings.openingBalanceDate >= cycle.start && settings.openingBalanceDate <= cycle.end) {
+		total += Math.max(0, 0 - settings.openingBalanceCents);
+	}
+	return total;
+};
+
 /** A chave `YYYY-MM` da fatura `delta` meses depois de `key`. */
 const shiftKey = (key: string, delta: number): string => {
 	const [year, month] = key.split('-').map(Number);
@@ -434,6 +452,11 @@ export interface InvoiceView {
 	 * continua sendo a soma dos lançamentos dela; o que ela cobra é a diferença.
 	 */
 	creditAppliedCents: number;
+	/**
+	 * O que ela cobrou antes de estornos e créditos (ver `invoiceDebits`). Com o saldo anterior,
+	 * diz se havia o que pagar: a fatura coberta por estorno é "Paga"; a que só teve estorno, não.
+	 */
+	debitsCents: number;
 	/**
 	 * Só nas fechadas: o que as faturas anteriores deixaram sem pagar e veio para esta, como
 	 * a linha "saldo anterior" da fatura do banco. Sem juros — o app não sabe deles. Zero
@@ -657,11 +680,6 @@ export const buildCardSummary = (
 	}
 
 	const daysToDue = daysBetween(today, closedCycle.dueDate);
-	let closedStatus: ClosedInvoiceStatus;
-	if (toPayCents === 0) closedStatus = closedInvoiceCents > 0 ? 'paid' : 'none';
-	else if (daysToDue < 0) closedStatus = 'overdue';
-	else if (daysToDue <= DUE_SOON_DAYS) closedStatus = 'due_soon';
-	else closedStatus = 'due';
 
 	const creditInto = carriedCredit(settings, entries, rule);
 	const creditApplied = (cycle: InvoiceCycle, amountCents: number): number => Math.min(creditInto(cycle.key), Math.max(0, amountCents));
@@ -674,6 +692,17 @@ export const buildCardSummary = (
 		if (offset > -1 || cycle.end < settings.openingBalanceDate) return 0;
 		return Math.max(0, owedOn(settings, entries, movements, cycle.end) - invoiceAmount(cycle, settings, entries));
 	};
+
+	// Nada a pagar e havia o que pagar — compra, encargo ou saldo anterior, mesmo que o estorno
+	// tenha coberto (SPD-125): paga. Antes contava só a fechada com valor positivo, e a de R$ 100
+	// de compra com R$ 300 de estorno ficava sem status, como se não tivesse tido nada.
+	let closedStatus: ClosedInvoiceStatus;
+	if (toPayCents === 0) {
+		const charged = invoiceDebits(closedCycle, settings, entries) + previousUnpaid(closedCycle, -1) > 0;
+		closedStatus = charged ? 'paid' : 'none';
+	} else if (daysToDue < 0) closedStatus = 'overdue';
+	else if (daysToDue <= DUE_SOON_DAYS) closedStatus = 'due_soon';
+	else closedStatus = 'due';
 
 	// O pagamento que sobrou das janelas anteriores e chega a uma fatura fechada: o espelho do
 	// saldo anterior. O devido na véspera do fechamento menos o que é dela, quando negativo, é
@@ -728,6 +757,7 @@ export const buildCardSummary = (
 			offset,
 			paidCents,
 			creditAppliedCents: creditApplied(cycle, amountCents),
+			debitsCents: invoiceDebits(cycle, settings, entries),
 			previousUnpaidCents,
 			leftOpenCents,
 			coveredPayments,
@@ -1194,19 +1224,30 @@ export type InvoiceStatus =
 /**
  * O estado de uma fatura para o chip dela. Antes, a fechada sem valor dizia "venceu 12/11"
  * no dia 07/11, e a que ficou em aberto e já passou para a seguinte dizia só "venceu".
+ *
+ * Paga é a fatura que tinha o que pagar — compra, encargo, valor informado ou saldo anterior
+ * (`debitsCents`, `previousUnpaidCents`) — e não deixa nada: pagamentos, estornos e o crédito
+ * que veio das anteriores cobriram tudo (SPD-125). Antes a regra olhava o valor com o saldo
+ * anterior, sem o crédito: a fatura de R$ 100 de compra e R$ 300 de estorno, ou a de R$ 500
+ * coberta por R$ 200 de crédito e R$ 300 de pagamento, dizia "fechada" sem nada a pagar. A que
+ * só teve estorno não cobrou nada e segue "fechada". O que falta pagar é o mesmo de
+ * `invoiceDueCents`, do lembrete e dos Relatórios.
  */
 export const invoiceStatusOf = (invoice: InvoiceView, summary: CardSummary, today: string): InvoiceStatus => {
 	if (invoice.offset === 0) return { kind: 'open' };
 	if (invoice.offset > 0) return { kind: 'future' };
-	const charged = invoice.amountCents + invoice.previousUnpaidCents;
+	const hadCharges = invoice.debitsCents + invoice.previousUnpaidCents > 0;
 	if (invoice.offset === -1) {
 		if (summary.closedStatus === 'overdue') return { kind: 'overdue', amountCents: summary.toPayCents };
 		if (summary.toPayCents > 0) return { kind: 'toPay', amountCents: summary.toPayCents };
-		if (charged > 0) return { kind: 'paid' };
+		if (hadCharges) return { kind: 'paid' };
 		return invoice.cycle.dueDate >= today ? { kind: 'closedUpcoming' } : { kind: 'closedPast' };
 	}
 	if (invoice.leftOpenCents > 0) return { kind: 'leftOpen', amountCents: invoice.leftOpenCents };
-	if (charged > 0 && invoice.paidCents >= charged) return { kind: 'paid' };
+	// O que ela cobrava: o valor menos o crédito das anteriores, mais o saldo anterior. Valor
+	// negativo (estorno maior que as compras) abate o saldo anterior, como na fatura do banco.
+	const chargedCents = Math.max(0, invoice.amountCents - invoice.creditAppliedCents + invoice.previousUnpaidCents);
+	if (hadCharges && invoice.paidCents >= chargedCents) return { kind: 'paid' };
 	return { kind: 'closedPast' };
 };
 
