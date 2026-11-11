@@ -393,7 +393,7 @@ const en = {
 			title: 'Emergency reserve',
 			subtitle: 'How many months of essential costs it should cover.',
 			months: 'Months of essential costs',
-			monthsHint: 'Six is the reference for a stable income; twelve, for variable or self-employed income.',
+			monthsHint: 'The default is 12 months. Six is the reference for a stable income; twelve, for variable or self-employed income.',
 			monthsOption_one: '{{count}} month',
 			monthsOption_other: '{{count}} months',
 			monthsOther: 'Or another number of months',
@@ -779,7 +779,7 @@ const en = {
 			},
 			capture: {
 				title: 'The app logs it for you',
-				body: 'On Android, Spendr reads your bank notifications and logs purchases, Pix and transfers by itself. When it is not sure, it asks before logging anything.',
+				body: 'On Android, Spendr reads your bank notifications and turns purchases, Pix and transfers into entries. A purchase from a new place waits for you to confirm it; after 3 confirmations of the same place, it logs them by itself.',
 			},
 			cards: {
 				title: 'Cards with the real bill',
@@ -838,23 +838,23 @@ const en = {
 			},
 			capture: {
 				title: 'Automatic capture from bank notifications',
-				body: 'Turn it on in Settings › Automatic capture and allow notification access. The app logs what it recognizes by itself. Anything it is unsure about shows up under "Review" at the top of the home screen: confirm it, fix the account or the amount, or dismiss it. When you correct a case, the app learns and does the same next time. Tip: in Settings › Your name at the bank, type your name as it appears on Pix transfers, so the app recognizes money moving between your own accounts.',
+				body: 'Turn it on in Settings › Automatic capture and allow notification access. The app decides by itself only what leaves no doubt: card bill payments, investing and redeeming, transfers between your own accounts and purchases from a place you have confirmed 3 times in a row with the same category. Everything else, like a purchase from a new place, waits under "Review" at the top of the home screen: confirm it, change the account or the category, or dismiss it. Your answer to an incomplete notification applies to the next identical one. Tip: in Settings › Your name at the bank, type your name as it appears on Pix transfers, so the app recognizes money moving between your own accounts.',
 			},
 			cards: {
 				title: 'Cards: setup and bills',
-				body: 'In Settings › Cards, tap Add card. Enter the bank, the card ending (bank notifications find the card by it), the limit, the day the bill closes and the day it is due — both are on the bill, in the bank app or on its website. On the card screen: the current bill, the next ones, "Left to pay", installments in progress and the best day to buy.',
+				body: 'In Settings › Cards, tap Add card. Enter the bank, the card ending (bank notifications find the card by it), the limit, the day the bill closes and the day it is due — both are on the bill, in the bank app or on its website. On the card screen: the current bill, the next ones, "Left to pay", installments in progress and the best day to buy, which is the closing day itself: a purchase made on it already goes on the next bill.',
 			},
 			invoice: {
 				title: 'Card bill: paying, matching and bank charges',
-				body: '• Pay bill: records the payment and which account it came from.\n• Match bank: the bill in the app differs from the bank? Enter the bank amount; the difference becomes a charge.\n• Old installment: an installment purchase made before you added the card.\n• Add a card charge: interest, IOF tax, annual fee and other fees the bank charged.\n• Probable repeat: the same amount twice around the same date gets flagged. Delete the extra one, or tap "Not a repeat".',
+				body: '• Pay bill: records the payment and which account it came from.\n• Match bank: the bill in the app differs from the bank? Enter the bank amount, and the app matches it. When the bank shows more, it asks first whether the difference is a charge.\n• Old installment: an installment purchase made before you added the card.\n• Add a card charge: interest, IOF tax, annual fee and other fees the bank charged.\n• Probable repeat: the same amount twice around the same date gets flagged. Delete the extra one, or tap "Not a repeat".',
 			},
 			bills: {
 				title: 'Bills and reminders',
-				body: 'In Settings › Bills, add rent, internet, school, with the amount and the due day. The app reminds you before and on the day, and lists everything under "Bills this month" on the home screen. Paid it? Tap "I paid it", and the payment comes out of the account you chose.',
+				body: 'In Settings › Bills, add rent, internet, school, with the amount and the due day. The app reminds you before and on the day, and lists everything under "Bills this month" on the home screen. Paid it? In Bills, tap "I paid it". For a fixed amount, the app asks whether to record the payment ("Record and mark paid") or just mark it as paid; for a variable amount, or when the payment is already logged, it just marks it.',
 			},
 			debts: {
 				title: 'Debts',
-				body: 'In Net worth, add loans and financing with the balance owed, the installment and how many are left. The app shows when it ends, how much interest you pay and whether it is "worth paying off early" compared with what the money would earn (CDI).',
+				body: 'In Net worth, add loans and financing with the balance owed, the installment and how many are left. The app shows when it ends, how much interest you pay and whether it is "worth paying off early" compared with what the money would earn invested.',
 			},
 			reserve: {
 				title: 'Emergency reserve and "Where to start"',
@@ -862,7 +862,7 @@ const en = {
 			},
 			budget: {
 				title: 'Budget',
-				body: 'On the home screen, in the "This month" card, set how much you want to spend in the month. The budget carries over to the following months until you change it. The app shows how much is gone and how much is left.',
+				body: 'On the home screen, in the "This month" card, set how much you want to spend in the month. The budget carries over to the following months until you change it. The app shows how much is gone and how much is left. "Spending" counts each card bill that closes in the month and each envelope\'s amount for the month; "Out" in Transactions adds up each purchase by its date. That is why the two can differ.',
 			},
 			reports: {
 				title: 'Reports',
@@ -870,7 +870,7 @@ const en = {
 			},
 			ofx: {
 				title: 'Bank statement (OFX)',
-				body: 'Download the statement as OFX from the bank app or website and import it in Settings › Import bank statement (OFX). The app merges it with what is already logged, without duplicates, confirms what was pending and offers the remaining installments.',
+				body: 'Download the statement as OFX from the bank app or website and import it in Settings › Import bank statement (OFX). The app merges it with what is already logged, without duplicates, flags the pending notifications the statement confirms and, for a card statement, offers the remaining installments.',
 			},
 			backup: {
 				title: 'Account, backup and privacy',
@@ -885,11 +885,11 @@ const en = {
 				},
 				review: {
 					title: 'Review',
-					body: 'What the app read in bank notifications and was not sure about waits here. Confirm, fix or dismiss it.',
+					body: 'Bank notifications waiting for you: purchases from a new place and whatever the app could not decide by itself. Confirm, fix or dismiss them.',
 				},
 				bills: {
 					title: 'Bills this month',
-					body: 'Rent, internet, school: what is due this month. Paid it? Tap "I paid it", and the payment comes out of the account you chose.',
+					body: 'Rent, internet, school: what is due this month. Tapping the card opens Bills, where "I paid it" is.',
 				},
 				month: {
 					title: 'This month',
@@ -910,7 +910,7 @@ const en = {
 					body: 'Choose whether the money went out or came in.',
 				},
 				transfer: {
-					title: 'Transfer between my accounts',
+					title: 'Transfer',
 					body: 'Money moving from one of your accounts to another. It does not count as spending.',
 				},
 				amount: {
@@ -929,7 +929,7 @@ const en = {
 			card: {
 				face: {
 					title: 'The current bill',
-					body: 'The card shows the open bill, when it closes and is due, and the limit left. Further down, each bill says how much is left to pay.',
+					body: 'The card shows the open bill, when it closes and is due and, if you entered the limit, how much of it is left. Further down are the bills for each month.',
 				},
 				pay: {
 					title: 'Pay bill',
@@ -937,7 +937,7 @@ const en = {
 				},
 				adjust: {
 					title: 'Match bank',
-					body: 'The bill in the app differs from the bank? Enter the bank amount; the difference becomes a charge.',
+					body: 'The bill in the app differs from the bank? Enter the bank amount, and the app matches it. When the bank shows more, it asks first whether the difference is a charge.',
 				},
 				installments: {
 					title: 'Old installment',
@@ -949,7 +949,7 @@ const en = {
 				},
 				invoices: {
 					title: 'Bills by month',
-					body: 'One tab per month, with the amount on the tab. Tap one to see that bill\'s entries and how much is left to pay.',
+					body: 'One tab per month, with the amount on the tab. Tap one to see that bill\'s entries and, after a payment or a match, how much is left to pay.',
 				},
 				duplicates: {
 					title: 'Probable repeat',
@@ -969,15 +969,15 @@ const en = {
 			inbox: {
 				card: {
 					title: 'To review',
-					body: 'A bank notification the app was not sure how to log. It asks first.',
+					body: 'A bank notification waiting for you: a purchase from a new place, or something the app could not decide by itself.',
 				},
 				actions: {
 					title: 'Confirm, fix or dismiss',
-					body: 'Check the amount and the account. Confirm it, fix what is wrong, or dismiss it.',
+					body: 'Check the amount and the account. Confirm it, change the account or the category, or dismiss it.',
 				},
 				learned: {
 					title: 'The app learns',
-					body: 'When you correct a case, the app learns and does the same next time.',
+					body: 'Your answer to an incomplete notification applies to the next identical one. And 3 confirmations in a row of the same place, with the same category, make the next ones go in by themselves.',
 				},
 			},
 			wealth: {
@@ -1023,7 +1023,7 @@ const en = {
 				},
 				capture: {
 					title: 'Automatic capture',
-					body: 'Allow notification access, and the app logs what it recognizes in bank notifications by itself.',
+					body: 'Allow notification access, and bank notifications become entries. A purchase from a new place goes to "Review" until 3 confirmations; after that, it goes in by itself.',
 				},
 				ownName: {
 					title: 'Your name at the bank',
@@ -1204,8 +1204,8 @@ account: {
 			confirmTitle: 'Move entries',
 			confirmBody_one: 'Move {{count}} entry to {{account}}?',
 			confirmBody_other: 'Move {{count}} entries to {{account}}?',
-			beforeAnchorWarning_one: '{{count}} of them is dated before the balance you set on {{account}}, so it will leave the total without entering that balance. After moving, use "Set balance" to settle it.',
-			beforeAnchorWarning_other: '{{count}} of them are dated before the balance you set on {{account}}, so they will leave the total without entering that balance. After moving, use "Set balance" to settle it.',
+			beforeAnchorWarning_one: '{{count}} of them is dated before the balance you set on {{account}}, so it will leave the total without entering that balance. After moving, use "Match the bank" on the account.',
+			beforeAnchorWarning_other: '{{count}} of them are dated before the balance you set on {{account}}, so they will leave the total without entering that balance. After moving, use "Match the bank" on the account.',
 			move: 'Move',
 			moved_one: '{{count}} entry moved',
 			moved_other: '{{count}} entries moved',

@@ -392,7 +392,7 @@ const it = {
 			title: 'Riserva di emergenza',
 			subtitle: 'Quanti mesi di costi essenziali deve coprire.',
 			months: 'Mesi di costi essenziali',
-			monthsHint: 'Sei è il riferimento per un reddito stabile; dodici, per un reddito variabile o autonomo.',
+			monthsHint: 'Il valore predefinito è 12 mesi. Sei è il riferimento per un reddito stabile; dodici, per un reddito variabile o autonomo.',
 			monthsOption_one: '{{count}} mese',
 			monthsOption_other: '{{count}} mesi',
 			monthsOther: 'Oppure un altro numero di mesi',
@@ -779,7 +779,7 @@ const it = {
 			},
 			capture: {
 				title: 'L\'app registra per te',
-				body: 'Su Android, Spendr legge le notifiche della banca e registra da sola acquisti, Pix e trasferimenti. Quando ha un dubbio, chiede prima di registrare.',
+				body: 'Su Android, Spendr legge le notifiche della banca e trasforma acquisti, Pix e trasferimenti in movimenti. L\'acquisto in un posto nuovo aspetta la tua conferma; dopo 3 conferme dello stesso posto, lo registra da sola.',
 			},
 			cards: {
 				title: 'La carta con l\'estratto vero',
@@ -838,23 +838,23 @@ const it = {
 			},
 			capture: {
 				title: 'Cattura automatica dalle notifiche della banca',
-				body: 'Attivala in Impostazioni › Cattura automatica e consenti l\'accesso alle notifiche. L\'app registra da sola ciò che riconosce. Quello di cui non è sicura compare in "Rivedi", in cima alla schermata iniziale: conferma, correggi il conto o l\'importo, oppure ignora. Quando correggi un caso, l\'app impara e la volta dopo fa lo stesso. Consiglio: in Impostazioni › Il tuo nome in banca, scrivi il tuo nome come appare nei Pix, così l\'app riconosce i soldi che passano tra i tuoi conti.',
+				body: 'Attivala in Impostazioni › Cattura automatica e consenti l\'accesso alle notifiche. L\'app decide da sola solo ciò che non lascia dubbi: pagamenti dell\'estratto, investimenti e riscatti, trasferimenti tra i tuoi conti e acquisti in un posto che hai confermato 3 volte di fila con la stessa categoria. Il resto, come l\'acquisto in un posto nuovo, aspetta in "Rivedi", in cima alla schermata iniziale: conferma, cambia il conto o la categoria, oppure ignora. La risposta a una notifica incompleta vale per la prossima notifica uguale. Consiglio: in Impostazioni › Il tuo nome in banca, scrivi il tuo nome come appare nei Pix, così l\'app riconosce i soldi che passano tra i tuoi conti.',
 			},
 			cards: {
 				title: 'Carte: registrazione ed estratto',
-				body: 'In Impostazioni › Carte, tocca Aggiungi carta. Indica la banca, le ultime cifre della carta (è da queste che le notifiche trovano la carta), il limite, il giorno in cui l\'estratto chiude e quello in cui scade — li trovi entrambi sull\'estratto, nell\'app o sul sito della banca. Nella schermata della carta: l\'estratto attuale, i prossimi, "Ancora da pagare", le rate in corso e il giorno migliore per comprare.',
+				body: 'In Impostazioni › Carte, tocca Aggiungi carta. Indica la banca, le ultime cifre della carta (è da queste che le notifiche trovano la carta), il limite, il giorno in cui l\'estratto chiude e quello in cui scade — li trovi entrambi sull\'estratto, nell\'app o sul sito della banca. Nella schermata della carta: l\'estratto attuale, i prossimi, "Ancora da pagare", le rate in corso e il giorno migliore per acquistare, che è il giorno stesso della chiusura: l\'acquisto fatto quel giorno va già nell\'estratto successivo.',
 			},
 			invoice: {
 				title: 'Estratto: pagare, allineare e ciò che la banca addebita',
-				body: '• Paga estratto: registra il pagamento e da quale conto è uscito.\n• Allinea: l\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca; la differenza diventa un onere.\n• Rata vecchia: un acquisto a rate fatto prima di registrare la carta.\n• Registra onere: interessi, IOF, canone annuo e commissioni addebitati dalla banca.\n• Probabile ripetuto: lo stesso importo due volte vicino alla stessa data viene segnalato. Cancella quello in più, oppure tocca "Non è ripetuto".',
+				body: '• Paga estratto: registra il pagamento e da quale conto è uscito.\n• Allinea: l\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca, e l\'app lo allinea. Quando la banca mostra di più, prima chiede se la differenza è un onere.\n• Rata vecchia: un acquisto a rate fatto prima di registrare la carta.\n• Registra onere: interessi, IOF, canone annuo e commissioni addebitati dalla banca.\n• Probabile ripetuto: lo stesso importo due volte vicino alla stessa data viene segnalato. Cancella quello in più, oppure tocca "Non è ripetuto".',
 			},
 			bills: {
 				title: 'Conti da pagare e promemoria',
-				body: 'In Impostazioni › Conti da pagare, aggiungi affitto, internet, scuola, con l\'importo e il giorno di scadenza. L\'app ti avvisa prima e il giorno stesso, e mostra tutto in "Scadenze del mese" nella schermata iniziale. Hai pagato? Tocca "Già pagato", e l\'uscita va sul conto scelto.',
+				body: 'In Impostazioni › Conti da pagare, aggiungi affitto, internet, scuola, con l\'importo e il giorno di scadenza. L\'app ti avvisa prima e il giorno stesso, e mostra tutto in "Scadenze del mese" nella schermata iniziale. Hai pagato? In Conti da pagare, tocca "Già pagato". Con un importo fisso, l\'app chiede se registrare l\'uscita ("Registra e segna pagato") o solo segnarlo come pagato; con un importo variabile, o con il pagamento già registrato, lo segna e basta.',
 			},
 			debts: {
 				title: 'Debiti',
-				body: 'In Patrimonio, aggiungi finanziamenti e prestiti con il debito residuo, la rata e quante ne mancano. L\'app mostra quando finisce, quanti interessi paghi e se "conviene estinguere prima" rispetto a quanto renderebbero i soldi (CDI).',
+				body: 'In Patrimonio, aggiungi finanziamenti e prestiti con il debito residuo, la rata e quante ne mancano. L\'app mostra quando finisce, quanti interessi paghi e se "conviene estinguere prima" rispetto a quanto renderebbero i soldi investiti.',
 			},
 			reserve: {
 				title: 'Riserva di emergenza e "Da dove iniziare"',
@@ -862,7 +862,7 @@ const it = {
 			},
 			budget: {
 				title: 'Budget',
-				body: 'Nella schermata iniziale, nella scheda "Questo mese", imposta quanto vuoi spendere nel mese. Il budget vale per i mesi successivi finché non lo cambi. L\'app mostra quanto è già andato e quanto manca.',
+				body: 'Nella schermata iniziale, nella scheda "Questo mese", imposta quanto vuoi spendere nel mese. Il budget vale per i mesi successivi finché non lo cambi. L\'app mostra quanto è già andato e quanto manca. "Spese" conta l\'estratto di ogni carta che chiude nel mese e l\'importo del mese di ogni busta; le "Uscite" di Movimenti sommano ogni acquisto alla sua data. Per questo i due numeri possono essere diversi.',
 			},
 			reports: {
 				title: 'Report',
@@ -870,7 +870,7 @@ const it = {
 			},
 			ofx: {
 				title: 'Estratto conto della banca (OFX)',
-				body: 'Scarica l\'estratto conto in OFX dall\'app o dal sito della banca e importalo in Impostazioni › Importa estratto conto (OFX). L\'app lo unisce a ciò che è già registrato, senza ripetere, conferma ciò che era in sospeso e propone le rate mancanti.',
+				body: 'Scarica l\'estratto conto in OFX dall\'app o dal sito della banca e importalo in Impostazioni › Importa estratto conto (OFX). L\'app lo unisce a ciò che è già registrato, senza ripetere, segnala le notifiche in sospeso che l\'estratto conferma e, nell\'estratto della carta, propone le rate mancanti.',
 			},
 			backup: {
 				title: 'Account, backup e privacy',
@@ -885,11 +885,11 @@ const it = {
 				},
 				review: {
 					title: 'Rivedi',
-					body: 'Ciò che l\'app ha letto nelle notifiche della banca senza esserne sicura aspetta qui. Conferma, correggi o ignora.',
+					body: 'Le notifiche della banca che aspettano te: acquisti in un posto nuovo e ciò che l\'app non ha saputo decidere da sola. Conferma, correggi o ignora.',
 				},
 				bills: {
 					title: 'Scadenze del mese',
-					body: 'Affitto, internet, scuola: ciò che scade nel mese. Hai pagato? Tocca "Già pagato", e l\'uscita va sul conto scelto.',
+					body: 'Affitto, internet, scuola: ciò che scade nel mese. Toccare la scheda apre Conti da pagare, dove c\'è "Già pagato".',
 				},
 				month: {
 					title: 'Questo mese',
@@ -910,7 +910,7 @@ const it = {
 					body: 'Scegli se i soldi sono usciti o entrati.',
 				},
 				transfer: {
-					title: 'Trasferimento tra i miei conti',
+					title: 'Trasferimento',
 					body: 'Soldi che passano da un tuo conto a un altro. Non contano come spesa.',
 				},
 				amount: {
@@ -929,7 +929,7 @@ const it = {
 			card: {
 				face: {
 					title: 'L\'estratto attuale',
-					body: 'La carta mostra l\'estratto aperto, quando chiude e scade, e il limite che resta. Più in basso, ogni estratto dice quanto resta da pagare.',
+					body: 'La carta mostra l\'estratto aperto, quando chiude e scade e, se hai indicato il limite, quanto ne resta. Più in basso ci sono gli estratti di ogni mese.',
 				},
 				pay: {
 					title: 'Paga estratto',
@@ -937,7 +937,7 @@ const it = {
 				},
 				adjust: {
 					title: 'Allinea',
-					body: 'L\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca; la differenza diventa un onere.',
+					body: 'L\'estratto dell\'app è diverso da quello della banca? Indica l\'importo della banca, e l\'app lo allinea. Quando la banca mostra di più, prima chiede se la differenza è un onere.',
 				},
 				installments: {
 					title: 'Rata vecchia',
@@ -949,7 +949,7 @@ const it = {
 				},
 				invoices: {
 					title: 'Estratti per mese',
-					body: 'Una scheda per mese, con l\'importo sulla scheda. Toccane una per vedere i movimenti di quell\'estratto e quanto resta da pagare.',
+					body: 'Una scheda per mese, con l\'importo sulla scheda. Toccane una per vedere i movimenti di quell\'estratto e, dopo un pagamento o un allineamento, quanto resta da pagare.',
 				},
 				duplicates: {
 					title: 'Probabile ripetuto',
@@ -969,15 +969,15 @@ const it = {
 			inbox: {
 				card: {
 					title: 'Da rivedere',
-					body: 'Una notifica della banca che l\'app non sapeva bene come registrare. Prima chiede.',
+					body: 'Una notifica della banca che aspetta te: l\'acquisto in un posto nuovo, o qualcosa che l\'app non ha saputo decidere da sola.',
 				},
 				actions: {
 					title: 'Conferma, correggi o ignora',
-					body: 'Controlla l\'importo e il conto. Conferma, correggi ciò che è sbagliato, oppure ignora.',
+					body: 'Controlla l\'importo e il conto. Conferma, cambia il conto o la categoria, oppure ignora.',
 				},
 				learned: {
 					title: 'L\'app impara',
-					body: 'Quando correggi un caso, l\'app impara e la volta dopo fa lo stesso.',
+					body: 'La risposta a una notifica incompleta vale per la prossima notifica uguale. E 3 conferme di fila dello stesso posto, con la stessa categoria, fanno entrare da sole le prossime.',
 				},
 			},
 			wealth: {
@@ -1023,7 +1023,7 @@ const it = {
 				},
 				capture: {
 					title: 'Cattura automatica',
-					body: 'Consenti l\'accesso alle notifiche, e l\'app registra da sola ciò che riconosce nelle notifiche della banca.',
+					body: 'Consenti l\'accesso alle notifiche, e le notifiche della banca diventano movimenti. L\'acquisto in un posto nuovo va in "Rivedi" fino a 3 conferme; dopo, entra da solo.',
 				},
 				ownName: {
 					title: 'Il tuo nome in banca',
@@ -1205,8 +1205,8 @@ account: {
 			confirmTitle: 'Sposta movimenti',
 			confirmBody_one: 'Spostare {{count}} movimento in {{account}}?',
 			confirmBody_other: 'Spostare {{count}} movimenti in {{account}}?',
-			beforeAnchorWarning_one: '{{count}} di questi è datato prima del saldo indicato su {{account}}, quindi uscirà dal totale senza entrare in quel saldo. Dopo lo spostamento, usa "Imposta saldo" per sistemarlo.',
-			beforeAnchorWarning_other: '{{count}} di questi sono datati prima del saldo indicato su {{account}}, quindi usciranno dal totale senza entrare in quel saldo. Dopo lo spostamento, usa "Imposta saldo" per sistemarlo.',
+			beforeAnchorWarning_one: '{{count}} di questi è datato prima del saldo indicato su {{account}}, quindi uscirà dal totale senza entrare in quel saldo. Dopo lo spostamento, usa "Allinea con la banca" sul conto.',
+			beforeAnchorWarning_other: '{{count}} di questi sono datati prima del saldo indicato su {{account}}, quindi usciranno dal totale senza entrare in quel saldo. Dopo lo spostamento, usa "Allinea con la banca" sul conto.',
 			move: 'Sposta',
 			moved_one: '{{count}} movimento spostato',
 			moved_other: '{{count}} movimenti spostati',
