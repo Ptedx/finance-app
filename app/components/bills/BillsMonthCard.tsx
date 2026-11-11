@@ -1,27 +1,48 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type React from 'react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBills } from '../../contexts/BillsContext';
+import { homeBills, type MonthBillRow } from '../../utils/billRules';
+import { formatDayMonth, monthKeyOf } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import BillStatusPill from './BillStatusPill';
 
 /**
- * "Contas do mês" na Home: cada conta ativa com o dia e a situação no mês corrente, e
- * quanto ainda falta pagar até o fim do mês. As de valor variável aparecem como "varia" e
+ * "Contas do mês" na Home, enxuto (SPD-142): só o que pede atenção — as atrasadas e as que
+ * vencem nos próximos 7 dias (`homeBills`), no máximo 3, com "e mais N" quando há mais — e,
+ * embaixo, quanto ainda falta pagar no mês. As de valor variável aparecem como "varia" e
  * ficam fora do total — o rodapé diz quantas, para o total não parecer tudo. Atrasada vem
  * em vermelho, com o texto dizendo "Atrasada".
  *
- * Tocar abre a tela de contas a pagar. Sem contas, um convite curto para cadastrar.
+ * Nada atrasado nem vencendo em 7 dias: uma linha só ("Nada vence nos próximos 7 dias ·
+ * Falta pagar R$ 1.500,00"). Sem contas: uma linha com "Cadastrar". Tocar abre a tela de
+ * contas a pagar, com todas as contas.
  */
 
 const ACCENT = '#15E8FE';
 
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/** "Dia 10 · R$ 500,00 · Dívida"; o vencimento do mês seguinte (perto da virada) sai com o mês: "03/12". */
+const subtitleOf = (row: MonthBillRow, month: string, t: Translate): string =>
+	[
+		monthKeyOf(row.dueDate) === month
+			? t('bills.day', { day: Number(row.dueDate.slice(8, 10)) })
+			: formatDayMonth(row.dueDate),
+		row.bill.amountCents === null ? t('bills.variable') : formatCents(row.bill.amountCents),
+		row.bill.debtId ? t('bills.fromDebt') : null,
+	]
+		.filter(Boolean)
+		.join(' · ');
+
 const BillsMonthCard: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { activeBills, month, isLoading } = useBills();
+	const { activeBills, month, today, isLoading } = useBills();
+	const soon = useMemo(() => homeBills(activeBills, today), [activeBills, today]);
 
 	if (isLoading) return null;
 
@@ -29,31 +50,64 @@ const BillsMonthCard: React.FC = () => {
 
 	if (activeBills.length === 0) {
 		return (
-			<View style={styles.container}>
-				<Text style={styles.title} accessibilityRole="header">
-					{t('bills.home.title')}
+			<View style={[styles.container, styles.line]}>
+				<Text style={styles.lineText} numberOfLines={2}>
+					{t('bills.home.none')}
 				</Text>
-				<View style={styles.invite}>
-					<Text style={styles.inviteText}>{t('bills.home.invite')}</Text>
-					<Pressable
-						onPress={() => router.push('/bills/new')}
-						accessibilityRole="button"
-						accessibilityLabel={t('bills.home.inviteAction')}
-						accessibilityHint={t('bills.home.invite')}
-						style={({ pressed }) => [styles.inviteButton, pressed && styles.pressed]}
-					>
-						<Ionicons name="add" size={16} color={ACCENT} />
-						<Text style={styles.inviteButtonText}>{t('bills.home.inviteAction')}</Text>
-					</Pressable>
-				</View>
+				<Pressable
+					onPress={() => router.push('/bills/new')}
+					accessibilityRole="button"
+					accessibilityLabel={t('bills.home.inviteAction')}
+					accessibilityHint={t('bills.home.invite')}
+					style={({ pressed }) => [styles.inviteButton, pressed && styles.pressed]}
+				>
+					<Ionicons name="add" size={16} color={ACCENT} />
+					<Text style={styles.inviteButtonText}>{t('bills.home.inviteAction')}</Text>
+				</Pressable>
 			</View>
 		);
 	}
 
+	const allPaid = month.dueCents === 0 && month.variableCount === 0;
+	const variableNote = month.variableCount > 0 ? t('bills.variableNote', { count: month.variableCount }) : null;
+	const lateNote = month.lateCount > 0 ? t('bills.lateCount', { count: month.lateCount }) : null;
+
+	if (soon.rows.length === 0) {
+		const left = allPaid
+			? t('bills.allPaid')
+			: [
+					t('bills.home.leftToPay', { amount: formatCents(month.dueCents) }),
+					month.variableCount > 0 ? t('bills.home.plusVariable', { count: month.variableCount }) : null,
+				]
+					.filter(Boolean)
+					.join(' ');
+		const line = `${t('bills.home.nothingSoon')} · ${left}`;
+		return (
+			<Pressable
+				onPress={open}
+				accessibilityRole="button"
+				accessibilityLabel={[`${t('bills.home.title')}. ${line}`, variableNote].filter(Boolean).join('. ')}
+				accessibilityHint={t('bills.home.open')}
+				style={({ pressed }) => [styles.container, styles.line, pressed && styles.pressed]}
+			>
+				<Text style={styles.lineText} numberOfLines={2}>
+					{line}
+				</Text>
+				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
+			</Pressable>
+		);
+	}
+
+	const more = soon.moreCount > 0 ? t('bills.home.more', { count: soon.moreCount }) : null;
 	const summary = [
-		`${t('bills.home.title')}. ${t('bills.toPay')}, ${formatCents(month.dueCents)}`,
-		month.variableCount > 0 ? t('bills.variableNote', { count: month.variableCount }) : null,
-		month.lateCount > 0 ? t('bills.lateCount', { count: month.lateCount }) : null,
+		t('bills.home.title'),
+		...soon.rows.map(
+			(row) => `${row.bill.name}, ${subtitleOf(row, month.month, t)}, ${t(`bills.status.${row.status}`)}`
+		),
+		more,
+		`${t('bills.toPay')}, ${allPaid ? t('bills.allPaid') : formatCents(month.dueCents)}`,
+		variableNote,
+		lateNote,
 	]
 		.filter(Boolean)
 		.join('. ');
@@ -73,7 +127,7 @@ const BillsMonthCard: React.FC = () => {
 				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
 			</View>
 
-			{month.rows.map((row) => {
+			{soon.rows.map((row) => {
 				const late = row.status === 'late';
 				return (
 					<View key={row.bill.id} style={styles.row}>
@@ -81,37 +135,22 @@ const BillsMonthCard: React.FC = () => {
 							<Text style={[styles.rowName, late && styles.late]} numberOfLines={1}>
 								{row.bill.name}
 							</Text>
-							<Text style={styles.rowSub}>
-								{t('bills.day', { day: Number(row.dueDate.slice(8, 10)) })} ·{' '}
-								{row.bill.amountCents === null
-									? t('bills.variable')
-									: formatCents(row.bill.amountCents)}
-							</Text>
+							<Text style={styles.rowSub}>{subtitleOf(row, month.month, t)}</Text>
 						</View>
 						<BillStatusPill status={row.status} />
 					</View>
 				);
 			})}
 
+			{more ? <Text style={styles.more}>{more}</Text> : null}
+
 			<View style={styles.footer}>
 				<View style={styles.footerLine}>
 					<Text style={styles.footerLabel}>{t('bills.toPay')}</Text>
-					<Text style={styles.footerValue}>
-						{month.dueCents === 0 && month.variableCount === 0
-							? t('bills.allPaid')
-							: formatCents(month.dueCents)}
-					</Text>
+					<Text style={styles.footerValue}>{allPaid ? t('bills.allPaid') : formatCents(month.dueCents)}</Text>
 				</View>
-				{month.variableCount > 0 ? (
-					<Text style={styles.footerSub}>
-						{t('bills.variableNote', { count: month.variableCount })}
-					</Text>
-				) : null}
-				{month.lateCount > 0 ? (
-					<Text style={[styles.footerSub, styles.late, styles.lateStrong]}>
-						{t('bills.lateCount', { count: month.lateCount })}
-					</Text>
-				) : null}
+				{variableNote ? <Text style={styles.footerSub}>{variableNote}</Text> : null}
+				{lateNote ? <Text style={[styles.footerSub, styles.late, styles.lateStrong]}>{lateNote}</Text> : null}
 			</View>
 		</Pressable>
 	);
@@ -123,6 +162,19 @@ const styles = StyleSheet.create({
 		borderRadius: 12,
 		padding: 16,
 		marginBottom: 20,
+	},
+	line: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		gap: 8,
+		minHeight: 56,
+		paddingVertical: 8,
+	},
+	lineText: {
+		flex: 1,
+		fontSize: 14,
+		color: 'rgba(255,255,255,0.85)',
 	},
 	header: {
 		flexDirection: 'row',
@@ -155,6 +207,11 @@ const styles = StyleSheet.create({
 		color: 'rgba(255,255,255,0.6)',
 		marginTop: 2,
 	},
+	more: {
+		fontSize: 13,
+		color: 'rgba(255,255,255,0.7)',
+		paddingVertical: 4,
+	},
 	late: {
 		color: '#FF6B6B',
 	},
@@ -185,19 +242,6 @@ const styles = StyleSheet.create({
 	},
 	footerSub: {
 		fontSize: 12,
-		color: 'rgba(255,255,255,0.6)',
-	},
-	invite: {
-		flexDirection: 'row',
-		alignItems: 'center',
-		justifyContent: 'space-between',
-		gap: 8,
-		marginTop: 8,
-	},
-	inviteText: {
-		flex: 1,
-		fontSize: 13,
-		fontStyle: 'italic',
 		color: 'rgba(255,255,255,0.6)',
 	},
 	inviteButton: {

@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	AccessibilityInfo,
 	Alert,
+	BackHandler,
 	KeyboardAvoidingView,
 	Platform,
 	Pressable,
@@ -54,9 +55,27 @@ import {
  *
  * A conta que vem de uma dívida mostra nome, dia e valor sem deixar editar: eles seguem a
  * dívida. Enquanto a dívida estiver viva, a conta também não se desliga nem se apaga.
+ *
+ * Sair sem salvar (a seta do topo ou o voltar do Android) com algo digitado ou alterado
+ * pergunta antes, como a dica do Acertar (SPD-142): "Sair e perder o que você digitou?". Sem
+ * nada alterado sai direto; depois de salvar, não pergunta.
  */
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
+
+/** O que está nos campos, para comparar com o que a tela abriu. */
+interface FormFields {
+	name: string;
+	dueDay: string;
+	amount: string;
+	accountId: string | null;
+	category: string | null;
+	matchHint: string;
+}
+
+const EMPTY_FORM: FormFields = { name: '', dueDay: '', amount: '', accountId: null, category: null, matchHint: '' };
+
+const snapshotOf = (fields: FormFields): string => JSON.stringify(fields);
 
 const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const { t } = useTranslation();
@@ -77,18 +96,69 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
 
+	// O que os campos tinham ao abrir: vazio na conta nova; na gravada, quando ela carrega (até
+	// lá, `null`, e sair não pergunta).
+	const openedWith = useRef<string | null>(billId ? null : snapshotOf(EMPTY_FORM));
+	// Salvo: sair (a tela fechando) não pergunta mais.
+	const saved = useRef(false);
+
 	// Os campos abrem uma vez com a conta gravada; uma recarga depois não apaga o que se digitou.
 	const loadedId = useRef<string | null>(null);
 	useEffect(() => {
 		if (!existing || loadedId.current === existing.id) return;
 		loadedId.current = existing.id;
-		setName(existing.name);
-		setDueDay(String(existing.dueDay));
-		setAmount(existing.amountCents === null ? '' : centsToDisplayInput(existing.amountCents));
-		setAccountId(existing.accountId);
-		setCategory(existing.category);
-		setMatchHint(existing.matchHint ?? '');
+		const loaded: FormFields = {
+			name: existing.name,
+			dueDay: String(existing.dueDay),
+			amount: existing.amountCents === null ? '' : centsToDisplayInput(existing.amountCents),
+			accountId: existing.accountId,
+			category: existing.category,
+			matchHint: existing.matchHint ?? '',
+		};
+		openedWith.current = snapshotOf(loaded);
+		setName(loaded.name);
+		setDueDay(loaded.dueDay);
+		setAmount(loaded.amount);
+		setAccountId(loaded.accountId);
+		setCategory(loaded.category);
+		setMatchHint(loaded.matchHint);
 	}, [existing]);
+
+	const changed =
+		openedWith.current !== null &&
+		snapshotOf({ name, dueDay, amount, accountId, category, matchHint }) !== openedWith.current;
+
+	/** Volta; com algo alterado e não salvo, pergunta antes. */
+	const leave = () => {
+		if (!changed || saved.current) {
+			router.back();
+			return;
+		}
+		Alert.alert(
+			t('tutorial.tip.leaveTitle'),
+			t('tutorial.tip.leaveBody'),
+			[
+				{ text: t('tutorial.tip.stay'), style: 'cancel' },
+				{ text: t('tutorial.tip.leave'), style: 'destructive', onPress: () => router.back() },
+			],
+			{ cancelable: true }
+		);
+	};
+
+	// O voltar do Android, só com a tela em foco (com a dívida aberta por cima, não é com ela).
+	// Sem nada alterado, deixa a navegação voltar sozinha.
+	const backRef = useRef({ changed, leave });
+	backRef.current = { changed, leave };
+	useFocusEffect(
+		useCallback(() => {
+			const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+				if (!backRef.current.changed || saved.current) return false;
+				backRef.current.leave();
+				return true;
+			});
+			return () => subscription.remove();
+		}, [])
+	);
 
 	// A fatura do cartão cadastrada aqui conta em dobro (SPD-137): as compras parceladas do cartão
 	// já entram no custo fixo e o app já avisa o vencimento da fatura. Avisa perto do nome, sem impedir.
@@ -135,6 +205,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 			setSaving(true);
 			try {
 				await write();
+				saved.current = true;
 				announce(t('bills.edit.saved'));
 				router.back();
 			} finally {
@@ -204,7 +275,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 			>
 				<View style={styles.header}>
 					<Pressable
-						onPress={() => router.back()}
+						onPress={leave}
 						accessibilityRole="button"
 						accessibilityLabel={t('bills.back')}
 						style={styles.iconButton}

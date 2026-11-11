@@ -12,6 +12,8 @@ const mockAccounts: { accounts: unknown[] } = { accounts: [] };
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ replace: jest.fn(), back: jest.fn(), push: jest.fn() }),
+	// SPD-142: o cadastro de conta a pagar ouve o voltar do Android só em foco.
+	useFocusEffect: () => undefined,
 	Stack: { Screen: () => null },
 }));
 
