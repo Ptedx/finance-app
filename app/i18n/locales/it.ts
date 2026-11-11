@@ -7,6 +7,43 @@ const it = {
 		settings: 'Impostazioni',
 	},
 
+	// A troca de moeda em Ajustes (SPD-140).
+	currency: {
+		title: 'Scegli la valuta',
+		close: 'Chiudi',
+		names: {
+			BTC: 'Bitcoin',
+			USD: 'Dollaro statunitense',
+			EUR: 'Euro',
+			GBP: 'Sterlina britannica',
+			JPY: 'Yen giapponese',
+			CAD: 'Dollaro canadese',
+			AUD: 'Dollaro australiano',
+			CHF: 'Franco svizzero',
+			CNY: 'Yuan cinese',
+			INR: 'Rupia indiana',
+			BRL: 'Real brasiliano',
+		},
+		rateExplanation:
+			'Hai già degli importi in {{name}}. Inserisci il tasso di cambio per convertirli tutti: movimenti, saldi iniziali dei conti, limiti delle carte, buste, trasferimenti, budget, debiti, conti da pagare, obiettivi e avvisi da rivedere.',
+		rateLabel: '1 {{from}} = ? {{to}}',
+		ratePlaceholder: '0,00',
+		convert: 'Converti gli importi',
+		converting: 'Conversione…',
+		symbolOnly: 'Cambia solo il simbolo',
+		cancel: 'Annulla',
+		keepTitle: 'Lasciare gli importi come sono?',
+		keepBody:
+			'Nessun importo verrà ricalcolato: 100 resta 100, ora letto come {{code}}. Fallo solo se gli importi erano già in {{name}}.',
+		keepConfirm: 'Lascia gli importi',
+		invalidRateTitle: 'Tasso non valido',
+		invalidRateBody: 'Inserisci un tasso di cambio maggiore di zero.',
+		conversionFailedTitle: 'Conversione non riuscita',
+		conversionFailedBody: 'Nessun importo è stato modificato. Riprova.',
+		errorTitle: 'Errore',
+		errorBody: 'Impossibile cambiare la valuta. Riprova.',
+	},
+
 	home: {
 		title: 'Spendr',
 		recentTransactions: 'Transazioni Recenti',

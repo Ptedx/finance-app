@@ -13,6 +13,13 @@ const mockRefreshData = jest.fn(async () => undefined);
 const mockConvertAllAmounts = jest.fn(async (_rate: number) => undefined);
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+// Os textos vêm do i18n desde o SPD-140: aqui a tela mostra a chave.
+jest.mock('react-i18next', () => ({
+	useTranslation: () => ({ t: (key: string) => key }),
+}));
+jest.mock('../../contexts/DebtsContext', () => ({ useDebts: () => ({ refresh: async () => undefined }) }));
+jest.mock('../../contexts/BillsContext', () => ({ useBills: () => ({ refresh: async () => undefined }) }));
+jest.mock('../../contexts/CapturesContext', () => ({ useCaptures: () => ({ refresh: async () => undefined }) }));
 jest.mock('../../contexts/CurrencyContext', () => ({
 	AVAILABLE_CURRENCIES: [
 		{ code: 'BRL', symbol: 'R$', name: 'Brazilian Real' },
@@ -80,7 +87,7 @@ it('converter de BRL para USD a 0,20 sem o provider das recorrências', async ()
 	await act(async () => {
 		rate.props.onChangeText('0.20');
 	});
-	await press('Convert amounts');
+	await press('currency.convert');
 
 	expect(mockConvertAllAmounts).toHaveBeenCalledWith(0.2);
 	expect(mockConvertBudgets).toHaveBeenCalledWith(0.2);

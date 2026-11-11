@@ -2859,21 +2859,60 @@ export const deleteRecurringTransaction = async (id: string): Promise<void> => {
 // Currency conversion
 // ---------------------------------------------------------------------------
 
-/** Whether the ledger holds anything at all, used to decide if a switch needs converting. */
+/**
+ * Cada valor em dinheiro guardado, por tabela (SPD-140). É a lista que a troca de moeda com
+ * taxa converte e que decide se a troca precisa perguntar a taxa — uma lista só, para as
+ * duas não divergirem.
+ *
+ * Fica de fora o que não é dinheiro: percentuais e pontos-base (`yieldCdiBp`, `rateBp`,
+ * `adminFeeBp`, `reinvestBp`, `expectedYieldBp`), contadores (parcelas, meses da reserva),
+ * dias e datas. O que é calculado — saldo, fatura, rendimento estimado, quanto a reserva já
+ * guardou — não é gravado: sai convertido das colunas daqui.
+ *
+ * `captures` entra inteira, e não só o que está pendente: o aviso a revisar já conta no
+ * saldo e na fatura (`provisionalEntries`) e vira lançamento com este valor; o resolvido
+ * guarda o mesmo valor do lançamento ou da transferência que gerou, e as duas pontas têm de
+ * continuar iguais. O texto do aviso (`text`) fica como o banco mandou.
+ */
+const MONEY_COLUMNS: ReadonlyArray<{ table: string; columns: readonly string[] }> = [
+	{ table: 'transactions', columns: ['amountCents'] },
+	{ table: 'recurring_transactions', columns: ['amountCents'] },
+	{ table: 'transfers', columns: ['amountCents'] },
+	{ table: 'accounts', columns: ['openingBalanceCents', 'creditLimitCents', 'envelopeMonthlyCents'] },
+	{ table: 'budgets', columns: ['amountCents'] },
+	{ table: 'retirement_goals', columns: ['targetMonthlyCents', 'outsideCapitalCents'] },
+	{ table: 'reserve_goals', columns: ['customMonthlyCostCents'] },
+	{ table: 'debts', columns: ['openingBalanceCents', 'installmentCents', 'feeCents'] },
+	{ table: 'bills', columns: ['amountCents'] },
+	{ table: 'captures', columns: ['amountCents'] },
+];
+
+/**
+ * Se há algum valor em dinheiro guardado, para a troca de moeda decidir se pergunta a taxa.
+ * Conta a linha viva com algum valor diferente de zero: uma conta zerada, uma conta a pagar
+ * que varia ou a meta da reserva só com os meses não têm o que converter.
+ *
+ * Antes só lançamentos e recorrentes contavam, e quem tinha só o saldo de partida das contas
+ * trocava de moeda sem ser perguntado: R$ 1.000 viravam US$ 1.000.
+ */
 export const hasFinancialData = async (): Promise<boolean> => {
-	const row = await db.getFirstAsync<{ count: number }>(
-		`SELECT (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL)
-          + (SELECT COUNT(*) FROM recurring_transactions WHERE deletedAt IS NULL) AS count`
+	const exists = MONEY_COLUMNS.map(
+		({ table, columns }) =>
+			`EXISTS (SELECT 1 FROM ${table} WHERE deletedAt IS NULL AND (${columns.map((column) => `COALESCE(${column}, 0) <> 0`).join(' OR ')}))`
 	);
-	return (row?.count ?? 0) > 0;
+	const row = await db.getFirstAsync<{ found: number }>(`SELECT (${exists.join(' OR ')}) AS found`);
+	return Boolean(row?.found);
 };
 
 /**
- * Rescales every stored amount by an exchange rate.
+ * Rescales every stored amount by an exchange rate — todas as colunas de `MONEY_COLUMNS`.
  *
  * Rounding happens once per row, in SQLite, so the result is the same integer cents
- * the app would have computed itself. Wrapped in a transaction: a half-converted
- * ledger would be worse than either currency.
+ * the app would have computed itself. Coluna nula (o limite de quem não informou, a conta a
+ * pagar que varia) continua nula. Wrapped in a transaction: a half-converted ledger would
+ * be worse than either currency.
+ *
+ * Só as linhas vivas: a lápide não volta a valer, e reconvertê-la só a faria subir de novo.
  */
 export const convertAllAmounts = async (rate: number): Promise<void> => {
 	if (!Number.isFinite(rate) || rate <= 0) {
@@ -2884,48 +2923,17 @@ export const convertAllAmounts = async (rate: number): Promise<void> => {
 
 	await runInTransaction(async () => {
 		// Every rescaled row is a genuine change and has to reach the other devices,
-		// otherwise they would keep the old currency's numbers under the new symbol.
-		await db.runAsync(
-			`UPDATE transactions
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL`,
-			[rate, timestamp]
-		);
-		await db.runAsync(
-			`UPDATE recurring_transactions
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL`,
-			[rate, timestamp]
-		);
-		await db.runAsync(
-			`UPDATE budgets
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL`,
-			[rate, timestamp]
-		);
-		await db.runAsync(
-			`UPDATE retirement_goals
-       SET targetMonthlyCents = CAST(ROUND(targetMonthlyCents * ?) AS INTEGER),
-           outsideCapitalCents = CAST(ROUND(outsideCapitalCents * ?) AS INTEGER),
-           updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL`,
-			[rate, rate, timestamp]
-		);
-		await db.runAsync(
-			`UPDATE debts
-       SET openingBalanceCents = CAST(ROUND(openingBalanceCents * ?) AS INTEGER),
-           installmentCents = CAST(ROUND(installmentCents * ?) AS INTEGER),
-           updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL`,
-			[rate, rate, timestamp]
-		);
-		// A conta a pagar que varia (`amountCents` nulo) não tem o que converter.
-		await db.runAsync(
-			`UPDATE bills
-       SET amountCents = CAST(ROUND(amountCents * ?) AS INTEGER), updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE deletedAt IS NULL AND amountCents IS NOT NULL`,
-			[rate, timestamp]
-		);
+		// otherwise they would keep the old currency's numbers under the new symbol. O
+		// carimbo é o de toda edição (`NEXT_STAMP`): agora, ou 1 ms depois do da linha. A linha
+		// sem valor nenhum (a conta a pagar que varia) não muda e não é carimbada.
+		for (const { table, columns } of MONEY_COLUMNS) {
+			const scaled = columns.map((column) => `${column} = CAST(ROUND(${column} * ?) AS INTEGER)`).join(', ');
+			const hasValue = columns.map((column) => `${column} IS NOT NULL`).join(' OR ');
+			await db.runAsync(
+				`UPDATE ${table} SET ${scaled}, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL AND (${hasValue})`,
+				[...columns.map(() => rate), timestamp]
+			);
+		}
 	});
 };
 

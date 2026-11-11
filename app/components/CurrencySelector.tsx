@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
 	Alert,
 	FlatList,
@@ -11,9 +12,12 @@ import {
 	TouchableOpacity,
 	View,
 } from 'react-native';
+import { useBills } from '../contexts/BillsContext';
 import { useBudget } from '../contexts/BudgetContext';
+import { useCaptures } from '../contexts/CapturesContext';
 import type { Currency } from '../contexts/CurrencyContext';
 import { AVAILABLE_CURRENCIES, useCurrency } from '../contexts/CurrencyContext';
+import { useDebts } from '../contexts/DebtsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { convertAllAmounts, hasFinancialData } from '../database/database';
 import { isValidRate, parseDecimalInput } from '../utils/money';
@@ -27,6 +31,13 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 	const { currentCurrency, setCurrency } = useCurrency();
 	const { convertBudgets } = useBudget();
 	const { refreshData } = useTransactions();
+	const { refresh: refreshDebts } = useDebts();
+	const { refresh: refreshBills } = useBills();
+	const { refresh: refreshCaptures } = useCaptures();
+	const { t } = useTranslation();
+
+	/** O nome da moeda no idioma do app; o inglês de `AVAILABLE_CURRENCIES` se faltar tradução. */
+	const nameOf = (currency: Currency): string => t(`currency.names.${currency.code}`, { defaultValue: currency.name });
 
 	const [pendingCurrency, setPendingCurrency] = useState<Currency | null>(null);
 	const [rateInput, setRateInput] = useState('');
@@ -54,7 +65,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 			onClose();
 		} catch (error) {
 			console.error('Error setting currency:', error);
-			Alert.alert('Error', 'Could not change the currency. Please try again.');
+			Alert.alert(t('currency.errorTitle'), t('currency.errorBody'));
 		}
 	};
 
@@ -70,12 +81,16 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 
 			await setCurrency(currency);
 			await refreshData();
+			// As dívidas, as contas a pagar e a caixa de entrada só releem no próximo sync ou ao
+			// voltar ao app; sem isto, a tela mostraria os valores de antes da troca. Os dados já
+			// estão convertidos: uma falha aqui não é falha da conversão.
+			if (rate !== null) await Promise.allSettled([refreshDebts(), refreshBills(), refreshCaptures()]);
 
 			setPendingCurrency(null);
 			onClose();
 		} catch (error) {
 			console.error('Error converting amounts:', error);
-			Alert.alert('Conversion Failed', 'Your data was not changed. Please try again.');
+			Alert.alert(t('currency.conversionFailedTitle'), t('currency.conversionFailedBody'));
 		} finally {
 			setIsConverting(false);
 		}
@@ -87,7 +102,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 		const rate = parseDecimalInput(rateInput);
 
 		if (!isValidRate(rate)) {
-			Alert.alert('Invalid Rate', 'Please enter an exchange rate greater than zero.');
+			Alert.alert(t('currency.invalidRateTitle'), t('currency.invalidRateBody'));
 			return;
 		}
 
@@ -98,12 +113,12 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 		if (!pendingCurrency) return;
 
 		Alert.alert(
-			'Keep amounts as they are?',
-			`Your recorded values will not be recalculated — an amount of 100 stays 100, now read as ${pendingCurrency.code}. Only do this if the amounts were already in ${pendingCurrency.name}.`,
+			t('currency.keepTitle'),
+			t('currency.keepBody', { code: pendingCurrency.code, name: nameOf(pendingCurrency) }),
 			[
-				{ text: 'Cancel', style: 'cancel' },
+				{ text: t('currency.cancel'), style: 'cancel' },
 				{
-					text: 'Keep amounts',
+					text: t('currency.keepConfirm'),
 					style: 'destructive',
 					onPress: () => applyCurrencyChange(pendingCurrency, null),
 				},
@@ -122,7 +137,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 				<View style={styles.currencyInfo}>
 					<Text style={styles.currencySymbol}>{item.symbol}</Text>
 					<View style={styles.currencyTextContainer}>
-						<Text style={styles.currencyName}>{item.name}</Text>
+						<Text style={styles.currencyName}>{nameOf(item)}</Text>
 						<Text style={styles.currencyCode}>{item.code}</Text>
 					</View>
 				</View>
@@ -137,8 +152,13 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 			<View style={styles.modalContainer}>
 				<View style={styles.modalContent}>
 					<View style={styles.modalHeader}>
-						<Text style={styles.modalTitle}>Select Currency</Text>
-						<TouchableOpacity onPress={onClose} style={styles.closeButton}>
+						<Text style={styles.modalTitle}>{t('currency.title')}</Text>
+						<TouchableOpacity
+							onPress={onClose}
+							style={styles.closeButton}
+							accessibilityRole="button"
+							accessibilityLabel={t('currency.close')}
+						>
 							<Ionicons name="close" size={24} color="#FFFFFF" />
 						</TouchableOpacity>
 					</View>
@@ -160,18 +180,17 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 							{currentCurrency.code} → {pendingCurrency?.code}
 						</Text>
 						<Text style={styles.rateExplanation}>
-							You already have amounts recorded in {currentCurrency.name}. Enter the exchange rate
-							to convert them.
+							{t('currency.rateExplanation', { name: nameOf(currentCurrency) })}
 						</Text>
 
 						<Text style={styles.rateLabel}>
-							1 {currentCurrency.code} = ? {pendingCurrency?.code}
+							{t('currency.rateLabel', { from: currentCurrency.code, to: pendingCurrency?.code ?? '' })}
 						</Text>
 						<TextInput
 							style={styles.rateInput}
 							value={rateInput}
 							onChangeText={setRateInput}
-							placeholder="0.00"
+							placeholder={t('currency.ratePlaceholder')}
 							placeholderTextColor="rgba(255, 255, 255, 0.3)"
 							keyboardType="decimal-pad"
 							autoFocus
@@ -184,7 +203,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 							disabled={isConverting}
 						>
 							<Text style={styles.ratePrimaryButtonText}>
-								{isConverting ? 'Converting…' : 'Convert amounts'}
+								{isConverting ? t('currency.converting') : t('currency.convert')}
 							</Text>
 						</TouchableOpacity>
 
@@ -193,7 +212,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 							onPress={handleKeepAmounts}
 							disabled={isConverting}
 						>
-							<Text style={styles.rateSecondaryButtonText}>Change symbol only</Text>
+							<Text style={styles.rateSecondaryButtonText}>{t('currency.symbolOnly')}</Text>
 						</TouchableOpacity>
 
 						<TouchableOpacity
@@ -201,7 +220,7 @@ const CurrencySelector: React.FC<CurrencySelectorProps> = ({ isVisible, onClose 
 							onPress={() => setPendingCurrency(null)}
 							disabled={isConverting}
 						>
-							<Text style={styles.rateCancelText}>Cancel</Text>
+							<Text style={styles.rateCancelText}>{t('currency.cancel')}</Text>
 						</TouchableOpacity>
 					</View>
 				</View>
