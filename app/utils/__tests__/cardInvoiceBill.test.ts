@@ -3,8 +3,9 @@
  *
  * Cadastrar a fatura inteira de um cartão em Contas a pagar conta em dobro: ela entra no
  * custo fixo junto com as parcelas do cartão, e o app já avisa o vencimento da fatura. A tela
- * avisa (sem impedir) quando o nome tem fatura/cartão (pt, en, it) ou o nome ou o banco de um
- * cartão cadastrado. Palavra inteira: "Cartório" não é cartão, "Internet" não é o Inter.
+ * avisa (sem impedir) quando o nome tem cartão (pt, en, it) ou o nome ou o banco de um cartão
+ * cadastrado. "Fatura" sozinha não basta (SPD-137b): "Fatura Claro" e "fatura de energia" são
+ * contas de verdade. Palavra inteira: "Cartório" não é cartão, "Internet" não é o Inter.
  */
 
 import { type CardNameLike, looksLikeCardInvoice } from '../cardInvoiceBill';
@@ -17,16 +18,12 @@ const CARDS: CardNameLike[] = [
 
 describe('looksLikeCardInvoice', () => {
 	it.each([
-		'Fatura Nubank',
 		'Cartão Inter',
 		'Cartão de crédito do Itaú',
 		'cartao de credito',
-		'FATURA',
-		'Faturas do mês',
 		'Cartões',
 		'Credit card',
 		'Card bill',
-		'Amex invoice',
 		'Fattura carta di credito',
 		'Carta di credito',
 		'Pagamento cartão - Santander',
@@ -67,6 +64,43 @@ describe('looksLikeCardInvoice', () => {
 	it('sem cartão cadastrado, o nome do banco sozinho não avisa', () => {
 		expect(looksLikeCardInvoice('Nubank', [])).toBe(false);
 		expect(looksLikeCardInvoice('Inter', [])).toBe(false);
+	});
+
+	// SPD-137b: fatura, invoice e fattura sozinhas são a conta de qualquer empresa.
+	it.each([
+		'Fatura Claro',
+		'Fatura de energia',
+		'fatura de energia',
+		'FATURA',
+		'Faturas do mês',
+		'Amex invoice',
+		'Electricity invoices',
+		'Fattura Enel',
+		'Fatture del gas',
+	])('"%s" não avisa: fatura sem cartão nem cartão cadastrado', (name) => {
+		expect(looksLikeCardInvoice(name, [])).toBe(false);
+		expect(looksLikeCardInvoice(name, CARDS)).toBe(false);
+	});
+
+	it.each([
+		'Fatura do cartão',
+		'Fatura cartão Santander',
+		'Faturas dos cartões',
+		'Card invoice',
+		'Invoices of my cards',
+		'Fattura della carta',
+		'Fatture carte',
+	])('"%s" avisa: fatura junto com uma palavra de cartão, sem cartão cadastrado', (name) => {
+		expect(looksLikeCardInvoice(name, [])).toBe(true);
+	});
+
+	it('fatura junto com o nome ou o banco de um cartão cadastrado avisa', () => {
+		expect(looksLikeCardInvoice('Fatura Nubank', CARDS)).toBe(true);
+		expect(looksLikeCardInvoice('Fatura Roxinho', CARDS)).toBe(true);
+		expect(looksLikeCardInvoice('Invoice Inter Gold', CARDS)).toBe(true);
+		expect(looksLikeCardInvoice('Fattura Itaú', CARDS)).toBe(true);
+		// O mesmo nome, sem o cartão cadastrado: é só "fatura" de alguém.
+		expect(looksLikeCardInvoice('Fatura Nubank', [])).toBe(false);
 	});
 
 	it('banco em branco não casa com tudo', () => {
