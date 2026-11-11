@@ -12,6 +12,7 @@ import {
 import {
 	getBudgets,
 	getCategoriesForBackup,
+	getMonthlyTransactions,
 	resetDatabase,
 	restoreBudget,
 	restoreCategory,
@@ -332,13 +333,16 @@ export const exportPeriodData = async (
 	await exportToCSV(transactions, categories, fileName);
 };
 
+/**
+ * Gera e compartilha o CSV dos Relatórios.
+ *
+ * O resumo mensal é lido aqui, do ano `year` (SPD-141). Ele vinha pronto do contexto,
+ * que só carrega o ano corrente: com um mês de 2025 selecionado, o arquivo dizia "full
+ * year 2025" e trazia os números de 2026.
+ */
 export const exportFinancialReport = async (
 	transactions: Transaction[],
 	categories: Category[],
-	monthlyData: {
-		expenses: { month: number; totalCents: number }[];
-		incomes: { month: number; totalCents: number }[];
-	},
 	categoryTotals: {
 		expenses: { categoryId: string; totalCents: number }[];
 		incomes: { categoryId: string; totalCents: number }[];
@@ -348,6 +352,11 @@ export const exportFinancialReport = async (
 ): Promise<void> => {
 	try {
 		const fileName = `spendr_report_${periodName.toLowerCase().replace(/\s+/g, '_')}_${timestamp()}.csv`;
+		const [expenses, incomes] = await Promise.all([
+			getMonthlyTransactions(year, 'expense'),
+			getMonthlyTransactions(year, 'income'),
+		]);
+		const monthlyData = { expenses, incomes };
 		const reportContent = await generateFinancialReport(
 			transactions,
 			categories,

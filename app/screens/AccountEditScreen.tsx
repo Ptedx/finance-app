@@ -36,6 +36,7 @@ import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { showsBalanceUnset } from '../utils/balanceUnset';
 import { dismissBalanceUnset, getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
+import { loadDeletionMessage } from '../utils/deletionNotice';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
 import { addDays, formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
@@ -326,9 +327,12 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		);
 	};
 
-	const handleDelete = () => {
+	// A confirmação diz quantos lançamentos ficam "Sem conta" e quantas transferências e
+	// pagamentos de fatura são apagados (SPD-141).
+	const handleDelete = async () => {
 		if (!existing) return;
-		Alert.alert(t('accounts.edit.delete'), t('accounts.edit.deleteConfirm'), [
+		const message = await loadDeletionMessage('accounts.edit', existing.id, accounts, t);
+		Alert.alert(t('accounts.edit.delete'), message, [
 			{ text: t('accounts.edit.cancel'), style: 'cancel' },
 			{
 				text: t('accounts.edit.delete'),

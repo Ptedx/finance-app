@@ -65,7 +65,7 @@ import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/m
 
 const ROW_GAP = 12;
 
-/** A fatura leva o nome do mês em que vence, que é a chave dela. */
+/** A fatura leva o nome do mês em que fecha (`invoiceClosingIn`), que é a chave dela; o vencimento pode cair no mês seguinte. */
 const invoiceMonth = (invoice: InvoiceView): string => `${invoice.cycle.key}-01`;
 
 interface CardDetailScreenProps {

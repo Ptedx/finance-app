@@ -40,7 +40,7 @@ const ReportsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { selectedMonth, selectedYear } = usePeriod();
-	const { currentPeriodTransactions, categories, monthlyData, categoryTotals } = useTransactions();
+	const { currentPeriodTransactions, categories, categoryTotals } = useTransactions();
 	const { goal, save: saveGoal, clear: clearGoal } = useRetirementGoal();
 	const [range, setRange] = useState<TrendRange>(6);
 	const [goalSheetOpen, setGoalSheetOpen] = useState(false);
@@ -62,11 +62,11 @@ const ReportsScreen = () => {
 
 	const handleExport = useCallback(async () => {
 		try {
-			await exportFinancialReport(currentPeriodTransactions, categories, monthlyData, categoryTotals, getMonthName(selectedMonth), selectedYear);
+			await exportFinancialReport(currentPeriodTransactions, categories, categoryTotals, getMonthName(selectedMonth), selectedYear);
 		} catch (error) {
 			console.error('Error exporting reports:', error);
 		}
-	}, [currentPeriodTransactions, categories, monthlyData, categoryTotals, selectedMonth, selectedYear]);
+	}, [currentPeriodTransactions, categories, categoryTotals, selectedMonth, selectedYear]);
 
 	const openIncomes = useCallback(() => {
 		router.push({ pathname: '/(tabs)/transactions', params: { kind: 'income' } });

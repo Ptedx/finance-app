@@ -27,6 +27,7 @@ import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
 import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
+import { loadDeletionMessage } from '../utils/deletionNotice';
 import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 /**
@@ -341,9 +342,12 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		router.back();
 	};
 
-	const handleDelete = () => {
+	// A confirmação diz quantos lançamentos ficam "Sem conta" e quantos pagamentos da fatura
+	// são apagados (SPD-141).
+	const handleDelete = async () => {
 		if (!existing) return;
-		Alert.alert(t('cards.edit.delete'), t('cards.edit.deleteConfirm'), [
+		const message = await loadDeletionMessage('cards.edit', existing.id, accounts, t);
+		Alert.alert(t('cards.edit.delete'), message, [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.delete'),
