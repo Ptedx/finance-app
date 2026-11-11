@@ -754,7 +754,6 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 							{t('cards.dates.title')}
 						</Text>
 						<View style={styles.panel}>
-							<Line label={t('cards.dates.best')} value={formatDayMonth(summary.openCycle.closingDate)} />
 							<Line label={t('cards.dates.closing')} value={formatDayMonth(summary.openCycle.closingDate)} />
 							<Line label={t('cards.dates.due')} value={formatDayMonth(summary.openCycle.dueDate)} />
 							<Text style={styles.explain}>

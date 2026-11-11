@@ -167,4 +167,11 @@ describe('painel "Datas" do cartão', () => {
 			params: { day: 28, best: formatDayMonth('2027-02-28') },
 		});
 	});
+
+	it('não repete a data do fechamento numa linha "Melhor dia de compra" (SPD-143)', async () => {
+		await mount(CARD);
+
+		expect(lines().some((line) => line.startsWith('cards.dates.best'))).toBe(false);
+		expect(lines()).toContain(`cards.dates.closing, ${formatDayMonth('2027-02-28')}`);
+	});
 });
