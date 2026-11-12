@@ -1593,6 +1593,11 @@ account: {
 			history: 'Storico',
 			empty: 'Nessun acquisto con questa carta.',
 		},
+		// A seção dos cartões de crédito na lista, com o "?" do guia da fatura (SPD-158).
+		credit: {
+			sectionTitle: 'Credito',
+			sampleHint: 'Ancora nessuna carta di credito. Il "?" mostra estratto, pagamento e allineamenti su una carta di esempio, senza salvare nulla.',
+		},
 		sectionTitle: 'Carte',
 		seeAll: 'Vedi tutte',
 		add: 'Aggiungi carta',

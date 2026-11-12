@@ -23,7 +23,8 @@ const CardsScreen = () => {
 	const { accounts, creditCards, debitCards, cardSummaries, cardsTotals } = useAccounts();
 	const { selectedMonth } = usePeriod();
 	const archived = accounts.filter((account) => account.kind === 'credit_card' && account.archived);
-	// As trilhas dos cartões (SPD-131) passam por aqui: "?" ao lado do título e na seção Débito.
+	// As trilhas dos cartões (SPD-131) passam por aqui: "?" ao lado do título (cadastro), na seção
+	// Crédito (fatura, SPD-158: sem cartão de crédito, o guia abre no cartão de exemplo) e na Débito.
 	useScreenTour('cards');
 	const tourScroll = useTourScroll('cards');
 	const totalsTarget = useTourTarget('cards.totals');
@@ -68,6 +69,14 @@ const CardsScreen = () => {
 				<TourTarget id="cards.add">
 					<Button label={t('cards.add')} icon="add" onPress={() => router.push('/cards/new')} />
 				</TourTarget>
+
+				<View style={styles.titleRow}>
+					<Text style={styles.sectionTitle} accessibilityRole="header">
+						{t('cards.credit.sectionTitle')}
+					</Text>
+					<HelpButton trail="cardInvoice" here={{ screen: 'cards' }} />
+				</View>
+				{creditCards.length === 0 ? <Text style={styles.empty}>{t('cards.credit.sampleHint')}</Text> : null}
 
 				{creditCards.map((card, index) => (
 					<CardFace

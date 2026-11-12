@@ -1589,6 +1589,11 @@ const pt = {
 			history: 'Histórico',
 			empty: 'Nenhuma compra com este cartão ainda.',
 		},
+		// A seção dos cartões de crédito na lista, com o "?" do guia da fatura (SPD-158).
+		credit: {
+			sectionTitle: 'Crédito',
+			sampleHint: 'Nenhum cartão de crédito ainda. O "?" mostra a fatura, o pagamento e os acertos num cartão de exemplo, sem salvar nada.',
+		},
 		sectionTitle: 'Cartões',
 		seeAll: 'Ver todos',
 		add: 'Adicionar cartão',

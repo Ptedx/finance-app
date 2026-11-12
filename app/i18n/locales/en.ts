@@ -1592,6 +1592,11 @@ account: {
 			history: 'History',
 			empty: 'No purchases with this card yet.',
 		},
+		// A seção dos cartões de crédito na lista, com o "?" do guia da fatura (SPD-158).
+		credit: {
+			sectionTitle: 'Credit',
+			sampleHint: 'No credit card yet. The "?" shows the bill, payment and matching on a sample card, without saving anything.',
+		},
 		sectionTitle: 'Cards',
 		seeAll: 'See all',
 		add: 'Add card',

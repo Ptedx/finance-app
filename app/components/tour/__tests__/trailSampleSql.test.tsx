@@ -226,6 +226,7 @@ import {
 import AccountEditScreen from '../../../screens/AccountEditScreen';
 import CardDetailScreen from '../../../screens/CardDetailScreen';
 import CardEditScreen from '../../../screens/CardEditScreen';
+import CardsScreen from '../../../screens/CardsScreen';
 import DebtDetailScreen from '../../../screens/DebtDetailScreen';
 import DebtEditScreen from '../../../screens/DebtEditScreen';
 import TransactionDetailScreen from '../../../transaction/[id]';
@@ -289,6 +290,9 @@ const FakeStack: React.FC<{ initial: TrailLocation[] }> = ({ initial }) => {
 	const id = top.params?.id;
 	const key = `${stack.length}:${top.screen}:${id ?? top.params?.exemplo ?? ''}`;
 	switch (top.screen) {
+		// A lista de cartões de verdade (SPD-158): o "?" do guia da fatura fica nela.
+		case 'cards':
+			return <CardsScreen key={key} />;
 		case 'card':
 			return <CardDetailScreen key={key} cardId={id ?? ''} />;
 		case 'cardNew':
@@ -368,6 +372,15 @@ const pressLabel = async (label: string) => {
 	});
 };
 
+/** O "?" de uma trilha, achado pelo rótulo de acessibilidade que diz o nome do guia. */
+const helpButtons = (trail: TrailId) =>
+	renderer?.root.findAll(
+		(candidate: ReactTestInstance) =>
+			typeof candidate.props.onPress === 'function' &&
+			candidate.props.accessibilityHint ===
+				`trails.helpHint${JSON.stringify({ trail: `trails.${trail}.title` })}`
+	) ?? [];
+
 const pointing = () =>
 	(renderer?.root.findAll((node) => node.props.testID === 'trail-outline').length ?? 0) > 0;
 const top = () => currentStack[currentStack.length - 1];
@@ -427,10 +440,14 @@ interface Shown {
 const walk = async (
 	trail: TrailId,
 	here: TrailLocation,
-	{ from, stopAt }: { from?: string; stopAt?: string } = {}
+	{ from, stopAt, press }: { from?: string; stopAt?: string; press?: boolean } = {}
 ): Promise<Shown[]> => {
+	// `press`: começa pelo "?" da tela, como o usuário (SPD-158), em vez de pedir a trilha direto.
+	const button = press ? helpButtons(trail)[0] : undefined;
+	if (press && !button) throw new Error(`sem "?" da trilha ${trail}. Na tela: ${texts().join(' | ')}`);
 	await act(async () => {
-		tour?.startTrail(trail, { here, from });
+		if (button) button.props.onPress();
+		else tour?.startTrail(trail, { here, from });
 	});
 	const shown: Shown[] = [];
 	const titleOf = () =>
@@ -881,6 +898,40 @@ describeSql('SPD-147 — o exemplo das trilhas, no SQL de verdade', () => {
 		expect(texts()).not.toContain('trails.sample.debt');
 	});
 
+	it('SPD-158 — sem cartão, o "?" da lista de cartões abre o guia da fatura no exemplo, volta para a lista e o banco fica igual', async () => {
+		await markAllClean();
+		const keysBefore = storageKeys();
+		await mount([{ screen: 'cards' }]);
+		const before = await snapshot();
+		const numbers = await fingerprint();
+		expect(before.accounts.rows).toBe(0);
+		expect(helpButtons('cardInvoice')).toHaveLength(1);
+
+		// Concluir: os 12 passos no cartão de exemplo, com a faixa e o rótulo, e a volta para a lista.
+		const invoice = await walk('cardInvoice', { screen: 'cards' }, { press: true });
+		expect(invoice.map((step) => step.id)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']);
+		expect(invoice.every((step) => step.at === 'card:exemplo-cartao' && step.sample && step.banner)).toBe(true);
+		expect(currentStack).toEqual([{ screen: 'cards' }]);
+		await wait(800);
+		expect(sampleOn).toBe(false);
+
+		// Pular no meio: também volta para a lista.
+		await walk('cardInvoice', { screen: 'cards' }, { press: true, stopAt: '4' });
+		expect(where(top())).toBe('card:exemplo-cartao');
+		expect(await fingerprint()).toEqual(numbers);
+		await pressLabel('tutorial.skip');
+		await waitUntil(() => where(top()) === 'cards', 'a volta para Cartões');
+		expect(currentStack).toEqual([{ screen: 'cards' }]);
+		await wait(800);
+		expect(sampleOn).toBe(false);
+
+		const after = await snapshot();
+		expect(after).toEqual(before);
+		expect(Object.values(after).reduce((total, table) => total + table.dirty, 0)).toBe(0);
+		expect(storageKeys()).toEqual(keysBefore);
+		expect(await fingerprint()).toEqual(numbers);
+	});
+
 	it('com os registros do usuário, a trilha usa os dele — e o banco também fica igual', async () => {
 		const card = await addAccount({
 			name: 'Cartão Teste',
@@ -997,5 +1048,33 @@ describeSql('SPD-147 — o exemplo das trilhas, no SQL de verdade', () => {
 		expect(await fingerprint()).toEqual(numbers);
 		expect(Object.keys(numbers.cards)).toEqual([card]);
 		expect(numbers.debts).toEqual([debt]);
+	});
+
+	it('SPD-158 — com cartão de crédito, o "?" da lista de cartões abre o guia da fatura no cartão de verdade, sem exemplo', async () => {
+		// O cartão do teste anterior continua no banco.
+		const cards = await db.getAllAsync<{ id: string }>(
+			"SELECT id FROM accounts WHERE kind = 'credit_card' AND deletedAt IS NULL ORDER BY sortOrder"
+		);
+		expect(cards).toHaveLength(1);
+		const [{ id: card }] = cards;
+		await mount([{ screen: 'cards' }]);
+		await markAllClean();
+		const before = await snapshot();
+		const numbers = await fingerprint();
+		expect(helpButtons('cardInvoice')).toHaveLength(1);
+
+		const invoice = await walk('cardInvoice', { screen: 'cards' }, { press: true });
+		expect(invoice).toHaveLength(12);
+		expect(invoice.every((step) => step.at === `card:${card}` && !step.sample && !step.banner)).toBe(true);
+		expect(currentStack).toEqual([{ screen: 'cards' }]);
+		expect(sampleOn).toBe(false);
+
+		await walk('cardInvoice', { screen: 'cards' }, { press: true, stopAt: '2' });
+		expect(texts()).toContain('Cartão Teste');
+		await pressLabel('tutorial.skip');
+		await waitUntil(() => where(top()) === 'cards', 'a volta para Cartões');
+
+		expect(await snapshot()).toEqual(before);
+		expect(await fingerprint()).toEqual(numbers);
 	});
 });

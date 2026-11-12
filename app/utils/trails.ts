@@ -319,7 +319,8 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			s('11', 'card', 'card.noClosing', { ...attention, record: 'cardNoClosing' }),
 		],
 	},
-	// Trilha 3 — Cartão: fatura, pagamento e acertos. Começa na tela de um cartão.
+	// Trilha 3 — Cartão: fatura, pagamento e acertos. Começa na tela de um cartão ou na seção
+	// Crédito de Ajustes › Cartões (SPD-158): de lá, abre o primeiro cartão de crédito da lista.
 	cardInvoice: {
 		id: 'cardInvoice',
 		steps: [
