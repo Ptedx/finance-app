@@ -1,3 +1,4 @@
+import { TRAIL_SAMPLE_RECORDS } from '../trailSample';
 import {
 	dropsOrigin,
 	navigateTrail,
@@ -98,13 +99,14 @@ describe('plano de uma trilha', () => {
 		expect(extras.find((step) => step.id === '6')?.location).toEqual({ screen: 'cardEdit', params: { id: 'cartao' } });
 	});
 
-	it('Trilha 3 sem cartão: só Ajustes › Cartões, com o texto do [sem dado]', () => {
-		const plan = planTrail(TRAILS.cardInvoice, { ...full, card: [] }, { screen: 'cards' });
-		expect(plan).toHaveLength(1);
+	it('Trilha 3 sem cartão: anda no cartão de exemplo (SPD-147), sem o "Nenhum cartão ainda"', () => {
+		const plan = planTrail(TRAILS.cardInvoice, { ...full, card: [] }, { screen: 'cards' }, TRAIL_SAMPLE_RECORDS);
+		expect(plan).toHaveLength(12);
 		expect(plan[0]).toMatchObject({
-			location: { screen: 'cards' },
-			textOnly: true,
-			bodyKey: 'trails.cardInvoice.steps.noCard.body',
+			location: { screen: 'card', params: { id: 'exemplo-cartao' } },
+			textOnly: false,
+			sample: true,
+			bodyKey: 'trails.cardInvoice.steps.1.body',
 		});
 	});
 

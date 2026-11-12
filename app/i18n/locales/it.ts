@@ -2427,6 +2427,16 @@ account: {
 		backHint: 'Torna al passo precedente',
 		skipHint: 'Chiude la guida e torna dove eri',
 		attention: 'Attenzione',
+		// L'esempio solo in memoria (SPD-147): la guida mostra la schermata con esso quando non hai ancora il dato.
+		sample: {
+			tag: 'Esempio',
+			banner: 'Esempio: solo per mostrare come appare. Niente qui è tuo, e niente viene salvato.',
+			account: 'Conto esempio',
+			bank: 'Banca esempio',
+			card: 'Carta esempio',
+			debt: 'Finanziamento esempio',
+			transaction: 'Spesa esempio',
+		},
 		accounts: {
 			title: 'Conti: registrazione, ruolo e saldo',
 			steps: {
@@ -2533,10 +2543,6 @@ account: {
 		cardInvoice: {
 			title: 'Carta: estratto, pagamento e allineamenti',
 			steps: {
-				noCard: {
-					title: 'Nessuna carta ancora.',
-					body: "Aggiungi una carta per vedere l'estratto, pagare e allinearlo con la banca. Poi il '?' della schermata della carta mostra ogni pulsante.",
-				},
 				'1': {
 					title: "L'estratto attuale.",
 					body: 'La carta mostra l\'estratto aperto, quando chiude e scade e, se c\'è, quello chiuso da pagare. Il limite rimasto compare quando hai indicato il limite.',

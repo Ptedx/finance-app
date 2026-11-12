@@ -25,6 +25,7 @@ import {
 	type TourState,
 	targetsOf,
 } from '../../utils/tour';
+import { TRAIL_SAMPLE_RECORDS } from '../../utils/trailSample';
 import {
 	hrefOf,
 	type PlannedTrailStep,
@@ -46,6 +47,7 @@ import {
 } from './TourContext';
 import TourOverlay from './TourOverlay';
 import TrailOverlay, { type TrailNavigator } from './TrailOverlay';
+import { TrailSampleContext } from './TrailSample';
 
 /**
  * O dono do guia na tela (SPD-129): guarda no aparelho o que já foi visto, decide quando um
@@ -63,6 +65,11 @@ import TrailOverlay, { type TrailNavigator } from './TrailOverlay';
  * monta o plano com os registros do usuário (quem os sabe se inscreve em `setTrailRecords`) e
  * desenha a `TrailOverlay`, que anda pelas telas. Com uma trilha aberta (e logo depois dela),
  * o guia de primeira visita de cada tela não abre.
+ *
+ * O modo exemplo (SPD-147) também: o plano recebe os registros de exemplo
+ * (`TRAIL_SAMPLE_RECORDS`) e, com algum passo de exemplo, o `TrailSampleContext` fica ligado
+ * enquanto a trilha está aberta. Ele desliga um instante depois do fim — o tempo de a tela de
+ * exemplo sair da pilha sem piscar "não encontrado". Só estado em memória: fechar o app leva.
  */
 
 /** Depois do foco, quanto esperar a tela assentar antes de abrir o guia sozinho. */
@@ -72,6 +79,8 @@ const SETTLE_MS = 700;
 const TRAIL_QUIET_MS = 1500;
 /** Entre duas navegações da trilha, o tempo do `expo-router` trocar de tela. */
 const NAV_GAP_MS = 60;
+/** Depois da trilha, quanto o exemplo ainda vale: a tela de exemplo está saindo da pilha. */
+const SAMPLE_LINGER_MS = 600;
 
 /** O que cada montagem de tela disse por último (a mesma tela pode estar duas vezes na pilha). */
 type Reports = Map<number | string, ScreenReport & { screen: TourPlace; instance: number }>;
@@ -135,6 +144,9 @@ export const TourProvider: React.FC<{
 	const [onboardingDone, setOnboardingDone] = useState(false);
 	const [active, setActive] = useState<ActiveTour | null>(null);
 	const [trail, setTrail] = useState<ActiveTrail | null>(null);
+	// O exemplo das trilhas (SPD-147): ligado enquanto a trilha aberta tem passo de exemplo.
+	const [sampleOn, setSampleOn] = useState(false);
+	const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// O que as decisões assíncronas leem: o valor da hora, não o do render que as agendou.
 	const stateRef = useRef<TourState | null>(null);
@@ -284,8 +296,13 @@ export const TourProvider: React.FC<{
 				try {
 					const source = recordSources.current[recordSources.current.length - 1];
 					const records = source ? await source().catch(() => ({})) : {};
-					const plan = planTrail(TRAILS[id], records, here);
+					const plan = planTrail(TRAILS[id], records, here, TRAIL_SAMPLE_RECORDS);
 					if (plan.length === 0) return;
+					if (plan.some((step) => step.sample)) {
+						if (sampleTimer.current) clearTimeout(sampleTimer.current);
+						sampleTimer.current = null;
+						setSampleOn(true);
+					}
 					counter.current += 1;
 					const next: ActiveTrail = {
 						plan,
@@ -307,6 +324,12 @@ export const TourProvider: React.FC<{
 		trailRef.current = null;
 		quietUntil.current = Date.now() + TRAIL_QUIET_MS;
 		setTrail(null);
+		// O guia já voltou para a tela de origem: o exemplo some assim que a de exemplo sair.
+		if (sampleTimer.current) clearTimeout(sampleTimer.current);
+		sampleTimer.current = setTimeout(() => {
+			sampleTimer.current = null;
+			setSampleOn(false);
+		}, SAMPLE_LINGER_MS);
 	}, []);
 
 	const trailReady = useCallback(
@@ -377,6 +400,7 @@ export const TourProvider: React.FC<{
 	useEffect(
 		() => () => {
 			for (const timer of timers.current.values()) clearTimeout(timer);
+			if (sampleTimer.current) clearTimeout(sampleTimer.current);
 		},
 		[]
 	);
@@ -404,7 +428,7 @@ export const TourProvider: React.FC<{
 				style={styles.screens}
 				importantForAccessibility={showing ? 'no-hide-descendants' : 'auto'}
 			>
-				{children}
+				<TrailSampleContext.Provider value={sampleOn}>{children}</TrailSampleContext.Provider>
 			</View>
 			{active && !paused ? (
 				<TourOverlay

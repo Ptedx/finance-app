@@ -9,6 +9,7 @@ import { ACCENT, Button } from '../components/cards/formParts';
 import AmortizeSheet from '../components/debts/AmortizeSheet';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, useSampleDebt } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
@@ -37,7 +38,9 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	const { cdi } = useAccounts();
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [expanded, setExpanded] = useState(false);
-	const debt = debts.find((item) => item.id === debtId);
+	// O exemplo das trilhas (SPD-147): sem dívida, a trilha abre esta tela com uma só em memória.
+	const sample = useSampleDebt(debtId);
+	const debt = sample ?? debts.find((item) => item.id === debtId);
 	const today = todayISO();
 
 	const state = useMemo(() => (debt ? debtStateOn(termsOf(debt), today) : null), [debt, today]);
@@ -82,7 +85,9 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 					{debt.name}
 				</Text>
 				<Pressable
-					onPress={() => router.push({ pathname: '/debts/edit/[id]', params: { id: debt.id } })}
+					onPress={() => {
+						if (!sample) router.push({ pathname: '/debts/edit/[id]', params: { id: debt.id } });
+					}}
 					accessibilityRole="button"
 					accessibilityLabel={t('debts.detail.edit')}
 					style={styles.iconButton}
@@ -92,6 +97,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				<HelpButton trail="debts" here={{ screen: 'debt', params: { id: debt.id } }} from="9" />
 			</View>
 
+			{sample ? <SampleBanner /> : null}
 			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{isPaidOff ? <Text style={styles.banner}>{t('debts.detail.paidOffBanner')}</Text> : null}
 
@@ -162,7 +168,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 									: t('debts.verdict.yieldDefault', { rate: formatPercentBp(DEFAULT_EXPECTED_YIELD_BP, 0) })}
 						</Text>
 						<TourTarget id="debt.simulate">
-							<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(true)} />
+							<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(!sample)} />
 						</TourTarget>
 					</View>
 				) : null}
@@ -212,7 +218,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				debt={debt}
 				investmentYieldBp={investmentYieldBp}
 				onClose={() => setSheetOpen(false)}
-				onConfirm={(result) => recordExtraPayment(debt.id, result)}
+				onConfirm={(result) => (sample ? Promise.resolve() : recordExtraPayment(debt.id, result))}
 			/>
 		</SafeAreaView>
 	);

@@ -2425,6 +2425,16 @@ const pt = {
 		backHint: 'Volta ao passo anterior',
 		skipHint: 'Fecha o guia e volta para onde você estava',
 		attention: 'Atenção',
+		// O exemplo só em memória (SPD-147): a trilha mostra a tela com ele quando você ainda não tem o registro.
+		sample: {
+			tag: 'Exemplo',
+			banner: 'Exemplo: só para mostrar como fica. Nada aqui é seu, e nada é salvo.',
+			account: 'Conta exemplo',
+			bank: 'Banco exemplo',
+			card: 'Cartão exemplo',
+			debt: 'Financiamento exemplo',
+			transaction: 'Mercado exemplo',
+		},
 		accounts: {
 			title: 'Contas: cadastro, papel e saldo',
 			steps: {
@@ -2531,10 +2541,6 @@ const pt = {
 		cardInvoice: {
 			title: 'Cartão: fatura, pagamento e acertos',
 			steps: {
-				noCard: {
-					title: 'Nenhum cartão ainda.',
-					body: "Cadastre um cartão para ver a fatura, pagar e acertar com o banco. Depois, o '?' da tela do cartão mostra cada botão.",
-				},
 				'1': {
 					title: 'A fatura atual.',
 					body: 'O cartão mostra a fatura aberta, quando ela fecha e vence e, se houver, a fechada a pagar. O limite que sobra aparece quando você informou o limite.',

@@ -206,9 +206,10 @@ const FakeStack: React.FC<{ initial: TrailLocation[] }> = ({ initial }) => {
 	currentStack = stack;
 	const top = stack[stack.length - 1];
 	if (!top) return null;
-	const key = `${stack.length}:${top.screen}:${top.params?.id ?? ''}`;
+	const key = `${stack.length}:${top.screen}:${top.params?.id ?? top.params?.exemplo ?? ''}`;
 	if (top.screen === 'wealth') return <WealthScreen key={key} />;
-	if (top.screen === 'debtNew') return <DebtEditScreen key={key} />;
+	// O `exemplo=1` da rota, como `app/debts/new.tsx` repassa (SPD-147).
+	if (top.screen === 'debtNew') return <DebtEditScreen key={key} sampleForm={top.params?.exemplo} />;
 	if (top.screen === 'debt') return <DebtDetailScreen key={key} debtId={top.params?.id ?? ''} />;
 	if (top.screen === 'debtEdit') return <DebtEditScreen key={key} debtId={top.params?.id} />;
 	return <Text key={key}>{`tela ${top.screen}`}</Text>;
@@ -276,6 +277,11 @@ const title = (id: number) => `trails.debts.steps.${id}.title`;
 const body = (id: number) => `trails.debts.steps.${id}.body`;
 const counter = (current: number, total = 12) => `tutorial.counter{"current":${current},"total":${total}}`;
 const top = () => currentStack[currentStack.length - 1];
+/** O cadastro aberto pela trilha com o exemplo, e a dívida de exemplo (SPD-147). */
+const sampleForm: TrailLocation = { screen: 'debtNew', params: { exemplo: '1' } };
+const sampleDebtAt: TrailLocation = { screen: 'debt', params: { id: 'exemplo-divida' } };
+const saveButton = () =>
+	renderer?.root.findAll((node) => node.props.accessibilityLabel === 'debts.edit.save' && node.props.accessibilityState !== undefined)[0];
 
 const mount = async (initial: TrailLocation[]) => {
 	await act(async () => {
@@ -330,16 +336,21 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 		expect(texts()).toContain(counter(1));
 		expect(top()).toEqual({ screen: 'wealth' });
 
-		// Passo 2: o guia abriu a Nova dívida, de verdade.
+		// Passo 2: o guia abriu a Nova dívida, de verdade — preenchida com o exemplo (SPD-147), que
+		// o formulário vazio não mostrava a prévia. O "Salvar" fica desligado.
 		await pressLabel('tutorial.next');
 		await showStep(2);
-		expect(top()).toEqual({ screen: 'debtNew' });
+		expect(top()).toEqual(sampleForm);
 		expect(texts()).toContain('debts.edit.newTitle');
+		expect(texts()).toContain('trails.sample.banner');
+		expect(texts()).toContain('trails.sample.tag');
+		expect(saveButton()?.props.accessibilityState).toEqual({ disabled: true });
 
 		for (const id of [3, 4, 5, 6, 7, 8]) {
 			await pressLabel('tutorial.next');
 			await showStep(id);
-			expect(top()).toEqual({ screen: 'debtNew' });
+			expect(top()).toEqual(sampleForm);
+			expect(texts()).toContain('trails.sample.tag');
 			// Passo 7 ("Atenção", consórcio): o formulário segue em financiamento; o guia aponta o tipo.
 			if (id === 7) expect(texts()).toContain('trails.attention');
 		}
@@ -350,6 +361,9 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 		expect(top()).toEqual({ screen: 'debt', params: { id: 'carro' } });
 		expect(texts()).toContain('Carro Teste');
 		expect(texts()).toContain(body(9));
+		// A dívida é a do usuário: sem exemplo.
+		expect(texts()).not.toContain('trails.sample.tag');
+		expect(texts()).not.toContain('trails.sample.banner');
 
 		await pressLabel('tutorial.next');
 		await showStep(10);
@@ -363,14 +377,14 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 		expect(top()).toEqual({ screen: 'debtEdit', params: { id: 'carro' } });
 		expect(texts()).toContain(counter(12));
 
-		// A prévia só aparece com o formulário preenchido: o passo 6 mostra o texto sem apontar.
+		// A prévia só aparece com o formulário preenchido: com o exemplo, o passo 6 aponta para ela.
 		expect(shownSteps).toEqual([
 			[1, true],
 			[2, true],
 			[3, true],
 			[4, true],
 			[5, true],
-			[6, false],
+			[6, true],
 			[7, true],
 			[8, true],
 			[9, true],
@@ -386,7 +400,7 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 
 		expectNothingSaved();
 		expect(mockActions).toEqual([
-			{ type: 'push', location: { screen: 'debtNew' } },
+			{ type: 'push', location: sampleForm },
 			{ type: 'pop', count: 1 },
 			{ type: 'push', location: { screen: 'debt', params: { id: 'carro' } } },
 			{ type: 'push', location: { screen: 'debtEdit', params: { id: 'carro' } } },
@@ -394,7 +408,7 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 		]);
 	});
 
-	it('sem dívida: os passos da tela de uma dívida ficam no texto, sem sair da Nova dívida', async () => {
+	it('sem dívida: os passos 9 a 12 andam na dívida de exemplo e apontam; ao sair, o exemplo some (SPD-147)', async () => {
 		mockData.debts = [];
 		await mount([{ screen: 'wealth' }]);
 		await pressHelp('debts');
@@ -403,25 +417,50 @@ describe('Trilha 9 — Dívidas, cruzando telas', () => {
 			await pressLabel('tutorial.next');
 			await showStep(id);
 		}
-		// O `[sem dado]` do passo 9: o texto próprio, sem apontar, ainda na Nova dívida.
-		expect(texts()).toContain('trails.debts.steps.9.missing');
-		expect(top()).toEqual({ screen: 'debtNew' });
-		for (const id of [10, 11, 12]) {
+		// O passo 9 na tela da dívida de exemplo, com o texto do passo (não o do [sem dado]).
+		expect(top()).toEqual(sampleDebtAt);
+		expect(texts()).toContain(body(9));
+		expect(texts()).not.toContain('trails.debts.steps.9.missing');
+		expect(texts()).toContain('trails.sample.debt');
+		expect(texts()).toContain('trails.sample.banner');
+		expect(texts()).toContain('trails.sample.tag');
+		for (const id of [10, 11]) {
 			await pressLabel('tutorial.next');
 			await showStep(id);
-			expect(top()).toEqual({ screen: 'debtNew' });
+			expect(top()).toEqual(sampleDebtAt);
 		}
-		expect(shownSteps.slice(8)).toEqual([
-			[9, false],
-			[10, false],
-			[11, false],
-			[12, false],
+		await pressLabel('tutorial.next');
+		await showStep(12);
+		expect(top()).toEqual({ screen: 'debtEdit', params: { id: 'exemplo-divida' } });
+		expect(texts()).toContain('trails.sample.banner');
+		expect(saveButton()?.props.accessibilityState).toEqual({ disabled: true });
+		expect(shownSteps.slice(5)).toEqual([
+			[6, true],
+			[7, true],
+			[8, true],
+			[9, true],
+			[10, true],
+			[11, true],
+			[12, true],
 		]);
+
+		// Os botões que gravam não fazem nada com o exemplo, mesmo tocados.
+		await pressLabel('debts.edit.archive');
+		await pressLabel('debts.edit.delete');
 
 		await pressLabel('tutorial.done');
 		await waitUntil(() => top()?.screen === 'wealth');
 		expect(currentStack).toEqual([{ screen: 'wealth' }]);
 		expectNothingSaved();
+
+		// Fora da trilha, a dívida de exemplo não existe mais: a mesma tela diz que não achou.
+		await wait(800);
+		await act(async () => {
+			setStack?.((stack) => [...stack, sampleDebtAt]);
+		});
+		await waitForText('debts.detail.missing');
+		expect(texts()).not.toContain('trails.sample.debt');
+		expect(texts()).not.toContain('trails.sample.banner');
 	});
 
 	it('o "?" da tela de uma dívida abre no passo 9, ali mesmo, e termina nela', async () => {

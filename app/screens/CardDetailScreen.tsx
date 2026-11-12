@@ -16,6 +16,7 @@ import { SelectField, type SelectOption } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { getAccountTransfers } from '../database/database';
@@ -26,6 +27,7 @@ import { capitalizeFirst } from '../utils/capitalize';
 import { dismissCardDuplicates, getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { type CardDuplicateEntry, cardPaymentEntries, findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import {
+	buildCardSummary,
 	CARD_CHARGE_NOTE,
 	type CardChargeKind,
 	type CardChargeShown,
@@ -96,8 +98,13 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	} = useAccounts();
 	const { transactions, categories } = useTransactions();
 
-	const card: Account | undefined = accounts.find((account) => account.id === cardId && account.kind === 'credit_card');
-	const summary = card ? cardSummaries.get(card.id) : undefined;
+	// O exemplo das trilhas (SPD-147): sem cartão, a trilha abre esta tela com um só em memória,
+	// sem lançamento nenhum; o resumo dele é calculado aqui, e nada dele passa pelo contexto.
+	const sampleAccount = useSampleAccount(cardId);
+	const sample = sampleAccount?.kind === 'credit_card' ? sampleAccount : undefined;
+	const sampleSummary = useMemo(() => (sample ? buildCardSummary(sample, [], [], todayISO()) : undefined), [sample]);
+	const card: Account | undefined = sample ?? accounts.find((account) => account.id === cardId && account.kind === 'credit_card');
+	const summary = card ? (sampleSummary ?? cardSummaries.get(card.id)) : undefined;
 
 	const [selectedKey, setSelectedKey] = useState<string | null>(null);
 	const [sheet, setSheet] = useState<SheetKind>(null);
@@ -287,7 +294,13 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 		return { ...tx, note: t('cards.charges.listLabel', { kind: t(`cards.charges.kinds.${kind}`) }) };
 	};
 
+	/** As folhas do cartão gravam: no cartão de exemplo (SPD-147), nenhuma abre. */
+	const openSheet = (kind: SheetKind) => {
+		if (!sample) setSheet(kind);
+	};
+
 	const dismissDuplicates = async (keys: string[]) => {
+		if (sample) return;
 		try {
 			setDismissedDuplicates(await dismissCardDuplicates(keys));
 			AccessibilityInfo.announceForAccessibility(t('cards.duplicates.dismissed'));
@@ -407,16 +420,17 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				</Pressable>
 			</View>
 
+			{sample ? <SampleBanner /> : null}
 			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				<TourTarget id="card.face">
 					<CardFace card={card} summary={summary} />
 				</TourTarget>
 
 				<View style={styles.actions}>
-					<ActionTile tourId="card.pay" icon="cash-outline" label={t('cards.actions.pay')} onPress={() => setSheet('pay')} />
-					<ActionTile tourId="card.adjust" icon="scale-outline" label={t('cards.actions.adjust')} onPress={() => setSheet('adjust')} />
-					<ActionTile tourId="card.installments" icon="layers-outline" label={t('cards.actions.installments')} onPress={() => setSheet('installments')} />
-					<ActionTile tourId="card.charge" icon="receipt-outline" label={t('cards.charges.action')} onPress={() => setSheet('charge')} />
+					<ActionTile tourId="card.pay" icon="cash-outline" label={t('cards.actions.pay')} onPress={() => openSheet('pay')} />
+					<ActionTile tourId="card.adjust" icon="scale-outline" label={t('cards.actions.adjust')} onPress={() => openSheet('adjust')} />
+					<ActionTile tourId="card.installments" icon="layers-outline" label={t('cards.actions.installments')} onPress={() => openSheet('installments')} />
+					<ActionTile tourId="card.charge" icon="receipt-outline" label={t('cards.charges.action')} onPress={() => openSheet('charge')} />
 				</View>
 
 				{summary && !summary.configured ? (
@@ -573,7 +587,9 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 													{item.last4 ? (
 														<Pressable
 															{...(item.last4 === usage.find((other) => other.last4)?.last4 ? renameTarget : {})}
-															onPress={() => setRenaming({ last4: item.last4 as string, name: item.name })}
+															onPress={() => {
+																if (!sample) setRenaming({ last4: item.last4 as string, name: item.name });
+															}}
 															accessibilityRole="button"
 															accessibilityLabel={t('cards.rename.actionFor', { card: label })}
 															style={styles.iconButton}
@@ -779,7 +795,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				) : null}
 			</ScrollView>
 
-			{summary ? (
+			{/* O cartão de exemplo não abre folha nenhuma: todas gravam. */}
+			{summary && !sample ? (
 				<>
 					<PaySheet
 						visible={sheet === 'pay'}

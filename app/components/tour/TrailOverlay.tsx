@@ -42,7 +42,8 @@ import { nextScreenInstance } from './TourContext';
  * `navigateTrail` manda), espera ela anunciar que está pronta, fecha o teclado, mede os alvos
  * e aponta o primeiro grupo que está na tela, rolando até ele se precisar. Sem alvo, segue o
  * `[sem dado]` do passo: o texto sem apontar, com o resto da tela escurecido, ou pula o passo.
- * Passo "Atenção:" é a mesma caixa, com o rótulo "Atenção" e o contorno âmbar.
+ * Passo "Atenção:" é a mesma caixa, com o rótulo "Atenção" e o contorno âmbar. Passo numa tela
+ * de exemplo (SPD-147: o usuário ainda não tem o cartão, a dívida…) leva o rótulo "Exemplo".
  *
  * O contador ("Passo 4 de 7", SPD-151) não muda no meio da trilha: os passos pulados são
  * decididos antes do primeiro balão — pelos dados, no plano (`planTrail`), e pelos alvos da tela
@@ -342,8 +343,9 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 	useEffect(() => {
 		if (!shown || !step) return;
 		const attention = step.attention ? `${t('trails.attention')}. ` : '';
+		const sample = step.sample ? `${t('trails.sample.tag')}. ` : '';
 		AccessibilityInfo.announceForAccessibility(
-			`${t('tutorial.counterLabel', { current, total })}. ${attention}${t(step.titleKey)}. ${t(shown.bodyKey)}`
+			`${t('tutorial.counterLabel', { current, total })}. ${attention}${sample}${t(step.titleKey)}. ${t(shown.bodyKey)}`
 		);
 	}, [shown]);
 
@@ -453,6 +455,11 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 								<Text style={styles.attentionText}>{t('trails.attention')}</Text>
 							</View>
 						) : null}
+						{step.sample ? (
+							<View style={styles.sampleTag} testID="trail-sample-tag">
+								<Text style={styles.sampleText}>{t('trails.sample.tag')}</Text>
+							</View>
+						) : null}
 					</View>
 					<Text style={styles.title} accessibilityRole="header">
 						{t(step.titleKey)}
@@ -544,6 +551,18 @@ const styles = StyleSheet.create({
 		fontSize: 13,
 		fontWeight: '700',
 		color: ATTENTION,
+	},
+	sampleTag: {
+		borderRadius: 8,
+		paddingHorizontal: 8,
+		paddingVertical: 2,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.5)',
+	},
+	sampleText: {
+		fontSize: 13,
+		fontWeight: '700',
+		color: '#FFFFFF',
 	},
 	title: {
 		fontSize: 18,

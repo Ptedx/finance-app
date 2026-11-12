@@ -1,6 +1,7 @@
 import en from '../../i18n/locales/en';
 import itLocale from '../../i18n/locales/it';
 import pt from '../../i18n/locales/pt';
+import { TRAIL_SAMPLE_RECORDS } from '../trailSample';
 import { planTrail, TRAILS, type TrailRecords } from '../trails';
 
 /**
@@ -38,11 +39,19 @@ const usedKeys = (): string[] => {
 		'trails.attention',
 		'trails.help',
 		'trails.helpHint',
+		// O modo exemplo (SPD-147): o rótulo do balão, a faixa da tela e os nomes do exemplo.
+		'trails.sample.tag',
+		'trails.sample.banner',
+		'trails.sample.account',
+		'trails.sample.bank',
+		'trails.sample.card',
+		'trails.sample.debt',
+		'trails.sample.transaction',
 	]);
 	for (const trail of Object.values(TRAILS)) {
 		keys.add(`trails.${trail.id}.title`);
 		for (const records of [everything, {}]) {
-			for (const step of planTrail(trail, records, { screen: 'home' })) {
+			for (const step of [...planTrail(trail, records, { screen: 'home' }), ...planTrail(trail, records, { screen: 'home' }, TRAIL_SAMPLE_RECORDS)]) {
 				keys.add(step.titleKey);
 				keys.add(step.bodyKey);
 				if (step.altBodyKey) keys.add(step.altBodyKey);

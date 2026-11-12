@@ -16,7 +16,9 @@
  *
  * A trilha nunca cria, altera nem apaga dado: ela só abre telas e aponta. Um formulário aberto
  * para mostrar os campos fecha sem salvar; a tela de uma conta ou de um cartão usa um registro
- * que o usuário já tem. Os textos ficam em `trails.<trilha>.steps.<passo>` no i18n.
+ * que o usuário já tem. Sem nenhum, usa o exemplo só em memória do SPD-147 (`utils/trailSample.ts`):
+ * a tela abre com um cartão, uma dívida ou uma conta de mentira, marcada "Exemplo", e o passo
+ * aponta o elemento certo. Os textos ficam em `trails.<trilha>.steps.<passo>` no i18n.
  *
  * Para as trilhas 8 a 21 (fases 2 e 3): uma entrada em `TRAILS` (e, se a tela for nova, em
  * `TRAIL_SCREENS`), os alvos marcados nas telas (`TourTarget`/`useTourTarget`), o
@@ -25,6 +27,7 @@
  */
 
 import { hasSize, type Rect, type TourScreen } from './tour';
+import { SAMPLE_FORM_PARAM } from './trailSample';
 
 // ---------------------------------------------------------------------------
 // Telas
@@ -112,6 +115,12 @@ interface ScreenDef {
 	 * escolhas da revisão): a trilha que começa nela não a tira da pilha (`dropsOrigin`).
 	 */
 	keep?: boolean;
+	/**
+	 * Formulário de cadastro que a trilha abre preenchido com o exemplo (SPD-147): a prévia da
+	 * dívida e as datas da fatura só aparecem com os campos preenchidos. Não quando a trilha
+	 * começou nele: aí o formulário é o do usuário, com o que ele digitou.
+	 */
+	sampleForm?: boolean;
 }
 
 export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
@@ -128,7 +137,7 @@ export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
 		keep: true,
 	},
 	cards: { path: '/cards', report: 'cards', parent: 'settings' },
-	cardNew: { path: '/cards/new', report: 'cardEdit', parent: 'cards', keep: true },
+	cardNew: { path: '/cards/new', report: 'cardEdit', parent: 'cards', keep: true, sampleForm: true },
 	card: { path: '/cards/[id]', report: 'card', parent: 'cards', record: 'card' },
 	cardEdit: {
 		path: '/cards/edit/[id]',
@@ -153,7 +162,7 @@ export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
 	wealth: { path: '/wealth', report: 'wealth', tab: true },
 	transactions: { path: '/transactions', report: 'transactions', tab: true },
 	reports: { path: '/reports', report: 'reports', tab: true },
-	debtNew: { path: '/debts/new', report: 'debtEdit', parent: 'wealth', keep: true },
+	debtNew: { path: '/debts/new', report: 'debtEdit', parent: 'wealth', keep: true, sampleForm: true },
 	debt: { path: '/debts/[id]', report: 'debt', parent: 'wealth', record: 'debt' },
 	debtEdit: {
 		path: '/debts/edit/[id]',
@@ -331,7 +340,7 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			// da tela, SPD-143). O texto aprovado fica igual.
 			s('12', 'card', 'card.limit+card.dates'),
 		],
-		fallback: { when: 'card', steps: [text('1', 'cards', { textId: 'noCard' })] },
+		// Sem cartão, a trilha anda no cartão de exemplo (SPD-147): não há mais "Nenhum cartão ainda".
 	},
 	// Trilha 4 — Cartões: virtuais, débito, juntar e encerrar. Começa na tela de um cartão.
 	cardExtras: {
@@ -564,6 +573,8 @@ export interface PlannedTrailStep {
 	altBodyKey?: string;
 	/** A partir deste grupo de alvos, o texto é o do `[sem dado]`. */
 	altGroup?: number;
+	/** A tela do passo mostra o exemplo só em memória (SPD-147), não um registro do usuário. */
+	sample: boolean;
 }
 
 const sameParams = (a?: TrailParams, b?: TrailParams): boolean => {
@@ -593,29 +604,58 @@ const pickRecord = (
 };
 
 /**
+ * Onde o passo aparece, com o registro da tela: o do usuário; sem nenhum, o de exemplo
+ * (`samples`, SPD-147); sem os dois, nulo (`absent`). O formulário de cadastro abre com o
+ * exemplo quando há exemplos, a não ser que a trilha tenha começado nele.
+ */
+const placeOf = (
+	def: TrailStepDef,
+	records: TrailRecords,
+	origin: TrailLocation,
+	samples: TrailRecords | undefined
+): { params: TrailParams | null; sample: boolean; absent: boolean } => {
+	const recordKind = def.record ?? TRAIL_SCREENS[def.screen].record;
+	if (recordKind === undefined) {
+		const form =
+			samples !== undefined &&
+			TRAIL_SCREENS[def.screen].sampleForm === true &&
+			origin.screen !== def.screen;
+		return form
+			? { params: { [SAMPLE_FORM_PARAM]: '1' }, sample: true, absent: false }
+			: { params: null, sample: false, absent: false };
+	}
+	const own = pickRecord(records, recordKind, origin);
+	if (own) return { params: own, sample: false, absent: false };
+	const sample = samples ? pickRecord(samples, recordKind, origin) : null;
+	return sample
+		? { params: sample, sample: true, absent: false }
+		: { params: null, sample: false, absent: true };
+};
+
+/**
  * O plano da trilha para este usuário. Sem o registro que a trilha inteira precisa, vale a
- * trilha do `fallback`. Passo cuja tela precisa de um registro que o usuário não tem (ou cuja
- * condição falta) segue o `[sem dado]`: sai do plano, ou mostra o texto sem apontar, na tela
- * onde o guia já está. O resto do `[sem dado]` (o alvo que não está na tela) só se sabe com a
- * tela aberta: `resolveTrailStep`.
+ * trilha do `fallback`. Passo cuja tela precisa de um registro que o usuário não tem usa o de
+ * exemplo (`samples`, SPD-147: `TRAIL_SAMPLE_RECORDS`), marcado `sample`; sem exemplo para ele
+ * (ou com a condição faltando: `needs` só vale com registro de verdade), segue o `[sem dado]`:
+ * sai do plano, ou mostra o texto sem apontar, na tela onde o guia já está. O resto do
+ * `[sem dado]` (o alvo que não está na tela) só se sabe com a tela aberta: `resolveTrailStep`.
  */
 export const planTrail = (
 	trail: TrailDef,
 	records: TrailRecords,
-	origin: TrailLocation
+	origin: TrailLocation,
+	samples?: TrailRecords
 ): PlannedTrailStep[] => {
-	const defs =
-		trail.fallback && !hasRecord(records, trail.fallback.when) ? trail.fallback.steps : trail.steps;
+	const whole = (kind: RecordKind) => hasRecord(records, kind) || (samples !== undefined && hasRecord(samples, kind));
+	const defs = trail.fallback && !whole(trail.fallback.when) ? trail.fallback.steps : trail.steps;
 	const plan: PlannedTrailStep[] = [];
 	for (const def of defs) {
 		const missing = def.missing ?? 'text';
 		const key = `trails.${trail.id}.steps.${def.textId ?? def.id}`;
 		const altBodyKey = missing === 'alt' ? `${key}.missing` : undefined;
-		const recordKind = def.record ?? TRAIL_SCREENS[def.screen].record;
-		const params = recordKind ? pickRecord(records, recordKind, origin) : null;
-		const absent =
-			(recordKind !== undefined && params === null) ||
-			(def.needs !== undefined && !hasRecord(records, def.needs));
+		const place = placeOf(def, records, origin, samples);
+		const params = place.params;
+		const absent = place.absent || (def.needs !== undefined && !hasRecord(records, def.needs));
 		if (absent && missing === 'skip') continue;
 		const previous = plan.length > 0 ? plan[plan.length - 1].location : origin;
 		const location: TrailLocation = absent
@@ -624,6 +664,7 @@ export const planTrail = (
 				? { screen: def.screen, params }
 				: { screen: def.screen };
 		plan.push({
+			sample: place.sample && !absent,
 			trail: trail.id,
 			id: def.id,
 			location,

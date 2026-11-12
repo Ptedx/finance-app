@@ -1,0 +1,252 @@
+import { isBalanceNeverInformed } from '../balanceUnset';
+import { buildCardSummary } from '../cardMath';
+import { debtStateOn, termsOf } from '../debt';
+import {
+	isSampleId,
+	SAMPLE_IDS,
+	type SampleNames,
+	sampleAccount,
+	sampleDebt,
+	sampleTransaction,
+	TRAIL_SAMPLE_RECORDS,
+} from '../trailSample';
+import { planTrail, TRAILS, type TrailLocation, type TrailRecords } from '../trails';
+
+/**
+ * O modo exemplo das trilhas (SPD-147): sem o registro que a trilha explica, o plano abre a
+ * tela com um exemplo só em memória (o id `exemplo-…`, ou o cadastro com `exemplo=1`), marcado
+ * `sample`, em vez de pular o passo ou mostrar o texto sem apontar. Com o registro do usuário,
+ * o plano usa o dele, como antes.
+ */
+
+const names: SampleNames = {
+	account: 'Conta exemplo',
+	bank: 'Banco exemplo',
+	card: 'Cartão exemplo',
+	debt: 'Financiamento exemplo',
+	transaction: 'Mercado exemplo',
+};
+const TODAY = '2026-11-07';
+
+const where = (plan: ReturnType<typeof planTrail>) =>
+	plan.map(
+		(step) =>
+			`${step.id}@${step.location.screen}${step.location.params ? `:${Object.values(step.location.params).join('/')}` : ''}${step.sample ? '*' : ''}`
+	);
+
+const nothing: TrailRecords = {};
+const cards: TrailLocation = { screen: 'cards' };
+const wealth: TrailLocation = { screen: 'wealth' };
+
+describe('o plano com o exemplo', () => {
+	it('Trilha 3 sem cartão: anda no cartão de exemplo, os 12 passos — sem o "Nenhum cartão ainda"', () => {
+		const plan = planTrail(TRAILS.cardInvoice, nothing, cards, TRAIL_SAMPLE_RECORDS);
+		expect(plan).toHaveLength(12);
+		expect(plan.every((step) => step.sample && !step.textOnly)).toBe(true);
+		expect(
+			plan.every(
+				(step) => step.location.screen === 'card' && step.location.params?.id === SAMPLE_IDS.card
+			)
+		).toBe(true);
+		expect(plan.map((step) => step.bodyKey)).not.toContain('trails.cardInvoice.steps.noCard.body');
+		expect(TRAILS.cardInvoice.fallback).toBeUndefined();
+	});
+
+	it('Trilha 3 com cartão: o do usuário, sem exemplo', () => {
+		const plan = planTrail(
+			TRAILS.cardInvoice,
+			{ card: [{ id: 'nubank' }] },
+			cards,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(plan).toHaveLength(12);
+		expect(plan.some((step) => step.sample)).toBe(false);
+		expect(plan[0].location).toEqual({ screen: 'card', params: { id: 'nubank' } });
+	});
+
+	it('Trilha 9 sem dívida, do Patrimônio: o cadastro com o exemplo (a prévia aparece) e a dívida de exemplo', () => {
+		const plan = planTrail(TRAILS.debts, nothing, wealth, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan)).toEqual([
+			'1@wealth',
+			'2@debtNew:1*',
+			'3@debtNew:1*',
+			'4@debtNew:1*',
+			'5@debtNew:1*',
+			'6@debtNew:1*',
+			'7@debtNew:1*',
+			'8@debtNew:1*',
+			'9@debt:exemplo-divida*',
+			'10@debt:exemplo-divida*',
+			'11@debt:exemplo-divida*',
+			'12@debtEdit:exemplo-divida*',
+		]);
+		expect(plan[1].location.params).toEqual({ exemplo: '1' });
+		// O texto do [sem dado] ("Na tela de cada dívida…") não é mais usado: há a dívida de exemplo.
+		expect(plan[8].bodyKey).toBe('trails.debts.steps.9.body');
+	});
+
+	it('Trilha 9 com dívida: a dívida do usuário; o cadastro continua com o exemplo', () => {
+		const plan = planTrail(TRAILS.debts, { debt: [{ id: 'carro' }] }, wealth, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan).slice(7)).toEqual([
+			'8@debtNew:1*',
+			'9@debt:carro',
+			'10@debt:carro',
+			'11@debt:carro',
+			'12@debtEdit:carro',
+		]);
+	});
+
+	it('Trilha 9 aberta pelo "?" da Nova dívida: o formulário é o do usuário, sem exemplo por cima', () => {
+		const plan = planTrail(TRAILS.debts, nothing, { screen: 'debtNew' }, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan).slice(1, 8)).toEqual([
+			'2@debtNew',
+			'3@debtNew',
+			'4@debtNew',
+			'5@debtNew',
+			'6@debtNew',
+			'7@debtNew',
+			'8@debtNew',
+		]);
+		expect(where(plan)[8]).toBe('9@debt:exemplo-divida*');
+	});
+
+	it('Trilha 2: o cadastro com o exemplo (as datas da fatura aparecem); sem cartão sem fechamento, o de exemplo', () => {
+		const plan = planTrail(
+			TRAILS.cardSetup,
+			{ card: [{ id: 'nubank' }] },
+			cards,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(where(plan)).toEqual([
+			'1@cards',
+			'2@cards',
+			'3@cardNew:1*',
+			'4@cardNew:1*',
+			'5@cardNew:1*',
+			'6@cardNew:1*',
+			'7@cardNew:1*',
+			'8@cardNew:1*',
+			'9@cardNew:1*',
+			'10@cardNew:1*',
+			'11@card:exemplo-cartao-sem-fechamento*',
+		]);
+		const own = planTrail(
+			TRAILS.cardSetup,
+			{ cardNoClosing: [{ id: 'captura' }] },
+			cards,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(where(own)[10]).toBe('11@card:captura');
+	});
+
+	it('Trilha 1 sem conta: a conta de exemplo nos passos 9 e 12, e a "criada pela captura" no 10', () => {
+		const plan = planTrail(TRAILS.accounts, nothing, { screen: 'accounts' }, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan).slice(8)).toEqual([
+			'9@account:exemplo-conta*',
+			'10@account:exemplo-conta-captura*',
+			'11@accounts',
+			'12@account:exemplo-conta*',
+		]);
+		expect(plan.every((step) => !step.textOnly)).toBe(true);
+	});
+
+	it('Trilha 5 sem lançamento: o passo 11 abre o lançamento de exemplo', () => {
+		const plan = planTrail(TRAILS.add, nothing, { screen: 'home' }, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan)[10]).toBe('11@transaction:exemplo-lancamento*');
+	});
+
+	it('condição (`needs`) não vale com exemplo: "Este mês" e Relatórios não ganham cartão nem dívida de mentira', () => {
+		expect(
+			planTrail(TRAILS.month, nothing, { screen: 'home' }, TRAIL_SAMPLE_RECORDS).map(
+				(step) => step.id
+			)
+		).not.toContain('4');
+		expect(
+			planTrail(TRAILS.health, nothing, { screen: 'reports' }, TRAIL_SAMPLE_RECORDS).map(
+				(step) => step.id
+			)
+		).not.toContain('8');
+		// O débito e o "Juntar" (outro cartão) continuam pulados: não há exemplo para eles.
+		expect(
+			planTrail(TRAILS.cardExtras, nothing, cards, TRAIL_SAMPLE_RECORDS).map((step) => step.id)
+		).toEqual(['1', '2', '3', '4', '6', '8', '9']);
+	});
+
+	it('sem os exemplos (o plano de antes), nada muda nos outros passos', () => {
+		const plan = planTrail(TRAILS.debts, nothing, wealth);
+		expect(plan.some((step) => step.sample)).toBe(false);
+		expect(plan[1].location).toEqual({ screen: 'debtNew' });
+		expect(plan[8]).toMatchObject({ textOnly: true, bodyKey: 'trails.debts.steps.9.missing' });
+	});
+});
+
+describe('os registros de exemplo', () => {
+	it('ids próprios, que nenhum registro de verdade tem', () => {
+		for (const id of Object.values(SAMPLE_IDS)) expect(isSampleId(id)).toBe(true);
+		expect(isSampleId('6f1c2e9a-0b1d-4c3e-9f00-000000000000')).toBe(false);
+		expect(isSampleId(undefined)).toBe(false);
+		expect(sampleAccount('nubank', names, TODAY)).toBeNull();
+		expect(sampleDebt(SAMPLE_IDS.card, names, TODAY)).toBeNull();
+	});
+
+	it('o cartão de exemplo: final 0000, limite R$ 5.000, fatura informada de R$ 500, fecha dia 5 e vence dia 15', () => {
+		const card = sampleAccount(SAMPLE_IDS.card, names, TODAY);
+		expect(card).toMatchObject({
+			name: 'Cartão exemplo',
+			kind: 'credit_card',
+			last4: '0000',
+			creditLimitCents: 500_000,
+			closingDay: 5,
+			dueDay: 15,
+			openingBalanceCents: -50_000,
+			openingBalanceDate: '2026-11-06',
+		});
+		const summary = buildCardSummary(card as NonNullable<typeof card>, [], [], TODAY);
+		expect(summary.configured).toBe(true);
+		expect(summary.owedCents).toBe(50_000);
+		expect(summary.limitAvailableCents).toBe(450_000);
+		const noClosing = sampleAccount(SAMPLE_IDS.cardNoClosing, names, TODAY);
+		expect(
+			buildCardSummary(noClosing as NonNullable<typeof noClosing>, [], [], TODAY).configured
+		).toBe(false);
+	});
+
+	it('a conta "criada pela captura" de exemplo mostra o "Saldo não informado"; a outra, não', () => {
+		const captured = sampleAccount(SAMPLE_IDS.capturedAccount, names, TODAY);
+		expect(captured && isBalanceNeverInformed(captured)).toBe(true);
+		const plain = sampleAccount(SAMPLE_IDS.account, names, TODAY);
+		expect(plain).toMatchObject({
+			name: 'Conta exemplo',
+			openingBalanceCents: 100_000,
+			role: 'main',
+		});
+		expect(plain && isBalanceNeverInformed(plain)).toBe(false);
+	});
+
+	it('a dívida de exemplo: R$ 20.000, 24 parcelas de R$ 1.000, em dia e amortizando', () => {
+		const debt = sampleDebt(SAMPLE_IDS.debt, names, TODAY);
+		expect(debt).toMatchObject({
+			name: 'Financiamento exemplo',
+			openingBalanceCents: 2_000_000,
+			installmentCents: 100_000,
+			remainingAtOpening: 24,
+		});
+		const state = debtStateOn(termsOf(debt as NonNullable<typeof debt>), TODAY);
+		expect(state.balanceCents).toBe(2_000_000);
+		expect(state.amortizes).toBe(true);
+		expect(state.settled).toBe(false);
+		// 24 × R$ 1.000 pagam R$ 20.000: uns 1,5% ao mês.
+		expect(debt?.rateBp).toBeGreaterThan(1_900);
+		expect(debt?.rateBp).toBeLessThan(2_000);
+	});
+
+	it('o lançamento de exemplo: R$ 100 de hoje, sem conta', () => {
+		expect(sampleTransaction(SAMPLE_IDS.transaction, names, TODAY)).toMatchObject({
+			amountCents: 10_000,
+			date: TODAY,
+			note: 'Mercado exemplo',
+			isIncome: false,
+			accountId: null,
+		});
+	});
+});

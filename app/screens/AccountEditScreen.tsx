@@ -22,6 +22,7 @@ import AdjustAccountSheet from '../components/accounts/AdjustAccountSheet';
 import ClosingUndoBar from '../components/accounts/ClosingUndoBar';
 import MergeTargetSheet from '../components/MergeTargetSheet';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
@@ -109,10 +110,15 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	// receita falsa no mês atual; dizer de qual mês é o número é o que evita a troca.
 	const { selectedYear, selectedMonth } = usePeriod();
 
-	const existing: Account | undefined = useMemo(
+	// O exemplo das trilhas (SPD-147): sem conta (ou sem uma criada pela captura), a trilha abre
+	// esta tela com uma só em memória. Nada dela grava: os botões abaixo não fazem nada com ela.
+	const sampleAccount = useSampleAccount(accountId);
+	const sample = sampleAccount && sampleAccount.kind !== 'credit_card' ? sampleAccount : undefined;
+	const found: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === accountId),
 		[accounts, accountId]
 	);
+	const existing: Account | undefined = sample ?? found;
 	const isEditing = Boolean(existing);
 
 	const [name, setName] = useState(existing?.name ?? '');
@@ -186,7 +192,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	}, [existing, openSetBalance]);
 
 	const handleDismissBalanceUnset = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		setDismissedBalanceUnset(await dismissBalanceUnset(existing.id));
 		announce(t('accounts.balanceUnset.dismissed'));
 	};
@@ -200,6 +206,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
 	const handleSave = async () => {
+		if (sample) return;
 		const nextErrors: typeof errors = {};
 		if (name.trim().length === 0) nextErrors.name = t('accounts.edit.invalidName');
 
@@ -278,7 +285,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const closeCandidates = existing ? closeTargets(accounts, existing) : [];
 
 	const startClose = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		let plan: ClosePlan;
 		try {
 			plan = await planClose(existing.id);
@@ -326,7 +333,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 
 	/** Reabrir: com saldo, avisa que ele volta aos totais de hoje. */
 	const handleReopen = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		const reopen = async () => {
 			await reopenAccount(existing.id);
 			announce(t('accounts.edit.reopened'));
@@ -353,7 +360,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	// O destino se escolhe numa folha com todas as contas (E2E-39): o Alert do Android mostra no
 	// máximo três botões. A confirmação, com dois, continua no Alert.
 	const handleMerge = () => {
-		if (!existing || mergeCandidates.length === 0) return;
+		if (!existing || sample || mergeCandidates.length === 0) return;
 		setMerging(true);
 	};
 
@@ -395,7 +402,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const feedOwner = existing && existing.kind !== 'credit_card' ? feedOwnerOf(accounts, existing) : null;
 
 	const handleTakeNotifications = () => {
-		if (!existing || !feedOwner || feedOwner.id === existing.id) return;
+		if (!existing || sample || !feedOwner || feedOwner.id === existing.id) return;
 		Alert.alert(
 			t('accounts.edit.feedTitle'),
 			t('accounts.edit.feedConfirm', { from: feedOwner.name, into: existing.name }),
@@ -424,7 +431,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const businessHere = !!existing && !!businessPlan && businessFeeds[businessPlan.packageName] === existing.id;
 
 	const handleTakeBusiness = () => {
-		if (!existing || !businessPlan || businessHere) return;
+		if (!existing || sample || !businessPlan || businessHere) return;
 		const { label, moveFeedTo } = businessPlan;
 		Alert.alert(
 			t('accounts.edit.feedTitle'),
@@ -450,7 +457,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	 * confirmação diz isso. Com conteúdo, diz por quê não e oferece Encerrar ou Juntar.
 	 */
 	const handleDelete = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		let contents: Awaited<ReturnType<typeof loadAccountContents>>;
 		try {
 			contents = await loadAccountContents(existing.id);
@@ -569,6 +576,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						{isEditing ? existing?.name : t('accounts.edit.newTitle')}
 					</Text>
 				</View>
+				{sample ? <SampleBanner /> : null}
 
 				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 					{existing && (
@@ -616,7 +624,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 
 							<Pressable
 								{...adjustTarget}
-								onPress={() => setAdjusting(true)}
+								onPress={() => setAdjusting(!sample)}
 								accessibilityRole="button"
 								accessibilityLabel={t('accounts.edit.setBalance')}
 								accessibilityHint={t('accounts.edit.setBalanceHint')}
@@ -773,11 +781,11 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 
 					<Pressable
 						onPress={handleSave}
-						disabled={saving}
+						disabled={saving || Boolean(sample)}
 						accessibilityRole="button"
 						accessibilityLabel={t('accounts.edit.save')}
-						accessibilityState={{ disabled: saving }}
-						style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, saving && styles.disabled]}
+						accessibilityState={{ disabled: saving || Boolean(sample) }}
+						style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, (saving || sample) && styles.disabled]}
 					>
 						<Text style={styles.primaryButtonText}>{t('accounts.edit.save')}</Text>
 					</Pressable>

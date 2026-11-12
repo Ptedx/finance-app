@@ -7,6 +7,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import HelpButton from '../components/tour/HelpButton';
 import { useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, useSampleTransaction } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
@@ -22,6 +23,8 @@ export default function TransactionDetailScreen() {
 	const { transactions, categories, removeTransaction, removeInstallmentGroup } = useTransactions();
 	const { accounts } = useAccounts();
 	const [transaction, setTransaction] = useState<Transaction | null>(null);
+	// O exemplo das trilhas (SPD-147): sem lançamento, a trilha abre esta tela com um só em memória.
+	const sample = useSampleTransaction(typeof id === 'string' ? id : undefined);
 	// biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
 	const [category, setCategory] = useState<any>(null);
 	// A trilha de lançar (SPD-131) passa por aqui: "Editar" e "Apagar".
@@ -32,7 +35,7 @@ export default function TransactionDetailScreen() {
 	useEffect(() => {
 		if (typeof id !== 'string') return;
 
-		const foundTransaction = transactions.find((t) => t.id === id);
+		const foundTransaction = sample ?? transactions.find((t) => t.id === id);
 		if (foundTransaction) {
 			setTransaction(foundTransaction);
 
@@ -47,16 +50,16 @@ export default function TransactionDetailScreen() {
 				}
 			);
 		}
-	}, [id, transactions, categories, t]);
+	}, [id, transactions, categories, t, sample]);
 
 	const handleEdit = () => {
-		if (transaction) {
+		if (transaction && !sample) {
 			router.push(`/transaction/edit/${transaction.id}`);
 		}
 	};
 
 	const handleDelete = () => {
-		if (!transaction) return;
+		if (!transaction || sample) return;
 
 		const run = (action: () => Promise<void>) => async () => {
 			try {
@@ -163,6 +166,7 @@ export default function TransactionDetailScreen() {
 				}}
 			/>
 			{topBar(title, true)}
+			{sample ? <SampleBanner /> : null}
 
 			<ScrollView
 				ref={tourScroll}

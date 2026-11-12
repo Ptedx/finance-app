@@ -2424,6 +2424,16 @@ account: {
 		backHint: 'Goes back to the previous step',
 		skipHint: 'Closes the guide and goes back to where you were',
 		attention: 'Watch out',
+		// The in-memory example (SPD-147): the guide shows the screen with it when you don't have the record yet.
+		sample: {
+			tag: 'Example',
+			banner: 'Example: just to show how it looks. Nothing here is yours, and nothing is saved.',
+			account: 'Sample account',
+			bank: 'Sample bank',
+			card: 'Sample card',
+			debt: 'Sample financing',
+			transaction: 'Sample groceries',
+		},
 		accounts: {
 			title: 'Accounts: setup, role and balance',
 			steps: {
@@ -2530,10 +2540,6 @@ account: {
 		cardInvoice: {
 			title: 'Card: bill, payment and matching',
 			steps: {
-				noCard: {
-					title: 'No card yet.',
-					body: "Add a card to see the bill, pay and match it with the bank. Then the card screen's '?' shows each button.",
-				},
 				'1': {
 					title: 'The current bill.',
 					body: 'The card shows the open bill, when it closes and is due and, if there is one, the closed bill to pay. The remaining limit shows when you entered the limit.',

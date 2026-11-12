@@ -12,6 +12,7 @@ import MergeTargetSheet from '../components/MergeTargetSheet';
 import { SelectField } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount, useSampleForm } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, AccountDraft } from '../database/schema';
@@ -40,6 +41,7 @@ import {
 	reopenMessage,
 } from '../utils/deletionNotice';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
+import { SAMPLE_IDS, SAMPLE_VALUES } from '../utils/trailSample';
 
 /**
  * Criar ou editar um cartão. Nada aqui fala de saldo.
@@ -106,9 +108,14 @@ export const dueDayShown = (card: Pick<Account, 'closingDay' | 'closingDaysBefor
 
 interface CardEditScreenProps {
 	cardId?: string;
+	/**
+	 * `exemplo=1` da rota (SPD-147): a trilha abriu o cadastro preenchido com o cartão de exemplo,
+	 * para as datas da fatura aparecerem. Com o exemplo (aqui ou num `cardId` de exemplo), nada grava.
+	 */
+	sampleForm?: string;
 }
 
-const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
+const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId, sampleForm }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const {
@@ -128,10 +135,15 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	} = useAccounts();
 	const { transactions } = useTransactions();
 
-	const existing: Account | undefined = useMemo(
+	// O exemplo das trilhas (SPD-147): o cartão de exemplo, ou o cadastro preenchido com ele.
+	const formSample = useSampleForm(sampleForm);
+	const sampleAccount = useSampleAccount(formSample ? SAMPLE_IDS.card : cardId);
+	const sample = sampleAccount?.kind === 'credit_card' ? sampleAccount : undefined;
+	const found: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
 		[accounts, cardId]
 	);
+	const existing: Account | undefined = formSample ? undefined : (sample ?? found);
 
 	// Sem banco escolhido até o dono escolher: cartão novo, ou um antigo que ficou sem banco.
 	// O salvar pede o banco (`bankRequired`).
@@ -161,18 +173,21 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	useScreenTour('cardEdit', { blocked: merging || closing !== null });
 	const tourScroll = useTourScroll('cardEdit');
 
+	// O cadastro de exemplo abre do mesmo jeito, com o cartão de exemplo e a fatura de hoje.
+	const filled = existing ?? sample;
 	useEffect(() => {
-		if (!existing) return;
-		const brand = brandFor(existing.bankName);
-		setBankId(brand?.id ?? (existing.bankName ? OTHER : null));
-		setOtherBank(brand ? '' : (existing.bankName ?? ''));
-		setName(existing.name);
-		setLast4(existing.last4 ?? '');
-		setNetwork((existing.network as CardNetwork | null) ?? null);
-		setLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
-		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
-		setDueDay(dueDayShown(existing, todayISO()));
-	}, [existing]);
+		if (!filled) return;
+		const brand = brandFor(filled.bankName);
+		setBankId(brand?.id ?? (filled.bankName ? OTHER : null));
+		setOtherBank(brand ? '' : (filled.bankName ?? ''));
+		setName(filled.name);
+		setLast4(filled.last4 ?? '');
+		setNetwork((filled.network as CardNetwork | null) ?? null);
+		setLimit(filled.creditLimitCents ? centsToDisplayInput(filled.creditLimitCents) : '');
+		setClosingDay(filled.closingDay ? String(filled.closingDay) : '');
+		setDueDay(dueDayShown(filled, todayISO()));
+		if (filled !== existing) setCurrentInvoice(centsToDisplayInput(SAMPLE_VALUES.cardInvoiceCents));
+	}, [filled, existing]);
 
 	const brand = BANK_BRANDS.find((b) => b.id === bankId) ?? null;
 	const bankName = bankId === OTHER ? otherBank.trim() : (brand?.name ?? '');
@@ -251,6 +266,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	};
 
 	const handleSave = async () => {
+		if (sample) return;
 		const next: Record<string, string | undefined> = {};
 		if (!bankName) next.bank = t('cards.edit.bankRequired');
 		const closing = parseDay(closingDay);
@@ -353,7 +369,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	 * do cartão passa a sair dela), o patrimônio igual e o efeito nos relatórios.
 	 */
 	const handleConvertToDebit = () => {
-		if (!existing || !chosenDebitAccount) return;
+		if (!existing || !chosenDebitAccount || sample) return;
 		// Parcela por cair: no débito ela só sairia da conta no dia dela, e o patrimônio de hoje
 		// subiria esse valor. Não oferece levar; diz quantas e quanto, e quando dá.
 		const future = futureCardEntries(transactions, existing.id, todayISO());
@@ -409,7 +425,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const closeCandidates = existing ? closeTargets(accounts, existing) : [];
 
 	const startClose = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		let plan: ClosePlan;
 		try {
 			plan = await planClose(existing.id);
@@ -453,7 +469,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 	/** Reabrir: com saldo, avisa que ele volta aos totais de hoje. */
 	const handleReopen = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		const reopen = async () => {
 			await reopenAccount(existing.id);
 			announce(t('cards.edit.reopened'));
@@ -475,7 +491,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	 * Encerrar ou Juntar.
 	 */
 	const handleDelete = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		let contents: Awaited<ReturnType<typeof loadAccountContents>>;
 		try {
 			contents = await loadAccountContents(existing.id);
@@ -540,7 +556,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	// O destino se escolhe numa folha com todos os cartões (E2E-39): o Alert do Android mostra no
 	// máximo três botões. A confirmação, com dois, continua no Alert.
 	const handleMerge = () => {
-		if (!existing || mergeCandidates.length === 0) return;
+		if (!existing || sample || mergeCandidates.length === 0) return;
 		setMerging(true);
 	};
 
@@ -592,6 +608,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					</Text>
 					<HelpButton trail="cardSetup" here={existing ? { screen: 'cardEdit', params: { id: existing.id } } : { screen: 'cardNew' }} />
 				</View>
+				{sample ? <SampleBanner /> : null}
 
 				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					<View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
@@ -786,7 +803,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						</TourTarget>
 					) : null}
 
-					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
+					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving || Boolean(sample)} icon="checkmark" />
 
 					{existing?.archived && cardBalance !== 0 ? (
 						<View style={styles.secondary}>

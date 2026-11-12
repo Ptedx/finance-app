@@ -10,6 +10,7 @@ import { Button, ChipGroup, Field } from '../components/cards/formParts';
 import { SelectField } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleDebt, useSampleForm } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { draftOf, useDebts } from '../contexts/DebtsContext';
 import type { AmortizationSystem, DebtDraft, DebtKind } from '../database/schema';
@@ -28,6 +29,7 @@ import {
 } from '../utils/debt';
 import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
+import { SAMPLE_IDS } from '../utils/trailSample';
 
 /**
  * Cadastrar ou corrigir uma dívida.
@@ -41,18 +43,27 @@ import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/pe
  * Salvar ancora a dívida em hoje: os valores digitados são os de hoje. Numa dívida já
  * cadastrada, os campos já vêm com o saldo e o prazo projetados para hoje, então salvar
  * sem mexer não muda nada.
+ *
+ * Nas trilhas (SPD-147), a tela também mostra o exemplo só em memória: a dívida de exemplo
+ * (`debtId` de exemplo) ou o cadastro já preenchido com ela (`sampleForm`, o `exemplo=1` da
+ * rota), para a prévia aparecer. Com o exemplo, nada grava: salvar, quitar e excluir não fazem nada.
  */
 
 type RatePeriod = 'month' | 'year';
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
 
-const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
+const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ debtId, sampleForm }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { debts, createDebt, saveDebt, removeDebt } = useDebts();
 	const { bankAccounts } = useAccounts();
-	const existing = useMemo(() => debts.find((debt) => debt.id === debtId), [debts, debtId]);
+	// O exemplo das trilhas (SPD-147): a dívida de exemplo, ou o cadastro preenchido com ela.
+	const formSample = useSampleForm(sampleForm);
+	const sample = useSampleDebt(formSample ? SAMPLE_IDS.debt : debtId);
+	const found = useMemo(() => debts.find((debt) => debt.id === debtId), [debts, debtId]);
+	const existing = formSample ? undefined : (sample ?? found);
+	const filled = existing ?? sample;
 	const today = todayISO();
 
 	const [kind, setKind] = useState<DebtKind>('financing');
@@ -74,25 +85,26 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	useScreenTour('debtEdit', { ready: debtId ? Boolean(existing) : true });
 	const tourScroll = useTourScroll('debtEdit');
 
-	// Uma dívida já cadastrada abre com o estado de hoje: saldo e prazo projetados.
+	// Uma dívida já cadastrada abre com o estado de hoje: saldo e prazo projetados. O cadastro
+	// de exemplo abre do mesmo jeito, com a dívida de exemplo.
 	useEffect(() => {
-		if (!existing) return;
-		const state = debtStateOn(termsOf(existing), today);
-		setKind(existing.kind);
-		setName(existing.name);
-		setSystem(existing.system === 'sac' ? 'sac' : 'price');
-		setInstallment(centsToDisplayInput(state.next?.installmentCents ?? existing.installmentCents));
+		if (!filled) return;
+		const state = debtStateOn(termsOf(filled), today);
+		setKind(filled.kind);
+		setName(filled.name);
+		setSystem(filled.system === 'sac' ? 'sac' : 'price');
+		setInstallment(centsToDisplayInput(state.next?.installmentCents ?? filled.installmentCents));
 		setRemaining(String(state.remaining));
-		setTotal(String(existing.installmentsTotal));
-		setDueDay(String(existing.dueDay));
+		setTotal(String(filled.installmentsTotal));
+		setDueDay(String(filled.dueDay));
 		setBalance(centsToDisplayInput(state.balanceCents));
 		// Financiamento se fala ao mês: a taxa abre como no contrato.
-		setRate(bpToPercentInput(Math.round(monthlyRateOf(existing.rateBp) * 10_000)));
+		setRate(bpToPercentInput(Math.round(monthlyRateOf(filled.rateBp) * 10_000)));
 		setRatePeriod('month');
-		if (existing.kind === 'consortium') setAdjustment(bpToPercentInput(existing.rateBp));
-		setAdminFee(existing.adminFeeBp !== null ? bpToPercentInput(existing.adminFeeBp) : '');
-		setAccountId(existing.accountId);
-	}, [existing, today]);
+		if (filled.kind === 'consortium') setAdjustment(bpToPercentInput(filled.rateBp));
+		setAdminFee(filled.adminFeeBp !== null ? bpToPercentInput(filled.adminFeeBp) : '');
+		setAccountId(filled.accountId);
+	}, [filled, today]);
 
 	const isConsortium = kind === 'consortium';
 	const effectiveSystem: AmortizationSystem = isConsortium ? 'none' : system;
@@ -189,6 +201,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
 	const handleSave = async () => {
+		if (sample) return;
 		const next: Record<string, string | undefined> = {};
 		if (!name.trim()) next.name = t('debts.edit.errors.name');
 		if (installmentCents === null || installmentCents <= 0) next.installment = t('debts.edit.errors.installment');
@@ -241,14 +254,14 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	};
 
 	const handleArchive = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		await saveDebt(existing.id, { ...draftOf(existing), archived: !existing.archived });
 		announce(existing.archived ? t('debts.edit.unarchived') : t('debts.edit.archived'));
 		router.back();
 	};
 
 	const handleDelete = () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		Alert.alert(t('debts.edit.deleteTitle'), t('debts.edit.deleteBody', { name: existing.name }), [
 			{ text: t('debts.edit.cancel'), style: 'cancel' },
 			{
@@ -276,6 +289,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					</Text>
 					{debtId ? null : <HelpButton trail="debts" here={{ screen: 'debtNew' }} from="2" />}
 				</View>
+				{sample ? <SampleBanner /> : null}
 
 				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					<TourTarget id="debtEdit.kind">
@@ -461,7 +475,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 						</TourTarget>
 					) : null}
 
-					<Button label={t('debts.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
+					<Button label={t('debts.edit.save')} onPress={handleSave} disabled={saving || Boolean(sample)} icon="checkmark" />
 
 					{existing ? (
 						<View style={styles.secondary}>
