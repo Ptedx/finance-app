@@ -1274,7 +1274,7 @@ const pt = {
 		linkedNotifications: 'Ligada às notificações do {{app}}',
 		linkedStatement: 'Ligada a um extrato do banco',
 		yieldIncluded: 'Inclui {{amount}} de rendimento estimado desde {{date}}. Acerte o saldo quando quiser conferir com o banco.',
-		archived: 'Arquivada',
+		archived: 'Encerradas',
 		cardSummary: '{{name}}, a pagar {{owed}}, fatura aberta {{invoice}}',
 		accountSummary: '{{name}}, saldo {{balance}}',
 		adjust: {
@@ -1556,7 +1556,7 @@ const pt = {
 			keep: 'Continuar editando',
 			confirm: 'Descartar',
 		},
-		archived: 'Arquivados',
+		archived: 'Encerrados',
 		notFound: 'Cartão não encontrado.',
 		editCard: 'Editar cartão',
 		setupTitle: 'Informe o dia de fechamento',
@@ -2368,8 +2368,8 @@ const pt = {
 					body: 'Quando há exatamente duas contas do mesmo banco e só uma recebe os avisos, o app sugere juntar. "Juntar as duas" leva tudo para a que você escolher; "São contas diferentes" (a pessoal e a da empresa, por exemplo) tira o aviso de vez. Se a que a captura criou está vazia e ninguém mexeu nela, o app junta sozinho e avisa "Juntamos … em …".',
 				},
 				'12': {
-					title: 'Juntar, arquivar, excluir.',
-					body: 'Juntar leva lançamentos, capturas e transferências para a outra conta e soma os saldos; o total não muda. Arquivar esconde a conta da tela inicial e dos totais, sem apagar nada. Excluir mantém os lançamentos, que viram "Sem conta", e apaga as transferências da conta.',
+					title: 'Juntar, encerrar, apagar.',
+					body: 'Juntar leva lançamentos, capturas e transferências para a outra conta e soma os saldos; o total não muda. Encerrar tira a conta das listas e dos totais de hoje, sem apagar nada, e dá para reabrir; se houver saldo, uma transferência de hoje com outra conta o zera antes. Apagar só vale para conta vazia, sem lançamento, transferência nem saldo.',
 				},
 			},
 		},
@@ -2480,7 +2480,7 @@ const pt = {
 			},
 		},
 		cardExtras: {
-			title: 'Cartões: virtuais, débito, juntar e arquivar',
+			title: 'Cartões: virtuais, débito, juntar e encerrar',
 			steps: {
 				'1': {
 					title: 'Físico e virtuais.',
@@ -2515,8 +2515,8 @@ const pt = {
 					body: 'A mesma compra pode ter ficado dos dois lados. Se houver, o app avisa quantos lançamentos podem estar repetidos, e eles aparecem marcados na tela do cartão.',
 				},
 				'9': {
-					title: 'Arquivar ou excluir.',
-					body: 'Arquivar esconde o cartão da tela inicial e dos totais. Excluir mantém as compras, mas elas viram "Sem conta"; os pagamentos da fatura dele são apagados.',
+					title: 'Encerrar ou apagar.',
+					body: 'Encerrar tira o cartão das listas e dos totais de hoje; as faturas ficam no histórico e dá para reabrir. Devendo, ele só encerra com a fatura paga. Apagar só vale para cartão vazio, sem compra, pagamento nem fatura informada.',
 				},
 			},
 		},
@@ -2610,8 +2610,8 @@ const pt = {
 					body: 'Com um nome a mais ou a menos, o app continua perguntando. O nome da sua conta do Spendr também conta. Com conta, o nome vai para os outros aparelhos; ele também entra no backup.',
 				},
 				'8': {
-					title: 'Conta arquivada.',
-					body: 'Se a conta ligada ao app do banco está arquivada, o app não cria outra no lugar: o aviso entra "Sem conta", e você escolhe na revisão.',
+					title: 'Conta encerrada.',
+					body: 'Se a conta ligada ao app do banco está encerrada, o app não cria outra no lugar: o aviso entra "Sem conta", e você escolhe na revisão.',
 				},
 				'9': {
 					title: 'Em qual conta caem os avisos.',
@@ -2785,7 +2785,7 @@ const pt = {
 				},
 				'2': {
 					title: 'Em contas.',
-					body: 'As contas com papel Principal ou Envelope, mais os lançamentos sem conta. Conta arquivada, reserva e externa ficam fora daqui; saldo negativo desconta.',
+					body: 'As contas com papel Principal ou Envelope, mais os lançamentos sem conta. Conta encerrada, reserva e externa ficam fora daqui; saldo negativo desconta.',
 				},
 				'3': {
 					title: 'Reservas.',

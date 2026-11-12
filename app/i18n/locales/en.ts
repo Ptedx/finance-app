@@ -1279,7 +1279,7 @@ account: {
 		linkedNotifications: 'Linked to {{app}} notifications',
 		linkedStatement: 'Linked to a bank statement',
 		yieldIncluded: 'Includes {{amount}} of estimated yield since {{date}}. Set the balance whenever you want to check against the bank.',
-		archived: 'Archived',
+		archived: 'Closed',
 		cardSummary: '{{name}}, to pay {{owed}}, open invoice {{invoice}}',
 		accountSummary: '{{name}}, balance {{balance}}',
 		adjust: {
@@ -1560,7 +1560,7 @@ account: {
 			keep: 'Keep editing',
 			confirm: 'Discard',
 		},
-		archived: 'Archived',
+		archived: 'Closed',
 		notFound: 'Card not found.',
 		editCard: 'Edit card',
 		setupTitle: 'Set the closing day',
@@ -2369,8 +2369,8 @@ account: {
 					body: 'When there are exactly two accounts at the same bank and only one gets the notifications, the app suggests merging. "Merge them" moves everything into the one you choose; "They are different accounts" (personal and business, for example) removes the warning for good. If the one capture created is empty and nobody touched it, the app merges by itself and says "We merged … into …".',
 				},
 				'12': {
-					title: 'Merge, archive, delete.',
-					body: 'Merging moves entries, captures and transfers to the other account and adds up the balances; the total does not change. Archiving hides the account from the home screen and the totals, without deleting anything. Deleting keeps the entries, which become "No account", and deletes the account\'s transfers.',
+					title: 'Merge, close, delete.',
+					body: 'Merging moves entries, captures and transfers to the other account and adds up the balances; the total does not change. Closing takes the account out of the lists and today\'s totals, without deleting anything, and you can reopen it; if it has a balance, a transfer dated today with another account brings it to zero first. Deleting only works for an empty account, with no entries, transfers or balance.',
 				},
 			},
 		},
@@ -2481,7 +2481,7 @@ account: {
 			},
 		},
 		cardExtras: {
-			title: 'Cards: virtual, debit, merge and archive',
+			title: 'Cards: virtual, debit, merge and close',
 			steps: {
 				'1': {
 					title: 'Physical and virtual.',
@@ -2516,8 +2516,8 @@ account: {
 					body: 'The same purchase may have ended up on both sides. If so, the app says how many entries may be repeats, and they show marked on the card screen.',
 				},
 				'9': {
-					title: 'Archive or delete.',
-					body: 'Archiving hides the card from the home screen and the totals. Deleting keeps the purchases, but they become "No account"; the card\'s bill payments are deleted.',
+					title: 'Close or delete.',
+					body: 'Closing takes the card out of the lists and today\'s totals; the bills stay in the history and you can reopen it. While it owes, it only closes once the bill is paid. Deleting only works for an empty card, with no purchases, payments or stated bill.',
 				},
 			},
 		},
@@ -2611,8 +2611,8 @@ account: {
 					body: 'With one name too many or too few, the app keeps asking. The name on your Spendr account also counts. With an account, the name goes to your other devices; it also goes into the backup.',
 				},
 				'8': {
-					title: 'Archived account.',
-					body: 'If the account linked to the bank app is archived, the app does not create another one in its place: the notification comes in as "No account", and you choose in the review.',
+					title: 'Closed account.',
+					body: 'If the account linked to the bank app is closed, the app does not create another one in its place: the notification comes in as "No account", and you choose in the review.',
 				},
 				'9': {
 					title: 'Which account gets the notifications.',
@@ -2786,7 +2786,7 @@ account: {
 				},
 				'2': {
 					title: 'In accounts.',
-					body: 'Accounts with the Main or Envelope role, plus entries with no account. Archived, reserve and external accounts are left out here; a negative balance subtracts.',
+					body: 'Accounts with the Main or Envelope role, plus entries with no account. Closed, reserve and external accounts are left out here; a negative balance subtracts.',
 				},
 				'3': {
 					title: 'Reserves.',

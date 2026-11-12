@@ -1280,7 +1280,7 @@ account: {
 		linkedNotifications: 'Collegato alle notifiche di {{app}}',
 		linkedStatement: 'Collegato a un estratto conto',
 		yieldIncluded: 'Include {{amount}} di rendimento stimato dal {{date}}. Imposta il saldo quando vuoi confrontarlo con la banca.',
-		archived: 'Archiviato',
+		archived: 'Chiusi',
 		cardSummary: '{{name}}, da pagare {{owed}}, estratto aperto {{invoice}}',
 		accountSummary: '{{name}}, saldo {{balance}}',
 		adjust: {
@@ -1561,7 +1561,7 @@ account: {
 			keep: 'Continua a modificare',
 			confirm: 'Scarta',
 		},
-		archived: 'Archiviate',
+		archived: 'Chiuse',
 		notFound: 'Carta non trovata.',
 		editCard: 'Modifica carta',
 		setupTitle: 'Imposta il giorno di chiusura',
@@ -2372,8 +2372,8 @@ account: {
 					body: 'Quando ci sono esattamente due conti della stessa banca e solo uno riceve gli avvisi, l\'app suggerisce di unirli. "Unisci i due" porta tutto in quello che scegli; "Sono conti diversi" (quello personale e quello dell\'azienda, per esempio) toglie l\'avviso per sempre. Se quello creato dalla cattura è vuoto e nessuno l\'ha toccato, l\'app li unisce da sola e avvisa "Abbiamo unito … a …".',
 				},
 				'12': {
-					title: 'Unire, archiviare, eliminare.',
-					body: 'Unire porta movimenti, catture e trasferimenti nell\'altro conto e somma i saldi; il totale non cambia. Archiviare nasconde il conto dalla schermata iniziale e dai totali, senza cancellare nulla. Eliminare mantiene i movimenti, che diventano "Senza conto", e cancella i trasferimenti del conto.',
+					title: 'Unire, chiudere, eliminare.',
+					body: 'Unire porta movimenti, catture e trasferimenti nell\'altro conto e somma i saldi; il totale non cambia. Chiudere toglie il conto dagli elenchi e dai totali di oggi, senza cancellare nulla, e puoi riaprirlo; se ha un saldo, prima un trasferimento di oggi con un altro conto lo azzera. Eliminare vale solo per un conto vuoto, senza movimenti, trasferimenti né saldo.',
 				},
 			},
 		},
@@ -2484,7 +2484,7 @@ account: {
 			},
 		},
 		cardExtras: {
-			title: 'Carte: virtuali, debito, unire e archiviare',
+			title: 'Carte: virtuali, debito, unire e chiudere',
 			steps: {
 				'1': {
 					title: 'Fisica e virtuali.',
@@ -2519,8 +2519,8 @@ account: {
 					body: 'Lo stesso acquisto può essere rimasto da entrambe le parti. Se succede, l\'app avvisa quanti movimenti potrebbero essere ripetuti, e compaiono segnati nella schermata della carta.',
 				},
 				'9': {
-					title: 'Archiviare o eliminare.',
-					body: 'Archiviare nasconde la carta dalla schermata iniziale e dai totali. Eliminare mantiene gli acquisti, ma diventano "Senza conto"; i pagamenti del suo estratto vengono cancellati.',
+					title: 'Chiudere o eliminare.',
+					body: 'Chiudere toglie la carta dagli elenchi e dai totali di oggi; gli estratti restano nello storico e puoi riaprirla. Se ha un debito, si chiude solo con l\'estratto pagato. Eliminare vale solo per una carta vuota, senza acquisti, pagamenti né estratto conto indicato.',
 				},
 			},
 		},
@@ -2614,8 +2614,8 @@ account: {
 					body: 'Con un nome in più o in meno, l\'app continua a chiedere. Conta anche il nome del tuo account Spendr. Con un account, il nome va sugli altri dispositivi; entra anche nel backup.',
 				},
 				'8': {
-					title: 'Conto archiviato.',
-					body: 'Se il conto collegato all\'app della banca è archiviato, l\'app non ne crea un altro al suo posto: l\'avviso entra "Senza conto", e scegli tu nella revisione.',
+					title: 'Conto chiuso.',
+					body: 'Se il conto collegato all\'app della banca è chiuso, l\'app non ne crea un altro al suo posto: l\'avviso entra "Senza conto", e scegli tu nella revisione.',
 				},
 				'9': {
 					title: 'In quale conto arrivano gli avvisi.',
@@ -2789,7 +2789,7 @@ account: {
 				},
 				'2': {
 					title: 'Sui conti.',
-					body: 'I conti con ruolo Principale o Busta, più i movimenti senza conto. Conti archiviati, di riserva ed esterni restano fuori da qui; un saldo negativo sottrae.',
+					body: 'I conti con ruolo Principale o Busta, più i movimenti senza conto. Conti chiusi, di riserva ed esterni restano fuori da qui; un saldo negativo sottrae.',
 				},
 				'3': {
 					title: 'Riserve.',

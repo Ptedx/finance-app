@@ -25,6 +25,7 @@ import {
 	navigateTrail,
 	type PlannedTrailStep,
 	resolveTrailStep,
+	sameLocation,
 	type TourPlace,
 	TRAIL_SCREENS,
 	type TrailLocation,
@@ -42,6 +43,13 @@ import { nextScreenInstance } from './TourContext';
  * e aponta o primeiro grupo que está na tela, rolando até ele se precisar. Sem alvo, segue o
  * `[sem dado]` do passo: o texto sem apontar, com o resto da tela escurecido, ou pula o passo.
  * Passo "Atenção:" é a mesma caixa, com o rótulo "Atenção" e o contorno âmbar.
+ *
+ * O contador ("Passo 4 de 7", SPD-151) não muda no meio da trilha: os passos pulados são
+ * decididos antes do primeiro balão — pelos dados, no plano (`planTrail`), e pelos alvos da tela
+ * onde a trilha abre, olhados de uma vez (`decideSkips`). Depois disso nenhum passo novo sai: o
+ * alvo que falta numa tela aberta mais adiante mostra o texto sem apontar, como o `[sem dado]`
+ * padrão. Assim o total fica o mesmo do primeiro ao último balão, e o número anda de um em um,
+ * para a frente e para trás.
  *
  * Botões: "Voltar" (um passo atrás, voltando de tela se preciso), "Pular" (encerra) e
  * "Próximo" ("Entendi" no último). O voltar do Android é "Pular". No fim, de um jeito ou de
@@ -131,7 +139,10 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 	const stack = useRef<TrailLocation[]>([origin]);
 	/** Para que lado andar quando um passo é pulado. */
 	const direction = useRef<1 | -1>(1);
+	/** Os passos que saíram da trilha: decididos antes do primeiro balão, e daí não mudam. */
 	const skipped = useRef(new Set<number>());
+	/** Algum balão já apareceu: o total já está na tela e não pode mais mudar. */
+	const counted = useRef(false);
 	const endingRef = useRef(false);
 	// O que o efeito assíncrono lê na hora, não o do render que o agendou.
 	const props = useRef({ navigator, isReady, onEnd, measure, scrollTo, settleMs, readyTimeoutMs });
@@ -196,11 +207,40 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 		});
 	};
 
+	/**
+	 * Antes do primeiro balão: os outros passos que podem ser pulados e estão na tela onde a
+	 * trilha abre (a "Este mês" inteira fica na tela inicial) são decididos agora, pelos alvos
+	 * que existem; e o que seria pulado porque ir até a tela dele perderia o que foi digitado
+	 * (`dropsOrigin`) também sai agora. Assim o primeiro total já é o certo.
+	 */
+	const decideSkips = async (here: TrailLocation, current: number) => {
+		const { measure: measureOne } = props.current;
+		for (const [item, other] of plan.entries()) {
+			if (item === current || other.missing !== 'skip' || skipped.current.has(item)) continue;
+			if (dropsOrigin([origin], other.location)) {
+				skipped.current.add(item);
+				continue;
+			}
+			if (other.textOnly || !sameLocation(other.location, here)) continue;
+			const ids = [...new Set(other.targets.flat())];
+			const rects = Object.fromEntries(
+				await Promise.all(ids.map(async (id) => [id, await measureOne(id)] as const))
+			);
+			if (resolveTrailStep(other, rects).kind === 'skip') skipped.current.add(item);
+		}
+	};
+
 	// biome-ignore lint/correctness/useExhaustiveDependencies: anda só quando o passo muda
 	useEffect(() => {
 		const step = plan[index];
 		if (!step) {
 			finish();
+			return;
+		}
+		// Já decidido que sai (voltando, ou adiante): segue sem abrir a tela dele.
+		if (skipped.current.has(index)) {
+			setShown(null);
+			move(index, direction.current);
 			return;
 		}
 		let alive = true;
@@ -270,11 +310,19 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 				else resolved = resolveTrailStep(step, {});
 			}
 			if (resolved.kind === 'skip') {
-				skipped.current.add(index);
-				move(index, direction.current);
-				return;
+				if (!counted.current) {
+					skipped.current.add(index);
+					move(index, direction.current);
+					return;
+				}
+				// O total já está na tela: o passo fica, com o texto sem apontar.
+				resolved = { kind: 'text', bodyKey: step.altBodyKey ?? step.bodyKey };
 			}
-			skipped.current.delete(index);
+			if (!counted.current) {
+				await decideSkips(at, index);
+				if (stopped()) return;
+				counted.current = true;
+			}
 			setShown({ index, rect, bodyKey: resolved.bodyKey, layer: frame });
 		})();
 		return () => {
@@ -286,7 +334,8 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 	const skippedBefore = [...skipped.current].filter((item) => item < index).length;
 	const total = plan.length - skipped.current.size;
 	const current = index + 1 - skippedBefore;
-	const isLast = index === plan.length - 1;
+	// O último que sobra, mesmo que os de depois dele no plano tenham saído.
+	const isLast = current === total;
 
 	// A cada passo mostrado, o leitor de tela ouve o passo inteiro.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: anuncia só quando aparece um passo novo
@@ -410,7 +459,7 @@ const TrailOverlay: React.FC<TrailOverlayProps> = ({
 					</Text>
 					<Text style={styles.body}>{t(shown.bodyKey)}</Text>
 					<View style={styles.buttons}>
-						{index > 0 ? (
+						{current > 1 ? (
 							<Pressable
 								onPress={() => move(index, -1)}
 								accessibilityRole="button"

@@ -174,7 +174,11 @@ export type MissingPolicy =
 	| 'text'
 	/** O texto próprio do `[sem dado]` (`…steps.<id>.missing`), sem apontar. */
 	| 'alt'
-	/** "Passo pulado". */
+	/**
+	 * "Passo pulado". Decidido antes do primeiro balão (SPD-151): pelos dados, aqui no plano, ou
+	 * pelo alvo na tela onde a trilha abre. Numa tela aberta depois, o alvo que falta mostra o
+	 * texto sem apontar, para o total do contador não mudar no meio da trilha.
+	 */
 	| 'skip';
 
 export interface TrailStepDef {
@@ -329,7 +333,7 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 		],
 		fallback: { when: 'card', steps: [text('1', 'cards', { textId: 'noCard' })] },
 	},
-	// Trilha 4 — Cartões: virtuais, débito, juntar e arquivar. Começa na tela de um cartão.
+	// Trilha 4 — Cartões: virtuais, débito, juntar e encerrar. Começa na tela de um cartão.
 	cardExtras: {
 		id: 'cardExtras',
 		steps: [
