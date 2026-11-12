@@ -1,11 +1,14 @@
+import { ambiguityOfReason } from '../ambiguityReasons';
 import { isBalanceNeverInformed } from '../balanceUnset';
 import { buildCardSummary } from '../cardMath';
 import { debtStateOn, termsOf } from '../debt';
 import {
 	isSampleId,
 	SAMPLE_IDS,
+	type SampleCaptureNames,
 	type SampleNames,
 	sampleAccount,
+	sampleCaptures,
 	sampleDebt,
 	sampleTransaction,
 	TRAIL_SAMPLE_RECORDS,
@@ -248,5 +251,90 @@ describe('os registros de exemplo', () => {
 			isIncome: false,
 			accountId: null,
 		});
+	});
+});
+
+describe('a revisão de exemplo (SPD-159)', () => {
+	const captureNames: SampleCaptureNames = {
+		bank: 'Banco exemplo',
+		wallet: 'Carteira exemplo',
+		merchant: 'Mercado exemplo',
+		store: 'Farmácia exemplo',
+		purchaseTitle: 'Compra aprovada',
+		purchaseText: 'Compra de R$ 100,00 aprovada em Mercado exemplo no débito.',
+		walletTitle: 'Pagamento feito',
+		walletText: 'R$ 100,00 em Mercado exemplo',
+		creditTitle: 'Compra no crédito',
+		creditText: 'Compra de R$ 50,00 no crédito aprovada em Farmácia exemplo.',
+	};
+	const NOW = new Date('2026-11-07T15:00:00.000Z');
+
+	it('Trilha 7 sem nada para revisar: os 11 passos, os dos avisos (2 a 8) no exemplo, sem sair da revisão', () => {
+		const plan = planTrail(TRAILS.review, nothing, { screen: 'inbox' }, TRAIL_SAMPLE_RECORDS);
+		expect(where(plan)).toEqual([
+			'1@home',
+			'2@inbox:*',
+			'3@inbox:*',
+			'4@inbox:*',
+			'5@inbox:*',
+			'6@inbox:*',
+			'7@inbox:*',
+			'8@inbox:*',
+			'9@inbox',
+			'10@inbox',
+			'11@inbox',
+		]);
+		expect(plan.some((step) => step.textOnly)).toBe(false);
+		// A revisão de exemplo é a revisão de sempre: `{}` e sem parâmetro são a mesma tela.
+		expect(plan[1].location).toEqual({ screen: 'inbox', params: {} });
+	});
+
+	it('Trilha 7 com aviso de verdade: os do usuário, sem exemplo', () => {
+		const plan = planTrail(TRAILS.review, { pending: [{}] }, { screen: 'home' }, TRAIL_SAMPLE_RECORDS);
+		expect(plan).toHaveLength(11);
+		expect(plan.some((step) => step.sample)).toBe(false);
+	});
+
+	it('três avisos de exemplo, com ids de exemplo, pendentes e em nenhum app de verdade', () => {
+		const captures = sampleCaptures(captureNames, NOW);
+		expect(captures.map((capture) => capture.id)).toEqual([
+			SAMPLE_IDS.capture,
+			SAMPLE_IDS.captureDuplicate,
+			SAMPLE_IDS.captureIncomplete,
+		]);
+		for (const capture of captures) {
+			expect(isSampleId(capture.id)).toBe(true);
+			expect(isSampleId(capture.packageName)).toBe(true);
+			expect(capture).toMatchObject({ status: 'pending', transactionId: null, autoConfirmed: false });
+			expect(capture.amountCents % 1_000).toBe(0);
+		}
+	});
+
+	it('a compra (passos 2 a 6), o mesmo valor pela carteira (passo 7) e o crédito sem cartão (passo 8)', () => {
+		const [purchase, duplicate, incomplete] = sampleCaptures(captureNames, NOW);
+		expect(purchase).toMatchObject({
+			kind: 'purchase',
+			direction: 'out',
+			amountCents: 10_000,
+			appLabel: 'Banco exemplo',
+			counterparty: 'Mercado exemplo',
+			accountId: SAMPLE_IDS.account,
+			question: null,
+			reason: null,
+			title: 'Compra aprovada',
+			text: 'Compra de R$ 100,00 aprovada em Mercado exemplo no débito.',
+		});
+		expect(duplicate).toMatchObject({
+			amountCents: purchase.amountCents,
+			appLabel: 'Carteira exemplo',
+			question: 'duplicate',
+			relatedId: purchase.id,
+		});
+		expect(new Date(duplicate.postedAt).getTime() - new Date(purchase.postedAt).getTime()).toBe(60_000);
+		expect(incomplete).toMatchObject({ amountCents: 5_000, accountId: null, cardLast4: null });
+		expect(ambiguityOfReason(incomplete.reason)).toEqual({ case: 'credit_no_last4', learned: false });
+		// Todos chegaram antes de agora.
+		for (const capture of [purchase, duplicate, incomplete])
+			expect(new Date(capture.postedAt).getTime()).toBeLessThan(NOW.getTime());
 	});
 });

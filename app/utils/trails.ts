@@ -403,22 +403,25 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 		fallback: { when: 'capture', steps: [text('1', 'settings', { textId: 'ios' })] },
 	},
 	// Trilha 7 — Revisar: as perguntas e o que o app aprende. Começa em Início › "Revisar".
+	// Os passos dos avisos (2 a 8) são do registro `pending`: sem nada para revisar, são os do
+	// exemplo só em memória (SPD-159), e a revisão desenha os avisos de exemplo no lugar da fila.
 	review: {
 		id: 'review',
 		steps: [
 			s('1', 'home', 'home.review'),
-			s('2', 'inbox', 'inbox.card'),
-			s('3', 'inbox', 'inbox.account'),
-			s('4', 'inbox', 'inbox.category'),
-			s('5', 'inbox', 'inbox.buttons'),
-			s('6', 'inbox', 'inbox.raw'),
-			s('7', 'inbox', 'inbox.question', attention),
-			s('8', 'inbox', 'inbox.ambiguity', attention),
+			s('2', 'inbox', 'inbox.card', { record: 'pending' }),
+			s('3', 'inbox', 'inbox.account', { record: 'pending' }),
+			s('4', 'inbox', 'inbox.category', { record: 'pending' }),
+			s('5', 'inbox', 'inbox.buttons', { record: 'pending' }),
+			s('6', 'inbox', 'inbox.raw', { record: 'pending' }),
+			s('7', 'inbox', 'inbox.question', { ...attention, record: 'pending' }),
+			s('8', 'inbox', 'inbox.ambiguity', { ...attention, record: 'pending' }),
 			s('9', 'inbox', 'inbox.learned'),
 			s('10', 'inbox', 'inbox.auto+inbox.ignored'),
 			s('11', 'inbox', 'inbox.history'),
 		],
-		// Nada para revisar: "Para revisar" vazia, com os passos 1, 9 e 11 sem apontar.
+		// Nada para revisar e sem o exemplo (os testes do plano): "Para revisar" vazia, com os
+		// passos 1, 9 e 11 sem apontar.
 		fallback: {
 			when: 'pending',
 			steps: [text('1', 'inbox'), text('9', 'inbox'), text('11', 'inbox')],

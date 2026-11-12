@@ -18,6 +18,7 @@ import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
 import { SelectSheet } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, type SampleReview, useSampleReview } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -301,6 +302,12 @@ interface CaptureCardProps {
 	 * a linha do porquê. Só marcam: não mudam nada do cartão.
 	 */
 	tour?: { main?: boolean; question?: boolean; ambiguity?: boolean };
+	/**
+	 * O aviso de exemplo da trilha (SPD-159): a conta e a categoria vêm do exemplo, que não
+	 * existe nos contextos, e trocar a conta ou a categoria não abre nada. Os botões chegam
+	 * sem efeito de quem desenha (`SAMPLE_HANDLERS`).
+	 */
+	sample?: Pick<SampleReview, 'accountName' | 'category'>;
 }
 
 const CaptureCard: React.FC<CaptureCardProps> = ({
@@ -317,6 +324,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onAnswerDirection,
 	onResolveInvoice,
 	tour,
+	sample,
 }) => {
 	const { t } = useTranslation();
 	const accountTarget = useTourTarget(tour?.main ? 'inbox.account' : undefined);
@@ -350,13 +358,15 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	const accountId = chosenAccountId === undefined ? capture.accountId : chosenAccountId;
 	// A linha da conta abre a lista das contas; "Sem conta" vem destacada na linha (SPD-111).
 	const [accountPickerOpen, setAccountPickerOpen] = useState(false);
-	const canPickAccount = activeAccounts.length > 0;
+	// No exemplo (SPD-159) a conta não troca: a lista nem abre.
+	const canPickAccount = !sample && activeAccounts.length > 0;
 	const categoryList = useMemo(() => categoryChoices(categories, isIncome, transactions), [categories, isIncome, transactions]);
 
-	const category = categories.find((c) => c.id === categoryId) ?? fallbackCategory(t);
+	const category = sample?.category ?? categories.find((c) => c.id === categoryId) ?? fallbackCategory(t);
 	const amount = formatCents(capture.amountCents);
 	const kindLabel = t(`captures.kind.${capture.kind}`, { defaultValue: t('captures.kind.unknown') });
-	const destination = destinationLabel({ accountId }, accounts, t);
+	const destination =
+		sample && accountId ? sample.accountName : destinationLabel({ accountId }, accounts, t);
 	const installments = installmentsLabel(capture, t);
 	const warning = currencyWarning(capture, t);
 	const confirmedByStatement = statementConfirmedLabel(capture, claimedByStatement, t);
@@ -571,7 +581,10 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 				<>
 					<Pressable
 						{...categoryTarget}
-						onPress={() => setPickerOpen(true)}
+						onPress={() => {
+							// No exemplo (SPD-159) a categoria não troca: a lista não abre.
+							if (!sample) setPickerOpen(true);
+						}}
 						accessibilityRole="button"
 						accessibilityLabel={t('captures.categoryLabel', { category: category.name })}
 						accessibilityHint={t('captures.changeCategoryHint')}
@@ -735,6 +748,23 @@ const ResolvedRow: React.FC<ResolvedRowProps> = ({
 	);
 };
 
+const ignore = () => undefined;
+
+/**
+ * Os botões dos avisos de exemplo (SPD-159): Confirmar, Transferência, Descartar e as
+ * respostas não chamam o `CapturesContext` — nada vai para o SQLite, a fila do sync, as regras
+ * aprendidas, as notificações nem a contagem. Como os botões do exemplo do SPD-147.
+ */
+const SAMPLE_HANDLERS = {
+	onConfirm: ignore,
+	onDismiss: ignore,
+	onTransfer: ignore,
+	onAnswerDuplicate: ignore,
+	onAnswerTransfer: ignore,
+	onAnswerDirection: ignore,
+	onResolveInvoice: ignore,
+} as const;
+
 const CaptureInboxScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
@@ -767,9 +797,14 @@ const CaptureInboxScreen = () => {
 	// O guia da revisão (SPD-129): o primeiro cartão e o "o app aprende".
 	useScreenTour('inbox', { ready: !isLoading });
 	const tourScroll = useTourScroll('inbox');
+	// A Trilha 7 sem nada para revisar (SPD-159): os avisos de exemplo, só em memória, no lugar
+	// da fila vazia. Com um aviso de verdade (ou a fila carregando), nada de exemplo. A contagem
+	// do cabeçalho segue a fila de verdade.
+	const sampleReview = useSampleReview(pending.length > 0 || isLoading);
+	const shown = sampleReview?.captures ?? pending;
 	// A trilha da revisão (SPD-131): o primeiro aviso com pergunta e o primeiro com a linha do porquê.
-	const questionTourId = useMemo(() => pending.find(asksQuestion)?.id, [pending]);
-	const ambiguityTourId = useMemo(() => pending.find((capture) => ambiguityLine(capture, t).text !== '')?.id, [pending, t]);
+	const questionTourId = useMemo(() => shown.find(asksQuestion)?.id, [shown]);
+	const ambiguityTourId = useMemo(() => shown.find((capture) => ambiguityLine(capture, t).text !== '')?.id, [shown, t]);
 	const autoTarget = useTourTarget('inbox.auto');
 	const ignoredTarget = useTourTarget('inbox.ignored');
 	const historyTarget = useTourTarget('inbox.history');
@@ -999,29 +1034,41 @@ const CaptureInboxScreen = () => {
 					</View>
 				)}
 
-				{pending.length === 0 && !isLoading && (supported ? enabled : false) && (
+				{pending.length === 0 && !isLoading && !sampleReview && (supported ? enabled : false) && (
 					<View style={styles.empty}>
 						<Ionicons name="checkmark-done-circle-outline" size={40} color={ACCENT} />
 						<Text style={styles.emptyText}>{t('captures.empty')}</Text>
 					</View>
 				)}
 
-				{pending.map((capture, index) => (
+				{sampleReview ? <SampleBanner /> : null}
+
+				{shown.map((capture, index) => (
 					<TourTarget key={capture.id} id={index === 0 ? 'inbox.card' : undefined}>
 					<CaptureCard
 						key={capture.id}
 						capture={capture}
-						related={capture.relatedId ? (byId.get(capture.relatedId) ?? null) : null}
+						related={
+							capture.relatedId
+								? ((sampleReview
+										? sampleReview.captures.find((item) => item.id === capture.relatedId)
+										: byId.get(capture.relatedId)) ?? null)
+								: null
+						}
 						categories={categories}
 						transactions={transactions}
 						claimedByStatement={claimedByStatement}
-						onConfirm={handleConfirm}
-						onDismiss={handleDismiss}
-						onTransfer={handleTransfer}
-						onAnswerDuplicate={handleAnswerDuplicate}
-						onAnswerTransfer={handleAnswerTransfer}
-						onAnswerDirection={handleAnswerDirection}
-						onResolveInvoice={handleResolveInvoice}
+						{...(sampleReview
+							? { ...SAMPLE_HANDLERS, sample: sampleReview }
+							: {
+									onConfirm: handleConfirm,
+									onDismiss: handleDismiss,
+									onTransfer: handleTransfer,
+									onAnswerDuplicate: handleAnswerDuplicate,
+									onAnswerTransfer: handleAnswerTransfer,
+									onAnswerDirection: handleAnswerDirection,
+									onResolveInvoice: handleResolveInvoice,
+								})}
 						tour={{
 							main: index === 0,
 							question: capture.id === questionTourId,
@@ -1031,7 +1078,7 @@ const CaptureInboxScreen = () => {
 					</TourTarget>
 				))}
 
-				{pending.length > 0 && (
+				{shown.length > 0 && (
 					<TourTarget id="inbox.learned">
 						<Text style={styles.learned}>{t('captures.learned')}</Text>
 					</TourTarget>

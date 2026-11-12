@@ -13,12 +13,15 @@
  * Como chega à tela: o plano da trilha (`planTrail`) recebe `TRAIL_SAMPLE_RECORDS` e, quando
  * a lista do usuário está vazia, abre a tela com o id de exemplo (`/cards/exemplo-cartao`) ou,
  * nos formulários de cadastro, com `exemplo=1`. A tela reconhece o id (`isSampleId`) e desenha
- * o exemplo, marcado "Exemplo", com os botões de gravar sem efeito.
+ * o exemplo, marcado "Exemplo", com os botões de gravar sem efeito. A revisão da captura
+ * (SPD-159) não tem id na rota: com o exemplo ligado e a fila vazia, ela desenha os avisos de
+ * `sampleCaptures`, com os mesmos botões sem efeito.
  *
  * Os valores são inventados e redondos; os nomes vêm traduzidos de quem chama (`names`).
  */
 
-import type { Account, Debt, Transaction } from '../database/schema';
+import type { Account, Capture, Debt, Transaction } from '../database/schema';
+import { ambiguousReason } from './ambiguityReasons';
 import { addDays } from './dateUtils';
 import { impliedRateBp } from './debt';
 import type { TrailRecords } from './trails';
@@ -33,6 +36,10 @@ export const SAMPLE_IDS = {
 	cardNoClosing: 'exemplo-cartao-sem-fechamento',
 	transaction: 'exemplo-lancamento',
 	debt: 'exemplo-divida',
+	capture: 'exemplo-aviso',
+	captureDuplicate: 'exemplo-aviso-repetido',
+	captureIncomplete: 'exemplo-aviso-incompleto',
+	category: 'exemplo-categoria',
 } as const;
 
 /** O parâmetro da rota que abre um formulário de cadastro já preenchido com o exemplo. */
@@ -46,9 +53,14 @@ export const isSampleForm = (value: unknown): boolean => value === '1';
 
 /**
  * Os registros de exemplo que o plano usa quando o usuário não tem nenhum daquele tipo. Só os
- * que a trilha abre numa tela própria; as condições (`otherCard`, `pending`, `capture`) e os
- * registros que só existem com dados de verdade por trás (o débito, a conta ligada ao banco)
- * ficam de fora: a tela deles mostraria totais que o exemplo não pode ter.
+ * que a trilha abre numa tela própria; as condições (`otherCard`, `capture`) e os registros que
+ * só existem com dados de verdade por trás (o débito, a conta ligada ao banco) ficam de fora: a
+ * tela deles mostraria totais que o exemplo não pode ter.
+ *
+ * `pending` (SPD-159) é a exceção: a revisão não abre por registro (a rota não tem id) e o
+ * exemplo dela não entra em total nenhum. Sem nada para revisar, a Trilha 7 anda pela revisão
+ * de sempre (`{}`, sem parâmetro) com os passos dos avisos marcados `sample`, e a tela, com o
+ * exemplo ligado e a fila vazia, desenha os avisos de exemplo (`sampleCaptures`).
  */
 export const TRAIL_SAMPLE_RECORDS: TrailRecords = {
 	account: [{ id: SAMPLE_IDS.account }],
@@ -57,6 +69,7 @@ export const TRAIL_SAMPLE_RECORDS: TrailRecords = {
 	cardNoClosing: [{ id: SAMPLE_IDS.cardNoClosing }],
 	transaction: [{ id: SAMPLE_IDS.transaction }],
 	debt: [{ id: SAMPLE_IDS.debt }],
+	pending: [{}],
 };
 
 /** Os nomes do exemplo, no idioma do app (`trails.sample.*`). */
@@ -214,4 +227,115 @@ export const sampleTransaction = (
 		cardLast4: null,
 		updatedAt: '',
 	};
+};
+
+/**
+ * Os textos dos avisos de exemplo da revisão (SPD-159), no idioma do app (`trails.sample.*`):
+ * os nomes e as notificações inventadas, no formato de um banco, já com o valor formatado.
+ */
+export interface SampleCaptureNames {
+	/** O app do banco que mandou o aviso. */
+	bank: string;
+	/** A carteira do celular, que repete o aviso da compra (a pergunta "é o mesmo?"). */
+	wallet: string;
+	/** Onde foi a compra. */
+	merchant: string;
+	/** Onde foi a compra no crédito que não diz o cartão. */
+	store: string;
+	/** O título e o texto de cada notificação. */
+	purchaseTitle: string;
+	purchaseText: string;
+	walletTitle: string;
+	walletText: string;
+	creditTitle: string;
+	creditText: string;
+}
+
+/** Os valores dos avisos de exemplo, redondos, e há quantos minutos cada um chegou. */
+export const SAMPLE_CAPTURE_VALUES = {
+	purchaseCents: 10_000,
+	creditCents: 5_000,
+	purchaseMinutesAgo: 30,
+	walletMinutesAgo: 29,
+	creditMinutesAgo: 10,
+} as const;
+
+/** Nenhum app de verdade tem este pacote: o exemplo não casa regra, extrato nem app ignorado. */
+const SAMPLE_PACKAGE = `${SAMPLE_PREFIX}app`;
+
+const minutesBefore = (now: Date, minutes: number): string =>
+	new Date(now.getTime() - minutes * 60_000).toISOString();
+
+/**
+ * Os avisos de exemplo da revisão (SPD-159), na ordem da tela:
+ * 1. a compra de sempre, já na conta de exemplo: o aviso, a conta, a categoria, os três
+ *    botões e a notificação original (passos 2 a 6);
+ * 2. o mesmo valor, um minuto depois, pela carteira do celular: a pergunta "Parece o mesmo
+ *    lançamento" (passo 7);
+ * 3. a compra no crédito que não diz o cartão, sem conta: a linha que explica a dúvida
+ *    (passo 8).
+ *
+ * Só objetos: quem desenha não grava, não soma e não sincroniza nada disto
+ * (`components/tour/TrailSample.tsx`, `screens/CaptureInboxScreen.tsx`).
+ */
+export const sampleCaptures = (names: SampleCaptureNames, now: Date): Capture[] => {
+	const base = {
+		packageName: SAMPLE_PACKAGE,
+		direction: 'out' as const,
+		kind: 'purchase',
+		merchantKey: null,
+		cardLast4: null,
+		status: 'pending' as const,
+		question: null,
+		relatedId: null,
+		suggestedCategory: null,
+		transactionId: null,
+		autoConfirmed: false,
+		reason: null,
+		accountId: null,
+		transferId: null,
+		installments: null,
+		createdAt: now.toISOString(),
+		updatedAt: '',
+	};
+	return [
+		{
+			...base,
+			id: SAMPLE_IDS.capture,
+			fingerprint: SAMPLE_IDS.capture,
+			appLabel: names.bank,
+			title: names.purchaseTitle,
+			text: names.purchaseText,
+			postedAt: minutesBefore(now, SAMPLE_CAPTURE_VALUES.purchaseMinutesAgo),
+			amountCents: SAMPLE_CAPTURE_VALUES.purchaseCents,
+			counterparty: names.merchant,
+			accountId: SAMPLE_IDS.account,
+		},
+		{
+			...base,
+			id: SAMPLE_IDS.captureDuplicate,
+			fingerprint: SAMPLE_IDS.captureDuplicate,
+			appLabel: names.wallet,
+			title: names.walletTitle,
+			text: names.walletText,
+			postedAt: minutesBefore(now, SAMPLE_CAPTURE_VALUES.walletMinutesAgo),
+			amountCents: SAMPLE_CAPTURE_VALUES.purchaseCents,
+			counterparty: names.merchant,
+			question: 'duplicate',
+			relatedId: SAMPLE_IDS.capture,
+			accountId: SAMPLE_IDS.account,
+		},
+		{
+			...base,
+			id: SAMPLE_IDS.captureIncomplete,
+			fingerprint: SAMPLE_IDS.captureIncomplete,
+			appLabel: names.bank,
+			title: names.creditTitle,
+			text: names.creditText,
+			postedAt: minutesBefore(now, SAMPLE_CAPTURE_VALUES.creditMinutesAgo),
+			amountCents: SAMPLE_CAPTURE_VALUES.creditCents,
+			counterparty: names.store,
+			reason: ambiguousReason('credit_no_last4'),
+		},
+	];
 };

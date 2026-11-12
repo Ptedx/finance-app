@@ -322,19 +322,19 @@ describe('Trilha 7 — Revisar, na revisão', () => {
 		expect([...mockStorage.keys()].filter((key) => key !== STORAGE_KEYS.tutorial)).toEqual([]);
 	});
 
-	it('sem nada para revisar: os passos 1, 9 e 11, sem apontar', async () => {
+	it('sem nada para revisar: os 11 passos, com os avisos de exemplo (SPD-159; detalhes em trailReviewSample)', async () => {
 		mockData.pending = [];
 		await mount([{ screen: 'inbox' }]);
 		await pressLabel('trails.help');
 
 		await waitForText(title(1));
-		expect(texts()).toContain('tutorial.counter{"current":1,"total":3}');
+		expect(texts()).toContain(counter(1));
 		expect(pointing()).toBe(false);
-		await pressLabel('tutorial.next');
-		await waitForText(title(9));
-		expect(pointing()).toBe(false);
-		await pressLabel('tutorial.next');
-		await waitForText(title(11));
+		for (const id of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+			await pressLabel('tutorial.next');
+			await waitForText(title(id));
+			expect({ id, pointing: pointing() }).toEqual({ id, pointing: true });
+		}
 		await pressLabel('tutorial.done');
 		await waitUntil(() => !texts().includes(title(11)));
 		expect(mockActions).toEqual([]);
