@@ -47,7 +47,8 @@ jest.mock('../../database/database', () => ({
 	mergeCardInto: jest.fn(async () => undefined),
 	setAccountCardNames: jest.fn(async () => undefined),
 	deleteTransfersOf: jest.fn(async () => undefined),
-	deleteAccount: jest.fn(async (id: string) => {
+	// Juntar e levar para o débito apagam a ficha que sai sem a guarda de conta vazia (SPD-144).
+	retireMergedAccount: jest.fn(async (id: string) => {
 		mockStore.accounts = mockStore.accounts.filter((account) => account.id !== id);
 	}),
 	getAccountBalances: jest.fn(async () => new Map()),
@@ -127,11 +128,11 @@ jest.mock('../PeriodContext', () => ({ usePeriod: () => mockPeriod }));
 import { act, create } from 'react-test-renderer';
 import { getAllCaptures } from '../../database/captures';
 import {
-	deleteAccount,
 	foldAccountBalance,
 	mergeCardInto,
 	moveAccountLedger,
 	reassignCaptureLedger,
+	retireMergedAccount,
 } from '../../database/database';
 import { onBillsChanged } from '../../utils/billEvents';
 import { AccountsProvider, useAccounts } from '../AccountsContext';
@@ -451,7 +452,7 @@ describe('AccountsContext — juntar avisa contas a pagar e dívidas (SPD-099)',
 			await api().mergeAccounts('inter-pf', 'inter');
 		});
 		expect(moveAccountLedger).toHaveBeenCalledWith('inter-pf', 'inter', null);
-		expectNoticeAfter(deleteAccount as jest.Mock);
+		expectNoticeAfter(retireMergedAccount as jest.Mock);
 	});
 
 	it('juntar cartões avisa depois de juntar', async () => {
@@ -468,7 +469,7 @@ describe('AccountsContext — juntar avisa contas a pagar e dívidas (SPD-099)',
 			await api().convertCardToDebit('cartao', 'inter');
 		});
 		expect(moveAccountLedger).toHaveBeenCalledWith('cartao', 'inter', '4321');
-		expectNoticeAfter(deleteAccount as jest.Mock);
+		expectNoticeAfter(retireMergedAccount as jest.Mock);
 	});
 
 	it('só juntar avisa: criar uma conta não', async () => {

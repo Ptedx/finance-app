@@ -1,82 +1,95 @@
 /**
- * O que a confirmação de "Excluir conta" e "Excluir cartão" diz que vai acontecer (SPD-141).
+ * As frases das confirmações de encerrar, apagar, juntar e reabrir conta ou cartão (SPD-144).
  *
- * `deleteAccount` (`database/database.ts`) deixa os lançamentos da conta "Sem conta" e põe
- * lápide em todas as transferências que entram ou saem dela — inclusive os pagamentos de
- * fatura, que são transferências para o cartão. A confirmação antiga só falava dos
- * lançamentos. Aqui se conta, com as mesmas regras do SQL da exclusão, quanto de cada coisa
- * está ligado à conta, e se monta a frase com esses números.
+ * Cada uma diz o efeito em R$. Antes (SPD-141), "Excluir" contava quantos lançamentos
+ * ficavam "Sem conta" e quantas transferências eram apagadas, sem dizer um real do que mudava
+ * — e mudava: apagar a PJ que mandou 2 × R$ 12.000 derrubava o patrimônio em R$ 24.000.
+ * Agora apagar só vale para conta vazia (`isAccountEmpty`, em `accountClosing.ts`); conta com
+ * conteúdo é encerrada ou juntada, e a frase diz para onde vai o dinheiro e o que acontece
+ * com o patrimônio.
+ *
+ * `scope` é o bloco do i18n: `accounts.edit` (conta) ou `cards.edit` (cartão).
  */
-import { getAccountTransactions, getAccountTransfers } from '../database/database';
-import type { Account, Transaction, Transfer } from '../database/schema';
-
-/** Quanto a exclusão alcança. */
-export interface DeletionImpact {
-	/** Lançamentos vivos da conta (parcelas futuras inclusive): ficam "Sem conta". */
-	entries: number;
-	/** Transferências vivas para um cartão (pagamentos de fatura): são apagadas. */
-	invoicePayments: number;
-	/** As demais transferências vivas que entram ou saem da conta: são apagadas. */
-	transfers: number;
-}
-
-/**
- * Conta, nos lançamentos e transferências dados, o que a exclusão de `accountId` alcança.
- * Os filtros são os do `deleteAccount`: `accountId` igual e vivo; transferência viva com a
- * conta numa das pontas. Pagamento de fatura é a transferência cujo destino é um cartão.
- */
-export const deletionImpact = (
-	accountId: string,
-	transactions: Pick<Transaction, 'accountId' | 'deletedAt'>[],
-	transfers: Pick<Transfer, 'fromAccountId' | 'toAccountId' | 'deletedAt'>[],
-	accounts: Pick<Account, 'id' | 'kind'>[]
-): DeletionImpact => {
-	const cards = new Set(accounts.filter((account) => account.kind === 'credit_card').map((account) => account.id));
-	const entries = transactions.filter((transaction) => transaction.accountId === accountId && !transaction.deletedAt).length;
-	const touched = transfers.filter(
-		(transfer) => !transfer.deletedAt && (transfer.fromAccountId === accountId || transfer.toAccountId === accountId)
-	);
-	const invoicePayments = touched.filter((transfer) => transfer.toAccountId !== null && cards.has(transfer.toAccountId)).length;
-	return { entries, invoicePayments, transfers: touched.length - invoicePayments };
-};
-
-/** Lê do banco o que a exclusão de `accountId` alcança. */
-export const loadDeletionImpact = async (accountId: string, accounts: Pick<Account, 'id' | 'kind'>[]): Promise<DeletionImpact> => {
-	const [transactions, transfers] = await Promise.all([getAccountTransactions(accountId), getAccountTransfers(accountId)]);
-	return deletionImpact(accountId, transactions, transfers, accounts);
-};
+import type { AccountContents, ClosePlan } from './accountClosing';
+import { formatCents } from './money';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
+export type NoticeScope = 'accounts.edit' | 'cards.edit';
 
-/**
- * A frase da confirmação: "12 lançamentos continuam no histórico, mas ficam "Sem conta". 3
- * pagamentos de fatura serão apagados. Continuar?". Só entra o que existe; sem nada ligado,
- * diz isso. `scope` é o bloco do i18n: `accounts.edit` (conta) ou `cards.edit` (cartão).
- */
-export const deletionMessage = (scope: 'accounts.edit' | 'cards.edit', impact: DeletionImpact, t: Translate): string => {
-	const parts: string[] = [];
-	if (impact.entries > 0) parts.push(t(`${scope}.deleteEntries`, { count: impact.entries }));
-	if (impact.invoicePayments > 0) parts.push(t(`${scope}.deletePayments`, { count: impact.invoicePayments }));
-	if (impact.transfers > 0) parts.push(t(`${scope}.deleteTransfers`, { count: impact.transfers }));
-	if (parts.length === 0) parts.push(t(`${scope}.deleteEmpty`));
+/** Conta vazia: "apagar não muda nada nos seus números", e o que fica sem conta. */
+export const deleteConfirmMessage = (scope: NoticeScope, name: string, contents: AccountContents, t: Translate): string => {
+	const parts = [t(`${scope}.deleteEmptyConfirm`, { name })];
+	const linked = contents.bills + contents.debts;
+	if (linked > 0) parts.push(t(`${scope}.deleteLinked`, { count: linked }));
 	parts.push(t(`${scope}.deleteContinue`));
 	return parts.join(' ');
 };
 
 /**
- * A frase para a confirmação, com os números; sem eles (a leitura falhou), a frase geral
- * `deleteConfirm`, que diz o mesmo sem contar.
+ * Conta com conteúdo: o primeiro motivo (lançamentos, transferências, capturas, saldo de
+ * partida) e o que fazer no lugar — encerrar ou juntar.
  */
-export const loadDeletionMessage = async (
-	scope: 'accounts.edit' | 'cards.edit',
-	accountId: string,
-	accounts: Pick<Account, 'id' | 'kind'>[],
+export const deleteRefusedMessage = (scope: NoticeScope, name: string, contents: AccountContents, t: Translate): string => {
+	let reason: string;
+	if (contents.transactions > 0) reason = t(`${scope}.deleteRefusedEntries`, { count: contents.transactions, name });
+	else if (contents.transfers > 0) reason = t(`${scope}.deleteRefusedTransfers`, { count: contents.transfers, name });
+	else if (contents.captures > 0) reason = t(`${scope}.deleteRefusedCaptures`, { count: contents.captures, name });
+	else reason = t(`${scope}.deleteRefusedOpening`, { amount: formatCents(Math.abs(contents.openingBalanceCents)), name });
+	return `${reason} ${t(`${scope}.deleteRefusedWhy`)}`;
+};
+
+export interface CloseConfirmInput {
+	name: string;
+	/** A conta do outro lado da transferência de encerramento. */
+	target?: string;
+	plan: ClosePlan;
+	/** A conta já estava encerrada (com saldo, fora dos totais): acertar faz o patrimônio de hoje mudar. */
+	alreadyClosed: boolean;
+	/** Papéis diferentes (reserva → principal): a transferência entra no quadro do mês. */
+	roleChange: boolean;
+}
+
+/** A confirmação de encerrar (ou de acertar o saldo de uma já encerrada), com o valor. */
+export const closeConfirmMessage = (scope: NoticeScope, input: CloseConfirmInput, t: Translate): string => {
+	const { name, target, plan, alreadyClosed, roleChange } = input;
+	if (plan.kind !== 'transfer') return t(`${scope}.closeDirect`, { name });
+	const amount = formatCents(plan.amountCents);
+	if (alreadyClosed) {
+		return t(plan.direction === 'out' ? `${scope}.settleOut` : `${scope}.settleIn`, { amount, name, target });
+	}
+	const message = t(plan.direction === 'out' ? `${scope}.closeTransferOut` : `${scope}.closeTransferIn`, { amount, name, target });
+	return roleChange ? `${message} ${t(`${scope}.closeRoleNote`)}` : message;
+};
+
+/** Por que não dá para encerrar agora, e o que fazer antes. */
+export const closeBlockedMessage = (
+	scope: NoticeScope,
+	name: string,
+	plan: Extract<ClosePlan, { kind: 'blocked' }>,
 	t: Translate
-): Promise<string> => {
-	try {
-		return deletionMessage(scope, await loadDeletionImpact(accountId, accounts), t);
-	} catch (error) {
-		console.error('Error counting what the deletion reaches:', error);
-		return t(`${scope}.deleteConfirm`);
+): string => {
+	switch (plan.reason) {
+		case 'cardOwes':
+			return t(`${scope}.closeBlockedOwes`, { amount: formatCents(plan.amountCents), name });
+		case 'pendingCaptures':
+			return t(`${scope}.closeBlockedPending`, { count: plan.count, name });
+		case 'futureEntries':
+			return t(`${scope}.closeBlockedFuture`, { count: plan.count, name });
 	}
 };
+
+/** Juntar: o que passa para a outra e com quanto ela fica — o total das contas não muda. */
+export const mergeConfirmMessage = (scope: NoticeScope, from: string, into: string, totalCents: number, t: Translate): string =>
+	t(`${scope}.mergeConfirm`, { from, into, total: formatCents(totalCents) });
+
+/**
+ * Reabrir com saldo: ele volta aos totais de hoje (negativo — o cartão devendo —, como
+ * dívida). Sem saldo, nada a perguntar (`null`).
+ */
+export const reopenMessage = (scope: NoticeScope, name: string, balanceCents: number, t: Translate): string | null => {
+	if (balanceCents === 0) return null;
+	const amount = formatCents(Math.abs(balanceCents));
+	return balanceCents > 0 ? t(`${scope}.reopenBalance`, { name, amount }) : t(`${scope}.reopenOwing`, { name, amount });
+};
+
+export default { deleteConfirmMessage, deleteRefusedMessage, closeConfirmMessage, closeBlockedMessage, mergeConfirmMessage, reopenMessage };

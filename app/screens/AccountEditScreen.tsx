@@ -37,7 +37,15 @@ import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { ACCOUNT_COLORS } from '../utils/accountResolver';
 import { showsBalanceUnset } from '../utils/balanceUnset';
 import { dismissBalanceUnset, getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
-import { loadDeletionMessage } from '../utils/deletionNotice';
+import { type ClosePlan, closeTargets, isAccountEmpty, mergeTargets } from '../utils/accountClosing';
+import {
+	closeBlockedMessage,
+	closeConfirmMessage,
+	deleteConfirmMessage,
+	deleteRefusedMessage,
+	mergeConfirmMessage,
+	reopenMessage,
+} from '../utils/deletionNotice';
 import { brandFor } from '../utils/bankBrands';
 import { usePeriod } from '../contexts/PeriodContext';
 import { addDays, formatDate, formatMonthLong, monthStartISO, todayISO } from '../utils/dateUtils';
@@ -74,8 +82,25 @@ interface AccountEditScreenProps {
 const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, accruedYield, cdi, periodSpentByAccount, month, createAccount, saveAccount, removeAccount, mergeAccounts, takeNotifications, takeBusinessNotifications, adjustAccountMonth } =
-		useAccounts();
+	const {
+		accounts,
+		balances,
+		accruedYield,
+		cdi,
+		periodSpentByAccount,
+		month,
+		createAccount,
+		saveAccount,
+		removeAccount,
+		mergeAccounts,
+		closeAccount,
+		reopenAccount,
+		planClose,
+		loadAccountContents,
+		takeNotifications,
+		takeBusinessNotifications,
+		adjustAccountMonth,
+	} = useAccounts();
 	const { transactions } = useTransactions();
 	// O gasto pré-preenchido na folha é o do **período escolhido** na tela inicial, e o
 	// ajuste é lançado hoje. Quem está olhando setembro e digita o número de outubro gera
@@ -105,8 +130,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [saving, setSaving] = useState(false);
 	// A folha de "Juntar com outra conta" aberta.
 	const [merging, setMerging] = useState(false);
+	// A folha de "para qual conta vai o saldo" do encerrar, com o plano que a abriu.
+	const [closing, setClosing] = useState<Extract<ClosePlan, { kind: 'transfer' }> | null>(null);
 	// As trilhas de Contas e da captura (SPD-131) passam por aqui: a conta nova e a de uma conta.
-	useScreenTour('account', { blocked: adjusting || merging });
+	useScreenTour('account', { blocked: adjusting || merging || closing !== null });
 	const tourScroll = useTourScroll('account');
 	const unsetTarget = useTourTarget('account.unset');
 	const adjustTarget = useTourTarget('account.adjust');
@@ -240,20 +267,86 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		}
 	};
 
-	const handleArchive = async () => {
+	/**
+	 * Encerrar (SPD-144), no lugar de "Arquivar": a conta sai das listas, dos seletores e dos
+	 * totais de hoje, e o histórico fica. Com saldo, uma transferência de hoje leva o saldo
+	 * para a conta escolhida antes — o patrimônio não muda, e a confirmação diz quanto vai.
+	 * Na conta já encerrada com saldo, o mesmo caminho é "Acertar o saldo".
+	 */
+	const closeCandidates = existing ? closeTargets(accounts, existing) : [];
+
+	const startClose = async () => {
 		if (!existing) return;
-		await saveAccount({ ...existing, archived: !existing.archived });
-		announce(existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive'));
+		let plan: ClosePlan;
+		try {
+			plan = await planClose(existing.id);
+		} catch (error) {
+			console.error('Error planning the account close:', error);
+			return;
+		}
+		const title = existing.archived ? t('accounts.edit.settle') : t('accounts.edit.close');
+		if (plan.kind === 'blocked') {
+			Alert.alert(title, closeBlockedMessage('accounts.edit', existing.name, plan, t));
+			return;
+		}
+		if (plan.kind === 'direct') {
+			confirmClose(plan, null);
+			return;
+		}
+		if (closeCandidates.length === 0) {
+			Alert.alert(title, t('accounts.edit.closeNoTarget', { name: existing.name }));
+			return;
+		}
+		// O destino se escolhe na mesma folha do "Juntar": o Alert do Android mostra no máximo três botões.
+		setClosing(plan);
+	};
+
+	const confirmClose = (plan: ClosePlan, target: Account | null) => {
+		setClosing(null);
+		if (!existing) return;
+		const wasClosed = existing.archived;
+		const message = closeConfirmMessage(
+			'accounts.edit',
+			{ name: existing.name, target: target?.name, plan, alreadyClosed: wasClosed, roleChange: target !== null && target.role !== existing.role },
+			t
+		);
+		Alert.alert(wasClosed ? t('accounts.edit.settle') : t('accounts.edit.close'), message, [
+			{ text: t('accounts.edit.cancel'), style: 'cancel' },
+			{
+				text: t('accounts.edit.closeAction'),
+				onPress: async () => {
+					await closeAccount(existing.id, target?.id ?? null);
+					announce(wasClosed ? t('accounts.edit.settle') : t('accounts.edit.closed'));
+				},
+			},
+		]);
+	};
+
+	/** Reabrir: com saldo, avisa que ele volta aos totais de hoje. */
+	const handleReopen = async () => {
+		if (!existing) return;
+		const reopen = async () => {
+			await reopenAccount(existing.id);
+			announce(t('accounts.edit.reopened'));
+		};
+		const message = existing.role === 'external' ? null : reopenMessage('accounts.edit', existing.name, balanceCents, t);
+		if (message === null) {
+			await reopen();
+			return;
+		}
+		Alert.alert(t('accounts.edit.reopen'), message, [
+			{ text: t('accounts.edit.cancel'), style: 'cancel' },
+			{ text: t('accounts.edit.reopen'), onPress: reopen },
+		]);
 	};
 
 	/**
 	 * A mesma conta do banco com duas fichas no app: a que o usuário cadastrou e a que a
 	 * primeira notificação criou, por exemplo. Juntar leva lançamentos, capturas e
-	 * transferências para a escolhida e apaga esta.
+	 * transferências para a escolhida e apaga esta. Só com conta ativa do mesmo papel
+	 * (SPD-144): papéis diferentes reclassificariam o histórico.
 	 */
-	const mergeCandidates = existing
-		? accounts.filter((account) => account.id !== existing.id && !account.deletedAt && !account.archived && (account.kind === 'credit_card') === (existing.kind === 'credit_card'))
-		: [];
+	const mergeCandidates = existing && !existing.archived ? mergeTargets(accounts, existing) : [];
 
 	// O destino se escolhe numa folha com todas as contas (E2E-39): o Alert do Android mostra no
 	// máximo três botões. A confirmação, com dois, continua no Alert.
@@ -262,10 +355,13 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		setMerging(true);
 	};
 
+	const balanceOf = (account: Account): number => balances.get(account.id) ?? account.openingBalanceCents;
+
 	const confirmMerge = (account: Account) => {
 		setMerging(false);
 		if (!existing) return;
-		Alert.alert(t('accounts.edit.merge'), t('accounts.edit.mergeConfirm', { from: existing.name, into: account.name }), [
+		const total = balanceOf(existing) + balanceOf(account);
+		Alert.alert(t('accounts.edit.merge'), mergeConfirmMessage('accounts.edit', existing.name, account.name, total, t), [
 			{ text: t('accounts.edit.cancel'), style: 'cancel' },
 			{
 				text: t('accounts.edit.mergeAction'),
@@ -337,18 +433,43 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		);
 	};
 
-	// A confirmação diz quantos lançamentos ficam "Sem conta" e quantas transferências e
-	// pagamentos de fatura são apagados (SPD-141).
+	/**
+	 * Apagar só conta vazia (SPD-144, `isAccountEmpty`): aí nada muda nos números, e a
+	 * confirmação diz isso. Com conteúdo, diz por quê não e oferece Encerrar ou Juntar.
+	 */
 	const handleDelete = async () => {
 		if (!existing) return;
-		const message = await loadDeletionMessage('accounts.edit', existing.id, accounts, t);
-		Alert.alert(t('accounts.edit.delete'), message, [
+		let contents: Awaited<ReturnType<typeof loadAccountContents>>;
+		try {
+			contents = await loadAccountContents(existing.id);
+		} catch (error) {
+			console.error('Error reading what is linked to the account:', error);
+			return;
+		}
+		if (!isAccountEmpty(contents)) {
+			Alert.alert(t('accounts.edit.delete'), deleteRefusedMessage('accounts.edit', existing.name, contents, t), [
+				{ text: t('accounts.edit.cancel'), style: 'cancel' },
+				...(existing.archived ? [] : [{ text: t('accounts.edit.close'), onPress: () => void startClose() }]),
+				...(mergeCandidates.length > 0 ? [{ text: t('accounts.edit.merge'), onPress: handleMerge }] : []),
+			]);
+			return;
+		}
+		Alert.alert(t('accounts.edit.delete'), deleteConfirmMessage('accounts.edit', existing.name, contents, t), [
 			{ text: t('accounts.edit.cancel'), style: 'cancel' },
 			{
 				text: t('accounts.edit.delete'),
 				style: 'destructive',
 				onPress: async () => {
-					await removeAccount(existing.id);
+					try {
+						await removeAccount(existing.id);
+					} catch (error) {
+						// Ganhou conteúdo entre a pergunta e o toque: o banco recusou e nada mudou.
+						if (error instanceof Error && error.name === 'AccountInUseError') {
+							Alert.alert(t('accounts.edit.delete'), t('accounts.edit.deleteChanged', { name: existing.name }));
+							return;
+						}
+						throw error;
+					}
 					router.back();
 				},
 			},
@@ -649,19 +770,35 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						<Text style={styles.primaryButtonText}>{t('accounts.edit.save')}</Text>
 					</Pressable>
 
+					{existing?.archived && existing.role !== 'external' && balanceCents !== 0 ? (
+						<View style={styles.section}>
+							<Text style={styles.empty}>{t('accounts.edit.closedWithBalance', { amount: formatCents(balanceCents) })}</Text>
+							<Pressable
+								onPress={() => void startClose()}
+								accessibilityRole="button"
+								accessibilityLabel={t('accounts.edit.settle')}
+								accessibilityHint={t('accounts.edit.settleHint')}
+								style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+							>
+								<Ionicons name="swap-horizontal-outline" size={18} color="#FFFFFF" />
+								<Text style={styles.secondaryButtonText}>{t('accounts.edit.settle')}</Text>
+							</Pressable>
+						</View>
+					) : null}
+
 					{existing && (
 						<View style={styles.secondaryActions}>
 							<Pressable
 								{...archiveTarget}
-								onPress={handleArchive}
+								onPress={existing.archived ? handleReopen : () => void startClose()}
 								accessibilityRole="button"
-								accessibilityLabel={existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive')}
-								accessibilityHint={t('accounts.edit.archiveHint')}
+								accessibilityLabel={existing.archived ? t('accounts.edit.reopen') : t('accounts.edit.close')}
+								accessibilityHint={existing.archived ? t('accounts.edit.reopenHint') : t('accounts.edit.closeHint')}
 								style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
 							>
 								<Ionicons name={existing.archived ? 'arrow-undo-outline' : 'archive-outline'} size={18} color="#FFFFFF" />
 								<Text style={styles.secondaryButtonText}>
-									{existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive')}
+									{existing.archived ? t('accounts.edit.reopen') : t('accounts.edit.close')}
 								</Text>
 							</Pressable>
 							{mergeCandidates.length > 0 ? (
@@ -682,6 +819,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								onPress={handleDelete}
 								accessibilityRole="button"
 								accessibilityLabel={t('accounts.edit.delete')}
+								accessibilityHint={t('accounts.edit.deleteHint')}
 								style={({ pressed }) => [styles.secondaryButton, styles.dangerButton, pressed && styles.pressed]}
 							>
 								<Ionicons name="trash-outline" size={18} color="#FF6B6B" />
@@ -786,6 +924,19 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					targets={mergeCandidates}
 					onPick={confirmMerge}
 					onClose={() => setMerging(false)}
+				/>
+			) : null}
+			{existing && closing ? (
+				<MergeTargetSheet
+					visible
+					title={existing.archived ? t('accounts.edit.settle') : t('accounts.edit.close')}
+					subtitle={t(closing.direction === 'out' ? 'accounts.edit.closePick' : 'accounts.edit.closePickIn', {
+						amount: formatCents(closing.amountCents),
+						name: existing.name,
+					})}
+					targets={closeCandidates}
+					onPick={(target) => confirmClose(closing, target)}
+					onClose={() => setClosing(null)}
 				/>
 			) : null}
 		</SafeAreaView>

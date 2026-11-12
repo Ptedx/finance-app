@@ -63,6 +63,11 @@ jest.mock('../../contexts/AccountsContext', () => ({
 		createAccount: jest.fn(),
 		saveAccount: jest.fn(),
 		removeAccount: mockRemoveAccount,
+		closeAccount: jest.fn(),
+		reopenAccount: jest.fn(),
+		planClose: jest.fn(),
+		// Apagar só cartão vazio (SPD-144): aqui todos são.
+		loadAccountContents: jest.fn(async () => ({ transactions: 0, transfers: 0, captures: 0, openingBalanceCents: 0, bills: 0, debts: 0 })),
 		adjustCardInvoices: jest.fn(),
 		convertCardToDebit: mockConvertCardToDebit,
 		mergeCards: mockMergeCards,
@@ -295,7 +300,7 @@ describe('E2E-40 — a pilha não guarda a tela do cartão que sumiu', () => {
 		expect(mockRouter.push).not.toHaveBeenCalled();
 	});
 
-	it('excluir: fecha a edição e a tela do cartão excluído, sem abrir a lista por cima', async () => {
+	it('apagar (o cartão vazio): fecha a edição e a tela do cartão apagado, sem abrir a lista por cima', async () => {
 		mockAccounts.accounts = [NUBANK, DUPLICADO];
 		await mount('dup');
 		await act(async () => {

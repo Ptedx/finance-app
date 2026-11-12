@@ -77,6 +77,7 @@ import {
 	deleteAccount,
 	deleteCategory,
 	deleteTransaction,
+	deleteTransfersOf,
 	initDatabase,
 	mergeCardInto,
 	moveAccountLedger,
@@ -326,17 +327,40 @@ describeSql('carimbo que sempre avança, SQL de verdade (SPD-107)', () => {
 			expectAfter(await stampOf('categories', 'trip'), future);
 		});
 
-		it('apagar a conta: a lápide dela e das transferências passa o carimbo de cada uma', async () => {
+		it('apagar a conta vazia (SPD-144): a lápide dela e a conta a pagar que fica sem conta passam o carimbo de cada uma', async () => {
 			const a = await addAccount(account({ name: 'Reserva' }));
-			const b = await addAccount(account({ name: 'Conta' }));
-			const transfer = await addTransfer({ fromAccountId: b, toAccountId: a, amountCents: 1_000, date: '2026-11-01', note: '' });
+			const bill = await addBill({
+				name: 'Luz',
+				dueDay: 10,
+				amountCents: 15_000,
+				accountId: a,
+				category: null,
+				matchHint: null,
+				debtId: null,
+				paidThrough: null,
+				paidByRef: null,
+				active: true,
+				sortOrder: 0,
+			});
 			const future = aheadBy(5);
 			await pulledWith('accounts', future, 'id = ?', a);
-			await pulledWith('transfers', future, 'id = ?', transfer);
+			await pulledWith('bills', future, 'id = ?', bill);
 
 			await deleteAccount(a);
 
 			expectAfter(await stampOf('accounts', a), future);
+			expectAfter(await stampOf('bills', bill), future);
+		});
+
+		it('a lápide das transferências de um cartão que vira débito passa o carimbo de cada uma', async () => {
+			const a = await addAccount(account({ name: 'Cartão' }));
+			const b = await addAccount(account({ name: 'Conta' }));
+			const transfer = await addTransfer({ fromAccountId: b, toAccountId: a, amountCents: 1_000, date: '2026-11-01', note: '' });
+			const future = aheadBy(5);
+			await pulledWith('transfers', future, 'id = ?', transfer);
+
+			await deleteTransfersOf(a);
+
 			expectAfter(await stampOf('transfers', transfer), future);
 		});
 

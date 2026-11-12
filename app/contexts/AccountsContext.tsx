@@ -12,6 +12,7 @@ import {
 	deleteTransfer,
 	deleteTransfersOf,
 	foldAccountBalance,
+	getAccountContents,
 	getAccount,
 	getAccountActivity,
 	getAccountBalances,
@@ -30,6 +31,7 @@ import {
 	normalizeAccountDraft,
 	reassignCaptureLedger,
 	repointTransfers,
+	retireMergedAccount,
 	runInTransaction,
 	setAccountCardNames,
 	setAccountAnchor,
@@ -53,6 +55,7 @@ import {
 	summarizeAccounts,
 	withProvisionalBalances,
 } from '../utils/accountMath';
+import { type AccountContents, CLOSING_TRANSFER_NOTE, type ClosePlan, planAccountClose } from '../utils/accountClosing';
 import { emitBillsChanged } from '../utils/billEvents';
 import {
 	buildCardSummary,
@@ -217,7 +220,22 @@ interface AccountsContextType {
 	cardLedgerRepair: CardLedgerRepairNotice | null;
 	/** A tela já avisou: some o aviso. */
 	dismissCardLedgerRepair: () => void;
+	/**
+	 * Apaga só conta vazia (SPD-144, `isAccountEmpty`); com conteúdo, rejeita com
+	 * `AccountInUseError` e nada muda.
+	 */
 	removeAccount: (id: string) => Promise<void>;
+	/** O que está ligado à conta: lançamentos, transferências, capturas, saldo de partida, contas a pagar e dívidas. */
+	loadAccountContents: (id: string) => Promise<AccountContents>;
+	/** Como encerrar a conta agora sem mexer no patrimônio (`planAccountClose`). */
+	planClose: (id: string) => Promise<ClosePlan>;
+	/**
+	 * Encerra a conta (`archived`). Com saldo, antes uma transferência de hoje leva o saldo
+	 * para `counterpartId` (ou traz dele): o patrimônio não muda. Rejeita o plano bloqueado.
+	 */
+	closeAccount: (id: string, counterpartId: string | null) => Promise<void>;
+	/** Reabre uma conta encerrada. */
+	reopenAccount: (id: string) => Promise<void>;
 	/**
 	 * Acerta uma conta com o que o banco mostra: quanto já saiu neste mês e quanto ainda há
 	 * na conta. A diferença de gasto entra como lançamento de hoje (aparece no mês e na
@@ -694,9 +712,101 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[afterAccountSaved, refresh]
 	);
 
+	/**
+	 * Apaga só conta vazia (SPD-144): com conteúdo, `deleteAccount` recusa com
+	 * `AccountInUseError` e nada muda. As contas a pagar e dívidas dela ficam sem conta; as
+	 * listas delas estão em providers abaixo deste, e só o aviso as faz reler.
+	 */
 	const removeAccount = useCallback(
 		async (id: string) => {
 			await deleteAccount(id);
+			syncQueue.schedule();
+			emitBillsChanged();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[refresh, refreshData]
+	);
+
+	const loadAccountContents = useCallback((id: string) => getAccountContents(id), []);
+
+	/**
+	 * Como encerrar a conta agora sem mexer no patrimônio (`planAccountClose`), lido do banco
+	 * na hora: o saldo de hoje como a tela mostra (com as compras provisórias da caixa de
+	 * entrada e o rendimento estimado), as compras pendentes dela e o que ela tem com data
+	 * depois de hoje.
+	 */
+	const planClose = useCallback(
+		async (id: string): Promise<ClosePlan> => {
+			const today = todayISO();
+			const [list, ledger, pending, entries, moves] = await Promise.all([
+				getAccounts(),
+				getAccountBalances(today),
+				getPendingCaptures(),
+				getAccountTransactions(id),
+				getAccountTransfers(id),
+			]);
+			const live = list.filter((account) => !account.deletedAt);
+			const account = live.find((candidate) => candidate.id === id);
+			if (!account) throw new Error('Conta não encontrada');
+			const shown = withProvisionalBalances(ledger, live, provisionalEntriesByAccount(pending, live), today);
+			return planAccountClose({
+				account,
+				balanceCents: (shown.get(id) ?? 0) + (accruedYield.get(id) ?? 0),
+				pendingCaptures: pending.filter((capture) => capture.accountId === id).length,
+				futureEntries:
+					entries.filter((entry) => entry.date > today).length + moves.filter((move) => move.date > today).length,
+			});
+		},
+		[accruedYield]
+	);
+
+	/**
+	 * Encerra (`archived`) sem mexer no patrimônio. Com saldo, uma transferência de hoje leva
+	 * o saldo para `counterpartId` (ou traz dele, se negativo) antes: o dinheiro muda de conta
+	 * e o total fica. O histórico não é tocado. Recusa — sem mudar nada — o plano bloqueado
+	 * (cartão devendo, compra a revisar, lançamento futuro) e a transferência sem destino.
+	 *
+	 * Serve também para acertar o saldo de uma conta que já estava encerrada com saldo.
+	 */
+	const closeAccount = useCallback(
+		async (id: string, counterpartId: string | null) => {
+			const plan = await planClose(id);
+			if (plan.kind === 'blocked') throw new Error(`Encerrar recusado: ${plan.reason}`);
+			const account = await getAccount(id);
+			if (!account || account.deletedAt) throw new Error('Conta não encontrada');
+
+			if (plan.kind === 'transfer') {
+				const counterpart = counterpartId && counterpartId !== id ? await getAccount(counterpartId) : null;
+				if (!counterpart || counterpart.deletedAt) throw new Error('Encerrar com saldo precisa de uma conta de destino');
+				const today = todayISO();
+				// O rendimento estimado só existe em memória: entra no saldo registrado antes,
+				// para a transferência levar o saldo inteiro e a conta ficar zerada.
+				const accrued = accruedYield.get(id) ?? 0;
+				if (accrued !== 0) {
+					const ledger = (await getAccountBalances(today)).get(id) ?? 0;
+					await setAccountBalanceToday(id, ledger + accrued);
+				}
+				await addTransfer({
+					fromAccountId: plan.direction === 'out' ? id : counterpart.id,
+					toAccountId: plan.direction === 'out' ? counterpart.id : id,
+					amountCents: plan.amountCents,
+					date: today,
+					note: CLOSING_TRANSFER_NOTE,
+				});
+			}
+			if (!account.archived) await updateAccount({ ...account, archived: true });
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[planClose, accruedYield, refresh, refreshData]
+	);
+
+	/** Reabre uma conta encerrada: volta às listas, aos seletores e aos totais de hoje. */
+	const reopenAccount = useCallback(
+		async (id: string) => {
+			const account = await getAccount(id);
+			if (!account || account.deletedAt || !account.archived) return;
+			await updateAccount({ ...account, archived: false });
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
@@ -1001,7 +1111,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				envelopeMonthlyCents: into.envelopeMonthlyCents ?? from.envelopeMonthlyCents,
 				yieldCdiBp: into.yieldCdiBp ?? from.yieldCdiBp,
 			});
-			await deleteAccount(fromId);
+			await retireMergedAccount(fromId);
 			syncQueue.schedule();
 			// As contas a pagar e as dívidas da que saiu vieram junto (SPD-099); as listas delas
 			// estão em providers abaixo deste, e só o aviso as faz reler.
@@ -1149,7 +1259,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await moveAccountLedger(cardId, accountId, card?.last4 ?? null);
 			// "Pagamentos" para um débito não existiram: tirá-los evita debitar a conta duas vezes.
 			await deleteTransfersOf(cardId);
-			await deleteAccount(cardId);
+			await retireMergedAccount(cardId);
 			syncQueue.schedule();
 			// Como em `mergeAccounts`: contas a pagar e dívidas do cartão foram para a conta.
 			emitBillsChanged();
@@ -1272,6 +1382,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			cardLedgerRepair,
 			dismissCardLedgerRepair,
 			removeAccount,
+			loadAccountContents,
+			planClose,
+			closeAccount,
+			reopenAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
 			addCardCharge,
@@ -1317,6 +1431,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			cardLedgerRepair,
 			dismissCardLedgerRepair,
 			removeAccount,
+			loadAccountContents,
+			planClose,
+			closeAccount,
+			reopenAccount,
 			adjustAccountMonth,
 			adjustCardInvoices,
 			addCardCharge,

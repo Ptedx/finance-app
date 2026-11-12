@@ -62,6 +62,11 @@ jest.mock('../../contexts/AccountsContext', () => ({
 		saveAccount: jest.fn(),
 		removeAccount: mockRemoveAccount,
 		mergeAccounts: mockMergeAccounts,
+		closeAccount: jest.fn(),
+		reopenAccount: jest.fn(),
+		planClose: jest.fn(),
+		// Apagar só conta vazia (SPD-144): aqui todas são.
+		loadAccountContents: jest.fn(async () => ({ transactions: 0, transfers: 0, captures: 0, openingBalanceCents: 0, bills: 0, debts: 0 })),
 		takeNotifications: jest.fn(),
 		takeBusinessNotifications: jest.fn(),
 		adjustAccountMonth: jest.fn(),
@@ -82,6 +87,7 @@ import { AccessibilityInfo, Alert, type AlertButton } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import Sheet from '../../components/cards/Sheet';
 import type { Account } from '../../database/schema';
+import { formatCents } from '../../utils/money';
 import AccountEditScreen from '../AccountEditScreen';
 
 jest.setTimeout(20_000);
@@ -121,6 +127,7 @@ const INTER = account({ id: 'inter', name: 'Inter Teste', bankName: 'Inter', sor
 const RESERVA = account({ id: 'reserva', name: 'Reserva', kind: 'savings', role: 'reserve', sortOrder: 3 });
 const CARTEIRA = account({ id: 'carteira', name: 'Carteira', kind: 'cash', sortOrder: 4 });
 const CARTAO = account({ id: 'cartao', name: 'Nubank Teste', kind: 'credit_card', role: 'card', sortOrder: 5 });
+const C6 = account({ id: 'c6', name: 'C6 Teste', bankName: 'C6', sortOrder: 6 });
 
 let renderer: ReactTestRenderer;
 
@@ -183,8 +190,8 @@ afterEach(() => {
 });
 
 describe('E2E-39 — juntar com outra conta: os destinos numa folha', () => {
-	it('com 4 contas para receber, a folha mostra as 4 (o cartão fica de fora)', async () => {
-		mockAccounts.accounts = [CORRENTE, DUPLICADA, INTER, RESERVA, CARTEIRA, CARTAO];
+	it('com 4 contas para receber, a folha mostra as 4 (a reserva e o cartão, de outro papel, ficam de fora — SPD-144)', async () => {
+		mockAccounts.accounts = [CORRENTE, DUPLICADA, INTER, RESERVA, CARTEIRA, CARTAO, C6];
 		await mount('dup');
 		await act(async () => {
 			pressables('accounts.edit.merge')[0].props.onPress();
@@ -193,7 +200,7 @@ describe('E2E-39 — juntar com outra conta: os destinos numa folha', () => {
 		expect(alertSpy).not.toHaveBeenCalled();
 		expect(openSheet()?.props.title).toBe('accounts.edit.merge');
 		expect(openSheet()?.props.subtitle).toBe(`accounts.edit.mergePick ${JSON.stringify({ name: DUPLICADA.name })}`);
-		expect(targetNames()).toEqual(['Corrente Teste', 'Inter Teste', 'Reserva', 'Carteira']);
+		expect(targetNames()).toEqual(['Corrente Teste', 'Inter Teste', 'Carteira', 'C6 Teste']);
 	});
 
 	it('escolher fecha a folha e confirma num Alert de dois botões; confirmado, junta e fecha a tela', async () => {
@@ -206,7 +213,7 @@ describe('E2E-39 — juntar com outra conta: os destinos numa folha', () => {
 
 		expect(openSheet()).toBeUndefined();
 		expect(alertSpy.mock.calls[0]?.[1]).toBe(
-			`accounts.edit.mergeConfirm ${JSON.stringify({ from: DUPLICADA.name, into: CARTEIRA.name })}`
+			`accounts.edit.mergeConfirm ${JSON.stringify({ from: DUPLICADA.name, into: CARTEIRA.name, total: formatCents(0) })}`
 		);
 		expect((alertSpy.mock.calls[0]?.[2] as AlertButton[]).map((button) => button.text)).toEqual([
 			'accounts.edit.cancel',
@@ -238,7 +245,7 @@ describe('E2E-39 — juntar com outra conta: os destinos numa folha', () => {
 });
 
 describe('E2E-40 — a conta que sumiu', () => {
-	it('excluir fecha a tela da conta, sem abrir nada por cima', async () => {
+	it('apagar (a conta vazia) fecha a tela da conta, sem abrir nada por cima', async () => {
 		mockAccounts.accounts = [CORRENTE, DUPLICADA];
 		await mount('dup');
 		await act(async () => {

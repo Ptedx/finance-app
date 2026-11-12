@@ -1,3 +1,4 @@
+import { AccountInUseError, type AccountContents, isAccountEmpty } from '../utils/accountClosing';
 import { brandFor } from '../utils/bankBrands';
 import { CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, CARD_CHARGE_NOTE_GLOB } from '../utils/cardMath';
 import { parseCardNames, planDebitCardConversions, withCardName } from '../utils/cardNames';
@@ -1287,6 +1288,17 @@ const runInitDatabase = async (): Promise<void> => {
 
 		await seedMissingDefaultCategories();
 
+		// O que a exclusão antiga deixou apontando para conta apagada (SPD-144). Falhar aqui
+		// não impede o app de abrir: o reparo roda de novo na próxima carga.
+		try {
+			const repaired = await repairDeadAccountLinks();
+			if (repaired.unlinked > 0 || repaired.orphaned > 0) {
+				console.log(`Dead account links: ${repaired.unlinked} cleared, ${repaired.orphaned} entry(ies) left on deleted accounts`);
+			}
+		} catch (error) {
+			console.error('Error repairing links to deleted accounts:', error);
+		}
+
 		console.log('Database initialized successfully');
 	} catch (error) {
 		console.error('Error initializing database:', error);
@@ -1760,38 +1772,163 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 };
 
 /**
- * Lápide em todas as transferências que entram ou saem de uma conta.
- *
- * O SQL fica separado porque duas operações precisam exatamente dele: apagar a conta e
- * converter um cartão em conta. Na conversão, `deleteTransfersOf` roda sozinha; em
- * `deleteAccount`, dentro da mesma transação da lápide da conta.
+ * Lápide em todas as transferências que entram ou saem de uma conta. Só a conversão de
+ * cartão em conta (`deleteTransfersOf`) usa: apagar conta não apaga mais transferência
+ * (SPD-144) — conta com transferência não é vazia, e não se apaga.
  */
 const TOMBSTONE_TRANSFERS_OF_ACCOUNT =
 	`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL`;
 
+export { AccountInUseError };
+
 /**
- * Lápide, como nas demais tabelas sincronizadas. Os lançamentos ficam "sem conta" e as
- * transferências da conta ganham lápide junto, na mesma transação.
+ * O que está ligado a uma conta, para decidir se ela é vazia (`isAccountEmpty`) e para a
+ * confirmação dizer por quê. Só linhas vivas; capturas em qualquer status (confirmada,
+ * descartada ou pendente: todas são aviso do banco que passou por esta conta).
+ */
+export const getAccountContents = async (id: string): Promise<AccountContents> => {
+	const row = await db.getFirstAsync<{
+		transactions: number;
+		transfers: number;
+		captures: number;
+		bills: number;
+		debts: number;
+		openingBalanceCents: number | null;
+	}>(
+		`SELECT
+       (SELECT COUNT(*) FROM transactions WHERE accountId = ? AND deletedAt IS NULL) AS transactions,
+       (SELECT COUNT(*) FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL) AS transfers,
+       (SELECT COUNT(*) FROM captures WHERE accountId = ? AND deletedAt IS NULL) AS captures,
+       (SELECT COUNT(*) FROM bills WHERE accountId = ? AND deletedAt IS NULL) AS bills,
+       (SELECT COUNT(*) FROM debts WHERE accountId = ? AND deletedAt IS NULL) AS debts,
+       (SELECT openingBalanceCents FROM accounts WHERE id = ?) AS openingBalanceCents`,
+		[id, id, id, id, id, id, id]
+	);
+	return {
+		transactions: row?.transactions ?? 0,
+		transfers: row?.transfers ?? 0,
+		captures: row?.captures ?? 0,
+		bills: row?.bills ?? 0,
+		debts: row?.debts ?? 0,
+		openingBalanceCents: row?.openingBalanceCents ?? 0,
+	};
+};
+
+/**
+ * A lápide da conta, e as contas a pagar e dívidas ligadas a ela ficam sem conta (carimbo
+ * novo e sujas, para o sync levar): nunca um id morto. Chamar dentro de uma transação.
+ */
+const tombstoneAccountRow = async (id: string, timestamp: string): Promise<void> => {
+	await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [timestamp, timestamp, id]);
+	await db.runAsync(`UPDATE bills SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
+		timestamp,
+		id,
+	]);
+	await db.runAsync(`UPDATE debts SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`, [
+		timestamp,
+		id,
+	]);
+};
+
+/**
+ * Apaga (lápide) uma conta **vazia** (SPD-144): sem lançamento, transferência, captura nem
+ * saldo de partida. Com conteúdo, recusa com `AccountInUseError` e não muda nada.
  *
- * As transferências não podem sobreviver à conta: uma reserva que recebeu R$ 40.000 da
- * principal deixava, ao ser apagada, a perna de saída viva e sem destino — a principal
- * ficava R$ 40.000 mais pobre para sempre, sem nada ter sido gasto. Lançamento é
- * diferente: ele é dinheiro que entrou ou saiu de verdade, e só perde a origem.
+ * O app recalcula saldo, patrimônio e histórico das linhas de hoje: apagar uma conta com
+ * conteúdo reescrevia o passado — apagar a PJ que mandou 2 × R$ 12.000 derrubava o
+ * patrimônio em R$ 24.000, apagar o cartão com fatura paga de R$ 800 o fazia subir. Conta
+ * com conteúdo é encerrada (`archived`) ou juntada com outra. A contagem e a lápide vão na
+ * mesma transação: o que entrar entre a pergunta e o toque também conta.
  */
 export const deleteAccount = async (id: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await runInTransaction(async () => {
-		await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [
-			timestamp,
-			timestamp,
-			id,
-		]);
-		await db.runAsync(
-			`UPDATE transactions SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`,
-			[timestamp, id]
-		);
-		await db.runAsync(TOMBSTONE_TRANSFERS_OF_ACCOUNT, [timestamp, timestamp, id, id]);
+		if (!isAccountEmpty(await getAccountContents(id))) throw new AccountInUseError();
+		await tombstoneAccountRow(id, timestamp);
 	});
+};
+
+/**
+ * A lápide de uma conta que já entregou tudo a outra — juntar contas, ou o cartão de débito
+ * que vira conta. Sem a verificação de vazia: o saldo de partida dela já foi somado na que
+ * fica (`foldAccountBalance`) ou não conta. Contas a pagar e dívidas que sobrassem ficam sem
+ * conta, como no `deleteAccount`.
+ */
+export const retireMergedAccount = async (id: string): Promise<void> => {
+	const timestamp = nowTimestamp();
+	await runInTransaction(async () => {
+		await tombstoneAccountRow(id, timestamp);
+	});
+};
+
+/**
+ * A conta apagada que ainda tem lançamento ou transferência viva volta **encerrada** (sem
+ * lápide, `archived = 1`, carimbo depois da lápide e suja, para o sync levar): o dinheiro
+ * não some. Fica fora dos totais de hoje, como estava, e o histórico a vê de novo.
+ * Devolve quantas voltaram.
+ */
+const reviveAccountsWithMoney = async (ids: Iterable<string>, timestamp: string): Promise<number> => {
+	let revived = 0;
+	for (const id of new Set(ids)) {
+		const result = await db.runAsync(
+			`UPDATE accounts SET deletedAt = NULL, archived = 1, updatedAt = ${NEXT_STAMP}, dirty = 1
+       WHERE id = ? AND deletedAt IS NOT NULL
+         AND (EXISTS (SELECT 1 FROM transactions WHERE accountId = ? AND deletedAt IS NULL)
+           OR EXISTS (SELECT 1 FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL))`,
+			[timestamp, id, id, id, id]
+		);
+		revived += result?.changes ?? 0;
+	}
+	return revived;
+};
+
+/**
+ * Contas a pagar, dívidas e capturas **pendentes** vivas que apontam para uma conta apagada
+ * ficam sem conta (carimbo novo, sujas). Com `ids`, só as que apontam para essas contas.
+ * A captura já confirmada ou descartada não muda: ela é registro do que aconteceu, e o
+ * lançamento dela é que conta. Devolve quantas linhas mudaram.
+ */
+const unlinkDeadAccounts = async (timestamp: string, ids?: Iterable<string>): Promise<number> => {
+	const targets = ids ? [...new Set(ids)] : null;
+	if (targets && targets.length === 0) return 0;
+	const scope = targets ? `AND accountId IN (${targets.map(() => '?').join(', ')})` : '';
+	const dead = `accountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL) ${scope}`;
+	let changed = 0;
+	for (const sql of [
+		`UPDATE bills SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL AND ${dead}`,
+		`UPDATE debts SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL AND ${dead}`,
+		`UPDATE captures SET accountId = NULL, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL AND status = 'pending' AND ${dead}`,
+	]) {
+		const result = await db.runAsync(sql, [timestamp, ...(targets ?? [])]);
+		changed += result?.changes ?? 0;
+	}
+	return changed;
+};
+
+/**
+ * O reparo, na carga, do que a exclusão antiga deixou apontando para conta apagada
+ * (SPD-144): conta a pagar, dívida e captura pendente ficam sem conta. Idempotente.
+ *
+ * Nenhum número muda: a conta a pagar e a dívida não entram em saldo, e a captura pendente
+ * de conta apagada já não contava como provisória (não há conta onde contar).
+ *
+ * O lançamento ou a transferência viva numa conta apagada (o "Já paguei" e a captura
+ * confirmada gravavam o id morto) **não** é tocado: hoje ele não aparece em número nenhum,
+ * e trazê-lo de volta mudaria o gasto do mês dele. Só é contado (`orphaned`), para o log.
+ */
+export const repairDeadAccountLinks = async (): Promise<{ unlinked: number; orphaned: number }> => {
+	const timestamp = nowTimestamp();
+	let outcome = { unlinked: 0, orphaned: 0 };
+	await runInTransaction(async () => {
+		const unlinked = await unlinkDeadAccounts(timestamp);
+		const orphans = await db.getFirstAsync<{ n: number }>(
+			`SELECT (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL AND accountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL))
+            + (SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL AND (fromAccountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL)
+                OR toAccountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL))) AS n`
+		);
+		outcome = { unlinked, orphaned: orphans?.n ?? 0 };
+	});
+	return outcome;
 };
 
 /**
@@ -3889,6 +4026,14 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 		return local !== null && local.updatedAt >= updatedAt;
 	};
 
+	// Para a regra da conta apagada (SPD-144, no fim da transação): só o que esta leva gravou.
+	/** Contas que chegaram com lápide. */
+	const accountTombstones = new Set<string>();
+	/** Contas de lançamentos e transferências vivos que chegaram. */
+	const moneyRefs = new Set<string>();
+	/** Contas de contas a pagar, dívidas e capturas pendentes vivas que chegaram. */
+	const linkRefs = new Set<string>();
+
 	await runInTransaction(async () => {
 		// Categorias primeiro: um lançamento pode vir na mesma leva que a categoria dele.
 		for (const row of changes.categories) {
@@ -3920,6 +4065,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 		// Contas antes dos lançamentos, pelo mesmo motivo das categorias.
 		for (const row of changes.accounts ?? []) {
 			if (await isStale('accounts', row.id, row.updatedAt)) continue;
+			if (row.deletedAt) accountTombstones.add(row.id);
 
 			await db.runAsync(
 				`INSERT INTO accounts
@@ -3970,6 +4116,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 
 		for (const row of changes.transactions) {
 			if (await isStale('transactions', row.id, row.updatedAt)) continue;
+			if (!row.deletedAt && row.accountId) moneyRefs.add(row.accountId);
 
 			await db.runAsync(
 				`INSERT INTO transactions
@@ -4003,6 +4150,10 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 
 		for (const row of changes.transfers ?? []) {
 			if (await isStale('transfers', row.id, row.updatedAt)) continue;
+			if (!row.deletedAt) {
+				if (row.fromAccountId) moneyRefs.add(row.fromAccountId);
+				if (row.toAccountId) moneyRefs.add(row.toAccountId);
+			}
 
 			await db.runAsync(
 				`INSERT INTO transfers (id, fromAccountId, toAccountId, amountCents, date, note, updatedAt, deletedAt, dirty)
@@ -4115,6 +4266,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 
 		for (const row of changes.debts ?? []) {
 			if (await isStale('debts', row.id, row.updatedAt)) continue;
+			if (!row.deletedAt && row.accountId) linkRefs.add(row.accountId);
 
 			const values = [
 				row.name,
@@ -4147,6 +4299,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 		// Contas a pagar (v20), depois das dívidas a que elas se ligam pela `debtId`.
 		for (const row of changes.bills ?? []) {
 			if (await isStale('bills', row.id, row.updatedAt)) continue;
+			if (!row.deletedAt && row.accountId) linkRefs.add(row.accountId);
 
 			const values = [
 				row.name,
@@ -4256,6 +4409,7 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			// daqui, que pode ter decisão ainda não enviada.
 			if (local && local.updatedAt >= row.updatedAt) continue;
 			written.add(row.id);
+			if (!row.deletedAt && row.status === 'pending' && row.accountId) linkRefs.add(row.accountId);
 
 			const values = [
 				row.packageName,
@@ -4320,7 +4474,44 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 				[relatedLocalId, relatedLocalId, localId]
 			);
 		}
+
+		await settleDeadAccountRefs(accountTombstones, moneyRefs, linkRefs);
 	});
+};
+
+/**
+ * A conta apagada num aparelho e usada em outro (SPD-144), resolvida no pull.
+ *
+ * - Lançamento ou transferência viva que chegou apontando para uma conta apagada: a conta
+ *   volta **encerrada** (sem lápide, `archived = 1`, carimbo depois da lápide, suja). O
+ *   dinheiro não some — fica fora dos totais de hoje, como a conta encerrada fica, e o
+ *   histórico o vê. O outro aparelho recebe a conta de volta no próximo pull.
+ * - Lápide de conta que chegou enquanto aqui há lançamento ou transferência **ainda não
+ *   enviado** (`dirty`) nela: a mesma coisa. Só o sujo conta: o app antigo, ao apagar uma
+ *   conta, deixava os lançamentos "sem conta" no servidor, e essa mudança pode vir numa
+ *   página depois da lápide — o lançamento já enviado que ainda aponta para ela aqui vai
+ *   chegar sem conta e não deve ressuscitar nada.
+ * - Conta a pagar, dívida ou captura pendente que chegou apontando para conta apagada, e o
+ *   que aqui aponta para uma conta cuja lápide chegou: ficam sem conta (sujas), nunca com
+ *   um id morto.
+ *
+ * Captura não ressuscita conta: as confirmadas antigas apontam para contas que o app antigo
+ * apagou, e um pull completo traria todas de volta.
+ */
+const settleDeadAccountRefs = async (accountTombstones: Set<string>, moneyRefs: Set<string>, linkRefs: Set<string>): Promise<void> => {
+	if (accountTombstones.size === 0 && moneyRefs.size === 0 && linkRefs.size === 0) return;
+	const timestamp = nowTimestamp();
+	const revive = new Set(moneyRefs);
+	for (const id of accountTombstones) {
+		const pending = await db.getFirstAsync<{ n: number }>(
+			`SELECT (SELECT COUNT(*) FROM transactions WHERE accountId = ? AND deletedAt IS NULL AND dirty = 1)
+            + (SELECT COUNT(*) FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL AND dirty = 1) AS n`,
+			[id, id, id]
+		);
+		if ((pending?.n ?? 0) > 0) revive.add(id);
+	}
+	await reviveAccountsWithMoney(revive, timestamp);
+	await unlinkDeadAccounts(timestamp, [...linkRefs, ...accountTombstones]);
 };
 
 // ---------------------------------------------------------------------------
@@ -4728,6 +4919,9 @@ export default {
 	addAccount,
 	updateAccount,
 	deleteAccount,
+	getAccountContents,
+	retireMergedAccount,
+	repairDeadAccountLinks,
 	getAccountActivity,
 	getAccountBalances,
 	getUnassignedNet,

@@ -15,6 +15,7 @@ import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/Tou
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, AccountDraft } from '../database/schema';
+import { type ClosePlan, closeTargets, isAccountEmpty, mergeTargets } from '../utils/accountClosing';
 import {
 	BANK_BRANDS,
 	brandFor,
@@ -27,8 +28,8 @@ import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
 import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
 import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
-import { loadDeletionMessage } from '../utils/deletionNotice';
-import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
+import { closeBlockedMessage, closeConfirmMessage, deleteConfirmMessage, deleteRefusedMessage, reopenMessage } from '../utils/deletionNotice';
+import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
 /**
  * Criar ou editar um cartão. Nada aqui fala de saldo.
@@ -100,8 +101,21 @@ interface CardEditScreenProps {
 const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit, mergeCards } =
-		useAccounts();
+	const {
+		accounts,
+		bankAccounts,
+		balances,
+		createAccount,
+		saveAccount,
+		removeAccount,
+		closeAccount,
+		reopenAccount,
+		planClose,
+		loadAccountContents,
+		adjustCardInvoices,
+		convertCardToDebit,
+		mergeCards,
+	} = useAccounts();
 	const { transactions } = useTransactions();
 
 	const existing: Account | undefined = useMemo(
@@ -131,8 +145,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [saving, setSaving] = useState(false);
 	// A folha de "Juntar com outro cartão" aberta.
 	const [merging, setMerging] = useState(false);
+	// A folha de "para qual conta volta o crédito" do encerrar, com o plano que a abriu.
+	const [closing, setClosing] = useState<Extract<ClosePlan, { kind: 'transfer' }> | null>(null);
 	// O guia do cadastro do cartão (SPD-129): o final e os dias da fatura.
-	useScreenTour('cardEdit', { blocked: merging });
+	useScreenTour('cardEdit', { blocked: merging || closing !== null });
 	const tourScroll = useTourScroll('cardEdit');
 
 	useEffect(() => {
@@ -335,25 +351,115 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		]);
 	};
 
-	const handleArchive = async () => {
+	/**
+	 * Encerrar (SPD-144), no lugar de "Arquivar": o cartão sai das listas, dos seletores e dos
+	 * totais de hoje, e as faturas ficam. Devendo, não encerra — a fatura se paga antes (um
+	 * "encerramento" que zerasse a dívida seria um pagamento que não houve). Com crédito, uma
+	 * transferência de hoje leva o crédito para a conta escolhida. A confirmação diz o valor.
+	 */
+	// Lido com folga: o saldo do cartão só importa para encerrar, reabrir e o aviso de encerrado.
+	const cardBalance = existing ? (balances?.get(existing.id) ?? existing.openingBalanceCents) : 0;
+	const closeCandidates = existing ? closeTargets(accounts, existing) : [];
+
+	const startClose = async () => {
 		if (!existing) return;
-		await saveAccount({ ...existing, archived: !existing.archived });
-		announce(existing.archived ? t('cards.edit.unarchived') : t('cards.edit.archived'));
-		router.back();
+		let plan: ClosePlan;
+		try {
+			plan = await planClose(existing.id);
+		} catch (error) {
+			console.error('Error planning the card close:', error);
+			return;
+		}
+		const title = existing.archived ? t('cards.edit.settle') : t('cards.edit.close');
+		if (plan.kind === 'blocked') {
+			Alert.alert(title, closeBlockedMessage('cards.edit', existing.name, plan, t));
+			return;
+		}
+		if (plan.kind === 'direct') {
+			confirmClose(plan, null);
+			return;
+		}
+		if (closeCandidates.length === 0) {
+			Alert.alert(title, t('cards.edit.closeNoTarget', { name: existing.name }));
+			return;
+		}
+		setClosing(plan);
 	};
 
-	// A confirmação diz quantos lançamentos ficam "Sem conta" e quantos pagamentos da fatura
-	// são apagados (SPD-141).
+	const confirmClose = (plan: ClosePlan, target: Account | null) => {
+		setClosing(null);
+		if (!existing) return;
+		const wasClosed = existing.archived;
+		const message = closeConfirmMessage('cards.edit', { name: existing.name, target: target?.name, plan, alreadyClosed: wasClosed, roleChange: false }, t);
+		Alert.alert(wasClosed ? t('cards.edit.settle') : t('cards.edit.close'), message, [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{
+				text: t('cards.edit.closeAction'),
+				onPress: async () => {
+					await closeAccount(existing.id, target?.id ?? null);
+					announce(wasClosed ? t('cards.edit.settle') : t('cards.edit.closed'));
+					if (!wasClosed) router.back();
+				},
+			},
+		]);
+	};
+
+	/** Reabrir: com saldo, avisa que ele volta aos totais de hoje. */
+	const handleReopen = async () => {
+		if (!existing) return;
+		const reopen = async () => {
+			await reopenAccount(existing.id);
+			announce(t('cards.edit.reopened'));
+		};
+		const message = reopenMessage('cards.edit', existing.name, cardBalance, t);
+		if (message === null) {
+			await reopen();
+			return;
+		}
+		Alert.alert(t('cards.edit.reopen'), message, [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{ text: t('cards.edit.reopen'), onPress: reopen },
+		]);
+	};
+
+	/**
+	 * Apagar só cartão vazio (SPD-144, `isAccountEmpty`): sem compra, pagamento, aviso nem
+	 * fatura informada — aí nada muda nos números. Com conteúdo, diz por quê e oferece
+	 * Encerrar ou Juntar.
+	 */
 	const handleDelete = async () => {
 		if (!existing) return;
-		const message = await loadDeletionMessage('cards.edit', existing.id, accounts, t);
-		Alert.alert(t('cards.edit.delete'), message, [
+		let contents: Awaited<ReturnType<typeof loadAccountContents>>;
+		try {
+			contents = await loadAccountContents(existing.id);
+		} catch (error) {
+			console.error('Error reading what is linked to the card:', error);
+			return;
+		}
+		if (!isAccountEmpty(contents)) {
+			Alert.alert(t('cards.edit.delete'), deleteRefusedMessage('cards.edit', existing.name, contents, t), [
+				{ text: t('cards.cancel'), style: 'cancel' },
+				...(existing.archived ? [] : [{ text: t('cards.edit.close'), onPress: () => void startClose() }]),
+				...(mergeCandidates.length > 0 ? [{ text: t('cards.edit.merge'), onPress: handleMerge }] : []),
+			]);
+			return;
+		}
+		Alert.alert(t('cards.edit.delete'), deleteConfirmMessage('cards.edit', existing.name, contents, t), [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.delete'),
 				style: 'destructive',
 				onPress: async () => {
-					await removeAccount(existing.id);
+					try {
+						await removeAccount(existing.id);
+					} catch (error) {
+						// Ganhou conteúdo entre a pergunta e o toque: o banco recusou e nada mudou.
+						if (error instanceof Error && error.name === 'AccountInUseError') {
+							Alert.alert(t('cards.edit.delete'), t('cards.edit.deleteChanged', { name: existing.name }));
+							return;
+						}
+						throw error;
+					}
 					leaveRemovedCard(existing.id);
 				},
 			},
@@ -363,13 +469,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	/**
 	 * O mesmo cartão do banco com duas fichas no app: a cadastrada à mão e a que o extrato
 	 * OFX criou, por exemplo (E2E-34). Como "Juntar com outra conta": este sai e o escolhido
-	 * fica, com o fechamento, o limite e a fatura informada dele (`mergeCards`).
+	 * fica, com o fechamento, o limite e a fatura informada dele (`mergeCards`). Só cartão
+	 * ativo com cartão ativo (`mergeTargets`).
 	 */
-	const mergeCandidates = existing
-		? accounts.filter(
-				(account) => account.kind === 'credit_card' && account.id !== existing.id && !account.deletedAt && !account.archived
-			)
-		: [];
+	const mergeCandidates = existing && !existing.archived ? mergeTargets(accounts, existing) : [];
 
 	/**
 	 * Quantos lançamentos do cartão que fica podem estar repetidos depois de juntar (E2E-34): a
@@ -631,13 +734,32 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
 
+					{existing?.archived && cardBalance !== 0 ? (
+						<View style={styles.secondary}>
+							<Text style={styles.explain}>
+								{cardBalance > 0
+									? t('cards.edit.closedWithBalance', { amount: formatCents(cardBalance) })
+									: t('cards.edit.closedOwing', { amount: formatCents(-cardBalance) })}
+							</Text>
+							{cardBalance > 0 ? (
+								<Button
+									label={t('cards.edit.settle')}
+									hint={t('cards.edit.settleHint')}
+									onPress={() => void startClose()}
+									variant="secondary"
+									icon="swap-horizontal-outline"
+								/>
+							) : null}
+						</View>
+					) : null}
+
 					{existing ? (
 						<View style={styles.secondary}>
 							<TourTarget id="cardEdit.archive">
 							<Button
-								label={existing.archived ? t('cards.edit.unarchive') : t('cards.edit.archive')}
-								hint={t('cards.edit.archiveHint')}
-								onPress={handleArchive}
+								label={existing.archived ? t('cards.edit.reopen') : t('cards.edit.close')}
+								hint={existing.archived ? t('cards.edit.reopenHint') : t('cards.edit.closeHint')}
+								onPress={existing.archived ? handleReopen : () => void startClose()}
 								variant="secondary"
 								icon={existing.archived ? 'arrow-undo-outline' : 'archive-outline'}
 							/>
@@ -657,7 +779,13 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								</View>
 							) : null}
 							<TourTarget id="cardEdit.delete">
-							<Button label={t('cards.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							<Button
+								label={t('cards.edit.delete')}
+								hint={t('cards.edit.deleteHint')}
+								onPress={handleDelete}
+								variant="danger"
+								icon="trash-outline"
+							/>
 							</TourTarget>
 						</View>
 					) : null}
@@ -674,6 +802,16 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					targets={mergeCandidates}
 					onPick={confirmMerge}
 					onClose={() => setMerging(false)}
+				/>
+			) : null}
+			{existing && closing ? (
+				<MergeTargetSheet
+					visible
+					title={existing.archived ? t('cards.edit.settle') : t('cards.edit.close')}
+					subtitle={t('cards.edit.closePick', { amount: formatCents(closing.amountCents), name: existing.name })}
+					targets={closeCandidates}
+					onPick={(target) => confirmClose(closing, target)}
+					onClose={() => setClosing(null)}
 				/>
 			) : null}
 		</SafeAreaView>
