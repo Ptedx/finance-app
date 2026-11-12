@@ -132,6 +132,40 @@ export const mergeTargets = <T extends Account>(
 				: account.kind !== 'credit_card' && account.role === from.role)
 	);
 
+/**
+ * Quanto tempo o "Desfazer" fica na tela depois de encerrar (SPD-154): o mesmo da barra da
+ * caixa de entrada. Depois disso, o caminho é "Reabrir", que não apaga a transferência.
+ */
+export const CLOSE_UNDO_WINDOW_MS = 8_000;
+
+/**
+ * O que um encerramento mudou, para desfazê-lo logo depois (SPD-154). Tudo é exclusão
+ * lógica, então desfazer é voltar a conta a ativa, devolver a âncora de antes (encerrar com
+ * saldo pode pôr o rendimento estimado nela) e apagar a transferência de encerramento — e a
+ * impressão digital financeira volta a ser exatamente a de antes.
+ */
+export interface CloseUndo {
+	accountId: string;
+	/** A âncora antes do encerramento. */
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	/** A transferência de encerramento que nasceu nele; nula no encerramento direto. */
+	transferId: string | null;
+	/** Quando encerrou (`Date.now()`). */
+	closedAt: number;
+}
+
+/** Quanto falta para o "Desfazer" sair (0 quando já passou). */
+export const closeUndoRemainingMs = (undo: Pick<CloseUndo, 'closedAt'>, now: number): number =>
+	Math.max(0, undo.closedAt + CLOSE_UNDO_WINDOW_MS - now);
+
+/**
+ * Ainda dá para desfazer: dentro da janela. Relógio que voltou para antes do encerramento
+ * não conta como dentro.
+ */
+export const canUndoClose = (undo: Pick<CloseUndo, 'closedAt'>, now: number): boolean =>
+	now >= undo.closedAt && closeUndoRemainingMs(undo, now) > 0;
+
 /** O banco recusou apagar: a conta tem lançamento, transferência, captura ou saldo de partida. */
 export class AccountInUseError extends Error {
 	constructor(message = 'A conta tem conteúdo: encerre ou junte com outra') {
@@ -146,5 +180,8 @@ export default {
 	planAccountClose,
 	closeTargets,
 	mergeTargets,
+	CLOSE_UNDO_WINDOW_MS,
+	closeUndoRemainingMs,
+	canUndoClose,
 	AccountInUseError,
 };

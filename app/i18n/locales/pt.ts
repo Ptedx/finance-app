@@ -1422,6 +1422,11 @@ const pt = {
 			reopen: 'Reabrir conta',
 			reopenHint: 'A conta volta às listas, aos seletores e aos totais de hoje',
 			reopened: 'Conta reaberta',
+			// O "Desfazer" curto logo depois de encerrar (SPD-154, `components/accounts/ClosingUndoBar.tsx`).
+			undoClose: 'Desfazer',
+			undoCloseHint: 'A conta volta a ativa e a transferência de encerramento, se houve, é apagada',
+			closeUndone: 'Encerramento desfeito',
+			undoCloseExpired: 'Não dá mais para desfazer. Para trazer a conta de volta, use "Reabrir conta": a transferência de encerramento continua.',
 			reopenBalance: '{{name}} tem {{amount}}. Reaberta, esse saldo volta a contar nos totais de hoje.',
 			reopenOwing: '{{name}} está com saldo negativo de {{amount}}. Reaberta, esse saldo volta a contar nos totais de hoje.',
 			delete: 'Apagar conta',
@@ -1846,6 +1851,11 @@ const pt = {
 			reopen: 'Reabrir cartão',
 			reopenHint: 'O cartão volta às listas, aos seletores e aos totais de hoje',
 			reopened: 'Cartão reaberto',
+			// Como em `accounts.edit` (SPD-154).
+			undoClose: 'Desfazer',
+			undoCloseHint: 'O cartão volta a ativo e a transferência de encerramento, se houve, é apagada',
+			closeUndone: 'Encerramento desfeito',
+			undoCloseExpired: 'Não dá mais para desfazer. Para trazer o cartão de volta, use "Reabrir cartão": a transferência de encerramento continua.',
 			reopenBalance: '{{name}} tem {{amount}} de saldo. Reaberto, ele volta a contar nos totais de hoje.',
 			reopenOwing: '{{name}} deve {{amount}}. Reaberto, a dívida volta a contar nos totais de hoje.',
 			delete: 'Apagar cartão',

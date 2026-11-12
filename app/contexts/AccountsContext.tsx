@@ -35,6 +35,7 @@ import {
 	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
+	undoAccountClose,
 	updateAccount,
 	updateTransfer,
 } from '../database/database';
@@ -54,7 +55,15 @@ import {
 	summarizeAccounts,
 	withProvisionalBalances,
 } from '../utils/accountMath';
-import { type AccountContents, CLOSING_TRANSFER_NOTE, type ClosePlan, planAccountClose } from '../utils/accountClosing';
+import {
+	type AccountContents,
+	CLOSING_TRANSFER_NOTE,
+	type ClosePlan,
+	type CloseUndo,
+	canUndoClose,
+	closeUndoRemainingMs,
+	planAccountClose,
+} from '../utils/accountClosing';
 import { canMergeAccounts, DebitFutureError, isDebitTarget, MergeRoleError } from '../utils/accountMerging';
 import { clearRevivalNotices, getRevivalNotices, type RevivalNotice } from '../utils/accountRevival';
 import {
@@ -241,8 +250,22 @@ interface AccountsContextType {
 	/**
 	 * Encerra a conta (`archived`). Com saldo, antes uma transferência de hoje leva o saldo
 	 * para `counterpartId` (ou traz dele): o patrimônio não muda. Rejeita o plano bloqueado.
+	 * Devolve o que desfazer logo depois (nulo se a conta já estava encerrada).
 	 */
-	closeAccount: (id: string, counterpartId: string | null) => Promise<void>;
+	closeAccount: (id: string, counterpartId: string | null) => Promise<CloseUndo | null>;
+	/**
+	 * O encerramento que acabou de acontecer (SPD-154): o "Desfazer" aparece enquanto ele
+	 * existe, por `CLOSE_UNDO_WINDOW_MS` ou até sair da tela (`dismissClosingUndo`).
+	 */
+	closingUndo: CloseUndo | null;
+	/**
+	 * Desfaz o encerramento de `id` que acabou de acontecer: a conta volta a ativa com a âncora
+	 * de antes e a transferência de encerramento é apagada — os números voltam a ser os de
+	 * antes. Fora da janela, ou de outra conta, rejeita sem mudar nada.
+	 */
+	undoClose: (id: string) => Promise<void>;
+	/** O "Desfazer" sai da tela (a tela fechou). */
+	dismissClosingUndo: () => void;
 	/** Reabre uma conta encerrada. */
 	reopenAccount: (id: string) => Promise<void>;
 	/**
@@ -806,6 +829,18 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[accruedYield]
 	);
 
+	// O encerramento que acabou de acontecer (SPD-154). Sai sozinho no fim da janela.
+	const [closingUndo, setClosingUndo] = useState<CloseUndo | null>(null);
+	useEffect(() => {
+		if (!closingUndo) return undefined;
+		const timer = setTimeout(
+			() => setClosingUndo((current) => (current === closingUndo ? null : current)),
+			closeUndoRemainingMs(closingUndo, Date.now())
+		);
+		return () => clearTimeout(timer);
+	}, [closingUndo]);
+	const dismissClosingUndo = useCallback(() => setClosingUndo(null), []);
+
 	/**
 	 * Encerra (`archived`) sem mexer no patrimônio. Com saldo, uma transferência de hoje leva
 	 * o saldo para `counterpartId` (ou traz dele, se negativo) antes: o dinheiro muda de conta
@@ -813,14 +848,18 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	 * (cartão devendo, compra a revisar, lançamento futuro) e a transferência sem destino.
 	 *
 	 * Serve também para acertar o saldo de uma conta que já estava encerrada com saldo.
+	 *
+	 * Encerrando uma conta ativa, guarda o que mudou (a âncora de antes e a transferência
+	 * criada) para o "Desfazer" curto que vem logo depois (SPD-154).
 	 */
 	const closeAccount = useCallback(
-		async (id: string, counterpartId: string | null) => {
+		async (id: string, counterpartId: string | null): Promise<CloseUndo | null> => {
 			const plan = await planClose(id);
 			if (plan.kind === 'blocked') throw new Error(`Encerrar recusado: ${plan.reason}`);
 			const account = await getAccount(id);
 			if (!account || account.deletedAt) throw new Error('Conta não encontrada');
 
+			let transferId: string | null = null;
 			if (plan.kind === 'transfer') {
 				const counterpart = counterpartId && counterpartId !== id ? await getAccount(counterpartId) : null;
 				if (!counterpart || counterpart.deletedAt) throw new Error('Encerrar com saldo precisa de uma conta de destino');
@@ -832,7 +871,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					const ledger = (await getAccountBalances(today)).get(id) ?? 0;
 					await setAccountBalanceToday(id, ledger + accrued);
 				}
-				await addTransfer({
+				transferId = await addTransfer({
 					fromAccountId: plan.direction === 'out' ? id : counterpart.id,
 					toAccountId: plan.direction === 'out' ? counterpart.id : id,
 					amountCents: plan.amountCents,
@@ -841,15 +880,51 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				});
 			}
 			if (!account.archived) await updateAccount({ ...account, archived: true });
+			// A conta que já estava encerrada (acertar o saldo) não ganha "Desfazer": o caminho dela é Reabrir.
+			const undo: CloseUndo | null = account.archived
+				? null
+				: {
+						accountId: id,
+						openingBalanceCents: account.openingBalanceCents,
+						openingBalanceDate: account.openingBalanceDate,
+						transferId,
+						closedAt: Date.now(),
+					};
+			if (undo) setClosingUndo(undo);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+			return undo;
+		},
+		[planClose, accruedYield, refresh, refreshData]
+	);
+
+	/**
+	 * Desfaz o encerramento que acabou de acontecer (SPD-154): a conta volta a ativa, com a
+	 * âncora de antes (se o encerramento a mexeu ao levar o rendimento estimado, ela volta), e a
+	 * transferência de encerramento é apagada (lápide, suja para o sync). Nada mais é tocado:
+	 * a impressão digital financeira volta a ser exatamente a de antes do encerramento.
+	 * Passada a janela, ou para outra conta, rejeita sem mudar nada — o caminho é "Reabrir".
+	 */
+	const undoClose = useCallback(
+		async (id: string) => {
+			const undo = closingUndo;
+			if (!undo || undo.accountId !== id || !canUndoClose(undo, Date.now())) {
+				throw new Error('Desfazer o encerramento não está mais disponível');
+			}
+			setClosingUndo(null);
+			const undone = await undoAccountClose(undo);
+			if (!undone) throw new Error('A conta não está mais encerrada');
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
-		[planClose, accruedYield, refresh, refreshData]
+		[closingUndo, refresh, refreshData]
 	);
 
 	/** Reabre uma conta encerrada: volta às listas, aos seletores e aos totais de hoje. */
 	const reopenAccount = useCallback(
 		async (id: string) => {
+			// Reaberta, não há mais encerramento para desfazer.
+			setClosingUndo((current) => (current?.accountId === id ? null : current));
 			const account = await getAccount(id);
 			if (!account || account.deletedAt || !account.archived) return;
 			await updateAccount({ ...account, archived: false });
@@ -1547,6 +1622,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			loadAccountContents,
 			planClose,
 			closeAccount,
+			closingUndo,
+			undoClose,
+			dismissClosingUndo,
 			reopenAccount,
 			closedReview,
 			settleClosedAccount,
@@ -1602,6 +1680,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			loadAccountContents,
 			planClose,
 			closeAccount,
+			closingUndo,
+			undoClose,
+			dismissClosingUndo,
 			reopenAccount,
 			closedReview,
 			settleClosedAccount,

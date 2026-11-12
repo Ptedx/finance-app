@@ -91,9 +91,11 @@ jest.mock('../../sync/queue', () => ({
 	getState: () => ({ status: 'idle' }),
 }));
 jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: jest.fn() }));
+// Sem CDI, nenhuma conta rende; o teste do rendimento (SPD-154) liga uma taxa e remonta.
+let mockCdiRate: { annualBp: number; date: string; fetchedAt: string } | null = null;
 jest.mock('../../api/cdi', () => ({
-	loadCachedCdi: jest.fn(async () => null),
-	refreshCdi: jest.fn(async () => null),
+	loadCachedCdi: jest.fn(async () => mockCdiRate),
+	refreshCdi: jest.fn(async () => mockCdiRate),
 }));
 
 // A mesma lista a cada render: uma nova dispararia a recarga sem parar.
@@ -129,6 +131,7 @@ import {
 } from '../../database/database';
 import type { AccountDraft } from '../../database/schema';
 import type { SyncChanges } from '../../sync/types';
+import { CLOSE_UNDO_WINDOW_MS, CLOSING_TRANSFER_NOTE } from '../../utils/accountClosing';
 import { netWorth, owedCents, provisionalEntriesByAccount } from '../../utils/accountMath';
 import type { CardEntry } from '../../utils/cardMath';
 import { monthKeyOf, monthKeyRange, todayISO } from '../../utils/dateUtils';
@@ -618,6 +621,7 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 		act(() => renderer?.unmount());
 		renderer = null;
 		current = null;
+		mockCdiRate = null;
 		jest.useRealTimers();
 	});
 
@@ -816,6 +820,175 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 			await reload();
 			expect(await fingerprint()).toEqual(before);
 			expect(activeIds()).toContain(carteira);
+		});
+	});
+
+	describe('desfazer logo depois de encerrar (SPD-154)', () => {
+		/** As transferências de encerramento, vivas ou apagadas. */
+		const closingTransfers = () =>
+			db.getAllAsync<{
+				fromAccountId: string;
+				toAccountId: string;
+				amountCents: number;
+				deletedAt: string | null;
+				dirty: number;
+			}>(
+				'SELECT fromAccountId, toAccountId, amountCents, deletedAt, dirty FROM transfers WHERE note = ?',
+				[CLOSING_TRANSFER_NOTE]
+			);
+		const deletedTransfers = () =>
+			db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM transfers WHERE deletedAt IS NOT NULL');
+		const anchorOf = (id: string) =>
+			db.getFirstAsync<{ openingBalanceCents: number; openingBalanceDate: string }>(
+				'SELECT openingBalanceCents, openingBalanceDate FROM accounts WHERE id = ?',
+				[id]
+			);
+
+		it('Reserva (R$ 300) para a Corrente e desfazer: a impressão digital é exatamente a de antes, e a transferência de encerramento fica apagada (suja, para o sync)', async () => {
+			const before = await fingerprint();
+			await act(async () => {
+				await ctx().closeAccount(reserva, corrente);
+			});
+			await reload();
+			// Encerrou de verdade: os R$ 300 foram para a Corrente (R$ 23.700 → R$ 24.000).
+			expect(ctx().balances.get(corrente)).toBe(2_400_000);
+			expect(activeIds()).not.toContain(reserva);
+			expect(ctx().closingUndo).toEqual(expect.objectContaining({ accountId: reserva }));
+			// O desfazer é só do encerramento que acabou de acontecer.
+			await expect(ctx().undoClose(carteira)).rejects.toThrow();
+
+			await act(async () => {
+				await ctx().undoClose(reserva);
+			});
+			await reload();
+
+			expect(await fingerprint()).toEqual(before);
+			expect(ctx().balances.get(reserva)).toBe(30_000);
+			expect(ctx().balances.get(corrente)).toBe(2_370_000);
+			expect(activeIds()).toContain(reserva);
+			expect(ctx().closingUndo).toBeNull();
+			expect(await closingTransfers()).toEqual([
+				expect.objectContaining({ fromAccountId: reserva, toAccountId: corrente, amountCents: 30_000, dirty: 1 }),
+			]);
+			expect((await closingTransfers())[0].deletedAt).not.toBeNull();
+			expect(
+				await db.getFirstAsync('SELECT archived, dirty FROM accounts WHERE id = ?', [reserva])
+			).toEqual({ archived: 0, dirty: 1 });
+			expect(await anchorOf(reserva)).toEqual({ openingBalanceCents: 0, openingBalanceDate: '2026-09-30' });
+			// Só a transferência de encerramento foi apagada: a de outubro (Corrente → Reserva) continua.
+			expect(await deletedTransfers()).toEqual({ n: 1 });
+		});
+
+		it('conta com saldo zero (a Vazia) e desfazer: igual, e nenhuma transferência nasce nem morre', async () => {
+			const before = await fingerprint();
+			expect(await ctx().planClose(vazia)).toEqual({ kind: 'direct' });
+			await act(async () => {
+				await ctx().closeAccount(vazia, null);
+			});
+			await reload();
+			expect(activeIds()).not.toContain(vazia);
+			expect(ctx().closingUndo).toEqual(expect.objectContaining({ accountId: vazia, transferId: null }));
+
+			await act(async () => {
+				await ctx().undoClose(vazia);
+			});
+			await reload();
+
+			expect(await fingerprint()).toEqual(before);
+			expect(activeIds()).toContain(vazia);
+			expect(await closingTransfers()).toEqual([]);
+			expect(await deletedTransfers()).toEqual({ n: 0 });
+			expect(await anchorOf(vazia)).toEqual({ openingBalanceCents: 0, openingBalanceDate: '2026-10-31' });
+		});
+
+		it('cartão quitado (a Corrente pagou os R$ 500) e desfazer: igual, e o pagamento da fatura continua', async () => {
+			await act(async () => {
+				await ctx().recordCardPayment(cartao, corrente, 50_000, '2026-11-11');
+			});
+			await reload();
+			const before = await fingerprint();
+			await act(async () => {
+				await ctx().closeAccount(cartao, null);
+			});
+			await reload();
+			expect(ctx().creditCards.map((card) => card.id)).not.toContain(cartao);
+
+			await act(async () => {
+				await ctx().undoClose(cartao);
+			});
+			await reload();
+
+			expect(await fingerprint()).toEqual(before);
+			expect(ctx().creditCards.map((card) => card.id)).toContain(cartao);
+			expect(ctx().balances.get(corrente)).toBe(2_320_000);
+			expect(await deletedTransfers()).toEqual({ n: 0 });
+			expect(await anchorOf(cartao)).toEqual({ openingBalanceCents: -80_000, openingBalanceDate: '2026-09-30' });
+		});
+
+		it('reserva que rende 100% do CDI: encerrar leva o rendimento estimado junto; desfazer devolve a âncora de antes, e a impressão digital é a de antes', async () => {
+			mockCdiRate = { annualBp: 1_490, date: '2026-11-10', fetchedAt: new Date().toISOString() };
+			await db.runAsync('UPDATE accounts SET yieldCdiBp = 10000 WHERE id = ?', [reserva]);
+			act(() => renderer?.unmount());
+			await mount();
+			const before = await fingerprint();
+			const shown = ctx().balances.get(reserva) ?? 0;
+			// Os R$ 300 desde 05/10 renderam alguns reais, estimados (não lançados).
+			expect(shown).toBeGreaterThan(30_000);
+
+			await act(async () => {
+				await ctx().closeAccount(reserva, corrente);
+			});
+			await reload();
+			// A transferência levou tudo, rendimento estimado inclusive, e a Reserva fica zerada.
+			expect(ctx().balances.get(corrente)).toBe(2_370_000 + shown);
+			expect(ctx().balances.get(reserva)).toBe(0);
+
+			await act(async () => {
+				await ctx().undoClose(reserva);
+			});
+			await reload();
+
+			expect(await anchorOf(reserva)).toEqual({ openingBalanceCents: 0, openingBalanceDate: '2026-09-30' });
+			expect(ctx().balances.get(reserva)).toBe(shown);
+			expect(await fingerprint()).toEqual(before);
+		});
+
+		it('passados 8 segundos, desfazer não está mais disponível: recusado e nada muda; Reabrir volta a conta e mantém a transferência', async () => {
+			await act(async () => {
+				await ctx().closeAccount(reserva, corrente);
+			});
+			await reload();
+			const closed = await fingerprint();
+
+			jest.setSystemTime(Date.now() + CLOSE_UNDO_WINDOW_MS);
+			await expect(ctx().undoClose(reserva)).rejects.toThrow();
+			await reload();
+
+			expect(await fingerprint()).toEqual(closed);
+			expect(activeIds()).not.toContain(reserva);
+			expect((await closingTransfers()).map((move) => move.deletedAt)).toEqual([null]);
+
+			await act(async () => {
+				await ctx().reopenAccount(reserva);
+			});
+			await reload();
+			expect(activeIds()).toContain(reserva);
+			expect(ctx().balances.get(reserva)).toBe(0);
+			expect(ctx().balances.get(corrente)).toBe(2_400_000);
+			expect((await closingTransfers()).map((move) => move.deletedAt)).toEqual([null]);
+		});
+
+		it('reabrir logo depois de encerrar tira o desfazer da tela: não há o que desfazer duas vezes', async () => {
+			await act(async () => {
+				await ctx().closeAccount(carteira, corrente);
+			});
+			await reload();
+			await act(async () => {
+				await ctx().reopenAccount(carteira);
+			});
+			expect(ctx().closingUndo).toBeNull();
+			await expect(ctx().undoClose(carteira)).rejects.toThrow();
+			expect((await closingTransfers()).map((move) => move.deletedAt)).toEqual([null]);
 		});
 	});
 

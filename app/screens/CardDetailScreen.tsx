@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import ClosingUndoBar from '../components/accounts/ClosingUndoBar';
 import CardFace from '../components/cards/CardFace';
 import { ACCENT, Button, ChipGroup, Field } from '../components/cards/formParts';
 import RenameCardSheet from '../components/cards/RenameCardSheet';
@@ -877,6 +878,8 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 					</Pressable>
 				</View>
 			) : null}
+			{/* Encerrar na edição volta para cá (SPD-154): o "Desfazer" curto aparece aqui. */}
+			<ClosingUndoBar accountId={card.id} scope="cards.edit" />
 		</SafeAreaView>
 	);
 };

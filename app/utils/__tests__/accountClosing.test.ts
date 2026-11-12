@@ -7,7 +7,15 @@
  */
 
 import type { Account } from '../../database/schema';
-import { closeTargets, isAccountEmpty, mergeTargets, planAccountClose } from '../accountClosing';
+import {
+	CLOSE_UNDO_WINDOW_MS,
+	canUndoClose,
+	closeTargets,
+	closeUndoRemainingMs,
+	isAccountEmpty,
+	mergeTargets,
+	planAccountClose,
+} from '../accountClosing';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'x',
@@ -209,5 +217,33 @@ describe('para onde vai o saldo, e com quem juntar', () => {
 		expect(names(mergeTargets(ALL, RESERVA))).toEqual(['Caixinha']);
 		expect(names(mergeTargets(ALL, CARTAO))).toEqual(['Inter']);
 		expect(names(mergeTargets(ALL, PJ))).toEqual([]);
+	});
+});
+
+describe('desfazer logo depois de encerrar (SPD-154)', () => {
+	// Encerrou às 12:00:00 de 11/11/2026.
+	const closedAt = new Date(2026, 10, 11, 12, 0, 0).getTime();
+	const undo = { closedAt };
+
+	it('a janela é curta, como a barra da caixa de entrada: 8 segundos', () => {
+		expect(CLOSE_UNDO_WINDOW_MS).toBe(8_000);
+	});
+
+	it('dentro da janela dá para desfazer, e a barra sabe quanto falta', () => {
+		expect(canUndoClose(undo, closedAt)).toBe(true);
+		expect(closeUndoRemainingMs(undo, closedAt)).toBe(8_000);
+		expect(canUndoClose(undo, closedAt + 7_999)).toBe(true);
+		expect(closeUndoRemainingMs(undo, closedAt + 3_000)).toBe(5_000);
+	});
+
+	it('passados os 8 segundos não dá mais: o caminho é "Reabrir"', () => {
+		expect(canUndoClose(undo, closedAt + 8_000)).toBe(false);
+		expect(canUndoClose(undo, closedAt + 60_000)).toBe(false);
+		expect(closeUndoRemainingMs(undo, closedAt + 8_000)).toBe(0);
+		expect(closeUndoRemainingMs(undo, closedAt + 60_000)).toBe(0);
+	});
+
+	it('relógio que voltou para antes do encerramento não reabre a janela', () => {
+		expect(canUndoClose(undo, closedAt - 1)).toBe(false);
 	});
 });

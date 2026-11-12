@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCOUNT_KIND_ICONS } from '../components/AccountPicker';
 import TransactionItem from '../components/TransactionItem';
 import AdjustAccountSheet from '../components/accounts/AdjustAccountSheet';
+import ClosingUndoBar from '../components/accounts/ClosingUndoBar';
 import MergeTargetSheet from '../components/MergeTargetSheet';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -950,6 +951,8 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					onClose={() => setClosing(null)}
 				/>
 			) : null}
+			{/* "Desfazer" logo depois de encerrar (SPD-154): some sozinho ou ao sair da tela. */}
+			{existing ? <ClosingUndoBar accountId={existing.id} scope="accounts.edit" /> : null}
 		</SafeAreaView>
 	);
 };

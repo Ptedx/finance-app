@@ -1787,6 +1787,42 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 };
 
 /**
+ * Desfaz um encerramento logo depois dele (SPD-154), numa transação: a conta volta a ativa
+ * com a âncora de antes, e a transferência de encerramento ganha lápide. Tudo sujo e com
+ * carimbo novo, para o sync levar. Só desfaz conta viva e ainda encerrada — reaberta ou
+ * apagada nesse meio-tempo, devolve `false` e nada muda.
+ */
+export const undoAccountClose = async (undo: {
+	accountId: string;
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+	transferId: string | null;
+}): Promise<boolean> => {
+	let undone = false;
+	await runInTransaction(async () => {
+		const row = await db.getFirstAsync<{ archived: number }>(
+			'SELECT archived FROM accounts WHERE id = ? AND deletedAt IS NULL',
+			[undo.accountId]
+		);
+		if (!row || row.archived !== 1) return;
+		const timestamp = nowTimestamp();
+		await db.runAsync(
+			`UPDATE accounts SET archived = 0, openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
+     WHERE id = ?`,
+			[undo.openingBalanceCents, undo.openingBalanceDate, timestamp, undo.accountId]
+		);
+		if (undo.transferId) {
+			await db.runAsync(
+				`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`,
+				[timestamp, timestamp, undo.transferId]
+			);
+		}
+		undone = true;
+	});
+	return undone;
+};
+
+/**
  * Lápide em todas as transferências que entram ou saem de uma conta (`deleteTransfersOf`).
  * Nenhum fluxo do app usa mais: apagar conta não apaga transferência (SPD-144), e levar o
  * cartão para o débito as leva para a conta (SPD-152).
@@ -5102,6 +5138,7 @@ export default {
 	findAccountByKey,
 	addAccount,
 	updateAccount,
+	undoAccountClose,
 	deleteAccount,
 	getAccountContents,
 	retireMergedAccount,
