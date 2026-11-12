@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	AccessibilityInfo,
+	Alert,
 	KeyboardAvoidingView,
 	type LayoutChangeEvent,
 	Platform,
@@ -21,9 +22,10 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import { addTransaction } from '../database/database';
 import type { Transaction, TransactionDraft } from '../database/schema';
 import * as syncQueue from '../sync/queue';
+import type { SettledBill } from '../utils/billMatcher';
 import { type CycleRule, cardInstallmentDates, cycleRuleOf, invoiceMonthOf } from '../utils/cardMath';
 import { generateUniqueId } from '../utils/categoryEditUtils';
-import { formatFullDate, formatMonthShort, formatMonthYear, getISODate, parseISODate } from '../utils/dateUtils';
+import { formatFullDate, formatMonthShort, formatMonthYear, getISODate, monthKeyName, parseISODate } from '../utils/dateUtils';
 import { MAX_INSTALLMENTS, splitInstallments } from '../utils/installments';
 import {
 	centsToDisplayInput,
@@ -267,11 +269,15 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				cardLast4: accountId && cardLast4?.length === 4 ? cardLast4 : null,
 			};
 
+			// A conta a pagar que o lançamento quitou: o mês é o mais antigo em aberto (SPD-145),
+			// que pode não ser o do lançamento, e o aviso diz qual foi (SPD-153).
+			let settledBill: SettledBill | null = null;
 			if (isEditing && initialTransaction) {
-				await updateExistingTransaction({
-					...transactionData,
-					id: initialTransaction.id,
-				});
+				settledBill =
+					(await updateExistingTransaction({
+						...transactionData,
+						id: initialTransaction.id,
+					})) ?? null;
 			} else if (installmentCount !== null && installmentCount > 1) {
 				// Parcelado: as linhas vão direto ao livro, como na captura parcelada, e a tela
 				// recarrega uma vez no fim. Parcela não dá baixa em conta a pagar.
@@ -282,10 +288,13 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 				syncQueue.schedule();
 				await refreshData();
 			} else {
-				await addNewTransaction(transactionData);
+				settledBill = (await addNewTransaction(transactionData))?.settledBill ?? null;
 			}
 
 			onSubmit();
+			if (settledBill) {
+				Alert.alert(t('bills.settledMonth', { name: settledBill.name, month: monthKeyName(settledBill.month) }));
+			}
 
 			// Reset form state
 			if (!isEditing) {

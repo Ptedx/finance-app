@@ -777,6 +777,38 @@ describe('baixa automática da conta a pagar (REM-04)', () => {
 		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
 	});
 
+	// SPD-153: a baixa quita o mês mais antigo em aberto (SPD-145), que pode não ser o do
+	// pagamento. A confirmação devolve a conta e o mês quitados para o aviso dizer qual foi.
+	it('com outubro em aberto e o pagamento em novembro, a confirmação diz que quitou outubro', async () => {
+		seedBill();
+		const capture = timPayment({ postedAt: '2026-11-05T12:00:00.000Z' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-10');
+		expect(result?.settledBill).toEqual({ name: 'Celular', month: '2026-10' });
+	});
+
+	it('com só novembro em aberto, a confirmação diz que quitou novembro', async () => {
+		seedBill({ paidThrough: '2026-10' });
+		const capture = timPayment({ postedAt: '2026-11-14T12:00:00.000Z' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-11');
+		expect(result?.settledBill).toEqual({ name: 'Celular', month: '2026-11' });
+	});
+
+	it('sem baixa, a confirmação não diz conta nenhuma', async () => {
+		seedBill();
+		const capture = timPayment({ counterparty: 'PADARIA', merchantKey: 'padaria' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(result?.status).toBe('confirmed');
+		expect(result?.settledBill).toBeNull();
+	});
+
 	it('recebimento e compra parcelada não pagam conta', async () => {
 		seedBill();
 		const income = timPayment({ direction: 'in', kind: 'pix_in' });

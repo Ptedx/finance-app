@@ -15,8 +15,8 @@
  * e depois na linha.
  */
 
-const mockAddNewTransaction = jest.fn(async (_draft: unknown) => 'tx-1');
-const mockUpdateExistingTransaction = jest.fn(async (_edit: unknown) => {});
+const mockAddNewTransaction = jest.fn(async (_draft: unknown): Promise<unknown> => ({ id: 'tx-1', settledBill: null }));
+const mockUpdateExistingTransaction = jest.fn(async (_edit: unknown): Promise<unknown> => null);
 const mockRefreshData = jest.fn(async () => {});
 const mockAddTransaction = jest.fn(async (_draft: unknown): Promise<string> => 'parcela');
 const mockSchedule = jest.fn();
@@ -77,7 +77,7 @@ jest.mock('../../utils/categoryEditUtils', () => ({
 	generateUniqueId: () => 'grupo-1',
 }));
 
-import { AccessibilityInfo, ScrollView, Text, TextInput } from 'react-native';
+import { AccessibilityInfo, Alert, ScrollView, Text, TextInput } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { Transaction } from '../../database/schema';
 import { configureDateLocale } from '../../utils/dateUtils';
@@ -570,5 +570,62 @@ describe('TransactionForm — transferência entre contas (E2E-28)', () => {
 		const tree = await render({ initialTransaction: transaction() });
 		expect(queryTestId(tree, 'transaction-form-type-transfer')).toHaveLength(0);
 		expect(queryTestId(tree, 'transaction-form-type-expense').length).toBeGreaterThan(0);
+	});
+});
+
+// SPD-153: a baixa quita o mês mais antigo em aberto (SPD-145), que pode não ser o do
+// lançamento. Depois de salvar, o formulário avisa a conta e o mês quitados.
+describe('TransactionForm — o aviso da conta a pagar quitada (SPD-153)', () => {
+	let alert: jest.SpyInstance;
+	beforeEach(() => {
+		alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+	});
+	afterEach(() => alert.mockRestore());
+
+	const saveExpense = async () => {
+		const onSubmit = jest.fn();
+		const tree = await render({ onSubmit });
+		await typeAmount(tree, '1500');
+		await pickCategory(tree, 'Compras');
+		await pickAccount(tree, 'Inter');
+		await press(byTestId(tree, 'transaction-form-save'));
+		return onSubmit;
+	};
+
+	it('outubro em aberto, hoje em novembro: o aviso diz a conta e outubro', async () => {
+		mockAddNewTransaction.mockResolvedValueOnce({ id: 'tx-1', settledBill: { name: 'Aluguel', month: '2026-10' } });
+
+		const onSubmit = await saveExpense();
+
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"outubro"}');
+	});
+
+	it('só o mês atual em aberto: o aviso diz novembro', async () => {
+		mockAddNewTransaction.mockResolvedValueOnce({ id: 'tx-1', settledBill: { name: 'Aluguel', month: '2026-11' } });
+
+		await saveExpense();
+
+		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"novembro"}');
+	});
+
+	it('sem conta quitada, nenhum aviso', async () => {
+		mockAddNewTransaction.mockResolvedValueOnce({ id: 'tx-1', settledBill: null });
+
+		const onSubmit = await saveExpense();
+
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+		expect(alert).not.toHaveBeenCalled();
+	});
+
+	it('a edição que quita uma conta também avisa', async () => {
+		mockUpdateExistingTransaction.mockResolvedValueOnce({ name: 'Aluguel', month: '2026-10' } as never);
+		const tree = await render({ initialTransaction: transaction() });
+
+		await press(byTestId(tree, 'transaction-form-save'));
+
+		expect(mockUpdateExistingTransaction).toHaveBeenCalledTimes(1);
+		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"outubro"}');
 	});
 });

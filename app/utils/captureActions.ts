@@ -67,7 +67,15 @@ import {
 import { type AmbiguityCase, ambiguityOfReason, ambiguousReason, learnedReason, TARGET_CASES } from './ambiguityReasons';
 import type { BusinessFeeds } from './businessFeed';
 import { emitBillsChanged } from './billEvents';
-import { type BillMatch, type BillMovement, billPaymentPatch, billPaymentUndo, matchBillPayment } from './billMatcher';
+import {
+	type BillMatch,
+	type BillMovement,
+	billPaymentPatch,
+	billPaymentUndo,
+	matchBillPayment,
+	type SettledBill,
+	settledBillOf,
+} from './billMatcher';
 import {
 	type CaptureChoiceStore,
 	type CaptureChoices,
@@ -314,11 +322,18 @@ type Postable = Pick<
 	'amountCents' | 'direction' | 'counterparty' | 'appLabel' | 'postedAt' | 'accountId' | 'installments' | 'cardLast4'
 >;
 
+/** O lançamento gravado: o id do primeiro e a conta a pagar que ele quitou, se quitou (SPD-153). */
+interface PostedTransaction {
+	id: string;
+	settledBill: SettledBill | null;
+}
+
 /**
  * Grava a compra no livro: uma transação, ou N parcelas datadas um mês após a outra
- * e ligadas por `installmentGroup` (o id da captura). Devolve o id da primeira.
+ * e ligadas por `installmentGroup` (o id da captura). Devolve o id da primeira e a conta
+ * a pagar que ela quitou.
  */
-const postTransaction = async (capture: Postable, categoryId: string, groupId: string): Promise<string> => {
+const postTransaction = async (capture: Postable, categoryId: string, groupId: string): Promise<PostedTransaction> => {
 	const date = localDateOf(capture.postedAt);
 	const note = capture.counterparty ?? capture.appLabel;
 	const count = capture.installments && capture.installments > 1 ? capture.installments : 1;
@@ -335,7 +350,7 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 		});
 		syncQueue.schedule();
 		// Compra parcelada não é pagamento de conta: só a de uma vez pode dar baixa.
-		await settleBillPayment({
+		const match = await settleBillPayment({
 			id,
 			amountCents: capture.amountCents,
 			date,
@@ -343,7 +358,7 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 			text: capture.counterparty,
 			isExpense: capture.direction === 'out',
 		});
-		return id;
+		return { id, settledBill: settledBillOf(match) };
 	}
 
 	const parts = splitInstallments(capture.amountCents, count);
@@ -367,7 +382,7 @@ const postTransaction = async (capture: Postable, categoryId: string, groupId: s
 		if (index === 1) firstId = id;
 	}
 	syncQueue.schedule();
-	return firstId;
+	return { id: firstId, settledBill: null };
 };
 
 /**
@@ -727,7 +742,7 @@ export const applyDecision = async (
 
 		case 'auto_confirm': {
 			const categoryId = resolveCategoryId(decision.categoryId, base.direction, categories);
-			const transactionId = await postTransaction(base, categoryId, id);
+			const { id: transactionId } = await postTransaction(base, categoryId, id);
 			await insertCapture(
 				{
 					...base,
@@ -1159,6 +1174,9 @@ const answeredReason = (reason: string | null): string | null => {
  *
  * No aviso ambíguo (SPD-123) confirmar também é a resposta: a conta ou o cartão escolhido,
  * ou a direção que está na tela, vira a regra do caso (`choices`, onde ela mora).
+ *
+ * Devolve também a conta a pagar que o lançamento quitou (`settledBill`, SPD-153), para o
+ * aviso da revisão dizer a conta e o mês.
  */
 export const confirmCapture = async (
 	id: string,
@@ -1166,7 +1184,7 @@ export const confirmCapture = async (
 	categories: Category[],
 	accountId?: string | null,
 	choices?: CaptureChoiceStore
-): Promise<Capture | null> => {
+): Promise<(Capture & { settledBill: SettledBill | null }) | null> => {
 	const found = await getCapture(id);
 	if (!found || found.status !== 'pending') {
 		logReviewSkipped('confirm', id, found);
@@ -1177,7 +1195,7 @@ export const confirmCapture = async (
 	const ambiguity = ambiguityOfReason(found.reason);
 
 	const resolved = resolveCategoryId(categoryId, capture.direction, categories);
-	const transactionId = await postTransaction(capture, resolved, capture.id);
+	const { id: transactionId, settledBill } = await postTransaction(capture, resolved, capture.id);
 	await updateCapture(id, {
 		status: 'confirmed',
 		question: null,
@@ -1221,7 +1239,7 @@ export const confirmCapture = async (
 		...(ambiguity ? { ambiguity: ambiguity.case, choiceLearned: learnedChoice } : {}),
 	});
 
-	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId };
+	return { ...capture, status: 'confirmed', suggestedCategory: resolved, transactionId, settledBill };
 };
 
 /**

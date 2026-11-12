@@ -19,6 +19,7 @@ import {
 } from '../database/captures';
 import type { Capture } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
+import type { SettledBill } from '../utils/billMatcher';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
 	answerCaptureDirection,
@@ -58,6 +59,11 @@ export interface UndoableAction {
 	/** Os itens a reverter. Uma transferência pode envolver duas pernas. */
 	ids: string[];
 	at: number;
+	/**
+	 * A conta a pagar que a confirmação quitou, para o aviso dizer a conta e o mês (SPD-153):
+	 * o mês é o mais antigo em aberto, que pode não ser o do pagamento.
+	 */
+	bill?: SettledBill | null;
 }
 
 interface CapturesContextType {
@@ -251,14 +257,14 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		if (hasCategories) void drainAndLoad();
 	}, [hasCategories, drainAndLoad]);
 
-	const remember = useCallback((kind: UndoableKind, ids: string[]) => {
-		setLastAction({ kind, ids, at: Date.now() });
+	const remember = useCallback((kind: UndoableKind, ids: string[], bill: SettledBill | null = null) => {
+		setLastAction({ kind, ids, at: Date.now(), bill });
 	}, []);
 
 	const confirm = useCallback(
 		async (id: string, categoryId: string, accountId?: string | null) => {
 			const result = await confirmCapture(id, categoryId, categoriesRef.current, accountId, captureChoiceStore);
-			if (result) remember('confirm', [id]);
+			if (result) remember('confirm', [id], result.settledBill ?? null);
 			await Promise.all([load(), reloadLedger()]);
 		},
 		[load, reloadLedger, remember]

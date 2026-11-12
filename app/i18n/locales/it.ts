@@ -1917,8 +1917,10 @@ account: {
 		revert: 'Ripristina',
 		revertHint: "Riporta la voce nell'elenco da rivedere e rimuove ciò che ha creato",
 		undo: 'Annulla',
+		settledBill: 'ha pagato {{name}}',
 		done: {
 			confirm: 'Voce aggiunta',
+			confirmBill: 'Voce aggiunta. {{name}}: {{month}} pagato',
 			dismiss: 'Ignorata',
 			transfer: 'Segnata come trasferimento',
 			duplicate: 'Segnata come duplicato',
@@ -2103,6 +2105,7 @@ account: {
 		undoPaidHint: 'Riporta {{name}} a non pagato per {{month}}',
 		markedPaid: '{{name}} segnato come pagato',
 		markedPaidMonth: '{{name}}: {{month}} segnato come pagato',
+		settledMonth: '{{name}}: {{month}} pagato',
 		unmarkedPaid: '{{name}} è di nuovo da pagare',
 		payOlderFirst: 'Salda prima {{month}}: "Già pagato" parte dal mese più vecchio da pagare.',
 		pay: {

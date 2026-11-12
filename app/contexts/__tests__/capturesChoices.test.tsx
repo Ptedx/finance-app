@@ -143,3 +143,36 @@ describe('as escolhas aprendidas passam pelo contexto', () => {
 		);
 	});
 });
+
+describe('a conta a pagar quitada pela confirmação vai para o aviso (SPD-153)', () => {
+	it('o último ato guarda a conta e o mês quitados, e o desfazer continua revertendo a captura', async () => {
+		mockConfirm.mockResolvedValue({ id: 'cap-1', settledBill: { name: 'Aluguel', month: '2026-10' } });
+		await mount();
+
+		await act(async () => {
+			await captures.confirm('cap-1', 'other_expense');
+		});
+		expect(captures.lastAction).toMatchObject({
+			kind: 'confirm',
+			ids: ['cap-1'],
+			bill: { name: 'Aluguel', month: '2026-10' },
+		});
+
+		const { revertCapture } = jest.requireMock('../../utils/captureActions') as { revertCapture: jest.Mock };
+		await act(async () => {
+			await captures.undo();
+		});
+		expect(revertCapture).toHaveBeenCalledWith('cap-1');
+		expect(captures.lastAction).toBeNull();
+	});
+
+	it('sem baixa, o último ato não tem conta', async () => {
+		await mount();
+
+		await act(async () => {
+			await captures.confirm('cap-1', 'other_expense');
+		});
+		expect(captures.lastAction).toMatchObject({ kind: 'confirm', ids: ['cap-1'] });
+		expect(captures.lastAction?.bill ?? null).toBeNull();
+	});
+});

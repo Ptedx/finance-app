@@ -1913,8 +1913,10 @@ const pt = {
 		revert: 'Reverter',
 		revertHint: 'Devolve este item à lista de revisão e remove o que ele criou',
 		undo: 'Desfazer',
+		settledBill: 'quitou {{name}}',
 		done: {
 			confirm: 'Lançamento adicionado',
+			confirmBill: 'Lançamento adicionado. {{name}}: {{month}} quitado',
 			dismiss: 'Descartado',
 			transfer: 'Marcado como transferência',
 			duplicate: 'Marcado como duplicado',
@@ -2099,6 +2101,7 @@ const pt = {
 		undoPaidHint: 'Volta {{name}} para em aberto em {{month}}',
 		markedPaid: '{{name}} marcada como paga',
 		markedPaidMonth: '{{name}}: {{month}} marcado como pago',
+		settledMonth: '{{name}}: {{month}} quitado',
 		unmarkedPaid: '{{name}} voltou para em aberto',
 		payOlderFirst: 'Quite {{month}} antes: "Já paguei" vai do mês mais antigo em aberto.',
 		pay: {

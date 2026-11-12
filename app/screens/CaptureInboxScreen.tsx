@@ -22,12 +22,15 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { getStatementClaimedCaptureIds } from '../database/captures';
-import type { Account, Capture, Category, Transaction } from '../database/schema';
+import { getBills } from '../database/database';
+import type { Account, Bill, Capture, Category, Transaction } from '../database/schema';
 import { ambiguityOfReason } from '../utils/ambiguityReasons';
+import { onBillsChanged } from '../utils/billEvents';
+import { billNameSettledBy } from '../utils/billMatcher';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage, STATEMENT_LEDGER_SUSPECT_REASON } from '../utils/captureMatcher';
 import type { CaptureDirection } from '../utils/captureParser';
-import { formatDate, getISODate } from '../utils/dateUtils';
+import { formatDate, getISODate, monthKeyName } from '../utils/dateUtils';
 import { splitInstallments } from '../utils/installments';
 import { formatCents } from '../utils/money';
 
@@ -636,15 +639,18 @@ interface ResolvedRowProps {
 	categories: Category[];
 	onRevert: (capture: Capture) => void;
 	revertLabel: string;
+	/** A conta a pagar que o lançamento desta captura quitou (SPD-153): só o nome, sem o mês. */
+	settledBillName?: string | null;
 }
 
-const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert, revertLabel }) => {
+const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert, revertLabel, settledBillName }) => {
 	const { t } = useTranslation();
 	const isIncome = capture.direction === 'in';
 	const category = categories.find((c) => c.id === capture.suggestedCategory);
 	const status = t(`captures.status.${capture.status}`, { defaultValue: capture.status });
 	const reason = resolvedReasonLabel(capture, t);
-	const detail = resolvedDetail(capture, category?.name ?? null, reason);
+	const settled = settledBillName ? t('captures.settledBill', { name: settledBillName }) : '';
+	const detail = [resolvedDetail(capture, category?.name ?? null, reason), settled].filter(Boolean).join(' · ');
 	const summary = `${status}. ${isIncome ? '+' : '−'} ${formatCents(capture.amountCents)}, ${
 		capture.counterparty ?? capture.appLabel
 	}. ${detail}`;
@@ -780,6 +786,29 @@ const CaptureInboxScreen = () => {
 			(c) => c.autoConfirmed && c.status === 'confirmed' && new Date(c.updatedAt).getTime() >= cutoff
 		);
 	}, [resolved]);
+
+	// As contas a pagar, para dizer na linha do aprovado sozinho qual conta o lançamento quitou
+	// (SPD-153). Relidas quando os aprovados mudam e quando as contas mudam (a baixa chega por
+	// `emitBillsChanged`), como as pendentes que o extrato casou.
+	const [bills, setBills] = useState<Bill[]>([]);
+	const autoApprovedRefs = useMemo(() => autoApproved.map((c) => c.transactionId ?? '').join(','), [autoApproved]);
+	useEffect(() => {
+		if (!autoApprovedRefs) return undefined;
+		let active = true;
+		const reload = () => {
+			getBills()
+				.then((rows) => {
+					if (active) setBills(rows);
+				})
+				.catch((error) => console.error('Failed to load bills:', error));
+		};
+		reload();
+		const stop = onBillsChanged(reload);
+		return () => {
+			active = false;
+			stop();
+		};
+	}, [autoApprovedRefs]);
 
 	const announce = useCallback((message: string) => {
 		AccessibilityInfo.announceForAccessibility(message);
@@ -987,6 +1016,7 @@ const CaptureInboxScreen = () => {
 								categories={categories}
 								onRevert={handleRevert}
 								revertLabel={t('captures.undo')}
+								settledBillName={billNameSettledBy(bills, capture.transactionId)}
 							/>
 						))}
 					</View>
@@ -1051,7 +1081,15 @@ const CaptureInboxScreen = () => {
 
 			{undoVisible && lastAction && (
 				<View style={styles.undoBar} accessibilityLiveRegion="polite">
-					<Text style={styles.undoText}>{t(`captures.done.${lastAction.kind}`)}</Text>
+					<Text style={styles.undoText}>
+						{/* A baixa quita o mês mais antigo em aberto (SPD-145): o aviso diz qual (SPD-153). */}
+						{lastAction.bill
+							? t('captures.done.confirmBill', {
+									name: lastAction.bill.name,
+									month: monthKeyName(lastAction.bill.month),
+								})
+							: t(`captures.done.${lastAction.kind}`)}
+					</Text>
 					<Pressable
 						onPress={handleUndo}
 						accessibilityRole="button"

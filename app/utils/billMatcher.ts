@@ -52,6 +52,30 @@ export interface BillMatch {
 	month: string;
 }
 
+/**
+ * A conta a pagar que um lançamento quitou, para o aviso dizer qual foi (SPD-153): o mês
+ * quitado é o mais antigo em aberto, que pode não ser o do pagamento.
+ */
+export interface SettledBill {
+	name: string;
+	/** Mês quitado, `YYYY-MM`. */
+	month: string;
+}
+
+/** O que o aviso precisa de uma baixa: o nome da conta e o mês. */
+export const settledBillOf = (match: BillMatch | null): SettledBill | null =>
+	match ? { name: match.bill.name, month: match.month } : null;
+
+/**
+ * O nome da conta a pagar cuja última baixa foi o lançamento `ref`, ou `null`. Só o nome: o
+ * mês não sai daqui com segurança, porque "Só marcar como paga" avança `paidThrough` e mantém
+ * o `paidByRef` (`markedPaid`) — o mês gravado pode ser um pago à mão depois (SPD-153).
+ */
+export const billNameSettledBy = (bills: Pick<Bill, 'name' | 'paidByRef' | 'deletedAt'>[], ref: string | null): string | null => {
+	if (!ref) return null;
+	return bills.find((bill) => bill.paidByRef === ref && !bill.deletedAt)?.name ?? null;
+};
+
 /** Número do dia, em UTC só para contar: não depende do fuso do aparelho. */
 const dayNumber = (isoDate: string): number => {
 	const [year, month, day] = isoDate.slice(0, 10).split('-').map(Number);

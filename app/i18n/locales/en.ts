@@ -1916,8 +1916,10 @@ account: {
 		revert: 'Revert',
 		revertHint: 'Brings this back to the review list and removes what it created',
 		undo: 'Undo',
+		settledBill: 'paid {{name}}',
 		done: {
 			confirm: 'Entry added',
+			confirmBill: 'Entry added. {{name}}: {{month}} paid',
 			dismiss: 'Dismissed',
 			transfer: 'Marked as transfer',
 			duplicate: 'Marked as duplicate',
@@ -2100,6 +2102,7 @@ account: {
 		undoPaidHint: 'Sets {{name}} back to unpaid for {{month}}',
 		markedPaid: '{{name}} marked as paid',
 		markedPaidMonth: '{{name}}: {{month}} marked as paid',
+		settledMonth: '{{name}}: {{month}} paid',
 		unmarkedPaid: '{{name}} is unpaid again',
 		payOlderFirst: 'Pay off {{month}} first: "I paid it" starts from the oldest unpaid month.',
 		pay: {
