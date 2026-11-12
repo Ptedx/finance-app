@@ -25,6 +25,9 @@ import BillStatusPill from './BillStatusPill';
  * dela ("10/10"), e o rodapé ganha a linha "Em atraso" — o valor dos meses anteriores e
  * quantas contas —, separada de "Falta pagar este mês", que continua só o mês. Os avisos de
  * atraso param no D+3; é essa linha que lembra até quitar.
+ *
+ * Nada a pagar no mês com alguma conta pulada: "Nada em aberto este mês", não "Tudo pago"
+ * (SPD-156).
  */
 
 const ACCENT = '#15E8FE';
@@ -82,12 +85,16 @@ const BillsMonthCard: React.FC = () => {
 	}
 
 	const allPaid = month.dueCents === 0 && month.variableCount === 0;
+	// Nada a pagar porque uma conta do mês foi pulada não é "Tudo pago" (SPD-156).
+	const allPaidText = month.rows.some((row) => row.status === 'skipped')
+		? t('bills.nothingOpen')
+		: t('bills.allPaid');
 	const variableNote = month.variableCount > 0 ? t('bills.variableNote', { count: month.variableCount }) : null;
 	const lateNote = month.lateCount > 0 ? t('bills.lateCount', { count: month.lateCount }) : null;
 
 	if (soon.rows.length === 0) {
 		const left = allPaid
-			? t('bills.allPaid')
+			? allPaidText
 			: [
 					t('bills.home.leftToPay', { amount: formatCents(month.dueCents) }),
 					month.variableCount > 0 ? t('bills.home.plusVariable', { count: month.variableCount }) : null,
@@ -126,7 +133,7 @@ const BillsMonthCard: React.FC = () => {
 			(row) => `${row.bill.name}, ${subtitleOf(row, month.month, t)}, ${t(`bills.status.${row.status}`)}`
 		),
 		more,
-		`${t('bills.toPay')}, ${allPaid ? t('bills.allPaid') : formatCents(month.dueCents)}`,
+		`${t('bills.toPay')}, ${allPaid ? allPaidText : formatCents(month.dueCents)}`,
 		variableNote,
 		lateNote,
 		hasOverdue ? `${t('bills.home.overdue')}, ${overdueValue}` : null,
@@ -171,7 +178,7 @@ const BillsMonthCard: React.FC = () => {
 			<View style={styles.footer}>
 				<View style={styles.footerLine}>
 					<Text style={styles.footerLabel}>{t('bills.toPay')}</Text>
-					<Text style={styles.footerValue}>{allPaid ? t('bills.allPaid') : formatCents(month.dueCents)}</Text>
+					<Text style={styles.footerValue}>{allPaid ? allPaidText : formatCents(month.dueCents)}</Text>
 				</View>
 				{variableNote ? <Text style={styles.footerSub}>{variableNote}</Text> : null}
 				{lateNote ? <Text style={[styles.footerSub, styles.late, styles.lateStrong]}>{lateNote}</Text> : null}

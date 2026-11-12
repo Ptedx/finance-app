@@ -11,10 +11,14 @@
  * cruas, com os valores entre chaves.
  */
 
-import type { Bill } from '../../../database/schema';
+import type { Bill, BillPayment } from '../../../database/schema';
 
 const mockPush = jest.fn();
-const mockState: { bills: Bill[]; today: string } = { bills: [], today: '2026-11-11' };
+const mockState: { bills: Bill[]; payments: BillPayment[]; today: string } = {
+	bills: [],
+	payments: [],
+	today: '2026-11-11',
+};
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ push: mockPush, back: jest.fn() }),
@@ -38,7 +42,8 @@ jest.mock('../../../contexts/BillsContext', () => {
 			return {
 				bills: mockState.bills,
 				activeBills,
-				month: monthBills(mockState.bills, mockState.today),
+				payments: mockState.payments,
+				month: monthBills(mockState.bills, mockState.today, mockState.payments),
 				today: mockState.today,
 				isLoading: false,
 			};
@@ -92,6 +97,7 @@ const pressables = () =>
 beforeEach(() => {
 	mockPush.mockClear();
 	mockState.today = '2026-11-11';
+	mockState.payments = [];
 });
 
 afterEach(async () => {
@@ -254,6 +260,26 @@ describe('nada vencendo em 7 dias e nada atrasado', () => {
 		await mount();
 		const line = texts().find((text) => text.includes('bills.home.nothingSoon'));
 		expect(line).toContain('bills.allPaid');
+		expect(line).not.toContain('bills.nothingOpen');
+	});
+
+	it('o que zerou o mês foi um mês pulado: "Nada em aberto este mês", não "Tudo pago" (SPD-156)', async () => {
+		mockState.bills = [bill({ id: 'academia', name: 'Academia teste', dueDay: 5 })];
+		mockState.payments = [
+			{
+				id: 'pulado',
+				billId: 'academia',
+				month: '2026-11',
+				status: 'skipped',
+				transactionId: null,
+				amountCents: null,
+				updatedAt: '',
+			},
+		];
+		await mount();
+		const line = texts().find((text) => text.includes('bills.home.nothingSoon'));
+		expect(line).toContain('bills.nothingOpen');
+		expect(line).not.toContain('bills.allPaid');
 	});
 });
 

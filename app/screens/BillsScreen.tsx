@@ -52,6 +52,9 @@ import { formatCents } from '../utils/money';
  * muda. No mês atual, com um mês anterior em aberto, além de "Quitar outubro" há "Pagar só
  * novembro", e a pergunta diz que outubro continua em atraso. O mês pulado ou pago fora de ordem
  * tem "Desfazer", que reabre aquele mês.
+ *
+ * Quando não falta nada no mês e alguma conta dele foi pulada, o total diz "Nada em aberto",
+ * não "Tudo pago" (SPD-156).
  */
 
 /** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
@@ -106,7 +109,15 @@ const BillsScreen: React.FC = () => {
 	const shownRows = filterMonthRows(shown.rows, filter);
 	const shownName = monthNameOf(shownKey);
 	const toPayLabel = isCurrentMonth ? t('bills.toPay') : t('bills.toPayIn', { month: shownName });
-	const allPaidLabel = isCurrentMonth ? t('bills.allPaid') : t('bills.allPaidIn', { month: shownName });
+	// Nada a pagar no mês porque uma conta foi pulada não é "Tudo pago" (SPD-156).
+	const anySkipped = shown.rows.some((row) => row.status === 'skipped');
+	const allPaidLabel = anySkipped
+		? isCurrentMonth
+			? t('bills.nothingOpen')
+			: t('bills.nothingOpenIn', { month: shownName })
+		: isCurrentMonth
+			? t('bills.allPaid')
+			: t('bills.allPaidIn', { month: shownName });
 	const isPastMonth = shownKey < currentKey;
 	// Para trás, só até onde o atraso conta (3 meses).
 	const canGoBack = monthOffset > -BILL_OVERDUE_MONTHS;
@@ -583,6 +594,7 @@ const BillsScreen: React.FC = () => {
 											style={({ pressed }) => [
 												styles.rowAction,
 												paid ? styles.rowActionUndo : styles.rowActionPay,
+												!action.secondary && styles.rowActionLast,
 												pressed && styles.pressed,
 											]}
 										>
@@ -618,6 +630,7 @@ const BillsScreen: React.FC = () => {
 											style={({ pressed }) => [
 												styles.rowAction,
 												styles.rowActionUndo,
+												styles.rowActionLast,
 												pressed && styles.pressed,
 											]}
 										>
@@ -856,13 +869,17 @@ const styles = StyleSheet.create({
 		color: 'rgba(255,255,255,0.85)',
 		marginBottom: 2,
 	},
+	// A borda existe sempre, transparente; a atrasada só troca a cor. Sem `overflow: 'hidden'`:
+	// com ele, o cartão que perdia um botão (atrasada → paga ou pulada) ficava em branco no
+	// Android até a tela redesenhar (SPD-156). Os cantos de baixo vêm do último botão
+	// (`rowActionLast`).
 	row: {
 		backgroundColor: '#1E1E1E',
 		borderRadius: 12,
-		overflow: 'hidden',
+		borderWidth: 1,
+		borderColor: 'transparent',
 	},
 	rowLate: {
-		borderWidth: 1,
 		borderColor: 'rgba(255,107,107,0.6)',
 	},
 	rowInactive: {
@@ -900,6 +917,11 @@ const styles = StyleSheet.create({
 	},
 	rowActionPay: {
 		backgroundColor: ACCENT,
+	},
+	// O raio do cartão menos a borda de 1px: o fundo do botão acompanha o canto do cartão.
+	rowActionLast: {
+		borderBottomLeftRadius: 11,
+		borderBottomRightRadius: 11,
 	},
 	rowActionUndo: {
 		backgroundColor: 'rgba(255,255,255,0.06)',
