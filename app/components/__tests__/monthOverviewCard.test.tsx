@@ -5,6 +5,7 @@
  */
 
 const mockPeriod = { selectedMonth: 11, selectedYear: 2026 };
+const mockLeftover = { cents: -58_000 };
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 
@@ -27,7 +28,7 @@ jest.mock('../../contexts/AccountsContext', () => ({
 			envelopes: [],
 			savedCents: 0,
 			yieldCents: 0,
-			leftoverCents: -58_000,
+			leftoverCents: mockLeftover.cents,
 			savingsRateBp: null,
 		},
 		provisionalMonth: null,
@@ -42,6 +43,7 @@ jest.mock('../PeriodSelector', () => () => null);
 jest.mock('../BudgetEditor', () => () => null);
 
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { formatCents } from '../../utils/money';
 import MonthOverviewCard from '../MonthOverviewCard';
 
 let renderer: ReactTestRenderer;
@@ -63,6 +65,7 @@ const show = (month: number, year: number) => {
 };
 
 beforeEach(() => {
+	mockLeftover.cents = -58_000;
 	// Hoje: 7 de novembro de 2026, meio-dia no fuso local.
 	jest.useFakeTimers({ now: new Date(2026, 10, 7, 12) });
 });
@@ -91,5 +94,31 @@ describe('E2E-43 — título do quadro do mês', () => {
 	it('o mesmo mês de outro ano não é o mês corrente', () => {
 		show(11, 2025);
 		expect(title()).toBe('month.otherTitle');
+	});
+});
+
+describe('SPD-161 — a cor do "Sobrou"', () => {
+	/** A cor final do valor do "Sobrou" (o último estilo que define cor vale). */
+	const leftoverColor = (cents: number): string | undefined => {
+		mockLeftover.cents = cents;
+		show(11, 2026);
+		const box = renderer.root.find(
+			(node) => (node.type as unknown) === 'View' && String(node.props.accessibilityLabel ?? '').startsWith('month.leftover,')
+		);
+		const value = box.find((node) => isHostText(node) && node.props.children === formatCents(cents));
+		const styles = [value.props.style].flat(Number.POSITIVE_INFINITY).filter(Boolean) as Array<{ color?: string }>;
+		return styles.reduce<string | undefined>((color, style) => style.color ?? color, undefined);
+	};
+
+	it('sobrou dinheiro: verde, como as receitas', () => {
+		expect(leftoverColor(745_801)).toBe('#4CAF50');
+	});
+
+	it('R$ 0,00: branco', () => {
+		expect(leftoverColor(0)).toBe('#FFFFFF');
+	});
+
+	it('gastou mais do que entrou: vermelho, como antes', () => {
+		expect(leftoverColor(-58_000)).toBe('#FF6B6B');
 	});
 });

@@ -163,7 +163,16 @@ const MonthOverviewCard: React.FC = () => {
 			<TourTarget id="month.leftover">
 				<View style={styles.leftover} accessible accessibilityLabel={`${t('month.leftover')}, ${formatCents(month.leftoverCents)}. ${ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}`}>
 					<Text style={styles.leftoverLabel}>{t('month.leftover')}</Text>
-					<Text style={[styles.leftoverValue, month.leftoverCents < 0 && styles.expense]}>{formatCents(month.leftoverCents)}</Text>
+					{/* Verde quando sobrou, vermelho quando faltou, branco só no zero (SPD-161). */}
+					<Text
+						style={[
+							styles.leftoverValue,
+							month.leftoverCents > 0 && styles.income,
+							month.leftoverCents < 0 && styles.expense,
+						]}
+					>
+						{formatCents(month.leftoverCents)}
+					</Text>
 					<Text style={styles.leftoverSub}>
 						{ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}
 					</Text>

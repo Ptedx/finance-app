@@ -93,6 +93,7 @@ beforeEach(() => {
 	mockFocus.effect = null;
 	appStateHandler = null;
 	mockCaptures.enabled = false;
+	mockCaptures.pendingCount = 0;
 	mockCaptures.pending = [];
 	mockCaptures.resolved = [];
 	mockCaptures.lastNotificationAt = null;
@@ -258,5 +259,26 @@ describe('o aviso de captura parada', () => {
 		await mount();
 
 		expect(stalledText()).toBe('captures.stalled|5');
+	});
+});
+
+describe('a faixa de lançamentos para revisar (SPD-161)', () => {
+	const texts = (): unknown[] =>
+		renderer?.root.findAll((node) => typeof node.props.children === 'string').map((node) => node.props.children) ?? [];
+
+	it('mostra a contagem sem o rótulo "Revisar" ao lado, que empurrava o texto para fora da linha', async () => {
+		mockCaptures.enabled = true;
+		mockCaptures.pendingCount = 4;
+		await mount();
+		expect(texts()).toContain('captures.homeBanner|4');
+		expect(texts()).not.toContain('captures.homeReview');
+	});
+
+	it('o texto da contagem fica em no máximo duas linhas, centrado com o ícone, o "?" e a seta', async () => {
+		mockCaptures.enabled = true;
+		mockCaptures.pendingCount = 4;
+		await mount();
+		const label = renderer?.root.find((node) => node.props.children === 'captures.homeBanner|4');
+		expect(label?.props.numberOfLines).toBe(2);
 	});
 });

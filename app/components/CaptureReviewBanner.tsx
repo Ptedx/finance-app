@@ -143,9 +143,10 @@ const CaptureReviewBanner: React.FC = () => {
 			style={styles.banner}
 		>
 			<Ionicons name="notifications-outline" size={22} color="#000000" />
-			<Text style={styles.text}>{sampleLabel}</Text>
+			<Text style={styles.text} numberOfLines={2}>
+				{sampleLabel}
+			</Text>
 			<SampleTag />
-			<Text style={styles.action}>{t('captures.homeReview')}</Text>
 		</View>
 	) : null;
 
@@ -213,9 +214,12 @@ const CaptureReviewBanner: React.FC = () => {
 			style={({ pressed }) => [styles.banner, pressed && styles.pressed]}
 		>
 			<Ionicons name="notifications-outline" size={22} color="#000000" />
-			<Text style={styles.text}>{label}</Text>
-			<Text style={styles.action}>{t('captures.homeReview')}</Text>
-			{/* O "?" da trilha da revisão (SPD-131), ao lado de "Revisar". */}
+			{/* Sem o rótulo "Revisar" ao lado: ele tirava espaço do texto, que saía da linha do ícone
+			    (SPD-161). A faixa inteira já abre a revisão, e a seta diz isso. */}
+			<Text style={styles.text} numberOfLines={2}>
+				{label}
+			</Text>
+			{/* O "?" da trilha da revisão (SPD-131). */}
 			<HelpButton trail="review" here={{ screen: 'home' }} color="#000000" />
 			<Ionicons name="chevron-forward" size={20} color="#000000" />
 		</Pressable>
