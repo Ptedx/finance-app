@@ -11,6 +11,7 @@ import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { formatCents } from '../utils/money';
 import type { EnvelopeMonth } from '../utils/monthOverview';
 import { ACCOUNT_KIND_ICONS } from './AccountPicker';
+import { useTourTarget } from './tour/TourContext';
 
 /**
  * "Contas" na tela inicial. Só contas: cartões têm a própria seção, com limite e fatura.
@@ -140,6 +141,12 @@ const AccountsOverview: React.FC = () => {
 	const router = useRouter();
 	const { bankAccounts, balances, overview, provisionalOverview, month, unassignedNetCents, isLoading } = useAccounts();
 	const dismissedBalanceUnset = useDismissedBalanceUnset();
+	// A trilha da tela inicial (SPD-131c): o título com "Gerenciar" e os totais; sem conta, o
+	// "Adicionar conta"; e a linha "Sem conta".
+	const headerTarget = useTourTarget(bankAccounts.length > 0 ? 'home.accounts' : undefined);
+	const totalsTarget = useTourTarget('home.accountsTotals');
+	const addTarget = useTourTarget('home.accountsAdd');
+	const unassignedTarget = useTourTarget('home.unassigned');
 
 	if (isLoading) return null;
 
@@ -157,7 +164,7 @@ const AccountsOverview: React.FC = () => {
 
 	return (
 		<View style={styles.section}>
-			<View style={styles.header}>
+			<View {...headerTarget} style={styles.header}>
 				<Text style={styles.title} accessibilityRole="header">
 					{t('accounts.groupAccounts')}
 				</Text>
@@ -177,6 +184,7 @@ const AccountsOverview: React.FC = () => {
 					<View style={styles.empty}>
 						<Text style={styles.emptyText}>{t('accounts.empty')}</Text>
 						<Pressable
+							{...addTarget}
 							onPress={() => router.push('/accounts/new')}
 							accessibilityRole="button"
 							accessibilityLabel={t('accounts.add')}
@@ -189,6 +197,7 @@ const AccountsOverview: React.FC = () => {
 				) : (
 					<>
 						<View
+							{...totalsTarget}
 							style={styles.totals}
 							accessible
 							accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}${cashPending ? `, ${cashPending}` : ''}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}${netPending ? `, ${netPending}` : ''}`}
@@ -220,6 +229,7 @@ const AccountsOverview: React.FC = () => {
 
 						{unassignedNetCents !== 0 && (
 							<Pressable
+								{...unassignedTarget}
 								onPress={() => router.push('/accounts/unassigned')}
 								accessibilityRole="button"
 								accessibilityLabel={`${t('accounts.unassigned')}, ${formatCents(unassignedNetCents)}`}

@@ -3106,6 +3106,135 @@ const pt = {
 				},
 			},
 		},
+		bills: {
+			title: 'Contas a pagar e lembretes',
+			steps: {
+				'1': {
+					title: 'Contas do mês.',
+					body: 'O que está atrasado ou vence nos próximos 7 dias, e quanto ainda falta pagar no mês. Conta de valor variável fica fora do total. Tocar no card abre Contas a pagar.',
+					missing: 'Cadastre boletos e contas fixas para ser avisado antes do vencimento.',
+				},
+				'2': {
+					title: 'Cadastrar.',
+					body: 'Aluguel, internet, plano de saúde, escola: você cadastra uma vez, e ela vale todo mês.',
+				},
+				'3': {
+					title: 'Nome e dia.',
+					body: 'O dia vai de 1 a 31; em mês mais curto, vale o último dia.',
+				},
+				'4': {
+					title: 'Valor.',
+					body: 'Deixe em branco se muda todo mês, como a conta de celular.',
+				},
+				'5': {
+					title: 'De onde sai.',
+					body: 'A conta de onde o pagamento sai e a categoria do gasto, as duas opcionais. "Nenhuma", no alto da lista, tira a escolha.',
+				},
+				'6': {
+					title: 'Como o banco escreve.',
+					body: 'Palavras do pagamento no aviso ou no extrato, separadas por vírgula (ex.: internet, fibra). A baixa automática procura estas palavras e também o nome da conta.',
+				},
+				'7': {
+					title: 'Os lembretes.',
+					body: 'Às 9h: 3 dias antes, no dia e, se não pagou, nos 3 dias seguintes. A fatura do cartão também avisa 3 dias antes e no dia. Os lembretes só chegam com "Notificações" ligado em Configurações.',
+				},
+				'8': {
+					title: 'Já paguei.',
+					body: 'Com valor fixo, o app pergunta: "Lançar e marcar paga" lança a saída com a data de hoje, da conta que paga (ou sem conta, se ela não tiver uma); "Só marcar como paga" não lança nada. De valor variável, só marca. Se o pagamento já está lançado, o app só marca, sem repetir.',
+				},
+				'9': {
+					title: 'Aviso esperando revisão.',
+					body: 'Se o aviso do banco desse pagamento está em "Revisar", o app marca a conta como paga e pede para você confirmar o aviso lá; o lançamento entra com ele.',
+				},
+				'10': {
+					title: 'Desfazer.',
+					body: 'Volta a conta para em aberto naquele mês. Se o app tinha lançado a saída, ela sai junto.',
+				},
+				'11': {
+					title: 'Baixa automática.',
+					body: 'Uma despesa (aviso confirmado ou lançada à mão, à vista) de 10 dias antes a 5 dias depois do vencimento, da conta que paga (se ela tiver uma), com o valor exato, ou perto dele e com o nome no texto, marca a conta como paga sozinha. Conta de valor variável precisa do nome no texto. Depois desses 5 dias, só com o nome. Na dúvida, o app não marca.',
+				},
+				'12': {
+					title: 'Desativar ou apagar.',
+					body: 'Desativada, a conta não avisa nem entra no mês. Cadastrou depois do vencimento? O app pergunta se este mês já está pago. Conta que vem de uma dívida segue a dívida: não tem "Desativar" e não pode ser apagada enquanto a dívida estiver ativa.',
+				},
+			},
+		},
+		ofx: {
+			title: 'Extrato do banco (OFX)',
+			steps: {
+				'1': {
+					title: 'Importar extrato.',
+					body: 'Baixe o extrato em OFX no app ou no site do banco e escolha o arquivo aqui. Funciona também no iPhone.',
+				},
+				'2': {
+					title: 'De qual conta é.',
+					body: 'Quando não tem certeza, o app pergunta "Este extrato é da conta …?" (ou "do cartão …"): "Este", "Criar novo" e, se houver outra candidata, "Outra conta" (ou "Outro cartão").',
+				},
+				'3': {
+					title: 'O resumo.',
+					body: 'Depois de importar, o app mostra quantas linhas o arquivo tinha, quantas já estavam no app, quantas vão para revisar, quantas entraram sozinhas e quantas ficaram de fora. "Revisar agora", quando há o que revisar, abre a revisão.',
+				},
+				'4': {
+					title: 'Nada repete.',
+					body: 'A linha que já veio por aviso ou que você digitou não entra de novo. Fatura, investimentos e transferências ficam de fora; o resto vai para a revisão, e só entram sozinhos os lugares que o app já aprendeu.',
+				},
+				'5': {
+					title: 'Aviso confirmado.',
+					body: 'Em "Revisar", um aviso que esperava revisão e apareceu no extrato fica marcado "Valor confirmado pelo extrato". Ele só sai da revisão sozinho se o app já sabe a categoria.',
+				},
+				'6': {
+					title: 'Linha que parece repetida.',
+					body: 'Em "Revisar", a linha do extrato com o mesmo valor de um lançamento seu em outra conta, com até 1 dia de diferença, vem marcada "Parece repetido". "É o mesmo, ficar com um" descarta a linha do extrato e fica o seu.',
+				},
+				'7': {
+					title: 'Parcelas.',
+					body: 'Uma compra "3/10" no extrato do cartão, sem as outras parcelas no app, vira a pergunta "Parcelas que faltam": "Criar parcelas" cria as que faltam no cartão; "Agora não" deixa como está.',
+				},
+			},
+		},
+		home: {
+			title: 'Tela inicial',
+			steps: {
+				'1': {
+					title: 'Tem algo para fazer?',
+					body: 'Os avisos do banco que esperam você. Tocar abre a revisão.',
+				},
+				'2': {
+					title: 'Sem conta.',
+					body: 'Sem uma conta, desinstalar o app apaga tudo. O aviso aparece depois de 20 lançamentos; o X o esconde de vez.',
+				},
+				'3': {
+					title: 'O que vence.',
+					body: 'O que está atrasado ou vence nos próximos 7 dias, e quanto ainda falta pagar no mês. Tocar abre Contas a pagar.',
+					missing: 'Cadastre boletos e contas fixas para ser avisado antes do vencimento.',
+				},
+				'4': {
+					title: 'Como está o mês.',
+					body: 'Receitas, gastos, guardado, o que sobrou e o orçamento.',
+				},
+				'5': {
+					title: 'Cartões.',
+					body: '"Faturas abertas", o limite disponível (quando informado) e, com fatura fechada a pagar, "A pagar agora". Os cartões de débito também aparecem. Tocar num cartão de crédito abre a fatura.',
+				},
+				'6': {
+					title: 'Contas.',
+					body: 'O saldo de cada conta, "Em caixa" e o que sobra "Depois das faturas". "Gerenciar" abre a lista das contas.',
+				},
+				'7': {
+					title: 'Lançamentos sem conta.',
+					body: 'Tocar abre a lista: você escolhe de qual conta eles saíram e move todos de uma vez.',
+				},
+				'8': {
+					title: 'Datas antes do saldo.',
+					body: 'Lançamento datado antes do saldo informado da conta sai do total sem entrar no saldo dela. Depois de mover, use "Acertar com o banco" na conta.',
+				},
+				'9': {
+					title: 'O resto do app.',
+					body: '"+" lança à mão. Lançamentos guarda o histórico, Patrimônio mostra o que você tem e deve, Relatórios mostram se você está no caminho. Puxar a tela para baixo atualiza (e sincroniza, com conta).',
+				},
+			},
+		},
 	},
 } as const;
 

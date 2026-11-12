@@ -3105,6 +3105,135 @@ account: {
 				},
 			},
 		},
+		bills: {
+			title: 'Bills and reminders',
+			steps: {
+				'1': {
+					title: 'Bills this month.',
+					body: 'What is late or due in the next 7 days, and how much is still left to pay this month. Bills with a varying amount stay out of the total. Tapping the card opens Bills.',
+					missing: 'Add bills and fixed expenses to be reminded before they are due.',
+				},
+				'2': {
+					title: 'Add a bill.',
+					body: 'Rent, internet, health plan, school: you add it once, and it counts every month.',
+				},
+				'3': {
+					title: 'Name and day.',
+					body: 'The day goes from 1 to 31; in a shorter month, the last day counts.',
+				},
+				'4': {
+					title: 'Amount.',
+					body: 'Leave it blank if it changes every month, like the phone bill.',
+				},
+				'5': {
+					title: 'Where it comes from.',
+					body: 'The account the payment comes from and the spending category, both optional. "None", at the top of the list, clears the choice.',
+				},
+				'6': {
+					title: 'How the bank writes it.',
+					body: 'Words from the payment in the alert or the statement, separated by commas (e.g. internet, fiber). Automatic marking looks for these words and also for the bill\'s name.',
+				},
+				'7': {
+					title: 'The reminders.',
+					body: 'At 9 a.m.: 3 days before, on the day and, if you haven\'t paid, on the 3 following days. The card bill also reminds you 3 days before and on the day. Reminders only arrive with "Notifications" on in Settings.',
+				},
+				'8': {
+					title: 'I paid it.',
+					body: 'With a fixed amount, the app asks: "Record and mark paid" records the payment with today\'s date, from the paying account (or with no account, if the bill has none); "Just mark as paid" records nothing. With a varying amount, it only marks. If the payment is already recorded, the app only marks it, without repeating.',
+				},
+				'9': {
+					title: 'Alert waiting for review.',
+					body: 'If the bank alert for this payment is in "Review", the app marks the bill as paid and asks you to confirm the alert there; the transaction comes in with it.',
+				},
+				'10': {
+					title: 'Undo.',
+					body: 'Puts the bill back to open for that month. If the app had recorded the payment, it goes away too.',
+				},
+				'11': {
+					title: 'Automatic marking.',
+					body: 'An expense (confirmed alert or entered by hand, paid in full) from 10 days before to 5 days after the due date, from the paying account (if the bill has one), with the exact amount, or close to it and with the name in the text, marks the bill as paid by itself. A bill with a varying amount needs the name in the text. After those 5 days, only with the name. When in doubt, the app doesn\'t mark it.',
+				},
+				'12': {
+					title: 'Turn off or delete.',
+					body: 'Turned off, the bill doesn\'t remind you or count in the month. Added it after the due date? The app asks whether this month is already paid. A bill that comes from a debt follows the debt: it has no "Turn off" and can\'t be deleted while the debt is active.',
+				},
+			},
+		},
+		ofx: {
+			title: 'Bank statement (OFX)',
+			steps: {
+				'1': {
+					title: 'Import a statement.',
+					body: 'Download the statement as OFX in the bank\'s app or website and choose the file here. It also works on iPhone.',
+				},
+				'2': {
+					title: 'Which account it is from.',
+					body: 'When it isn\'t sure, the app asks "Is this statement from the account …?" (or "from the card …"): "This one", "Create new" and, if there is another candidate, "Another account" (or "Another card").',
+				},
+				'3': {
+					title: 'The summary.',
+					body: 'After importing, the app shows how many lines the file had, how many were already in the app, how many go to review, how many came in by themselves and how many were left out. "Review now", when there is something to review, opens the review.',
+				},
+				'4': {
+					title: 'Nothing repeats.',
+					body: 'A line that already came from an alert or that you typed doesn\'t come in again. Card bills, investments and transfers are left out; the rest goes to review, and only places the app has already learned come in by themselves.',
+				},
+				'5': {
+					title: 'Confirmed alert.',
+					body: 'In "Review", an alert that was waiting for review and showed up in the statement is marked "Amount confirmed by the statement". It only leaves the review by itself if the app already knows the category.',
+				},
+				'6': {
+					title: 'Line that looks repeated.',
+					body: 'In "Review", a statement line with the same amount as one of your transactions in another account, up to 1 day apart, comes marked "Looks repeated". "Same entry, keep one" discards the statement line and keeps yours.',
+				},
+				'7': {
+					title: 'Installments.',
+					body: 'A "3/10" purchase in the card statement, without the other installments in the app, becomes the question "Missing installments": "Create installments" creates the missing ones on the card; "Not now" leaves it as it is.',
+				},
+			},
+		},
+		home: {
+			title: 'Home screen',
+			steps: {
+				'1': {
+					title: 'Anything to do?',
+					body: 'The bank alerts waiting for you. Tapping opens the review.',
+				},
+				'2': {
+					title: 'No account.',
+					body: 'Without an account, uninstalling the app erases everything. The notice shows up after 20 transactions; the X hides it for good.',
+				},
+				'3': {
+					title: 'What is due.',
+					body: 'What is late or due in the next 7 days, and how much is still left to pay this month. Tapping opens Bills.',
+					missing: 'Add bills and fixed expenses to be reminded before they are due.',
+				},
+				'4': {
+					title: 'How the month is going.',
+					body: 'Income, spending, saved, what is left and the budget.',
+				},
+				'5': {
+					title: 'Cards.',
+					body: '"Open bills", the available limit (when filled in) and, with a closed bill to pay, "To pay now". Debit cards show up too. Tapping a credit card opens its bill.',
+				},
+				'6': {
+					title: 'Accounts.',
+					body: 'The balance of each account, "Cash" and what is left "After card bills". "Manage" opens the list of accounts.',
+				},
+				'7': {
+					title: 'Transactions with no account.',
+					body: 'Tapping opens the list: you choose which account they came from and move them all at once.',
+				},
+				'8': {
+					title: 'Dates before the balance.',
+					body: 'A transaction dated before the account\'s informed balance leaves the total without entering its balance. After moving, use "Match the bank" on the account.',
+				},
+				'9': {
+					title: 'The rest of the app.',
+					body: '"+" records by hand. Transactions keeps the history, Net worth shows what you own and owe, Reports show whether you are on track. Pulling the screen down refreshes (and syncs, with an account).',
+				},
+			},
+		},
 	},
 } as const;
 

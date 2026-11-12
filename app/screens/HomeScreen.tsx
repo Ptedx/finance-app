@@ -11,6 +11,7 @@ import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
+import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import TourNotice from '../components/tour/TourNotice';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -73,9 +74,13 @@ const HomeScreen = () => {
 			<StatusBar barStyle="light-content" />
 
 			<View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-				<Text style={styles.headerTitle} accessibilityRole="header">
-					{t('home.title')}
-				</Text>
+				{/* O "?" da trilha da tela inicial (SPD-131c), ao lado do título. */}
+				<View style={styles.titleRow}>
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('home.title')}
+					</Text>
+					<HelpButton trail="home" here={{ screen: 'home' }} />
+				</View>
 				<Pressable
 					{...settingsTarget}
 					onPress={() => router.push({ pathname: '/settings' })}
@@ -123,6 +128,11 @@ const styles = StyleSheet.create({
 		justifyContent: 'space-between',
 		paddingHorizontal: 16,
 		paddingBottom: 12,
+	},
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
 	},
 	headerTitle: {
 		fontSize: 28,

@@ -20,6 +20,7 @@ import { accountSelectOptions } from '../components/AccountPicker';
 import { categoryChoices } from '../components/CategoryPicker';
 import { Button, Field } from '../components/cards/formParts';
 import { SelectField } from '../components/SelectField';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -95,6 +96,10 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const [matchHint, setMatchHint] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A trilha das contas a pagar (SPD-131c) mostra os campos daqui, sem digitar nem salvar nada.
+	// A conta gravada fica pronta quando carrega.
+	useScreenTour('billEdit', { ready: !billId || Boolean(existing) });
+	const tourScroll = useTourScroll('billEdit');
 
 	// O que os campos tinham ao abrir: vazio na conta nova; na gravada, quando ela carrega (até
 	// lá, `null`, e sair não pergunta).
@@ -287,7 +292,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					</Text>
 				</View>
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					{existing && fromDebt ? (
 						<View style={styles.note} accessible>
 							<Ionicons name="information-circle-outline" size={20} color="#15E8FE" />
@@ -309,15 +314,17 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 						/>
 					) : null}
 
-					<Field
-						label={t('bills.edit.name')}
-						value={name}
-						onChangeText={setName}
-						editable={!fromDebt}
-						placeholder={t('bills.edit.namePlaceholder')}
-						placeholderTextColor="rgba(255,255,255,0.35)"
-						error={errors.name}
-					/>
+					<TourTarget id="billEdit.name">
+						<Field
+							label={t('bills.edit.name')}
+							value={name}
+							onChangeText={setName}
+							editable={!fromDebt}
+							placeholder={t('bills.edit.namePlaceholder')}
+							placeholderTextColor="rgba(255,255,255,0.35)"
+							error={errors.name}
+						/>
+					</TourTarget>
 					{looksLikeCardBill ? (
 						<View style={[styles.note, styles.warning]} accessible accessibilityLiveRegion="polite">
 							<Ionicons name="card-outline" size={20} color="#FFD166" />
@@ -325,63 +332,73 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 						</View>
 					) : null}
 
-					<Field
-						label={t('bills.edit.dueDay')}
-						hint={t('bills.edit.dueDayHint')}
-						value={dueDay}
-						onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
-						editable={!fromDebt}
-						keyboardType="number-pad"
-						maxLength={2}
-						error={errors.dueDay}
-					/>
+					<TourTarget id="billEdit.dueDay">
+						<Field
+							label={t('bills.edit.dueDay')}
+							hint={t('bills.edit.dueDayHint')}
+							value={dueDay}
+							onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
+							editable={!fromDebt}
+							keyboardType="number-pad"
+							maxLength={2}
+							error={errors.dueDay}
+						/>
+					</TourTarget>
 
-					<Field
-						label={t('bills.edit.amount')}
-						optionalLabel={fromDebt ? undefined : t('bills.edit.optional')}
-						hint={fromDebt ? undefined : t('bills.edit.amountHint')}
-						value={fromDebt && amount === '' ? t('bills.variable') : amount}
-						onChangeText={(text) => setAmount(formatAmountInput(text))}
-						onBlur={() => setAmount(amount.trim() === '' ? '' : finaliseAmountInput(amount))}
-						editable={!fromDebt}
-						keyboardType="decimal-pad"
-						selectTextOnFocus
-						error={errors.amount}
-					/>
+					<TourTarget id="billEdit.amount">
+						<Field
+							label={t('bills.edit.amount')}
+							optionalLabel={fromDebt ? undefined : t('bills.edit.optional')}
+							hint={fromDebt ? undefined : t('bills.edit.amountHint')}
+							value={fromDebt && amount === '' ? t('bills.variable') : amount}
+							onChangeText={(text) => setAmount(formatAmountInput(text))}
+							onBlur={() => setAmount(amount.trim() === '' ? '' : finaliseAmountInput(amount))}
+							editable={!fromDebt}
+							keyboardType="decimal-pad"
+							selectTextOnFocus
+							error={errors.amount}
+						/>
+					</TourTarget>
 
 					{bankAccounts.length > 0 && !fromDebt ? (
-						<SelectField
-							label={t('bills.edit.account')}
-							optionalLabel={t('bills.edit.optional')}
-							options={accountSelectOptions(bankAccounts)}
-							selected={accountId}
-							onSelect={setAccountId}
-							clearLabel={t('select.none')}
-							onClear={() => setAccountId(null)}
-						/>
+						<TourTarget id="billEdit.account">
+							<SelectField
+								label={t('bills.edit.account')}
+								optionalLabel={t('bills.edit.optional')}
+								options={accountSelectOptions(bankAccounts)}
+								selected={accountId}
+								onSelect={setAccountId}
+								clearLabel={t('select.none')}
+								onClear={() => setAccountId(null)}
+							/>
+						</TourTarget>
 					) : null}
 
 					{expenseCategories.length > 0 ? (
-						<SelectField
-							label={t('bills.edit.category')}
-							optionalLabel={t('bills.edit.optional')}
-							options={categoryChoices(expenseCategories, false).options}
-							selected={category}
-							onSelect={setCategory}
-							clearLabel={t('select.none')}
-							onClear={() => setCategory(null)}
-						/>
+						<TourTarget id="billEdit.category">
+							<SelectField
+								label={t('bills.edit.category')}
+								optionalLabel={t('bills.edit.optional')}
+								options={categoryChoices(expenseCategories, false).options}
+								selected={category}
+								onSelect={setCategory}
+								clearLabel={t('select.none')}
+								onClear={() => setCategory(null)}
+							/>
+						</TourTarget>
 					) : null}
 
-					<Field
-						label={t('bills.edit.matchHint')}
-						optionalLabel={t('bills.edit.optional')}
-						hint={t('bills.edit.matchHintHint')}
-						value={matchHint}
-						onChangeText={setMatchHint}
-						autoCapitalize="none"
-						autoCorrect={false}
-					/>
+					<TourTarget id="billEdit.match">
+						<Field
+							label={t('bills.edit.matchHint')}
+							optionalLabel={t('bills.edit.optional')}
+							hint={t('bills.edit.matchHintHint')}
+							value={matchHint}
+							onChangeText={setMatchHint}
+							autoCapitalize="none"
+							autoCorrect={false}
+						/>
+					</TourTarget>
 
 					<Button
 						label={t('bills.edit.save')}
@@ -391,7 +408,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					/>
 
 					{existing && (canToggleActive(existing) || canDeleteBill(existing)) ? (
-						<View style={styles.secondary}>
+						<TourTarget id="billEdit.actions" style={styles.secondary}>
 							{canToggleActive(existing) ? (
 								<Button
 									label={existing.active ? t('bills.edit.deactivate') : t('bills.edit.activate')}
@@ -409,7 +426,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 									icon="trash-outline"
 								/>
 							) : null}
-						</View>
+						</TourTarget>
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>

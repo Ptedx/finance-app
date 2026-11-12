@@ -23,7 +23,8 @@
  * Para as trilhas 8 a 21 (fases 2 e 3): uma entrada em `TRAILS` (e, se a tela for nova, em
  * `TRAIL_SCREENS`), os alvos marcados nas telas (`TourTarget`/`useTourTarget`), o
  * `useScreenTour` na tela nova e o "?" (`HelpButton trail=…`). As trilhas 9 a 15 (SPD-131b):
- * Dívidas, Reserva, Patrimônio, "Este mês", Lançamentos e as duas dos Relatórios.
+ * Dívidas, Reserva, Patrimônio, "Este mês", Lançamentos e as duas dos Relatórios. As trilhas 8,
+ * 16 e 21 (SPD-131c): Contas a pagar e lembretes, Extrato do banco (OFX) e Tela inicial.
  */
 
 import { hasSize, type Rect, type TourScreen } from './tour';
@@ -47,7 +48,9 @@ export type TourPlace =
 	| 'transaction'
 	| 'transactions'
 	| 'debt'
-	| 'debtEdit';
+	| 'debtEdit'
+	| 'bills'
+	| 'billEdit';
 
 /** As telas por onde as trilhas passam. */
 export type TrailScreen =
@@ -69,7 +72,10 @@ export type TrailScreen =
 	| 'reports'
 	| 'debtNew'
 	| 'debt'
-	| 'debtEdit';
+	| 'debtEdit'
+	| 'bills'
+	| 'billNew'
+	| 'billEdit';
 
 /**
  * O que a trilha precisa do usuário: o registro que uma tela abre (a conta, o cartão) ou uma
@@ -88,7 +94,8 @@ export type RecordKind =
 	| 'transaction'
 	| 'pending'
 	| 'capture'
-	| 'debt';
+	| 'debt'
+	| 'bill';
 
 /** Os parâmetros da rota de um registro (`{ id }`, ou `{ accountId, last4 }` no débito). */
 export type TrailParams = Readonly<Record<string, string>>;
@@ -171,6 +178,17 @@ export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
 		record: 'debt',
 		keep: true,
 	},
+	// Contas a pagar (SPD-131c): a lista, o cadastro e a edição de uma conta a pagar. Não há
+	// conta a pagar de exemplo: sem nenhuma, o passo da edição mostra o texto sem apontar.
+	bills: { path: '/bills', report: 'bills', parent: 'settings' },
+	billNew: { path: '/bills/new', report: 'billEdit', parent: 'bills', keep: true },
+	billEdit: {
+		path: '/bills/edit/[id]',
+		report: 'billEdit',
+		parent: 'bills',
+		record: 'bill',
+		keep: true,
+	},
 };
 
 // ---------------------------------------------------------------------------
@@ -235,7 +253,10 @@ export type TrailId =
 	| 'month'
 	| 'transactions'
 	| 'health'
-	| 'freedom';
+	| 'freedom'
+	| 'bills'
+	| 'ofx'
+	| 'home';
 
 export interface TrailDef {
 	id: TrailId;
@@ -547,6 +568,67 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			s('8', 'reports', 'reports.projection'),
 			s('9', 'reports', 'reports.categories+reports.sources'),
 			s('10', 'reports', 'reports.export'),
+		],
+	},
+	// Trilha 8 — Contas a pagar e lembretes (SPD-131c). Começa em Início › "Contas do mês".
+	bills: {
+		id: 'bills',
+		steps: [
+			// Sem nenhuma conta a pagar, o card vira o convite: aponta o "Cadastrar", com o texto próprio.
+			s('1', 'home', 'home.billsCard', { missing: 'alt', altTargets: 'home.billsInvite' }),
+			// "Cadastrar conta" (lista vazia) ou o "+" do topo, que fica fora da rolagem.
+			s('2', 'bills', 'bills.emptyAdd|bills.add', { fixed: true }),
+			s('3', 'billNew', 'billEdit.name+billEdit.dueDay'),
+			s('4', 'billNew', 'billEdit.amount'),
+			// "Conta que paga" só aparece com uma conta cadastrada: sem ela, aponta só a categoria.
+			s('5', 'billNew', 'billEdit.account+billEdit.category'),
+			s('6', 'billNew', 'billEdit.match'),
+			s('7', 'billNew', 'billEdit.dueDay', attention),
+			// O "Já paguei" e o "Desfazer" da primeira conta que tem o botão; sem nenhuma, o texto
+			// sem apontar.
+			s('8', 'bills', 'bills.pay'),
+			s('9', 'bills', 'bills.pay', attention),
+			s('10', 'bills', 'bills.undo'),
+			s('11', 'bills', 'bills.list', attention),
+			// "Desativar" e "Apagar", juntos. A conta de uma dívida ativa não tem nenhum dos dois:
+			// o passo mostra o texto sem apontar.
+			s('12', 'billEdit', 'billEdit.actions'),
+		],
+	},
+	// Trilha 16 — Extrato do banco (OFX) (SPD-131c). Começa em Configurações › seção "Dados".
+	// A pergunta da conta, o resumo e a oferta das parcelas são alertas que só aparecem ao
+	// importar: os passos deles são texto, sem apontar. "Valor confirmado pelo extrato" e "Parece
+	// repetido" ficam na tela "Para revisar", que não tem marca para eles: também texto, aqui.
+	ofx: {
+		id: 'ofx',
+		steps: [
+			s('1', 'settings', 'settings.ofx'),
+			s('2', 'settings', 'settings.ofx'),
+			text('3', 'settings'),
+			text('4', 'settings', attention),
+			text('5', 'settings'),
+			text('6', 'settings'),
+			text('7', 'settings', attention),
+		],
+	},
+	// Trilha 21 — Tela inicial: o que cada bloco mostra (SPD-131c). Começa no Início. Os blocos
+	// que só existem às vezes ("Revisar", "Proteja seus dados", "Sem conta") são olhados na tela
+	// antes do primeiro balão: sem eles, os passos saem.
+	home: {
+		id: 'home',
+		steps: [
+			s('1', 'home', 'home.review', { missing: 'skip' }),
+			s('2', 'home', 'home.protect', { missing: 'skip' }),
+			s('3', 'home', 'home.billsCard', { missing: 'alt', altTargets: 'home.billsInvite' }),
+			s('4', 'home', 'month.header'),
+			// Sem cartão, aponta "Adicionar cartão", com o mesmo texto.
+			s('5', 'home', 'home.cards+home.cardsTotals|home.cardsAdd'),
+			// Sem conta, aponta "Adicionar conta", com o mesmo texto.
+			s('6', 'home', 'home.accounts+home.accountsTotals|home.accountsAdd'),
+			s('7', 'home', 'home.unassigned', { missing: 'skip' }),
+			s('8', 'home', 'home.unassigned', { ...attention, missing: 'skip' }),
+			// O "+" e as abas ficam fora da rolagem.
+			s('9', 'home', 'home.add+home.tabs', { fixed: true }),
 		],
 	},
 };

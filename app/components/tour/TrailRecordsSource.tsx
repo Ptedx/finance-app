@@ -1,13 +1,15 @@
 import type React from 'react';
 import { useContext, useEffect, useRef } from 'react';
 import { useAccounts } from '../../contexts/AccountsContext';
+import BillsContext from '../../contexts/BillsContext';
 import { useCaptures } from '../../contexts/CapturesContext';
 import DebtsContext from '../../contexts/DebtsContext';
 import { useTransactions } from '../../contexts/TransactionsContext';
-import type { Account, Debt } from '../../database/schema';
+import type { Account, Bill, Debt } from '../../database/schema';
 import { feedOwnerOf } from '../../utils/accountBinding';
 import { showsBalanceUnset } from '../../utils/balanceUnset';
 import { getDismissedBalanceUnset } from '../../utils/balanceUnsetDismissals';
+import { canToggleActive } from '../../utils/billRules';
 import { planBusinessFeed } from '../../utils/businessFeed';
 import { todayISO } from '../../utils/dateUtils';
 import { debtStateOn, termsOf } from '../../utils/debt';
@@ -35,6 +37,16 @@ export const debtRecords = (debts: readonly Debt[], today: string) => {
 	return [...debts.filter((debt) => !paidOff(debt)), ...debts.filter(paidOff)].map((debt) => ({ id: debt.id }));
 };
 
+/**
+ * As contas a pagar que a edição abre (SPD-131c): primeiro as ativas cadastradas à mão, que têm
+ * "Desativar" e "Apagar" para mostrar; depois as de dívida e as desativadas. Só lê a lista.
+ */
+export const billRecords = (bills: readonly Bill[]) => {
+	const live = bills.filter((bill) => !bill.deletedAt);
+	const manual = live.filter((bill) => bill.active && canToggleActive(bill));
+	return [...manual, ...live.filter((bill) => !manual.includes(bill))].map((bill) => ({ id: bill.id }));
+};
+
 const TrailRecordsSource: React.FC = () => {
 	const tour = useTour();
 	const { accounts, creditCards, debitCards } = useAccounts();
@@ -42,8 +54,10 @@ const TrailRecordsSource: React.FC = () => {
 	const { pending, supported } = useCaptures();
 	// Lido sem exigir o provider: fora dele (num teste do guia), não há dívida.
 	const debts = useContext(DebtsContext)?.debts ?? [];
-	const latest = useRef({ accounts, creditCards, debitCards, transactions, pending, supported, debts });
-	latest.current = { accounts, creditCards, debitCards, transactions, pending, supported, debts };
+	// As contas a pagar, do mesmo jeito (SPD-131c): fora do provider, nenhuma.
+	const bills = useContext(BillsContext)?.bills ?? [];
+	const latest = useRef({ accounts, creditCards, debitCards, transactions, pending, supported, debts, bills });
+	latest.current = { accounts, creditCards, debitCards, transactions, pending, supported, debts, bills };
 
 	useEffect(() => {
 		if (!tour) return;
@@ -56,6 +70,7 @@ const TrailRecordsSource: React.FC = () => {
 				pending: queue,
 				supported: capture,
 				debts: owed,
+				bills: payable,
 			} = latest.current;
 			// As contas que a tela de Contas lista (cartão de crédito tem tela própria): as ativas
 			// primeiro, na ordem do app.
@@ -82,6 +97,7 @@ const TrailRecordsSource: React.FC = () => {
 				pending: queue.length > 0 ? [{}] : [],
 				capture: capture ? [{}] : [],
 				debt: debtRecords(owed, todayISO()),
+				bill: billRecords(payable),
 			};
 		});
 	}, [tour]);

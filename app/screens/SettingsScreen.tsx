@@ -629,11 +629,18 @@ const SettingsScreen = () => {
 						handleImportData,
 						isImporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
 					)}
+					{/* O "?" da trilha do extrato (SPD-131c) fica no lugar da seta, ao lado do item. */}
 					{renderSettingsItem(
 						'document-text-outline',
 						t('captures.import.item'),
 						handleImportStatement,
-						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined,
+						isImportingStatement ? (
+							<ActivityIndicator size="small" color="#15E8FE" />
+						) : (
+							<View style={styles.helpInItem}>
+								<HelpButton trail="ofx" here={{ screen: 'settings' }} />
+							</View>
+						),
 						'settings.ofx'
 					)}
 					{renderSettingsItem(
@@ -788,6 +795,11 @@ const styles = StyleSheet.create({
 	settingLeft: {
 		flexDirection: 'row',
 		alignItems: 'center',
+	},
+	// O "?" tem 48 de toque; a margem negativa não deixa ele aumentar a linha do item.
+	helpInItem: {
+		marginVertical: -12,
+		marginRight: -12,
 	},
 	settingIcon: {
 		marginRight: 12,

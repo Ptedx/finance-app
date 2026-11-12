@@ -3108,6 +3108,135 @@ account: {
 				},
 			},
 		},
+		bills: {
+			title: 'Conti da pagare e promemoria',
+			steps: {
+				'1': {
+					title: 'Scadenze del mese.',
+					body: 'Ciò che è in ritardo o scade nei prossimi 7 giorni, e quanto resta da pagare nel mese. I conti con importo variabile restano fuori dal totale. Toccare la scheda apre Conti da pagare.',
+					missing: 'Aggiungi bollette e spese fisse per ricevere un promemoria prima della scadenza.',
+				},
+				'2': {
+					title: 'Aggiungere.',
+					body: 'Affitto, internet, assicurazione sanitaria, scuola: lo aggiungi una volta, e vale ogni mese.',
+				},
+				'3': {
+					title: 'Nome e giorno.',
+					body: 'Il giorno va da 1 a 31; nei mesi più corti vale l\'ultimo giorno.',
+				},
+				'4': {
+					title: 'Importo.',
+					body: 'Lascialo vuoto se cambia ogni mese, come la bolletta del telefono.',
+				},
+				'5': {
+					title: 'Da dove esce.',
+					body: 'Il conto da cui esce il pagamento e la categoria della spesa, entrambi facoltativi. "Nessuna", in cima all\'elenco, toglie la scelta.',
+				},
+				'6': {
+					title: 'Come lo scrive la banca.',
+					body: 'Parole del pagamento nell\'avviso o nell\'estratto conto, separate da virgole (es.: internet, fibra). Il pagamento automatico cerca queste parole e anche il nome del conto.',
+				},
+				'7': {
+					title: 'I promemoria.',
+					body: 'Alle 9: 3 giorni prima, il giorno stesso e, se non hai pagato, nei 3 giorni successivi. Anche l\'estratto della carta avvisa 3 giorni prima e il giorno stesso. I promemoria arrivano solo con "Notifiche" attivo in Impostazioni.',
+				},
+				'8': {
+					title: 'Già pagato.',
+					body: 'Con importo fisso, l\'app chiede: "Registra e segna pagato" registra l\'uscita con la data di oggi, dal conto che paga (o senza conto, se non ne ha uno); "Segna solo come pagato" non registra nulla. Con importo variabile, segna soltanto. Se il pagamento è già registrato, l\'app segna soltanto, senza ripetere.',
+				},
+				'9': {
+					title: 'Avviso in attesa di revisione.',
+					body: 'Se l\'avviso della banca per questo pagamento è in "Rivedi", l\'app segna il conto come pagato e ti chiede di confermare l\'avviso lì; il movimento entra con lui.',
+				},
+				'10': {
+					title: 'Annullare.',
+					body: 'Riporta il conto ad aperto per quel mese. Se l\'app aveva registrato l\'uscita, se ne va anche lei.',
+				},
+				'11': {
+					title: 'Pagamento automatico.',
+					body: 'Una spesa (avviso confermato o inserita a mano, in un\'unica soluzione) da 10 giorni prima a 5 giorni dopo la scadenza, dal conto che paga (se ne ha uno), con l\'importo esatto, o vicino e con il nome nel testo, segna il conto come pagato da sola. Un conto con importo variabile ha bisogno del nome nel testo. Dopo quei 5 giorni, solo con il nome. Nel dubbio, l\'app non lo segna.',
+				},
+				'12': {
+					title: 'Disattivare o eliminare.',
+					body: 'Disattivato, il conto non avvisa e non entra nel mese. L\'hai aggiunto dopo la scadenza? L\'app chiede se questo mese è già pagato. Un conto che viene da un debito segue il debito: non ha "Disattiva" e non si può eliminare finché il debito è attivo.',
+				},
+			},
+		},
+		ofx: {
+			title: 'Estratto conto (OFX)',
+			steps: {
+				'1': {
+					title: 'Importare l\'estratto.',
+					body: 'Scarica l\'estratto conto in OFX dall\'app o dal sito della banca e scegli il file qui. Funziona anche su iPhone.',
+				},
+				'2': {
+					title: 'Di quale conto è.',
+					body: 'Quando non è sicura, l\'app chiede "Questo estratto è del conto …?" (o "della carta …"): "Questa", "Crea nuovo" e, se c\'è un\'altra candidata, "Un altro conto" (o "Un\'altra carta").',
+				},
+				'3': {
+					title: 'Il riepilogo.',
+					body: 'Dopo l\'importazione, l\'app mostra quante righe aveva il file, quante erano già nell\'app, quante vanno in revisione, quante sono entrate da sole e quante sono rimaste fuori. "Rivedi ora", quando c\'è qualcosa da rivedere, apre la revisione.',
+				},
+				'4': {
+					title: 'Niente si ripete.',
+					body: 'La riga già arrivata da un avviso o che hai digitato non entra di nuovo. Estratti della carta, investimenti e trasferimenti restano fuori; il resto va in revisione, ed entrano da soli solo i luoghi che l\'app ha già imparato.',
+				},
+				'5': {
+					title: 'Avviso confermato.',
+					body: 'In "Rivedi", un avviso che aspettava la revisione ed è comparso nell\'estratto viene segnato "Importo confermato dall\'estratto conto". Esce dalla revisione da solo solo se l\'app conosce già la categoria.',
+				},
+				'6': {
+					title: 'Riga che sembra ripetuta.',
+					body: 'In "Rivedi", la riga dell\'estratto con lo stesso importo di un tuo movimento in un altro conto, con al massimo 1 giorno di differenza, arriva segnata "Sembra ripetuto". "Stessa voce, tienine una" scarta la riga dell\'estratto e resta la tua.',
+				},
+				'7': {
+					title: 'Rate.',
+					body: 'Un acquisto "3/10" nell\'estratto della carta, senza le altre rate nell\'app, diventa la domanda "Rate mancanti": "Crea le rate" crea quelle che mancano sulla carta; "Non ora" lascia tutto com\'è.',
+				},
+			},
+		},
+		home: {
+			title: 'Schermata iniziale',
+			steps: {
+				'1': {
+					title: 'C\'è qualcosa da fare?',
+					body: 'Gli avvisi della banca che ti aspettano. Toccare apre la revisione.',
+				},
+				'2': {
+					title: 'Senza account.',
+					body: 'Senza un account, disinstallare l\'app cancella tutto. L\'avviso compare dopo 20 movimenti; la X lo nasconde per sempre.',
+				},
+				'3': {
+					title: 'Cosa scade.',
+					body: 'Ciò che è in ritardo o scade nei prossimi 7 giorni, e quanto resta da pagare nel mese. Toccare apre Conti da pagare.',
+					missing: 'Aggiungi bollette e spese fisse per ricevere un promemoria prima della scadenza.',
+				},
+				'4': {
+					title: 'Come va il mese.',
+					body: 'Entrate, spese, risparmiato, ciò che è avanzato e il budget.',
+				},
+				'5': {
+					title: 'Carte.',
+					body: '"Estratti aperti", il limite disponibile (se indicato) e, con un estratto chiuso da pagare, "Da pagare ora". Compaiono anche le carte di debito. Toccare una carta di credito apre il suo estratto.',
+				},
+				'6': {
+					title: 'Conti.',
+					body: 'Il saldo di ogni conto, "Liquidità" e ciò che resta "Dopo gli estratti". "Gestisci" apre l\'elenco dei conti.',
+				},
+				'7': {
+					title: 'Movimenti senza conto.',
+					body: 'Toccare apre l\'elenco: scegli da quale conto sono usciti e li sposti tutti in una volta.',
+				},
+				'8': {
+					title: 'Date prima del saldo.',
+					body: 'Un movimento con data precedente al saldo indicato del conto esce dal totale senza entrare nel suo saldo. Dopo averlo spostato, usa "Allinea con la banca" sul conto.',
+				},
+				'9': {
+					title: 'Il resto dell\'app.',
+					body: '"+" registra a mano. Movimenti conserva lo storico, Patrimonio mostra ciò che hai e ciò che devi, Report mostra se sei sulla strada giusta. Trascinare lo schermo verso il basso aggiorna (e sincronizza, con un account).',
+				},
+			},
+		},
 	},
 } as const;
 

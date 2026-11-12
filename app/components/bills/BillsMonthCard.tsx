@@ -8,6 +8,8 @@ import { useBills } from '../../contexts/BillsContext';
 import { homeBills, type MonthBillRow, overdueBills } from '../../utils/billRules';
 import { formatDayMonth, monthKeyOf } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
+import HelpButton from '../tour/HelpButton';
+import { useTourTarget } from '../tour/TourContext';
 import BillStatusPill from './BillStatusPill';
 
 /**
@@ -28,6 +30,9 @@ import BillStatusPill from './BillStatusPill';
  *
  * Nada a pagar no mês com alguma conta pulada: "Nada em aberto este mês", não "Tudo pago"
  * (SPD-156).
+ *
+ * O "?" abre a trilha das contas a pagar (SPD-131c). O card é um passo dela e da trilha da tela
+ * inicial; sem contas, o passo aponta o "Cadastrar".
  */
 
 const ACCENT = '#15E8FE';
@@ -59,8 +64,16 @@ const BillsMonthCard: React.FC = () => {
 		() => overdueBills(activeBills, month.month, payments),
 		[activeBills, month.month, payments]
 	);
+	const cardTarget = useTourTarget('home.billsCard');
+	const inviteTarget = useTourTarget('home.billsInvite');
 
 	if (isLoading) return null;
+
+	const help = (
+		<View style={styles.help}>
+			<HelpButton trail="bills" here={{ screen: 'home' }} />
+		</View>
+	);
 
 	const open = () => router.push('/bills');
 
@@ -70,7 +83,9 @@ const BillsMonthCard: React.FC = () => {
 				<Text style={styles.lineText} numberOfLines={2}>
 					{t('bills.home.none')}
 				</Text>
+				{help}
 				<Pressable
+					{...inviteTarget}
 					onPress={() => router.push('/bills/new')}
 					accessibilityRole="button"
 					accessibilityLabel={t('bills.home.inviteAction')}
@@ -104,6 +119,7 @@ const BillsMonthCard: React.FC = () => {
 		const line = `${t('bills.home.nothingSoon')} · ${left}`;
 		return (
 			<Pressable
+				{...cardTarget}
 				onPress={open}
 				accessibilityRole="button"
 				accessibilityLabel={[`${t('bills.home.title')}. ${line}`, variableNote].filter(Boolean).join('. ')}
@@ -113,6 +129,7 @@ const BillsMonthCard: React.FC = () => {
 				<Text style={styles.lineText} numberOfLines={2}>
 					{line}
 				</Text>
+				{help}
 				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
 			</Pressable>
 		);
@@ -145,6 +162,7 @@ const BillsMonthCard: React.FC = () => {
 
 	return (
 		<Pressable
+			{...cardTarget}
 			onPress={open}
 			accessibilityRole="button"
 			accessibilityLabel={summary}
@@ -152,9 +170,10 @@ const BillsMonthCard: React.FC = () => {
 			style={({ pressed }) => [styles.container, pressed && styles.pressed]}
 		>
 			<View style={styles.header}>
-				<Text style={styles.title} accessibilityRole="header">
+				<Text style={[styles.title, styles.headerTitle]} accessibilityRole="header">
 					{t('bills.home.title')}
 				</Text>
+				{help}
 				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
 			</View>
 
@@ -228,6 +247,14 @@ const styles = StyleSheet.create({
 		fontSize: 18,
 		fontWeight: '600',
 		color: '#FFFFFF',
+	},
+	// O título empurra o "?" e a seta para a direita.
+	headerTitle: {
+		flex: 1,
+	},
+	// O "?" tem 48 de toque; a margem negativa não deixa ele aumentar a linha do título.
+	help: {
+		marginVertical: -12,
 	},
 	row: {
 		flexDirection: 'row',

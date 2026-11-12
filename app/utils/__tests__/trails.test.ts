@@ -128,7 +128,7 @@ describe('plano de uma trilha', () => {
 		expect(plan[0].location).toEqual({ screen: 'card', params: { id: 'b' } });
 	});
 
-	it('cada passo das trilhas 1 a 7 e 9 a 15 tem tela, alvo ou texto sem apontar, e o "Atenção" dos textos aprovados', () => {
+	it('cada passo das trilhas 1 a 16 e 21 tem tela, alvo ou texto sem apontar, e o "Atenção" dos textos aprovados', () => {
 		const attention: Record<string, string[]> = {
 			accounts: ['10', '11'],
 			cardSetup: ['9', '11'],
@@ -145,6 +145,10 @@ describe('plano de uma trilha', () => {
 			transactions: ['3', '8'],
 			health: [],
 			freedom: ['5'],
+			// Trilhas 8, 16 e 21 (SPD-131c).
+			bills: ['7', '9', '11'],
+			ofx: ['4', '7'],
+			home: ['8'],
 		};
 		const sizes: Record<string, number> = {
 			accounts: 12,
@@ -161,6 +165,9 @@ describe('plano de uma trilha', () => {
 			transactions: 8,
 			health: 10,
 			freedom: 10,
+			bills: 12,
+			ofx: 7,
+			home: 9,
 		};
 		for (const [id, trail] of Object.entries(TRAILS)) {
 			expect(trail.steps.map((step) => step.id)).toEqual(Array.from({ length: sizes[id] }, (_, index) => String(index + 1)));
@@ -372,7 +379,7 @@ describe('a tela de origem com algo digitado não sai da pilha', () => {
 			.filter(([, def]) => def.keep)
 			.map(([screen]) => screen)
 			.sort();
-		expect(kept).toEqual(['account', 'accountNew', 'cardEdit', 'cardNew', 'debtEdit', 'debtNew', 'inbox']);
+		expect(kept).toEqual(['account', 'accountNew', 'billEdit', 'billNew', 'cardEdit', 'cardNew', 'debtEdit', 'debtNew', 'inbox']);
 	});
 });
 

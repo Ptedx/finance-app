@@ -17,6 +17,7 @@ import { usePeriod } from '../../contexts/PeriodContext';
 import { getMonthName } from '../../utils/dateUtils';
 import type { Account } from '../../database/schema';
 import { formatCents } from '../../utils/money';
+import { useTourTarget } from '../tour/TourContext';
 import CardFace from './CardFace';
 import DebitCardFace from './DebitCardFace';
 
@@ -59,6 +60,11 @@ const CardsSection: React.FC = () => {
 		{ type: 'add' },
 	];
 	const cardCount = creditCards.length + debitCards.length;
+	// A trilha da tela inicial (SPD-131c): o título com "Ver todos" e os totais; sem cartão, o
+	// "Adicionar cartão".
+	const headerTarget = useTourTarget(cardCount > 0 ? 'home.cards' : undefined);
+	const totalsTarget = useTourTarget('home.cardsTotals');
+	const addTarget = useTourTarget('home.cardsAdd');
 
 	const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
 		const first = viewableItems.find((item) => item.isViewable);
@@ -76,7 +82,7 @@ const CardsSection: React.FC = () => {
 
 	return (
 		<View style={styles.section}>
-			<View style={styles.header}>
+			<View {...headerTarget} style={styles.header}>
 				<Text style={styles.title} accessibilityRole="header">
 					{t('cards.sectionTitle')}
 				</Text>
@@ -95,6 +101,7 @@ const CardsSection: React.FC = () => {
 
 			{creditCards.length > 0 ? (
 				<View
+					{...totalsTarget}
 					style={styles.totals}
 					accessible
 					accessibilityLabel={[
@@ -189,6 +196,7 @@ const CardsSection: React.FC = () => {
 				</>
 			) : (
 				<Pressable
+					{...addTarget}
 					onPress={() => router.push('/cards/new')}
 					accessibilityRole="button"
 					accessibilityLabel={`${t('cards.add')}. ${t('cards.emptyBody')}`}

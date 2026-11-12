@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BillStatusPill from '../components/bills/BillStatusPill';
+import HelpButton from '../components/tour/HelpButton';
+import { useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { type BillPaymentPlan, markPaidTransactionId, useBills } from '../contexts/BillsContext';
 import type { Bill } from '../database/schema';
@@ -55,6 +57,10 @@ import { formatCents } from '../utils/money';
  *
  * Quando não falta nada no mês e alguma conta dele foi pulada, o total diz "Nada em aberto",
  * não "Tudo pago" (SPD-156).
+ *
+ * O "?" do topo abre a trilha das contas a pagar (SPD-131c) no passo desta tela. Os passos
+ * apontam o "+" (ou o "Cadastrar conta"), o "Já paguei" e o "Desfazer" da primeira conta que
+ * tem cada um, e a lista.
  */
 
 /** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
@@ -101,6 +107,14 @@ const BillsScreen: React.FC = () => {
 	// Quantos meses longe do atual (0 = o atual): segue o mês certo quando o dia vira.
 	const [monthOffset, setMonthOffset] = useState(0);
 	const [filter, setFilter] = useState<BillFilter>('all');
+	// A trilha das contas a pagar (SPD-131c): a tela se anuncia depois de carregar.
+	useScreenTour('bills', { ready: !isLoading });
+	const tourScroll = useTourScroll('bills');
+	const addTarget = useTourTarget('bills.add');
+	const emptyAddTarget = useTourTarget('bills.emptyAdd');
+	const payTarget = useTourTarget('bills.pay');
+	const undoTarget = useTourTarget('bills.undo');
+	const listTarget = useTourTarget('bills.list');
 
 	const currentKey = month.month;
 	const isCurrentMonth = monthOffset === 0;
@@ -365,6 +379,10 @@ const BillsScreen: React.FC = () => {
 	};
 
 	const empty = !isLoading && bills.length === 0;
+	// A trilha aponta o "Já paguei" e o "Desfazer" da primeira conta que tem cada um: um alvo só
+	// por nome.
+	const firstPayId = shownRows.find((row) => actionOf(row).kind === 'pay')?.bill.id ?? null;
+	const firstUndoId = shownRows.find((row) => actionOf(row).kind === 'undo')?.bill.id ?? null;
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -382,7 +400,10 @@ const BillsScreen: React.FC = () => {
 				<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 					{t('bills.title')}
 				</Text>
+				{/* O "?" da trilha das contas a pagar (SPD-131c), ao lado do título. */}
+				<HelpButton trail="bills" here={{ screen: 'bills' }} from="2" />
 				<Pressable
+					{...addTarget}
 					onPress={() => router.push('/bills/new')}
 					accessibilityRole="button"
 					accessibilityLabel={t('bills.add')}
@@ -392,11 +413,12 @@ const BillsScreen: React.FC = () => {
 				</Pressable>
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{empty ? (
 					<View style={styles.emptyBox}>
 						<Text style={styles.emptyText}>{t('bills.empty')}</Text>
 						<Pressable
+							{...emptyAddTarget}
 							onPress={() => router.push('/bills/new')}
 							accessibilityRole="button"
 							accessibilityLabel={t('bills.emptyAction')}
@@ -539,7 +561,7 @@ const BillsScreen: React.FC = () => {
 				) : null}
 
 				{shownRows.length > 0 ? (
-					<View style={styles.list}>
+					<View {...listTarget} style={styles.list}>
 						{shownRows.map((row) => {
 							const paid = row.status === 'paid' || row.status === 'skipped';
 							const subtitle = subtitleOf(row.bill, row.dueDate, t);
@@ -586,6 +608,8 @@ const BillsScreen: React.FC = () => {
 									) : null}
 									{action.kind ? (
 										<Pressable
+											{...(action.kind === 'pay' && row.bill.id === firstPayId ? payTarget : {})}
+											{...(action.kind === 'undo' && row.bill.id === firstUndoId ? undoTarget : {})}
 											onPress={() => toggle(row)}
 											disabled={busyId === row.bill.id}
 											accessibilityRole="button"

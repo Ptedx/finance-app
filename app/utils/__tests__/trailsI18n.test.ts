@@ -28,6 +28,7 @@ const everything: TrailRecords = {
 	pending: [{}],
 	capture: [{}],
 	debt: [{ id: 'd' }],
+	bill: [{ id: 'b' }],
 };
 
 /** As chaves de todos os planos: com tudo, sem nada (os `[sem dado]`) e as trilhas de fallback. */
@@ -110,6 +111,24 @@ describe('textos das trilhas', () => {
 		expect(read(pt, 'trails.month.steps.8.title')).toBe('Orçamento.');
 		expect(read(pt, 'trails.freedom.steps.10.body')).toBe(
 			'Gera um CSV (com títulos em inglês) com o resumo de cada mês do ano, os totais por categoria e os lançamentos do mês escolhido, e abre o compartilhamento. Transferências não entram.'
+		);
+	});
+
+	it('as trilhas 8, 16 e 21 têm os textos aprovados do português (SPD-131c)', () => {
+		for (const id of ['bills', 'ofx', 'home']) expect(keys).toContain(`trails.${id}.title`);
+		expect(read(pt, 'trails.bills.title')).toBe('Contas a pagar e lembretes');
+		expect(read(pt, 'trails.bills.steps.1.missing')).toBe('Cadastre boletos e contas fixas para ser avisado antes do vencimento.');
+		expect(read(pt, 'trails.bills.steps.8.body')).toBe(
+			'Com valor fixo, o app pergunta: "Lançar e marcar paga" lança a saída com a data de hoje, da conta que paga (ou sem conta, se ela não tiver uma); "Só marcar como paga" não lança nada. De valor variável, só marca. Se o pagamento já está lançado, o app só marca, sem repetir.'
+		);
+		expect(read(pt, 'trails.ofx.title')).toBe('Extrato do banco (OFX)');
+		expect(read(pt, 'trails.ofx.steps.4.body')).toBe(
+			'A linha que já veio por aviso ou que você digitou não entra de novo. Fatura, investimentos e transferências ficam de fora; o resto vai para a revisão, e só entram sozinhos os lugares que o app já aprendeu.'
+		);
+		expect(read(pt, 'trails.home.title')).toBe('Tela inicial');
+		expect(read(pt, 'trails.home.steps.3.missing')).toBe('Cadastre boletos e contas fixas para ser avisado antes do vencimento.');
+		expect(read(pt, 'trails.home.steps.9.body')).toBe(
+			'"+" lança à mão. Lançamentos guarda o histórico, Patrimônio mostra o que você tem e deve, Relatórios mostram se você está no caminho. Puxar a tela para baixo atualiza (e sincroniza, com conta).'
 		);
 	});
 
