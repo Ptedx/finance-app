@@ -9,6 +9,7 @@ import BillStatusPill from '../components/bills/BillStatusPill';
 import { useAccounts } from '../contexts/AccountsContext';
 import { type BillPaymentPlan, markPaidTransactionId, useBills } from '../contexts/BillsContext';
 import type { Bill } from '../database/schema';
+import { paymentFor } from '../utils/billPayments';
 import { BILL_OVERDUE_MONTHS } from '../utils/billReminders';
 import {
 	type BillFilter,
@@ -45,6 +46,12 @@ import { formatCents } from '../utils/money';
  * antes de marcar. Num mês passado, a conta com um mês ainda mais antigo em aberto fica sem ação,
  * com uma frase dizendo qual quitar antes; "Desfazer" fica no mês que é o último pago. No mês
  * atual, o atraso de meses anteriores aparece à parte do total, e tocar nele vai ao mais antigo.
+ *
+ * Mês pulado e fora de ordem (SPD-146): no mês atrasado que o "Já paguei" quitaria, a conta tem
+ * também "Não vou pagar este mês" — a pergunta diz que nenhum lançamento é criado e o saldo não
+ * muda. No mês atual, com um mês anterior em aberto, além de "Quitar outubro" há "Pagar só
+ * novembro", e a pergunta diz que outubro continua em atraso. O mês pulado ou pago fora de ordem
+ * tem "Desfazer", que reabre aquele mês.
  */
 
 /** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
@@ -84,7 +91,8 @@ const subtitleOf = (
 const BillsScreen: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { bills, month, today, isLoading, planPayment, markPaid, undoPaid } = useBills();
+	const { bills, payments, month, today, isLoading, planPayment, markPaid, skipMonth, undoPaid } =
+		useBills();
 	const { accounts } = useAccounts();
 	const [busyId, setBusyId] = useState<string | null>(null);
 	// Quantos meses longe do atual (0 = o atual): segue o mês certo quando o dia vira.
@@ -94,7 +102,7 @@ const BillsScreen: React.FC = () => {
 	const currentKey = month.month;
 	const isCurrentMonth = monthOffset === 0;
 	const shownKey = shiftMonthKey(currentKey, monthOffset);
-	const shown = isCurrentMonth ? month : billsOfMonth(bills, shownKey, today);
+	const shown = isCurrentMonth ? month : billsOfMonth(bills, shownKey, today, payments);
 	const shownRows = filterMonthRows(shown.rows, filter);
 	const shownName = monthNameOf(shownKey);
 	const toPayLabel = isCurrentMonth ? t('bills.toPay') : t('bills.toPayIn', { month: shownName });
@@ -103,7 +111,7 @@ const BillsScreen: React.FC = () => {
 	// Para trás, só até onde o atraso conta (3 meses).
 	const canGoBack = monthOffset > -BILL_OVERDUE_MONTHS;
 	// O atraso de meses anteriores, à parte do total do mês (só no mês atual).
-	const overdue = isCurrentMonth ? overdueBills(bills, currentKey) : null;
+	const overdue = isCurrentMonth ? overdueBills(bills, currentKey, payments) : null;
 	const overdueText =
 		overdue && overdue.billCount > 0
 			? overdue.cents > 0
@@ -117,21 +125,35 @@ const BillsScreen: React.FC = () => {
 
 	/**
 	 * A ação de uma linha no mês mostrado: "Já paguei" no mês mais antigo em aberto da conta (e,
-	 * no mês atual, também quando o mais antigo é de antes: aí quita ele); "Desfazer" no último
-	 * mês pago. `target` é o mês que o "Já paguei" quita; `blockedBy`, num mês passado, o mês
-	 * mais antigo que tem de ser quitado antes.
+	 * no mês atual, também quando o mais antigo é de antes: aí quita ele); "Desfazer" no mês pago
+	 * que pode reabrir (o último pago, ou o que tem registro) e no pulado. `target` é o mês que o
+	 * "Já paguei" quita; `blockedBy`, num mês passado, o mês mais antigo que tem de ser quitado
+	 * antes. `secondary` (SPD-146): "Não vou pagar este mês" no mês atrasado que o "Já paguei"
+	 * quitaria, ou "Pagar só novembro" no mês atual com um anterior em aberto.
 	 */
 	const actionOf = (
 		row: MonthBillRow
-	): { kind: 'pay' | 'undo' | null; target: string | null; blockedBy: string | null } => {
-		if (row.status === 'paid') {
-			return { kind: canUndoMonth(row.bill, shownKey) ? 'undo' : null, target: null, blockedBy: null };
+	): {
+		kind: 'pay' | 'undo' | null;
+		target: string | null;
+		blockedBy: string | null;
+		secondary: 'skip' | 'payOnly' | null;
+	} => {
+		if (row.status === 'paid' || row.status === 'skipped') {
+			const kind = canUndoMonth(row.bill, shownKey, payments) ? 'undo' : null;
+			return { kind, target: null, blockedBy: null, secondary: null };
 		}
-		const target = payableMonth(row.bill, currentKey);
+		const target = payableMonth(row.bill, currentKey, payments);
 		if (target !== null && (target === shownKey || (isCurrentMonth && target < shownKey))) {
-			return { kind: 'pay', target, blockedBy: null };
+			const secondary = target < shownKey ? 'payOnly' : row.status === 'late' ? 'skip' : null;
+			return { kind: 'pay', target, blockedBy: null, secondary };
 		}
-		return { kind: null, target: null, blockedBy: isPastMonth && target !== null && target < shownKey ? target : null };
+		return {
+			kind: null,
+			target: null,
+			blockedBy: isPastMonth && target !== null && target < shownKey ? target : null,
+			secondary: null,
+		};
 	};
 
 	/** "Achamos a saída de R$ 500,00 em 20/10: ela fica como o pagamento de outubro." */
@@ -144,19 +166,20 @@ const BillsScreen: React.FC = () => {
 
 	/**
 	 * "Lançar a saída de R$ 120,00 da conta Corrente Teste, com a data de hoje?" Quitando um
-	 * mês que não é o atual, o título diz qual ("Quitar outubro?") e o texto, por quê.
+	 * mês que não é o atual, o título diz qual ("Quitar outubro?") e o texto, por quê; pagando
+	 * fora de ordem, que o mês anterior continua em atraso (`intro`).
 	 */
 	const askToPost = (
 		plan: Extract<BillPaymentPlan, { kind: 'post' }>,
-		older: { month: string; name: string } | null
+		intro: { title: string; text: string } | null
 	): Promise<PostChoice> =>
 		new Promise((resolve) => {
 			const amount = formatCents(plan.draft.amountCents);
 			const account = accounts.find((item) => item.id === plan.draft.accountId)?.name;
 			const body = account ? t('bills.pay.body', { amount, account }) : t('bills.pay.bodyNoAccount', { amount });
 			Alert.alert(
-				older ? t('bills.pay.titleMonth', { month: older.month }) : t('bills.pay.title'),
-				older ? `${t('bills.pay.olderBody', older)}\n\n${body}` : body,
+				intro ? intro.title : t('bills.pay.title'),
+				intro ? `${intro.text}\n\n${body}` : body,
 				[
 					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve('cancel') },
 					{ text: t('bills.pay.onlyMark'), onPress: () => resolve('onlyMark') },
@@ -181,18 +204,91 @@ const BillsScreen: React.FC = () => {
 			);
 		});
 
-	const pay = async (bill: Bill) => {
-		const target = payableMonth(bill, currentKey);
+	/**
+	 * "Pagar só novembro?" — pagar o mês atual com um anterior em aberto (SPD-146): diz que o
+	 * anterior continua em atraso. Quando não lança nada; lançando, o texto vai na pergunta de
+	 * lançar.
+	 */
+	const confirmOutOfOrder = (
+		plan: BillPaymentPlan,
+		bill: Bill,
+		month: string,
+		older: string
+	): Promise<boolean> =>
+		new Promise((resolve) => {
+			const names = { name: bill.name, month: monthNameOf(month), older: monthNameOf(older) };
+			const text = t('bills.payOnly.body', names);
+			Alert.alert(
+				t('bills.payOnly.title', names),
+				plan.kind === 'matched' ? `${text}\n\n${foundBodyOf(plan, month)}` : text,
+				[
+					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('bills.payOnly.confirm', names), onPress: () => resolve(true) },
+				],
+				{ cancelable: true, onDismiss: () => resolve(false) }
+			);
+		});
+
+	/** "Não vai pagar outubro?" — nenhum lançamento é criado e o saldo não muda (SPD-146). */
+	const confirmSkip = (bill: Bill, month: string): Promise<boolean> =>
+		new Promise((resolve) => {
+			const names = { name: bill.name, month: monthNameOf(month) };
+			Alert.alert(
+				t('bills.skip.title', names),
+				t('bills.skip.body', names),
+				[
+					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('bills.skip.confirm'), onPress: () => resolve(true) },
+				],
+				{ cancelable: true, onDismiss: () => resolve(false) }
+			);
+		});
+
+	const skip = async (bill: Bill, month: string) => {
+		if (!(await confirmSkip(bill, month))) return;
+		const skipped = await skipMonth(bill.id, month);
+		if (skipped) {
+			AccessibilityInfo.announceForAccessibility(
+				t('bills.skip.done', { name: bill.name, month: monthNameOf(skipped) })
+			);
+		}
+	};
+
+	/**
+	 * "Já paguei": quita o mês mais antigo em aberto — ou, com `only`, só o mês atual, fora de
+	 * ordem (SPD-146), deixando o anterior em atraso.
+	 */
+	const pay = async (bill: Bill, only?: string) => {
+		const oldest = payableMonth(bill, currentKey, payments);
+		const target = only ?? oldest;
 		if (!target) return;
 		const older = target !== currentKey;
-		const plan = await planPayment(bill.id);
+		const outOfOrder = only !== undefined && oldest !== null && oldest < only ? oldest : null;
+		const plan = await planPayment(bill.id, only);
 		if (!plan) return;
 
-		let options: { post: boolean } | undefined;
+		let options: { post?: boolean; month?: string } | undefined = only
+			? { month: only }
+			: undefined;
 		if (plan.kind === 'post') {
-			const choice = await askToPost(plan, older ? { month: monthNameOf(target), name: bill.name } : null);
+			const names = {
+				name: bill.name,
+				month: monthNameOf(target),
+				older: outOfOrder ? monthNameOf(outOfOrder) : '',
+			};
+			const intro = outOfOrder
+				? { title: t('bills.payOnly.title', names), text: t('bills.payOnly.body', names) }
+				: older
+					? {
+							title: t('bills.pay.titleMonth', { month: names.month }),
+							text: t('bills.pay.olderBody', { month: names.month, name: bill.name }),
+						}
+					: null;
+			const choice = await askToPost(plan, intro);
 			if (choice === 'cancel') return;
-			options = { post: choice === 'post' };
+			options = { ...options, post: choice === 'post' };
+		} else if (outOfOrder) {
+			if (!(await confirmOutOfOrder(plan, bill, target, outOfOrder))) return;
 		} else if (older && !(await confirmOlder(plan, bill, target))) {
 			return;
 		}
@@ -212,8 +308,9 @@ const BillsScreen: React.FC = () => {
 			AccessibilityInfo.announceForAccessibility(t('bills.markedPaid', { name: bill.name }));
 		}
 		if (result.kind === 'inbox') Alert.alert(t('bills.pay.inboxTitle'), t('bills.pay.inboxBody'));
-		// O pagamento já estava lançado: diz o que achou (num mês anterior, a pergunta já disse).
-		if (result.kind === 'matched' && !older) {
+		// O pagamento já estava lançado: diz o que achou (num mês anterior ou fora de ordem, a
+		// pergunta já disse).
+		if (result.kind === 'matched' && !older && !outOfOrder) {
 			Alert.alert(t('bills.pay.foundTitle'), foundBodyOf(result, paidMonth));
 		}
 	};
@@ -221,16 +318,36 @@ const BillsScreen: React.FC = () => {
 	const toggle = async (row: MonthBillRow) => {
 		setBusyId(row.bill.id);
 		try {
-			if (row.status === 'paid') {
+			if (row.status === 'skipped') {
+				await undoPaid(row.bill.id, shownKey);
+				AccessibilityInfo.announceForAccessibility(
+					t('bills.skip.undone', { name: row.bill.name, month: shownName })
+				);
+			} else if (row.status === 'paid') {
 				// Desfazer tira o lançamento quando foi o "Já paguei" que o criou (o id diz).
-				const removesPayment = row.bill.paidByRef === markPaidTransactionId(row.bill.id, shownKey);
-				await undoPaid(row.bill.id);
+				const created = markPaidTransactionId(row.bill.id, shownKey);
+				const removesPayment =
+					row.bill.paidByRef === created ||
+					paymentFor(payments, row.bill.id, shownKey)?.transactionId === created;
+				// O mês mostrado, não "o último pago": com registro, o desfazer reabre exatamente ele.
+				await undoPaid(row.bill.id, shownKey);
 				AccessibilityInfo.announceForAccessibility(
 					t(removesPayment ? 'bills.pay.undonePosted' : 'bills.unmarkedPaid', { name: row.bill.name })
 				);
 			} else {
 				await pay(row.bill);
 			}
+		} finally {
+			setBusyId(null);
+		}
+	};
+
+	/** A ação de baixo (SPD-146): pular o mês mostrado, ou pagar só ele fora de ordem. */
+	const runSecondary = async (row: MonthBillRow, kind: 'skip' | 'payOnly') => {
+		setBusyId(row.bill.id);
+		try {
+			if (kind === 'skip') await skip(row.bill, shownKey);
+			else await pay(row.bill, shownKey);
 		} finally {
 			setBusyId(null);
 		}
@@ -413,7 +530,7 @@ const BillsScreen: React.FC = () => {
 				{shownRows.length > 0 ? (
 					<View style={styles.list}>
 						{shownRows.map((row) => {
-							const paid = row.status === 'paid';
+							const paid = row.status === 'paid' || row.status === 'skipped';
 							const subtitle = subtitleOf(row.bill, row.dueDate, t);
 							const action = actionOf(row);
 							// No mês atual, com um mês anterior em aberto, o botão diz que quita esse.
@@ -425,7 +542,10 @@ const BillsScreen: React.FC = () => {
 									? t('bills.markPaidOlder', { month: monthNameOf(olderTarget) })
 									: t('bills.markPaid');
 							const actionHint = paid
-								? t('bills.undoPaidHint', { name: row.bill.name, month: shownName })
+								? t(row.status === 'skipped' ? 'bills.skip.undoHint' : 'bills.undoPaidHint', {
+										name: row.bill.name,
+										month: shownName,
+									})
 								: olderTarget
 									? t('bills.markPaidOlderHint', { name: row.bill.name, month: monthNameOf(olderTarget) })
 									: t('bills.markPaidHint', { name: row.bill.name, month: shownName });
@@ -473,6 +593,47 @@ const BillsScreen: React.FC = () => {
 											/>
 											<Text style={[styles.rowActionText, !paid && styles.rowActionTextPay]}>
 												{actionLabel}
+											</Text>
+										</Pressable>
+									) : null}
+									{action.secondary ? (
+										<Pressable
+											onPress={() => runSecondary(row, action.secondary ?? 'skip')}
+											disabled={busyId === row.bill.id}
+											accessibilityRole="button"
+											accessibilityLabel={
+												action.secondary === 'skip'
+													? t('bills.skip.action')
+													: t('bills.payOnly.action', { month: shownName })
+											}
+											accessibilityHint={
+												action.secondary === 'skip'
+													? t('bills.skip.hint', { name: row.bill.name, month: shownName })
+													: t('bills.payOnly.hint', {
+															name: row.bill.name,
+															month: shownName,
+															older: monthNameOf(action.target ?? shownKey),
+														})
+											}
+											style={({ pressed }) => [
+												styles.rowAction,
+												styles.rowActionUndo,
+												pressed && styles.pressed,
+											]}
+										>
+											<Ionicons
+												name={
+													action.secondary === 'skip'
+														? 'close-circle-outline'
+														: 'checkmark-done-outline'
+												}
+												size={18}
+												color="#FFFFFF"
+											/>
+											<Text style={styles.rowActionText}>
+												{action.secondary === 'skip'
+													? t('bills.skip.action')
+													: t('bills.payOnly.action', { month: shownName })}
 											</Text>
 										</Pressable>
 									) : null}

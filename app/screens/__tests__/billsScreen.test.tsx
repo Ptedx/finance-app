@@ -7,15 +7,20 @@
  * O que o "Já paguei" grava é do `BillsContext` (testado lá); aqui ele é um dublê e a
  * pergunta é o que a tela mostra e o que ela pede ao contexto. As chaves de tradução
  * aparecem cruas, com os valores entre chaves.
+ *
+ * SPD-146: "Não vou pagar este mês" no mês atrasado, "Pagar só novembro" com outubro em
+ * aberto, e o "Desfazer" que reabre o mês mostrado.
  */
 
 import type { BillPaymentPlan } from '../../contexts/BillsContext';
-import type { Bill } from '../../database/schema';
+import type { Bill, BillPayment } from '../../database/schema';
 
 const mockMarkPaid = jest.fn();
 const mockUndoPaid = jest.fn();
 const mockPlanPayment = jest.fn();
+const mockSkipMonth = jest.fn();
 let mockRows: { bill: Bill; status: string; dueDate: string }[] = [];
+let mockPayments: BillPayment[] = [];
 
 jest.mock('expo-router', () => ({
 	useRouter: () => ({ push: jest.fn(), back: jest.fn() }),
@@ -41,11 +46,16 @@ jest.mock('../../contexts/BillsContext', () => ({
 	markPaidTransactionId: (id: string, month: string) => `lancamento-${id}-${month}`,
 	useBills: () => ({
 		bills: mockRows.map((row) => row.bill),
+		payments: mockPayments,
 		month: { month: '2026-11', rows: mockRows, dueCents: 0, variableCount: 0, lateCount: 0 },
+		today: '2026-11-11',
 		isLoading: false,
-		planPayment: (id: string) => mockPlanPayment(id),
-		markPaid: (id: string, options?: { post?: boolean }) => mockMarkPaid(id, options),
-		undoPaid: (id: string) => mockUndoPaid(id),
+		planPayment: (id: string, month?: string) =>
+			month ? mockPlanPayment(id, month) : mockPlanPayment(id),
+		markPaid: (id: string, options?: { post?: boolean; month?: string }) =>
+			mockMarkPaid(id, options),
+		skipMonth: (id: string, month?: string) => mockSkipMonth(id, month),
+		undoPaid: (id: string, month?: string) => mockUndoPaid(id, month),
 	}),
 }));
 
@@ -134,6 +144,8 @@ const mount = async () => {
 beforeEach(() => {
 	jest.clearAllMocks();
 	mockRows = [{ bill: { ...INTERNET }, status: 'upcoming', dueDate: '2026-11-10' }];
+	mockPayments = [];
+	mockSkipMonth.mockImplementation(async (_id: string, month?: string) => month ?? null);
 	mockPlanPayment.mockResolvedValue(POST);
 	mockMarkPaid.mockImplementation(async (_id: string, options?: { post?: boolean }) => ({
 		...POST,
@@ -224,7 +236,8 @@ describe('"Já paguei" que não lança', () => {
 		mockRows = [{ bill: { ...INTERNET, paidThrough: '2026-11' }, status: 'paid', dueDate: '2026-11-10' }];
 		await mount();
 		await press('bills.undoPaid');
-		expect(mockUndoPaid).toHaveBeenCalledWith('internet');
+		// O mês mostrado: com registro, o desfazer reabre exatamente ele (SPD-146).
+		expect(mockUndoPaid).toHaveBeenCalledWith('internet', '2026-11');
 		expect(mockPlanPayment).not.toHaveBeenCalled();
 	});
 });
@@ -294,5 +307,178 @@ describe('"Já paguei" com outubro em aberto', () => {
 		expect(alertSpy.mock.calls.at(-1)?.[1]).toContain('bills.pay.olderBody');
 		await pressAlertButton('bills.pay.cancel');
 		expect(mockMarkPaid).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * SPD-146: no mês atrasado que o "Já paguei" quitaria, "Não vou pagar este mês" — a pergunta
+ * diz que nenhum lançamento é criado e o saldo não muda.
+ */
+describe('"Não vou pagar este mês"', () => {
+	const skipAction = 'bills.skip.action';
+	const names = { name: 'Internet teste', month: 'November' };
+
+	beforeEach(() => {
+		// Hoje 11/11, vence dia 10, pago até outubro: novembro está atrasado.
+		mockRows = [
+			{ bill: { ...INTERNET, paidThrough: '2026-10' }, status: 'late', dueDate: '2026-11-10' },
+		];
+	});
+
+	it('aparece no mês atrasado e pergunta antes, dizendo que nada é lançado', async () => {
+		await mount();
+		await press(skipAction);
+
+		expect(mockSkipMonth).not.toHaveBeenCalled();
+		const [title, body, buttons] = alertSpy.mock.calls.at(-1) ?? [];
+		expect(title).toBe(`bills.skip.title${JSON.stringify(names)}`);
+		expect(body).toBe(`bills.skip.body${JSON.stringify(names)}`);
+		expect((buttons as AlertButton[]).map((button) => button.text)).toEqual([
+			'bills.pay.cancel',
+			'bills.skip.confirm',
+		]);
+	});
+
+	it('confirmado, pula o mês mostrado e não toca no "Já paguei"', async () => {
+		await mount();
+		await press(skipAction);
+		await pressAlertButton('bills.skip.confirm');
+
+		expect(mockSkipMonth).toHaveBeenCalledWith('internet', '2026-11');
+		expect(mockPlanPayment).not.toHaveBeenCalled();
+		expect(mockMarkPaid).not.toHaveBeenCalled();
+		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(
+			`bills.skip.done${JSON.stringify(names)}`
+		);
+	});
+
+	it('cancelado, não pula', async () => {
+		await mount();
+		await press(skipAction);
+		await pressAlertButton('bills.pay.cancel');
+		expect(mockSkipMonth).not.toHaveBeenCalled();
+	});
+
+	it('mês que ainda vai vencer não tem a opção', async () => {
+		mockRows = [
+			{ bill: { ...INTERNET, paidThrough: '2026-10' }, status: 'upcoming', dueDate: '2026-11-20' },
+		];
+		await mount();
+		const shown = renderer.root.findAll(isHostText).map((node) => node.props.children);
+		expect(shown).not.toContain(skipAction);
+	});
+
+	it('o mês pulado mostra "Desfazer", que reabre aquele mês', async () => {
+		mockRows = [
+			{ bill: { ...INTERNET, paidThrough: '2026-11' }, status: 'skipped', dueDate: '2026-11-10' },
+		];
+		mockPayments = [
+			{
+				id: 'pulado',
+				billId: 'internet',
+				month: '2026-11',
+				status: 'skipped',
+				transactionId: null,
+				amountCents: null,
+				updatedAt: '',
+			},
+		];
+		await mount();
+		await press('bills.undoPaid');
+
+		expect(mockUndoPaid).toHaveBeenCalledWith('internet', '2026-11');
+		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(
+			`bills.skip.undone${JSON.stringify(names)}`
+		);
+	});
+});
+
+/**
+ * SPD-146: com outubro em aberto, novembro pode ser pago fora de ordem — a pergunta diz que
+ * outubro continua em atraso.
+ */
+describe('"Pagar só novembro" com outubro em aberto', () => {
+	const payOnly = 'bills.payOnly.action{"month":"November"}';
+	const names = { name: 'Internet teste', month: 'November', older: 'October' };
+
+	beforeEach(() => {
+		mockRows = [
+			{ bill: { ...INTERNET, paidThrough: '2026-09' }, status: 'upcoming', dueDate: '2026-11-10' },
+		];
+	});
+
+	it('aparece junto de "Quitar outubro"', async () => {
+		await mount();
+		const shown = renderer.root.findAll(isHostText).map((node) => node.props.children);
+		expect(shown).toContain('bills.markPaidOlder{"month":"October"}');
+		expect(shown).toContain(payOnly);
+	});
+
+	it('lançando: a pergunta diz que outubro continua em atraso, e marca novembro', async () => {
+		await mount();
+		await press(payOnly);
+
+		expect(mockPlanPayment).toHaveBeenCalledWith('internet', '2026-11');
+		const [title, body] = alertSpy.mock.calls.at(-1) ?? [];
+		expect(title).toBe(`bills.payOnly.title${JSON.stringify(names)}`);
+		expect(body).toContain(`bills.payOnly.body${JSON.stringify(names)}`);
+		expect(body).toContain(formatCents(12_000));
+		await pressAlertButton('bills.pay.post');
+
+		expect(mockMarkPaid).toHaveBeenCalledWith('internet', { month: '2026-11', post: true });
+	});
+
+	it('pagamento já lançado: pergunta com o aviso de outubro e o que achou, e marca novembro', async () => {
+		const matched = { kind: 'matched', ref: 'pix', amountCents: 12_000, date: '2026-11-05' };
+		mockPlanPayment.mockResolvedValue(matched);
+		mockMarkPaid.mockResolvedValue({ ...matched, posted: false, month: '2026-11' });
+		await mount();
+		await press(payOnly);
+
+		const [title, body, buttons] = alertSpy.mock.calls.at(-1) ?? [];
+		expect(title).toBe(`bills.payOnly.title${JSON.stringify(names)}`);
+		expect(body).toContain('bills.payOnly.body');
+		expect(body).toContain('bills.pay.foundBody');
+		expect((buttons as AlertButton[]).map((button) => button.text)).toEqual([
+			'bills.pay.cancel',
+			`bills.payOnly.confirm${JSON.stringify(names)}`,
+		]);
+		await pressAlertButton(`bills.payOnly.confirm${JSON.stringify(names)}`);
+		expect(mockMarkPaid).toHaveBeenCalledWith('internet', { month: '2026-11' });
+		// Já disse o que achou na pergunta: não repete depois.
+		expect(alertSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it('cancelado, não marca', async () => {
+		mockPlanPayment.mockResolvedValue({ kind: 'none' });
+		await mount();
+		await press(payOnly);
+		await pressAlertButton('bills.pay.cancel');
+		expect(mockMarkPaid).not.toHaveBeenCalled();
+	});
+
+	it('novembro pago fora de ordem (com registro) mostra "Desfazer", que reabre novembro', async () => {
+		mockRows = [
+			{ bill: { ...INTERNET, paidThrough: '2026-09' }, status: 'paid', dueDate: '2026-11-10' },
+		];
+		mockPayments = [
+			{
+				id: 'novembro',
+				billId: 'internet',
+				month: '2026-11',
+				status: 'paid',
+				transactionId: 'lancamento-internet-2026-11',
+				amountCents: 12_000,
+				updatedAt: '',
+			},
+		];
+		await mount();
+		await press('bills.undoPaid');
+
+		expect(mockUndoPaid).toHaveBeenCalledWith('internet', '2026-11');
+		// O lançamento era o do "Já paguei" (o registro diz): o aviso diz que ele saiu.
+		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(
+			`bills.pay.undonePosted${JSON.stringify({ name: 'Internet teste' })}`
+		);
 	});
 });

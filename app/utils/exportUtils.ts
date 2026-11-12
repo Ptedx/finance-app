@@ -20,6 +20,7 @@ import {
 } from '../database/database';
 import {
 	getAccounts,
+	getBillPayments,
 	getBills,
 	getDebts,
 	getRecurringTransactions,
@@ -29,6 +30,7 @@ import {
 	getTransfers,
 	restoreAccount,
 	restoreBill,
+	restoreBillPayment,
 	restoreDebt,
 	restoreRecurringTransaction,
 	restoreTransaction,
@@ -41,6 +43,7 @@ import {
 import type {
 	Account,
 	Bill,
+	BillPayment,
 	Capture,
 	Category,
 	Debt,
@@ -61,7 +64,8 @@ import { exportPreferences, importPreferences } from './storageUtils';
  * passa a levar **tudo que é dado do usuário**: a caixa de entrada (`captures`), as
  * regras aprendidas (`merchant_rules`), as preferências do AsyncStorage e as categorias
  * que a tela esconde (a `uncategorized` e as apagadas); 5 = as contas a pagar (`bills`,
- * banco v20).
+ * banco v20); 6 = os meses das contas a pagar (`billPayments`, banco v23, SPD-146): o mês
+ * pulado, o pago fora de ordem e o lançamento de cada baixa.
  *
  * Ninguém decide nada pelo número: a leitura aceita todas as formas campo a campo. Ele
  * fica no arquivo para quem precisar olhar um backup antigo e entender o que falta nele.
@@ -71,7 +75,7 @@ import { exportPreferences, importPreferences } from './storageUtils';
  * que é tudo que a validação de um app antigo exige. Um arquivo v4 entra numa 1.2.7
  * sem explodir — ela simplesmente ignora as chaves que não conhece.
  */
-const EXPORT_FORMAT_VERSION = 5;
+const EXPORT_FORMAT_VERSION = 6;
 
 /** A budget as it travels in a backup file, in either the current or the legacy shape. */
 interface ExportedBudget {
@@ -100,6 +104,8 @@ export interface DatabaseExportData {
 	debts?: Debt[];
 	/** Contas a pagar (v5). Ausentes em backups anteriores. */
 	bills?: Bill[];
+	/** Os meses das contas a pagar (v6, SPD-146). Ausentes em backups anteriores. */
+	billPayments?: BillPayment[];
 	retirementGoal?: RetirementGoalDraft | null;
 	reserveGoal?: ReserveGoalDraft | null;
 	/**
@@ -501,13 +507,14 @@ export const exportDatabaseData = async (): Promise<void> => {
 			await safely('budgets', getBudgets, [] as Awaited<ReturnType<typeof getBudgets>>)
 		).map(({ id, year, month, amountCents }) => ({ id, year, month, amountCents }));
 
-		const [recurringTransactions, accounts, transfers, debts, bills, retirement, reserve] =
+		const [recurringTransactions, accounts, transfers, debts, bills, billPayments, retirement, reserve] =
 			await Promise.all([
 				safely('recurringTransactions', getRecurringTransactions, [] as RecurringTransaction[]),
 				safely('accounts', getAccounts, [] as Account[]),
 				safely('transfers', getTransfers, [] as Transfer[]),
 				safely('debts', getDebts, [] as Debt[]),
 				safely('bills', getBills, [] as Bill[]),
+				safely('billPayments', getBillPayments, [] as BillPayment[]),
 				safely('retirementGoal', getRetirementGoal, null),
 				safely('reserveGoal', getReserveGoal, null),
 			]);
@@ -530,6 +537,7 @@ export const exportDatabaseData = async (): Promise<void> => {
 			transfers,
 			debts,
 			bills,
+			billPayments,
 			// As metas vão sem o id fixo e sem a contabilidade do sync: só o que o usuário escolheu.
 			retirementGoal: retirement
 				? {
@@ -792,6 +800,31 @@ const restoreBackup = async (importData: DatabaseExportData): Promise<RestoreOut
 			id
 		);
 	});
+	// Os meses das contas a pagar (v6, SPD-146) depois delas: só os das contas que voltaram.
+	// Contam no resumo junto com as contas (uma falha aqui é uma conta a pagar incompleta).
+	const billIds = new Set(asArray(importData.bills).map((bill) => bill.id));
+	await restoreEach(
+		'billPayments',
+		'bills',
+		asArray(importData.billPayments).filter(
+			(payment) =>
+				typeof payment?.id === 'string' &&
+				billIds.has(payment.billId) &&
+				typeof payment.month === 'string'
+		),
+		(payment) =>
+			restoreBillPayment({
+				id: payment.id,
+				billId: payment.billId,
+				month: payment.month,
+				status: payment.status === 'skipped' ? 'skipped' : 'paid',
+				transactionId: payment.status === 'skipped' ? null : (payment.transactionId ?? null),
+				amountCents:
+					payment.status === 'skipped' || typeof payment.amountCents !== 'number'
+						? null
+						: payment.amountCents,
+			})
+	);
 	if (importData.retirementGoal) await setRetirementGoal(importData.retirementGoal);
 	if (importData.reserveGoal) await setReserveGoal(importData.reserveGoal);
 

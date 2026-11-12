@@ -41,13 +41,15 @@ import {
 	findLiveTransfer,
 	getAccount,
 	getAccounts,
+	getBillPayments,
 	getBills,
 	getTransfer,
 	reassignCaptureLedger,
+	saveBillPayments,
 	updateBill,
 	updateTransfer,
 } from '../database/database';
-import type { Account, Capture, Category, Transfer } from '../database/schema';
+import type { Account, BillPayment, Capture, Category, Transfer } from '../database/schema';
 import { logCaptureDecision, logCaptureFailure } from '../diagnostics/capture';
 import type { DiagnosticValue } from '../diagnostics/contract';
 import { log } from '../diagnostics/log';
@@ -70,12 +72,14 @@ import { emitBillsChanged } from './billEvents';
 import {
 	type BillMatch,
 	type BillMovement,
+	type BillSettlementUndo,
 	billPaymentPatch,
-	billPaymentUndo,
+	billSettlementUndo,
 	matchBillPayment,
 	type SettledBill,
 	settledBillOf,
 } from './billMatcher';
+import { billPaymentDraft } from './billPayments';
 import {
 	type CaptureChoiceStore,
 	type CaptureChoices,
@@ -220,11 +224,40 @@ const serialized = <T>(work: () => Promise<T>): Promise<T> => {
 const afterBillsWrite = async (): Promise<void> => {
 	syncQueue.schedule();
 	try {
-		await scheduleBillReminders(await getBills());
+		const [bills, payments] = await Promise.all([getBills(), getBillPayments()]);
+		await scheduleBillReminders(bills, new Date(), payments);
 	} catch (error) {
 		console.error('Failed to reschedule bill reminders:', error);
 	}
 	emitBillsChanged();
+};
+
+/**
+ * Grava a baixa de um mês: o registro do mês com o lançamento e o valor (SPD-146) e a conta
+ * (`paidThrough` e a última baixa). O registro primeiro: é ele que diz qual mês o
+ * lançamento pagou, e sem a conta gravada `paidThrough` só fica atrás — piso, não erro.
+ */
+const writeSettlement = async (
+	match: BillMatch,
+	movement: BillMovement,
+	payments: readonly BillPayment[]
+): Promise<void> => {
+	await saveBillPayments([
+		billPaymentDraft(
+			match.bill.id,
+			match.month,
+			'paid',
+			movement.id,
+			Math.abs(movement.amountCents)
+		),
+	]);
+	await updateBill(match.bill.id, billPaymentPatch(match.bill, match.month, movement.id, payments));
+};
+
+/** Desfaz a baixa de um lançamento numa conta: a conta, o registro que sai e os que entram. */
+const writeSettlementUndo = async (billId: string, undo: BillSettlementUndo): Promise<void> => {
+	await saveBillPayments(undo.fill, undo.remove ? [undo.remove.id] : []);
+	await updateBill(billId, undo.draft);
 };
 
 /**
@@ -237,9 +270,10 @@ const afterBillsWrite = async (): Promise<void> => {
 export const settleBillPayment = (movement: BillMovement): Promise<BillMatch | null> =>
 	serialized(async () => {
 		try {
-			const match = matchBillPayment(await getBills(), movement);
+			const [bills, payments] = await Promise.all([getBills(), getBillPayments()]);
+			const match = matchBillPayment(bills, movement, payments);
 			if (!match) return null;
-			await updateBill(match.bill.id, billPaymentPatch(match.bill, match.month, movement.id));
+			await writeSettlement(match, movement, payments);
 			await afterBillsWrite();
 			return match;
 		} catch (error) {
@@ -249,17 +283,19 @@ export const settleBillPayment = (movement: BillMovement): Promise<BillMatch | n
 	});
 
 /**
- * O lançamento `ref` foi apagado: a conta cuja última baixa foi ele volta a ficar pendente
- * naquele mês. `date` (a do lançamento) diz qual mês ele tinha quitado. Nunca falha.
+ * O lançamento `ref` foi apagado: o mês que ele pagou volta a ficar pendente. Com o registro
+ * do mês (SPD-146), é exatamente aquele mês; sem ele, a conta cuja última baixa foi o
+ * lançamento, e `date` (a do lançamento) diz qual mês ele tinha quitado. Nunca falha.
  */
 export const undoBillPayment = (ref: string, date: string | null): Promise<void> =>
 	serialized(async () => {
 		try {
 			let changed = false;
-			for (const bill of await getBills()) {
-				const undo = billPaymentUndo(bill, ref, date);
+			const [bills, payments] = await Promise.all([getBills(), getBillPayments()]);
+			for (const bill of bills) {
+				const undo = billSettlementUndo(bill, ref, date, payments);
 				if (!undo) continue;
-				await updateBill(bill.id, undo);
+				await writeSettlementUndo(bill.id, undo);
 				changed = true;
 			}
 			if (changed) await afterBillsWrite();
@@ -294,18 +330,20 @@ export const resettleBillPayment = (previous: BillMovement | null, next: BillMov
 
 			let changed = false;
 			if (previous) {
-				for (const bill of await getBills()) {
-					const undo = billPaymentUndo(bill, next.id, previous.date);
+				const [bills, payments] = await Promise.all([getBills(), getBillPayments()]);
+				for (const bill of bills) {
+					const undo = billSettlementUndo(bill, next.id, previous.date, payments);
 					if (!undo) continue;
-					await updateBill(bill.id, undo);
+					await writeSettlementUndo(bill.id, undo);
 					changed = true;
 				}
 			}
 
 			// Relidas: a conta que acabou de perder a baixa pode ser a que o dado novo quita.
-			const match = matchBillPayment(await getBills(), next);
+			const [bills, payments] = await Promise.all([getBills(), getBillPayments()]);
+			const match = matchBillPayment(bills, next, payments);
 			if (match) {
-				await updateBill(match.bill.id, billPaymentPatch(match.bill, match.month, next.id));
+				await writeSettlement(match, next, payments);
 				changed = true;
 			}
 

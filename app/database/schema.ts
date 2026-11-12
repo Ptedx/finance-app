@@ -282,8 +282,13 @@ export const DATABASE_NAME = 'spendr.db';
  *     apaga as capturas de verdade e guarda só a impressão digital de cada aviso, para a
  *     mesma notificação do banco não virar dinheiro de novo. Local, fora de
  *     `SYNCED_TABLES`. Só tabela nova: um app v21 abre um banco v22 e ignora a tabela.
+ * 23 — `bill_payments` é criada e entra em `SYNCED_TABLES` (SPD-146): o mês de uma conta
+ *     a pagar que o usuário pulou ("Não vou pagar este mês") ou pagou fora de ordem vira
+ *     registro, e toda baixa grava o mês com o lançamento. `bills.paidThrough` continua
+ *     sendo o trecho contínuo pago — é o que um app antigo lê. Só tabela nova: um app v22
+ *     abre um banco v23 e ignora a tabela.
  */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -299,6 +304,7 @@ export const SYNCED_TABLES = [
 	'captures',
 	'merchant_rules',
 	'bills',
+	'bill_payments',
 	'preferences',
 ] as const;
 
@@ -650,6 +656,37 @@ export interface Bill extends SyncMeta {
 	sortOrder: number;
 }
 
+/**
+ * O que aconteceu com um mês de uma conta a pagar (SPD-146): `paid` (pago — à mão, pela
+ * baixa automática ou fora de ordem) ou `skipped` ("Não vou pagar este mês": sem lançamento,
+ * sem valor).
+ */
+export type BillPaymentStatus = 'paid' | 'skipped';
+
+/**
+ * Um mês de uma conta a pagar (v23, SPD-146). `bills.paidThrough` guarda só o trecho contínuo
+ * pago; o mês pulado e o pago fora de ordem precisam de linha própria, e toda baixa grava a
+ * sua, com o lançamento, para o desfazer saber exatamente o que reabrir.
+ *
+ * O `id` sai da conta e do mês (`billPaymentId`): dois aparelhos que marcam o mesmo mês caem
+ * na mesma linha, e o último a escrever ganha. Desfazer é lápide (`deletedAt`), não DELETE,
+ * para os outros aparelhos saberem.
+ */
+export interface BillPayment extends SyncMeta {
+	id: string;
+	billId: string;
+	/** O mês da conta, `YYYY-MM`. */
+	month: string;
+	status: BillPaymentStatus;
+	/** O lançamento que pagou o mês. `null` no pulado e no "Só marcar como paga". */
+	transactionId: string | null;
+	/** Quanto foi pago, em centavos. `null` no pulado ou quando não se sabe. */
+	amountCents: number | null;
+}
+
+/** O que se grava de um mês: tudo menos o carimbo do sync. */
+export type BillPaymentDraft = Omit<BillPayment, keyof SyncMeta>;
+
 export type DebtDraft = Omit<Debt, 'id' | keyof SyncMeta>;
 
 export const CREATE_DEBTS_TABLE = `
@@ -695,6 +732,22 @@ export const CREATE_BILLS_TABLE = `
     paidByRef TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     sortOrder INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
+ * Os meses das contas a pagar (v23, SPD-146). `billId` não é chave estrangeira, como nas
+ * outras tabelas sincronizadas: a ordem de chegada do sync não é garantida.
+ */
+export const CREATE_BILL_PAYMENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS bill_payments (
+    id TEXT PRIMARY KEY NOT NULL,
+    billId TEXT NOT NULL,
+    month TEXT NOT NULL,
+    status TEXT NOT NULL,
+    transactionId TEXT,
+    amountCents INTEGER,
 ${SYNC_COLUMNS_SQL}
   );
 `;
@@ -897,6 +950,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_captures_dirty ON captures (dirty);
   CREATE INDEX IF NOT EXISTS idx_merchant_rules_dirty ON merchant_rules (dirty);
   CREATE INDEX IF NOT EXISTS idx_bills_dirty ON bills (dirty);
+  CREATE INDEX IF NOT EXISTS idx_bill_payments_dirty ON bill_payments (dirty);
   CREATE INDEX IF NOT EXISTS idx_preferences_dirty ON preferences (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
@@ -1104,6 +1158,7 @@ export default {
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_DEBTS_TABLE,
 	CREATE_BILLS_TABLE,
+	CREATE_BILL_PAYMENTS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	CREATE_PREFERENCES_TABLE,
 	CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE,

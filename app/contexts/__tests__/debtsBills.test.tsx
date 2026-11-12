@@ -22,6 +22,7 @@ jest.mock('../../database/database', () => ({
 	deleteDebt: jest.fn(async () => undefined),
 	ensureDebtBills: jest.fn(async () => mockEnsureWrites),
 	getBills: jest.fn(async () => mockBills.map((bill) => ({ ...bill }))),
+	getBillPayments: jest.fn(async () => []),
 	updateBill: jest.fn(async (id: string, draft: BillDraft) => {
 		mockBills = mockBills.map((bill) => (bill.id === id ? { ...bill, ...draft } : bill));
 	}),

@@ -22,11 +22,18 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { getStatementClaimedCaptureIds } from '../database/captures';
-import { getBills } from '../database/database';
-import type { Account, Bill, Capture, Category, Transaction } from '../database/schema';
+import { getBillPayments, getBills } from '../database/database';
+import type {
+	Account,
+	Bill,
+	BillPayment,
+	Capture,
+	Category,
+	Transaction,
+} from '../database/schema';
 import { ambiguityOfReason } from '../utils/ambiguityReasons';
 import { onBillsChanged } from '../utils/billEvents';
-import { billNameSettledBy } from '../utils/billMatcher';
+import { billSettledBy } from '../utils/billMatcher';
 import { resolveCategoryId } from '../utils/captureActions';
 import { isStatementPackage, STATEMENT_LEDGER_SUSPECT_REASON } from '../utils/captureMatcher';
 import type { CaptureDirection } from '../utils/captureParser';
@@ -639,17 +646,40 @@ interface ResolvedRowProps {
 	categories: Category[];
 	onRevert: (capture: Capture) => void;
 	revertLabel: string;
-	/** A conta a pagar que o lançamento desta captura quitou (SPD-153): só o nome, sem o mês. */
-	settledBillName?: string | null;
+	/**
+	 * A conta a pagar que o lançamento desta captura quitou (SPD-153), com o mês quando há o
+	 * registro dele (SPD-146); sem registro, só o nome.
+	 */
+	settledBill?: { name: string; month: string | null } | null;
 }
 
-const ResolvedRow: React.FC<ResolvedRowProps> = ({ capture, categories, onRevert, revertLabel, settledBillName }) => {
+/** "quitou Plano de outubro", ou "quitou Plano" sem o registro do mês. */
+const settledBillText = (
+	settledBill: { name: string; month: string | null } | null | undefined,
+	t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+	if (!settledBill) return '';
+	return settledBill.month
+		? t('captures.settledBillMonth', {
+				name: settledBill.name,
+				month: monthKeyName(settledBill.month),
+			})
+		: t('captures.settledBill', { name: settledBill.name });
+};
+
+const ResolvedRow: React.FC<ResolvedRowProps> = ({
+	capture,
+	categories,
+	onRevert,
+	revertLabel,
+	settledBill,
+}) => {
 	const { t } = useTranslation();
 	const isIncome = capture.direction === 'in';
 	const category = categories.find((c) => c.id === capture.suggestedCategory);
 	const status = t(`captures.status.${capture.status}`, { defaultValue: capture.status });
 	const reason = resolvedReasonLabel(capture, t);
-	const settled = settledBillName ? t('captures.settledBill', { name: settledBillName }) : '';
+	const settled = settledBillText(settledBill, t);
 	const detail = [resolvedDetail(capture, category?.name ?? null, reason), settled].filter(Boolean).join(' · ');
 	const summary = `${status}. ${isIncome ? '+' : '−'} ${formatCents(capture.amountCents)}, ${
 		capture.counterparty ?? capture.appLabel
@@ -788,17 +818,21 @@ const CaptureInboxScreen = () => {
 	}, [resolved]);
 
 	// As contas a pagar, para dizer na linha do aprovado sozinho qual conta o lançamento quitou
-	// (SPD-153). Relidas quando os aprovados mudam e quando as contas mudam (a baixa chega por
-	// `emitBillsChanged`), como as pendentes que o extrato casou.
+	// (SPD-153) e, com o registro do mês (SPD-146), qual mês. Relidas quando os aprovados mudam e
+	// quando as contas mudam (a baixa chega por `emitBillsChanged`), como as pendentes que o
+	// extrato casou.
 	const [bills, setBills] = useState<Bill[]>([]);
+	const [billPayments, setBillPayments] = useState<BillPayment[]>([]);
 	const autoApprovedRefs = useMemo(() => autoApproved.map((c) => c.transactionId ?? '').join(','), [autoApproved]);
 	useEffect(() => {
 		if (!autoApprovedRefs) return undefined;
 		let active = true;
 		const reload = () => {
-			getBills()
-				.then((rows) => {
-					if (active) setBills(rows);
+			Promise.all([getBills(), getBillPayments()])
+				.then(([rows, months]) => {
+					if (!active) return;
+					setBills(rows);
+					setBillPayments(months);
 				})
 				.catch((error) => console.error('Failed to load bills:', error));
 		};
@@ -1016,7 +1050,7 @@ const CaptureInboxScreen = () => {
 								categories={categories}
 								onRevert={handleRevert}
 								revertLabel={t('captures.undo')}
-								settledBillName={billNameSettledBy(bills, capture.transactionId)}
+								settledBill={billSettledBy(bills, billPayments, capture.transactionId)}
 							/>
 						))}
 					</View>

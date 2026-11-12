@@ -13,7 +13,8 @@
  * `scheduleCardReminders`); aqui é só a conta, para dar para testar em qualquer fuso.
  */
 
-import type { Bill } from '../database/schema';
+import type { Bill, BillPayment } from '../database/schema';
+import { paymentFor } from './billPayments';
 import { type CardSummary, invoiceDueCents } from './cardMath';
 import {
 	addDays,
@@ -26,7 +27,8 @@ import {
 
 export type BillReminderKind = 'soon' | 'today' | 'late';
 
-export type BillStatus = 'paid' | 'upcoming' | 'due_today' | 'late';
+/** `skipped`: o usuário disse "Não vou pagar este mês" (SPD-146) — nem pago, nem atrasado. */
+export type BillStatus = 'paid' | 'skipped' | 'upcoming' | 'due_today' | 'late';
 
 export interface BillReminder {
 	billId: string;
@@ -92,6 +94,22 @@ export const firstOpenMonth = (bill: Pick<Bill, 'paidThrough'>, current: string)
 	return next > floor ? next : floor;
 };
 
+/**
+ * O mês em aberto mais antigo contando os registros (SPD-146): a partir de `firstOpenMonth`,
+ * pula os meses que já têm registro — o pulado e o pago fora de ordem. É por ele que "Já
+ * paguei", a baixa automática e o "Em atraso" andam quando há registros. Sem registro, é o
+ * próprio `firstOpenMonth`.
+ */
+export const firstUnsettledMonth = (
+	bill: Pick<Bill, 'id' | 'paidThrough'>,
+	current: string,
+	payments: readonly BillPayment[] = []
+): string => {
+	let month = firstOpenMonth(bill, current);
+	while (paymentFor(payments, bill.id, month)) month = shiftMonthKey(month, 1);
+	return month;
+};
+
 /** Conta que pode avisar: ativa e não apagada. */
 const isLive = (bill: Bill): boolean => bill.active && !bill.deletedAt;
 
@@ -109,8 +127,14 @@ const atReminderHour = (isoDate: string): Date => {
  * gera nada daquele mês. Passado o D+3, o atraso não avisa mais: quem lembra dele até ser
  * quitado é a linha "Em atraso" da tela inicial (SPD-145). Um mês anterior em aberto não
  * cala os avisos do mês corrente, que segue sem pagar.
+ *
+ * O mês com registro (`payments`, SPD-146) — pulado ou pago fora de ordem — também não avisa.
  */
-export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
+export const billReminders = (
+	bills: Bill[],
+	now: Date,
+	payments: readonly BillPayment[] = []
+): BillReminder[] => {
 	const horizon = new Date(now);
 	horizon.setDate(horizon.getDate() + BILL_REMINDER_HORIZON_DAYS);
 
@@ -125,7 +149,7 @@ export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
 		if (!isLive(bill)) continue;
 
 		for (const month of months) {
-			if (isMonthPaid(bill, month)) continue;
+			if (isMonthPaid(bill, month) || paymentFor(payments, bill.id, month)) continue;
 
 			const dueDate = billDueDate(bill, month);
 
@@ -146,9 +170,21 @@ export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
  * do calendário, como `todayISO()`). Pago é o mês antes do mais antigo em aberto
  * (`firstOpenMonth`): o atraso vai no máximo 3 meses para trás, e a conta sem mês pago não
  * tem passado atrasado.
+ *
+ * Com registro do mês (SPD-146): o pulado é `skipped`, mesmo dentro do trecho pago — um app
+ * antigo pode ter passado `paidThrough` por cima dele —; o pago fora de ordem é `paid`, mesmo
+ * depois de `paidThrough` — um app antigo pode tê-lo baixado. `paidThrough` é piso: o que
+ * está antes dele, sem registro, está pago.
  */
-export const billStatus = (bill: Bill, month: string, today: string): BillStatus => {
-	if (month < firstOpenMonth(bill, monthKeyOf(today.slice(0, 10)))) return 'paid';
+export const billStatus = (
+	bill: Bill,
+	month: string,
+	today: string,
+	payments: readonly BillPayment[] = []
+): BillStatus => {
+	const record = paymentFor(payments, bill.id, month);
+	if (record?.status === 'skipped') return 'skipped';
+	if (record || month < firstOpenMonth(bill, monthKeyOf(today.slice(0, 10)))) return 'paid';
 
 	const dueDate = billDueDate(bill, month);
 	const day = today.slice(0, 10);

@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Device from 'expo-device';
 import i18next from 'i18next';
 import { Platform } from 'react-native';
-import type { Bill } from '../database/schema';
+import type { Bill, BillPayment } from '../database/schema';
 import { errorData, log } from '../diagnostics/log';
 import {
 	type BillReminder,
@@ -269,10 +269,15 @@ let billScheduling: Promise<unknown> = Promise.resolve();
  * remarcados todo mês.
  *
  * Com as notificações desligadas, só cancela. No Expo Go não faz nada.
- * Devolve quantos lembretes ficaram agendados.
+ * Devolve quantos lembretes ficaram agendados. O mês pulado ou pago fora de ordem
+ * (`payments`, SPD-146) não avisa.
  */
-export const scheduleBillReminders = (bills: Bill[], now: Date = new Date()): Promise<number> => {
-	const run = billScheduling.then(() => rescheduleBillReminders(bills, now));
+export const scheduleBillReminders = (
+	bills: Bill[],
+	now: Date = new Date(),
+	payments: readonly BillPayment[] = []
+): Promise<number> => {
+	const run = billScheduling.then(() => rescheduleBillReminders(bills, now, payments));
 	billScheduling = run.catch(() => undefined);
 	return run;
 };
@@ -344,7 +349,11 @@ const logBillReminders = async (
 	});
 };
 
-const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number> => {
+const rescheduleBillReminders = async (
+	bills: Bill[],
+	now: Date,
+	payments: readonly BillPayment[]
+): Promise<number> => {
 	const Notifications = getNotifications();
 	if (!Notifications) return 0;
 
@@ -366,7 +375,7 @@ const rescheduleBillReminders = async (bills: Bill[], now: Date): Promise<number
 		const billsById = new Map(bills.map((bill) => [bill.id, bill]));
 		let count = 0;
 
-		for (const reminder of billReminders(bills, now)) {
+		for (const reminder of billReminders(bills, now, payments)) {
 			const bill = billsById.get(reminder.billId);
 			if (!bill) continue;
 

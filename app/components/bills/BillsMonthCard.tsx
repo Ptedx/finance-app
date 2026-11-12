@@ -46,9 +46,16 @@ const subtitleOf = (row: MonthBillRow, month: string, t: Translate): string =>
 const BillsMonthCard: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { activeBills, month, today, isLoading } = useBills();
-	const soon = useMemo(() => homeBills(activeBills, today), [activeBills, today]);
-	const overdue = useMemo(() => overdueBills(activeBills, month.month), [activeBills, month.month]);
+	const { activeBills, payments, month, today, isLoading } = useBills();
+	// Os meses pulados ou pagos fora de ordem (SPD-146) não são atraso nem "vence logo".
+	const soon = useMemo(
+		() => homeBills(activeBills, today, payments),
+		[activeBills, today, payments]
+	);
+	const overdue = useMemo(
+		() => overdueBills(activeBills, month.month, payments),
+		[activeBills, month.month, payments]
+	);
 
 	if (isLoading) return null;
 

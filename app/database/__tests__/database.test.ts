@@ -254,6 +254,8 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 			'reserve_goals',
 			// As contas a pagar entram no v20, junto com o resto do livro.
 			'bills',
+			// E os meses delas no v23 (SPD-146).
+			'bill_payments',
 			// A caixa de entrada entra na lista no v19, depois do conserto dos ponteiros.
 			'captures',
 		]);

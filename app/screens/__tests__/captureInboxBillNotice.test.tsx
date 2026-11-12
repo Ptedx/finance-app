@@ -4,17 +4,21 @@
  * não ser o do pagamento: quem pagou "novembro" com outubro em aberto precisa ler que foi
  * outubro. O mês sai no idioma do app; o "Desfazer" continua o mesmo. Em "Aprovados
  * automaticamente", a linha diz a conta que o lançamento quitou, sem o mês: o `paidByRef` não
- * diz o mês com segurança ("Só marcar" avança o mês e mantém a referência). O resto da tela é
- * dublê; as chaves de tradução aparecem cruas.
+ * diz o mês com segurança ("Só marcar" avança o mês e mantém a referência). Desde o SPD-146 a
+ * baixa grava o registro do mês com o lançamento: com ele, a linha diz o mês ("quitou Aluguel
+ * de outubro"); sem ele, continua só o nome. O resto da tela é dublê; as chaves de tradução
+ * aparecem cruas.
  */
 
 const mockUndo = jest.fn(async () => undefined);
 const mockData: { lastAction: unknown; resolved: unknown[] } = { lastAction: null, resolved: [] };
 const mockBills: unknown[] = [];
+const mockBillPayments: unknown[] = [];
 
 jest.mock('../../database/database', () => ({
 	...jest.requireActual('../../database/database'),
 	getBills: jest.fn(async () => [...mockBills]),
+	getBillPayments: jest.fn(async () => [...mockBillPayments]),
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -81,7 +85,7 @@ jest.mock('../../contexts/CapturesContext', () => ({
 }));
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import type { Bill, Capture } from '../../database/schema';
+import type { Bill, BillPayment, Capture } from '../../database/schema';
 import { emitBillsChanged } from '../../utils/billEvents';
 import { configureDateLocale } from '../../utils/dateUtils';
 import CaptureInboxScreen from '../CaptureInboxScreen';
@@ -116,6 +120,7 @@ beforeEach(() => {
 	mockUndo.mockClear();
 	mockData.resolved = [];
 	mockBills.length = 0;
+	mockBillPayments.length = 0;
 	configureDateLocale('pt-BR');
 });
 
@@ -261,5 +266,51 @@ describe('"Aprovados automaticamente" diz a conta que o lançamento quitou', () 
 		});
 
 		expect(screenTexts().some((text) => text.includes(SETTLED))).toBe(true);
+	});
+
+	// SPD-146: o registro do mês guarda o lançamento que o pagou.
+	const payment = (overrides: Partial<BillPayment> = {}): BillPayment => ({
+		id: 'pagamento-outubro',
+		billId: 'aluguel',
+		month: '2026-10',
+		status: 'paid',
+		transactionId: 'tx-auto',
+		amountCents: 150_000,
+		updatedAt: '',
+		...overrides,
+	});
+	const SETTLED_OCTOBER = `captures.settledBillMonth ${JSON.stringify({ name: 'Aluguel', month: 'outubro' })}`;
+
+	it('com o registro do mês pago pelo lançamento, a linha diz a conta e o mês', async () => {
+		mockData.resolved = [autoCapture()];
+		// "Só marcar" depois levou paidThrough a novembro: o mês sai do registro, não de paidThrough.
+		mockBills.push(bill({ paidThrough: '2026-11' }));
+		mockBillPayments.push(payment());
+
+		await mount(null);
+
+		expect(screenTexts().some((text) => text.includes(SETTLED_OCTOBER))).toBe(true);
+		expect(screenTexts().some((text) => text.includes(SETTLED))).toBe(false);
+	});
+
+	it('o registro diz a conta mesmo quando a última baixa já é de outro lançamento', async () => {
+		mockData.resolved = [autoCapture()];
+		mockBills.push(bill({ paidByRef: 'outro-lancamento', paidThrough: '2026-11' }));
+		mockBillPayments.push(payment());
+
+		await mount(null);
+
+		expect(screenTexts().some((text) => text.includes(SETTLED_OCTOBER))).toBe(true);
+	});
+
+	it('registro de outro lançamento não dá mês: só o nome, pela última baixa', async () => {
+		mockData.resolved = [autoCapture()];
+		mockBills.push(bill());
+		mockBillPayments.push(payment({ transactionId: 'outro-lancamento' }));
+
+		await mount(null);
+
+		expect(screenTexts().some((text) => text.includes(SETTLED))).toBe(true);
+		expect(screenTexts().some((text) => text.includes('captures.settledBillMonth'))).toBe(false);
 	});
 });

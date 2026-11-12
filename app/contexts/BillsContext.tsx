@@ -14,13 +14,22 @@ import {
 	addBill,
 	deleteBill,
 	deleteTransaction,
+	getBillPayments,
 	getBills,
 	getTransactionsByDateRange,
 	initDatabase,
 	restoreTransaction,
+	saveBillPayments,
 	updateBill,
 } from '../database/database';
-import type { Bill, Capture, Category, Transaction, TransactionDraft } from '../database/schema';
+import type {
+	Bill,
+	BillPayment,
+	Capture,
+	Category,
+	Transaction,
+	TransactionDraft,
+} from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import { emitBillsChanged, onBillsChanged } from '../utils/billEvents';
@@ -37,13 +46,14 @@ import {
 	canDeleteBill,
 	canToggleActive,
 	editedBillDraft,
+	isOpenMonth,
 	type MonthBills,
-	markedPaid,
 	monthBills,
 	newBillDraft,
 	type PaidState,
 	payableMonth,
-	undonePaid,
+	settleMonth,
+	undoMonth,
 } from '../utils/billRules';
 import { resolveCategoryId } from '../utils/captureActions';
 import { addDays, getISODate, monthKeyOf, shiftMonthKey, todayISO } from '../utils/dateUtils';
@@ -73,6 +83,11 @@ import { useTransactions } from './TransactionsContext';
  * o de hoje — com outubro em aberto, quita outubro, e o próximo toque quita novembro. O
  * desfazer reabre o último mês pago, um por vez, e tira o lançamento que o "Já paguei" criou
  * para aquele mês (o id determinístico diz qual é), mesmo depois de reabrir o app.
+ *
+ * Mês pulado e fora de ordem (SPD-146): "Não vou pagar este mês" (`skipMonth`) registra o mês
+ * sem lançamento nenhum; "Já paguei" pode quitar um mês escolhido (`month`) com outro mais
+ * antigo em aberto, que continua atrasado. Toda baixa grava o registro do mês com o lançamento
+ * (`bill_payments`), e o desfazer reabre o mês escolhido pelo registro dele (`undoMonth`).
  *
  * As regras — mês pago de partida, bloqueio da conta de dívida, total do mês — ficam em
  * `utils/billRules.ts`; aqui só se grava e se avisa.
@@ -117,6 +132,8 @@ export interface BillPaymentInput {
 	/** Saídas na caixa de entrada (avisos do banco ainda não confirmados). */
 	inbox: BillMovement[];
 	categories: Category[];
+	/** Os meses registrados (SPD-146): o lançamento que já pagou outro mês não serve para este. */
+	payments?: readonly BillPayment[];
 }
 
 /** Quantos meses para cada lado o "Já paguei" olha os lançamentos que ele mesmo criou para outros meses. */
@@ -133,11 +150,27 @@ const OWN_PAYMENT_MONTHS_AROUND = 6;
  *    hoje, a conta de pagamento, o valor e o texto. Num mês atrasado vale também só o valor
  *    exato, porque quem diz que pagou é o usuário.
  * Não serve o lançamento que já deu baixa em outra conta, a última baixa desta (já quitou o
- * mês anterior) nem o que o "Já paguei" criou para outro mês dela.
+ * mês anterior), o que o "Já paguei" criou para outro mês dela nem o que já é o pagamento
+ * registrado de outro mês (`payments`, SPD-146).
  */
-export const billPaymentPlan = ({ bill, bills, month, today, ledger, inbox, categories }: BillPaymentInput): BillPaymentPlan => {
+export const billPaymentPlan = ({
+	bill,
+	bills,
+	month,
+	today,
+	ledger,
+	inbox,
+	categories,
+	payments = [],
+}: BillPaymentInput): BillPaymentPlan => {
 	const own = markPaidTransactionId(bill.id, month);
-	const taken = new Set(bills.filter((other) => other.id !== bill.id).map((other) => other.paidByRef));
+	const taken = new Set<string | null>(
+		bills.filter((other) => other.id !== bill.id).map((other) => other.paidByRef)
+	);
+	for (const payment of payments) {
+		if (payment.deletedAt || (payment.billId === bill.id && payment.month === month)) continue;
+		taken.add(payment.transactionId);
+	}
 	const otherMonths = new Set<string>();
 	for (let delta = -OWN_PAYMENT_MONTHS_AROUND; delta <= OWN_PAYMENT_MONTHS_AROUND; delta += 1) {
 		if (delta !== 0) otherMonths.add(markPaidTransactionId(bill.id, shiftMonthKey(month, delta)));
@@ -199,6 +232,8 @@ interface PaidMemory {
 interface BillsContextType {
 	/** Todas as vivas, desativadas inclusive. */
 	bills: Bill[];
+	/** Os meses registrados vivos (SPD-146): pulados, pagos fora de ordem e as baixas. */
+	payments: BillPayment[];
 	/** Só as que avisam e entram no mês. */
 	activeBills: Bill[];
 	/** As contas do mês corrente, com status e o total que ainda falta pagar. */
@@ -216,20 +251,32 @@ interface BillsContextType {
 	removeBill: (id: string) => Promise<boolean>;
 	/**
 	 * O que o "Já paguei" faria agora (sem gravar): a tela pergunta antes de lançar.
-	 * `null` quando a conta não existe ou não tem mês em aberto até o atual.
+	 * `null` quando a conta não existe ou não tem mês em aberto até o atual. Com `month`, o
+	 * plano daquele mês (fora de ordem), `null` se ele não estiver em aberto.
 	 */
-	planPayment: (id: string) => Promise<BillPaymentPlan | null>;
+	planPayment: (id: string, month?: string) => Promise<BillPaymentPlan | null>;
 	/**
 	 * Marca como pago o mês mais antigo em aberto (`payableMonth`; com outubro em aberto, é
-	 * outubro) e, quando o plano é lançar, lança a saída — salvo `post: false` ("só marcar").
-	 * Devolve o que fez, ou `null` quando a conta não existe ou está paga até o mês atual.
+	 * outubro) — ou `month`, fora de ordem: o mais antigo continua atrasado — e, quando o plano
+	 * é lançar, lança a saída — salvo `post: false` ("só marcar"). Grava o registro do mês com
+	 * o lançamento. Devolve o que fez, ou `null` quando a conta não existe ou o mês não está em
+	 * aberto.
 	 */
-	markPaid: (id: string, options?: { post?: boolean }) => Promise<MarkPaidResult | null>;
+	markPaid: (
+		id: string,
+		options?: { post?: boolean; month?: string }
+	) => Promise<MarkPaidResult | null>;
 	/**
-	 * Volta o último mês pago para em aberto — só ele — e apaga o lançamento que o "Já paguei"
-	 * criou para esse mês (só ele).
+	 * "Não vou pagar este mês" (SPD-146): registra o mês (`month`, ou o mais antigo em aberto)
+	 * como pulado, sem lançamento nem mudança de saldo. Devolve o mês pulado, ou `null` quando
+	 * a conta não existe ou o mês não está em aberto.
 	 */
-	undoPaid: (id: string) => Promise<void>;
+	skipMonth: (id: string, month?: string) => Promise<string | null>;
+	/**
+	 * Volta o mês `month` (por padrão, o último pago) para em aberto — só ele — e apaga o
+	 * lançamento que o "Já paguei" criou para esse mês (só ele).
+	 */
+	undoPaid: (id: string, month?: string) => Promise<void>;
 	/** Remarca os lembretes (contas e faturas) com o que há agora (o liga/desliga das notificações). */
 	rescheduleReminders: () => Promise<number>;
 	refresh: () => Promise<void>;
@@ -239,6 +286,7 @@ const BillsContext = createContext<BillsContextType | undefined>(undefined);
 
 export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 	const [bills, setBills] = useState<Bill[]>([]);
+	const [payments, setPayments] = useState<BillPayment[]>([]);
 	const [today, setToday] = useState(todayISO);
 	const [isLoading, setIsLoading] = useState(true);
 	const { lastSyncedAt } = useSync();
@@ -265,6 +313,7 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
 	// A lista mais recente, para as ações não lerem uma versão velha entre duas cargas.
 	const billsRef = useRef<Bill[]>([]);
+	const paymentsRef = useRef<BillPayment[]>([]);
 	// O estado de antes de cada "Já paguei" desta sessão, para o desfazer voltar a ele — só
 	// enquanto o mês que ele quitou ainda for o último pago (outra baixa depois o invalida).
 	const beforePaid = useRef(new Map<string, PaidMemory>());
@@ -274,11 +323,13 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 	const refresh = useCallback(async () => {
 		try {
 			await initDatabase();
-			const rows = await getBills();
+			const [rows, months] = await Promise.all([getBills(), getBillPayments()]);
 			billsRef.current = rows;
+			paymentsRef.current = months;
 			setBills(rows);
+			setPayments(months);
 			setToday(todayISO());
-			void scheduleBillReminders(rows).catch((error) =>
+			void scheduleBillReminders(rows, new Date(), months).catch((error) =>
 				console.error('Error scheduling bill reminders:', error)
 			);
 		} catch (error) {
@@ -408,47 +459,100 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 			ledger: transactions.flatMap((tx) => ledgerMovement(tx) ?? []),
 			inbox: pending.flatMap((capture) => inboxMovement(capture) ?? []),
 			categories: categoriesRef.current,
+			payments: paymentsRef.current,
 		});
 	}, []);
 
+	/**
+	 * O mês que a ação quita ou pula: `month`, se estiver em aberto, ou o mais antigo em aberto
+	 * (`payableMonth`; com outubro em aberto, é outubro, mesmo em novembro). `null` sem nenhum.
+	 */
+	const targetMonth = useCallback((bill: Bill, current: string, month?: string): string | null => {
+		if (month === undefined) return payableMonth(bill, current, paymentsRef.current);
+		return isOpenMonth(bill, month, current, paymentsRef.current) ? month : null;
+	}, []);
+
 	const planPayment = useCallback(
-		async (id: string) => {
+		async (id: string, chosen?: string) => {
 			const bill = findBill(id);
 			if (!bill) return null;
 			const today = todayISO();
-			const month = payableMonth(bill, monthKeyOf(today));
+			const month = targetMonth(bill, monthKeyOf(today), chosen);
 			if (!month) return null;
 			return planFor(bill, month, today);
 		},
-		[findBill, planFor]
+		[findBill, planFor, targetMonth]
 	);
 
 	const markPaid = useCallback(
-		async (id: string, options: { post?: boolean } = {}): Promise<MarkPaidResult | null> => {
+		async (
+			id: string,
+			options: { post?: boolean; month?: string } = {}
+		): Promise<MarkPaidResult | null> => {
 			const bill = findBill(id);
 			if (!bill) return null;
 			const today = todayISO();
 			const current = monthKeyOf(today);
-			// O mais antigo em aberto: com outubro em aberto, é outubro, mesmo em novembro.
-			const month = payableMonth(bill, current);
+			const month = targetMonth(bill, current, options.month);
 			if (!month) return null;
 			const plan = await planFor(bill, month, today);
 			const post = plan.kind === 'post' && options.post !== false;
+			const transactionId =
+				plan.kind === 'matched' ? plan.ref : plan.kind === 'post' && post ? plan.id : null;
+			const amountCents =
+				plan.kind === 'matched'
+					? plan.amountCents
+					: plan.kind === 'post' && post
+						? plan.draft.amountCents
+						: null;
+			const settled = settleMonth(bill, paymentsRef.current, month, current, {
+				status: 'paid',
+				transactionId,
+				amountCents,
+			});
 
 			beforePaid.current.set(id, { previous: { paidThrough: bill.paidThrough, paidByRef: bill.paidByRef }, month });
 			await commit(async () => {
 				// Lança antes de dar a baixa: a baixa aponta para o lançamento. `restoreTransaction`
 				// tira a lápide de um "Já paguei" desfeito no mesmo mês (o id é o mesmo) antes de gravar.
 				if (plan.kind === 'post' && post) await restoreTransaction(plan.draft, plan.id);
-				const paid = markedPaid(bill, current);
-				const paidByRef = plan.kind === 'matched' ? plan.ref : plan.kind === 'post' && post ? plan.id : paid.paidByRef;
-				await updateBill(id, { ...billDraftOf(bill), ...paid, paidByRef });
+				await saveBillPayments([settled.record]);
+				await updateBill(id, {
+					...billDraftOf(bill),
+					paidThrough: settled.paidThrough,
+					paidByRef: transactionId ?? bill.paidByRef,
+				});
 			});
 			// O saldo da conta e o gasto do mês passam a contar o lançamento.
 			if (post) await refreshDataRef.current();
 			return { ...plan, posted: post, month };
 		},
-		[commit, findBill, planFor]
+		[commit, findBill, planFor, targetMonth]
+	);
+
+	const skipMonth = useCallback(
+		async (id: string, chosen?: string): Promise<string | null> => {
+			const bill = findBill(id);
+			if (!bill) return null;
+			const current = monthKeyOf(todayISO());
+			const month = targetMonth(bill, current, chosen);
+			if (!month) return null;
+			const settled = settleMonth(bill, paymentsRef.current, month, current, { status: 'skipped' });
+
+			beforePaid.current.set(id, {
+				previous: { paidThrough: bill.paidThrough, paidByRef: bill.paidByRef },
+				month,
+			});
+			// Nenhum lançamento: o mês sai do que falta pagar e do atraso, e o saldo não muda.
+			await commit(async () => {
+				await saveBillPayments([settled.record]);
+				if (settled.paidThrough !== bill.paidThrough) {
+					await updateBill(id, { ...billDraftOf(bill), paidThrough: settled.paidThrough });
+				}
+			});
+			return month;
+		},
+		[commit, findBill, targetMonth]
 	);
 
 	/**
@@ -463,27 +567,34 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 	}, []);
 
 	const undoPaid = useCallback(
-		async (id: string) => {
+		async (id: string, chosen?: string) => {
 			const bill = findBill(id);
-			if (!bill?.paidThrough) return;
-			// Reabre o último mês pago, só ele: nunca "o mês atual − 1", que deixaria pago um mês
-			// que ninguém pagou.
-			const month = bill.paidThrough;
+			if (!bill) return;
+			// Reabre o mês escolhido ou, sem escolha, o último pago — só ele: nunca "o mês atual − 1",
+			// que deixaria pago um mês que ninguém pagou.
+			const month = chosen ?? bill.paidThrough;
+			if (!month) return;
 			const memory = beforePaid.current.get(id);
-			beforePaid.current.delete(id);
 			const previous = memory?.month === month ? memory.previous : undefined;
+			const reopened = undoMonth(bill, paymentsRef.current, month, previous);
+			if (!reopened) return;
+			beforePaid.current.delete(id);
 			// Só o lançamento que o "Já paguei" criou para este mês (reconhecido pelo id) sai — esteja
 			// a baixa nele ou não (o mês seguinte pode ter sido quitado e desfeito depois). A baixa que
 			// veio de um lançamento que já existia — à mão ou da captura — volta atrás sem apagar nada.
 			const created = markPaidTransactionId(bill.id, month);
 			const ownRef = bill.paidByRef === created;
-			const ownPayment = ownRef || (await hasOwnPayment(created, month, todayISO()));
-			const undone = undonePaid(bill, month, previous);
+			const ownPayment =
+				ownRef ||
+				reopened.remove?.transactionId === created ||
+				(await hasOwnPayment(created, month, todayISO()));
+			const paidByRef = previous ? previous.paidByRef : bill.paidByRef;
 			await commit(async () => {
+				await saveBillPayments(reopened.fill, reopened.remove ? [reopened.remove.id] : []);
 				await updateBill(id, {
 					...billDraftOf(bill),
-					...undone,
-					paidByRef: ownRef && undone.paidByRef === created ? null : undone.paidByRef,
+					paidThrough: reopened.paidThrough,
+					paidByRef: paidByRef === created ? null : paidByRef,
 				});
 				// Depois da conta: com a baixa já fora, apagar o lançamento não reabre nada de novo.
 				if (ownPayment) await deleteTransaction(created);
@@ -494,17 +605,22 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 	);
 
 	const rescheduleReminders = useCallback(async () => {
-		const billCount = await scheduleBillReminders(billsRef.current);
+		const billCount = await scheduleBillReminders(
+			billsRef.current,
+			new Date(),
+			paymentsRef.current
+		);
 		const cardCount = await scheduleCardReminders(cardSourcesRef.current);
 		return billCount + cardCount;
 	}, []);
 
 	const activeBills = useMemo(() => bills.filter((bill) => bill.active), [bills]);
-	const month = useMemo(() => monthBills(bills, today), [bills, today]);
+	const month = useMemo(() => monthBills(bills, today, payments), [bills, today, payments]);
 
 	const value = useMemo<BillsContextType>(
 		() => ({
 			bills,
+			payments,
 			activeBills,
 			month,
 			today,
@@ -515,12 +631,14 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 			removeBill,
 			planPayment,
 			markPaid,
+			skipMonth,
 			undoPaid,
 			rescheduleReminders,
 			refresh,
 		}),
 		[
 			bills,
+			payments,
 			activeBills,
 			month,
 			today,
@@ -531,6 +649,7 @@ export const BillsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 			removeBill,
 			planPayment,
 			markPaid,
+			skipMonth,
 			undoPaid,
 			rescheduleReminders,
 			refresh,

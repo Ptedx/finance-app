@@ -12,7 +12,14 @@
  * o teste passaria sem exercitar o filtro que foi acrescentado do lado de cá.
  */
 
-import type { Account, Bill, Capture, MerchantRule, Transfer } from '../../database/schema';
+import type {
+	Account,
+	Bill,
+	BillPayment,
+	Capture,
+	MerchantRule,
+	Transfer,
+} from '../../database/schema';
 
 interface TransactionRow {
 	id: string;
@@ -32,6 +39,8 @@ const mockTransactions = new Map<string, TransactionRow>();
 const mockCaptures = new Map<string, Capture>();
 const mockRules = new Map<string, MerchantRule>();
 const mockBills = new Map<string, Bill>();
+/** Os meses registrados das contas a pagar (SPD-146), lápides inclusive. */
+const mockBillPayments = new Map<string, BillPayment>();
 const mockCounter = { value: 0 };
 const mockMakeId = (prefix: string): string => {
 	mockCounter.value += 1;
@@ -121,6 +130,18 @@ jest.mock('../../database/database', () => ({
 	findAccountByKey: jest.fn(async () => null),
 	reassignCaptureLedger: jest.fn(async () => undefined),
 	getBills: jest.fn(async () => [...mockBills.values()].filter((bill) => !bill.deletedAt)),
+	getBillPayments: jest.fn(async () =>
+		[...mockBillPayments.values()].filter((payment) => !payment.deletedAt)
+	),
+	saveBillPayments: jest.fn(
+		async (upserts: Omit<BillPayment, 'updatedAt' | 'deletedAt'>[], removeIds: string[] = []) => {
+			for (const draft of upserts) mockBillPayments.set(draft.id, { ...draft, updatedAt: '' });
+			for (const id of removeIds) {
+				const found = mockBillPayments.get(id);
+				if (found) mockBillPayments.set(id, { ...found, deletedAt: 'apagado' });
+			}
+		}
+	),
 	updateBill: jest.fn(async (id: string, patch: Omit<Bill, 'id' | 'updatedAt' | 'deletedAt'>) => {
 		const found = mockBills.get(id);
 		if (found) mockBills.set(id, { ...found, ...patch });
@@ -277,6 +298,7 @@ beforeEach(() => {
 	mockCaptures.clear();
 	mockRules.clear();
 	mockBills.clear();
+	mockBillPayments.clear();
 	jest.clearAllMocks();
 	for (const item of [CHECKING, CARD, OTHER_CARD]) mockAccounts.set(item.id, item);
 });

@@ -49,6 +49,17 @@ jest.mock('../../database/database', () => ({
 			updatedAt: '2026-10-01T00:00:00.000Z',
 		},
 	]),
+	getBillPayments: jest.fn(async () => [
+		{
+			id: 'mes-celular-outubro',
+			billId: 'bill-celular',
+			month: '2026-10',
+			status: 'skipped',
+			transactionId: null,
+			amountCents: null,
+			updatedAt: '2026-11-01T00:00:00.000Z',
+		},
+	]),
 	getDebts: jest.fn(async () => []),
 	getRecurringTransactions: jest.fn(async () => []),
 	getReserveGoal: jest.fn(async () => null),
@@ -58,6 +69,7 @@ jest.mock('../../database/database', () => ({
 	resetDatabase: jest.fn(),
 	restoreAccount: jest.fn(async () => undefined),
 	restoreBill: jest.fn(async () => undefined),
+	restoreBillPayment: jest.fn(async () => undefined),
 	restoreBudget: jest.fn(async () => undefined),
 	restoreCategory: jest.fn(async () => undefined),
 	restoreDebt: jest.fn(async () => undefined),
@@ -118,7 +130,14 @@ jest.mock('expo-sharing', () => ({ shareAsync: jest.fn() }));
 import * as Sharing from 'expo-sharing';
 import { Alert, type AlertButton } from 'react-native';
 import { getAllCaptures } from '../../database/captures';
-import { getBills, getDebts, getTransactions, restoreBill } from '../../database/database';
+import {
+	getBillPayments,
+	getBills,
+	getDebts,
+	getTransactions,
+	restoreBill,
+	restoreBillPayment,
+} from '../../database/database';
 import type { Category, Transaction } from '../../database/schema';
 import {
 	type DatabaseExportData,
@@ -373,7 +392,7 @@ describe('exportDatabaseData', () => {
 		await exportDatabaseData();
 		const backup = written();
 
-		expect(backup.formatVersion).toBe(5);
+		expect(backup.formatVersion).toBe(6);
 		expect(backup.captures).toHaveLength(1);
 		expect(backup.captures?.[0]).toMatchObject({ id: 'cap-1', status: 'pending' });
 		expect(backup.merchantRules).toEqual([{ merchantKey: 'padaria', confirmations: 4 }]);
@@ -465,11 +484,11 @@ describe('contas a pagar no backup', () => {
 
 	const written = (): DatabaseExportData => JSON.parse(mockFile.written) as DatabaseExportData;
 
-	it('o arquivo leva `bills`, no formato 5', async () => {
+	it('o arquivo leva `bills`, desde o formato 5', async () => {
 		await exportDatabaseData();
 		const backup = written();
 
-		expect(backup.formatVersion).toBe(5);
+		expect(backup.formatVersion).toBe(6);
 		expect(backup.bills).toHaveLength(1);
 		expect(backup.bills?.[0]).toMatchObject({
 			id: 'bill-celular',
@@ -581,6 +600,82 @@ describe('contas a pagar no backup', () => {
 		expect(restoreBill).toHaveBeenCalledWith(expect.objectContaining({ debtId: null }), 'bill-orfa');
 	});
 
+	// SPD-146: os meses das contas a pagar (o pulado, o pago fora de ordem) também viajam.
+	it('o arquivo leva os meses das contas a pagar (`billPayments`, formato 6)', async () => {
+		await exportDatabaseData();
+		const backup = written();
+
+		expect(backup.billPayments).toEqual([
+			{
+				id: 'mes-celular-outubro',
+				billId: 'bill-celular',
+				month: '2026-10',
+				status: 'skipped',
+				transactionId: null,
+				amountCents: null,
+				updatedAt: '2026-11-01T00:00:00.000Z',
+			},
+		]);
+		expect(backup.incomplete).toBeUndefined();
+	});
+
+	it('ida e volta: cada mês volta com o id do arquivo, sem os carimbos, e só os das contas que vieram', async () => {
+		(getTransactions as jest.Mock).mockResolvedValueOnce([]);
+		(getBillPayments as jest.Mock).mockResolvedValueOnce([
+			{
+				id: 'mes-celular-outubro',
+				billId: 'bill-celular',
+				month: '2026-10',
+				status: 'skipped',
+				transactionId: 'nao-devia-ter',
+				amountCents: 9_900,
+				updatedAt: '2026-11-01T00:00:00.000Z',
+			},
+			{
+				id: 'mes-celular-novembro',
+				billId: 'bill-celular',
+				month: '2026-11',
+				status: 'paid',
+				transactionId: 'tx-1',
+				amountCents: 9_900,
+				updatedAt: '2026-11-11T00:00:00.000Z',
+			},
+			{
+				id: 'mes-de-conta-que-nao-veio',
+				billId: 'bill-que-nao-veio',
+				month: '2026-11',
+				status: 'paid',
+				transactionId: null,
+				amountCents: null,
+				updatedAt: '2026-11-11T00:00:00.000Z',
+			},
+		]);
+		await exportDatabaseData();
+
+		const result = await importDatabaseData();
+
+		expect(result.success).toBe(true);
+		expect(result.warnings).toEqual([]);
+		expect(restoreBillPayment).toHaveBeenCalledTimes(2);
+		// O pulado nunca leva lançamento nem valor.
+		expect(restoreBillPayment).toHaveBeenNthCalledWith(1, {
+			id: 'mes-celular-outubro',
+			billId: 'bill-celular',
+			month: '2026-10',
+			status: 'skipped',
+			transactionId: null,
+			amountCents: null,
+		});
+		expect(restoreBillPayment).toHaveBeenNthCalledWith(2, {
+			id: 'mes-celular-novembro',
+			billId: 'bill-celular',
+			month: '2026-11',
+			status: 'paid',
+			transactionId: 'tx-1',
+			amountCents: 9_900,
+		});
+	});
+
 	it('arquivo antigo, sem `bills`, continua importando', async () => {
 		mockFile.written = JSON.stringify({
 			formatVersion: 4,
@@ -595,5 +690,6 @@ describe('contas a pagar no backup', () => {
 		expect(result.success).toBe(true);
 		expect(result.warnings).toEqual([]);
 		expect(restoreBill).not.toHaveBeenCalled();
+		expect(restoreBillPayment).not.toHaveBeenCalled();
 	});
 });

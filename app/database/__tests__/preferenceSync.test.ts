@@ -150,17 +150,18 @@ describe('migração v21', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v20 roda o passo 21 (e o 22, que veio depois) e grava a versão em cada um', async () => {
+	it('um banco v20 roda o passo 21 (e o 22 e o 23, que vieram depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(20, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
 		expect(reached).toBe(SCHEMA_VERSION);
-		expect(versions).toEqual([21, 22]);
+		expect(versions).toEqual([21, 22, 23]);
 		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
 			'CREATE TABLE IF NOT EXISTS preferences',
 			'CREATE TABLE IF NOT EXISTS seen_capture_fingerprints',
+			'CREATE TABLE IF NOT EXISTS bill_payments',
 		]);
 	});
 

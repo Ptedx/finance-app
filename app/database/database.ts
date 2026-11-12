@@ -35,6 +35,7 @@ import {
 	CREATE_RECURRING_TRANSACTIONS_TABLE,
 	CREATE_DEBTS_TABLE,
 	CREATE_BILLS_TABLE,
+	CREATE_BILL_PAYMENTS_TABLE,
 	CREATE_PREFERENCES_TABLE,
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
@@ -57,6 +58,8 @@ import {
 	type DebtDraft,
 	type Bill,
 	type BillDraft,
+	type BillPayment,
+	type BillPaymentDraft,
 	RETIREMENT_GOAL_ID,
 	type RetirementGoalRow,
 	SCHEMA_VERSION,
@@ -291,6 +294,16 @@ interface BillDB extends SyncColumnsDB {
 	paidByRef: string | null;
 	active: number;
 	sortOrder: number;
+}
+
+/** Uma linha de `bill_payments` (v23, SPD-146): um mês pulado ou pago de uma conta a pagar. */
+interface BillPaymentDB extends SyncColumnsDB {
+	id: string;
+	billId: string;
+	month: string;
+	status: string;
+	transactionId: string | null;
+	amountCents: number | null;
 }
 
 /** Uma linha de `preferences` (v21): a chave do AsyncStorage e o texto guardado nela. */
@@ -759,6 +772,7 @@ export const migrationLadder = (): MigrationStep[] => [
 	[20, migrateBills],
 	[21, migratePreferences],
 	[22, migrateSeenCaptureFingerprints],
+	[23, migrateBillPayments],
 ];
 
 /**
@@ -1073,6 +1087,15 @@ const migrateSeenCaptureFingerprints = async (): Promise<void> => {
 	await db.execAsync(CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE);
 };
 
+/**
+ * v22 -> v23: os meses das contas a pagar (SPD-146), numa tabela sincronizada nova. Só
+ * tabela nova, como o v20: nada é copiado de `bills.paidThrough`, que continua valendo como
+ * o trecho contínuo pago — os registros só existem do SPD-146 em diante.
+ */
+const migrateBillPayments = async (): Promise<void> => {
+	await db.execAsync(CREATE_BILL_PAYMENTS_TABLE);
+};
+
 /** v14 -> v15: debts (financing, consortium, loan) get their own synced table. */
 const migrateDebts = async (): Promise<void> => {
 	await db.execAsync(CREATE_DEBTS_TABLE);
@@ -1290,6 +1313,7 @@ const runInitDatabase = async (): Promise<void> => {
       ${CREATE_DEBTS_TABLE}
       ${CREATE_RESERVE_GOALS_TABLE}
       ${CREATE_BILLS_TABLE}
+      ${CREATE_BILL_PAYMENTS_TABLE}
       ${CREATE_PREFERENCES_TABLE}
       ${CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE}
       ${CREATE_INDEXES}
@@ -2578,7 +2602,15 @@ export const addTransfer = async (transfer: TransferDraft, explicitId?: string):
 };
 
 /** As tabelas que a restauração regrava por cima da lápide, todas com a identidade em `id`. */
-type RestoredTable = 'accounts' | 'transfers' | 'transactions' | 'recurring_transactions' | 'debts' | 'bills' | 'budgets';
+type RestoredTable =
+	| 'accounts'
+	| 'transfers'
+	| 'transactions'
+	| 'recurring_transactions'
+	| 'debts'
+	| 'bills'
+	| 'bill_payments'
+	| 'budgets';
 
 /**
  * Tira a lápide de `id` para a restauração regravar a linha, e devolve o carimbo dela (nulo
@@ -3427,6 +3459,77 @@ export const deleteBill = async (id: string): Promise<void> => {
 	await db.runAsync(`UPDATE bills SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`, [timestamp, timestamp, id]);
 };
 
+// ---------------------------------------------------------------------------
+// Os meses das contas a pagar (bill_payments, v23, SPD-146)
+// ---------------------------------------------------------------------------
+
+const BILL_PAYMENT_COLUMNS = ['billId', 'month', 'status', 'transactionId', 'amountCents'] as const;
+
+const billPaymentValues = (draft: BillPaymentDraft) =>
+	BILL_PAYMENT_COLUMNS.map((column) => draft[column] ?? null);
+
+const convertBillPayment = (row: BillPaymentDB): BillPayment => ({
+	id: row.id,
+	billId: row.billId,
+	month: row.month,
+	status: row.status === 'skipped' ? 'skipped' : 'paid',
+	transactionId: row.transactionId ?? null,
+	amountCents: row.amountCents ?? null,
+	updatedAt: row.updatedAt,
+	deletedAt: row.deletedAt ?? undefined,
+});
+
+/** Os meses registrados vivos (não desfeitos), de todas as contas. */
+export const getBillPayments = async (): Promise<BillPayment[]> => {
+	const rows = await db.getAllAsync<BillPaymentDB>(
+		'SELECT * FROM bill_payments WHERE deletedAt IS NULL ORDER BY month ASC, billId ASC'
+	);
+	return rows.map(convertBillPayment);
+};
+
+/**
+ * Grava os meses de uma vez, numa transação: `upserts` entram (ou voltam, por cima de uma
+ * lápide — o id é o da conta e do mês, então desfazer e marcar de novo cai na mesma linha) e
+ * `removeIds` viram lápide. Tudo sujo, para subir.
+ */
+export const saveBillPayments = async (
+	upserts: readonly BillPaymentDraft[],
+	removeIds: readonly string[] = []
+): Promise<void> => {
+	if (upserts.length === 0 && removeIds.length === 0) return;
+	const timestamp = nowTimestamp();
+	await runInTransaction(async () => {
+		for (const draft of upserts) {
+			await db.runAsync(
+				`INSERT INTO bill_payments (id, ${BILL_PAYMENT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+         VALUES (?, ${BILL_PAYMENT_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
+         ON CONFLICT (id) DO UPDATE SET
+           ${BILL_PAYMENT_COLUMNS.map((column) => `${column} = excluded.${column}`).join(', ')},
+           updatedAt = ${NEXT_STAMP_UPSERT}, deletedAt = NULL, dirty = 1`,
+				[draft.id, ...billPaymentValues(draft), timestamp]
+			);
+		}
+		for (const id of removeIds) {
+			await db.runAsync(
+				`UPDATE bill_payments SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ? AND deletedAt IS NULL`,
+				[timestamp, timestamp, id]
+			);
+		}
+	});
+};
+
+/** Grava um mês do backup com o id original, pelo mesmo motivo das contas a pagar. */
+export const restoreBillPayment = async (draft: BillPaymentDraft): Promise<void> => {
+	const tombstone = await liftTombstone('bill_payments', draft.id);
+	await db.runAsync(
+		`INSERT INTO bill_payments (id, ${BILL_PAYMENT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+     VALUES (?, ${BILL_PAYMENT_COLUMNS.map(() => '?').join(', ')}, ?, NULL, 1)
+     ON CONFLICT (id) DO NOTHING`,
+		[draft.id, ...billPaymentValues(draft), nowTimestamp()]
+	);
+	await stampPastTombstone('bill_payments', draft.id, tombstone);
+};
+
 /**
  * Uma conta a pagar por dívida ativa (financiamento, consórcio, empréstimo), ligada pela
  * `debtId`. Devolve quantas linhas gravou.
@@ -3732,7 +3835,22 @@ export const clearBudget = async (year: number, month: number): Promise<void> =>
  * uma vez, e o servidor recusa remessas acima de `SYNC_PAGE_SIZE`.
  */
 export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
-	const [categories, accounts, transactions, recurring, budgets, transfers, retirementGoals, debts, reserveGoals, captures, merchantRules, bills, preferences] = await Promise.all([
+	const [
+		categories,
+		accounts,
+		transactions,
+		recurring,
+		budgets,
+		transfers,
+		retirementGoals,
+		debts,
+		reserveGoals,
+		captures,
+		merchantRules,
+		bills,
+		preferences,
+		billPayments,
+	] = await Promise.all([
 		db.getAllAsync<Category & { dirty: number; deletedAt: string | null }>(
 			'SELECT * FROM categories WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?',
 			[limit]
@@ -3764,6 +3882,7 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 		db.getAllAsync<MerchantRuleDB>('SELECT * FROM merchant_rules WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<BillDB>('SELECT * FROM bills WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 		db.getAllAsync<PreferenceDB>('SELECT * FROM preferences WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
+		db.getAllAsync<BillPaymentDB>('SELECT * FROM bill_payments WHERE dirty = 1 ORDER BY updatedAt ASC LIMIT ?', [limit]),
 	]);
 
 	// O `relatedId` ("é duplicata daquela?") é um id local, que não significa nada do
@@ -3964,6 +4083,16 @@ export const getDirtyChanges = async (limit: number): Promise<SyncChanges> => {
 			updatedAt: row.updatedAt,
 			deletedAt: row.deletedAt ?? null,
 		})),
+		billPayments: billPayments.map((row) => ({
+			id: row.id,
+			billId: row.billId,
+			month: row.month,
+			status: row.status === 'skipped' ? 'skipped' : 'paid',
+			transactionId: row.transactionId ?? null,
+			amountCents: row.amountCents ?? null,
+			updatedAt: row.updatedAt,
+			deletedAt: row.deletedAt,
+		})),
 	};
 };
 
@@ -4124,6 +4253,7 @@ export const markChangesClean = async (changes: SyncChanges): Promise<void> => {
 		['merchant_rules', changes.merchantRules ?? []],
 		['bills', changes.bills ?? []],
 		['preferences', changes.preferences ?? []],
+		['bill_payments', changes.billPayments ?? []],
 	];
 
 	await runInTransaction(async () => {
@@ -4529,6 +4659,28 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
+		// Os meses das contas a pagar (v23, SPD-146), depois das contas.
+		for (const row of changes.billPayments ?? []) {
+			if (await isStale('bill_payments', row.id, row.updatedAt)) continue;
+			await db.runAsync(
+				`INSERT INTO bill_payments (id, ${BILL_PAYMENT_COLUMNS.join(', ')}, updatedAt, deletedAt, dirty)
+         VALUES (?, ${BILL_PAYMENT_COLUMNS.map(() => '?').join(', ')}, ?, ?, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           ${BILL_PAYMENT_COLUMNS.map((column) => `${column} = excluded.${column}`).join(', ')},
+           updatedAt = excluded.updatedAt, deletedAt = excluded.deletedAt, dirty = 0`,
+				[
+					row.id,
+					row.billId,
+					row.month,
+					row.status === 'skipped' ? 'skipped' : 'paid',
+					row.transactionId ?? null,
+					row.amountCents ?? null,
+					row.updatedAt,
+					row.deletedAt ?? null,
+				]
+			);
+		}
+
 		/**
 		 * As preferências (v21). Duas diferenças das outras coleções:
 		 *
@@ -4901,7 +5053,18 @@ export const resetDatabase = async (): Promise<void> => {
 		// Tombstones rather than DELETE: if the device is signed in, "erase my data" has
 		// to reach the profile too, and a plain delete would be undone by the next pull.
 		await runInTransaction(async () => {
-			for (const table of ['transactions', 'recurring_transactions', 'budgets', 'transfers', 'accounts', 'retirement_goals', 'debts', 'reserve_goals', 'bills']) {
+			for (const table of [
+				'transactions',
+				'recurring_transactions',
+				'budgets',
+				'transfers',
+				'accounts',
+				'retirement_goals',
+				'debts',
+				'reserve_goals',
+				'bills',
+				'bill_payments',
+			]) {
 				await db.runAsync(
 					`UPDATE ${table} SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE deletedAt IS NULL`,
 					[timestamp, timestamp]
@@ -4952,8 +5115,8 @@ export const resetDatabase = async (): Promise<void> => {
 /**
  * O que o "Apagar todos os dados" apaga, linha por linha, lápides inclusive (SPD-082,
  * DEC-35): o dinheiro e tudo o que aponta para ele — lançamentos, recorrências,
- * orçamentos, transferências, contas e cartões, metas, dívidas, contas a pagar e a caixa
- * de entrada.
+ * orçamentos, transferências, contas e cartões, metas, dívidas, contas a pagar (e os meses
+ * delas) e a caixa de entrada.
  */
 export const WIPE_DELETED_TABLES = [
 	'transactions',
@@ -4965,6 +5128,7 @@ export const WIPE_DELETED_TABLES = [
 	'debts',
 	'reserve_goals',
 	'bills',
+	'bill_payments',
 	'captures',
 ] as const satisfies readonly SyncedTable[];
 

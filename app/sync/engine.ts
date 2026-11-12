@@ -691,6 +691,9 @@ const pushPages = async (stats: PushStats): Promise<number> => {
 			bills: (changes.bills ?? []).filter((r) => !rejected.has(`bills:${r.id}`)),
 			// Nas preferências o `id` é a chave do AsyncStorage, nos dois sentidos.
 			preferences: (changes.preferences ?? []).filter((r) => !rejected.has(`preferences:${r.id}`)),
+			billPayments: (changes.billPayments ?? []).filter(
+				(r) => !rejected.has(`billPayments:${r.id}`)
+			),
 		});
 
 		sent += response.applied;

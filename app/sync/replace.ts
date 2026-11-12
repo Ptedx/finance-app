@@ -19,7 +19,22 @@
 import type { SyncChanges } from './types';
 
 /** As coleções do sync, na ordem em que o servidor as grava. */
-export const COLLECTIONS = ['categories', 'accounts', 'transactions', 'recurringTransactions', 'budgets', 'transfers', 'retirementGoals', 'debts', 'reserveGoals', 'captures', 'merchantRules', 'bills', 'preferences'] as const;
+export const COLLECTIONS = [
+	'categories',
+	'accounts',
+	'transactions',
+	'recurringTransactions',
+	'budgets',
+	'transfers',
+	'retirementGoals',
+	'debts',
+	'reserveGoals',
+	'captures',
+	'merchantRules',
+	'bills',
+	'preferences',
+	'billPayments',
+] as const;
 
 export type Collection = (typeof COLLECTIONS)[number];
 
@@ -43,6 +58,8 @@ export const TABLE_OF: Record<Collection, string> = {
 	bills: 'bills',
 	// v21. A identidade é a chave do AsyncStorage, guardada na coluna `key`.
 	preferences: 'preferences',
+	// v23 (SPD-146): os meses das contas a pagar.
+	billPayments: 'bill_payments',
 };
 
 /** Uma lista vazia por coleção — derivada de COLLECTIONS, para nenhuma ficar de fora. */

@@ -15,6 +15,8 @@
 import type {
 	Bill,
 	BillDraft,
+	BillPayment,
+	BillPaymentDraft,
 	Capture,
 	Category,
 	Transaction,
@@ -23,6 +25,8 @@ import type {
 import type { CardSummary } from '../../utils/cardMath';
 
 let mockStore: Bill[] = [];
+/** Os meses registrados (SPD-146), lápides inclusive, como a tabela. */
+let mockPayments: BillPayment[] = [];
 let mockNextId = 1;
 let mockLastSyncedAt: string | null = null;
 /** Os lançamentos vivos. */
@@ -49,6 +53,21 @@ const toBill = (id: string, draft: BillDraft): Bill => ({
 jest.mock('../../database/database', () => ({
 	initDatabase: jest.fn(async () => undefined),
 	getBills: jest.fn(async () => mockStore.map((bill) => ({ ...bill }))),
+	getBillPayments: jest.fn(async () =>
+		mockPayments.filter((payment) => !payment.deletedAt).map((payment) => ({ ...payment }))
+	),
+	// Como o de verdade: o upsert tira a lápide do mesmo id; o desfazer vira lápide.
+	saveBillPayments: jest.fn(async (upserts: BillPaymentDraft[], removeIds: string[] = []) => {
+		for (const draft of upserts) {
+			mockPayments = mockPayments.filter((payment) => payment.id !== draft.id);
+			mockPayments.push({ ...draft, updatedAt: '2026-10-24T12:00:00.000Z' });
+		}
+		mockPayments = mockPayments.map((payment) =>
+			removeIds.includes(payment.id)
+				? { ...payment, deletedAt: '2026-10-24T13:00:00.000Z' }
+				: payment
+		);
+	}),
 	addBill: jest.fn(async (draft: BillDraft) => {
 		const id = `bill-${mockNextId++}`;
 		mockStore.push(toBill(id, draft));
@@ -221,6 +240,7 @@ const lastScheduledIds = (): string[] =>
 beforeEach(() => {
 	mockToday = '2026-10-24';
 	mockStore = [bill(), { ...FINANCING }];
+	mockPayments = [];
 	mockNextId = 1;
 	mockLastSyncedAt = null;
 	mockLedger = [];
@@ -924,5 +944,224 @@ describe('lembretes da fatura do cartão (E2E-22)', () => {
 		});
 		expect(scheduleCards).toHaveBeenCalledTimes(1);
 		expect(scheduleCards.mock.calls[0][0]).toHaveLength(1);
+	});
+});
+
+/**
+ * SPD-146: o mês pulado ("Não vou pagar este mês") e o pago fora de ordem viram registro, e
+ * toda baixa grava o registro do mês com o lançamento. Hoje 11/11, Plano pago até setembro.
+ */
+describe('mês pulado e fora de ordem: hoje 11/11, Plano pago até setembro', () => {
+	const october = (): string => markPaidTransactionId('plano', '2026-10');
+	const november = (): string => markPaidTransactionId('plano', '2026-11');
+	const stored = (): Bill | undefined => mockStore.find((item) => item.id === 'plano');
+	const live = (): BillPayment[] => mockPayments.filter((payment) => !payment.deletedAt);
+	const months = (): [string, string, string | null][] =>
+		live().map((payment) => [payment.month, payment.status, payment.transactionId]);
+
+	beforeEach(() => {
+		mockToday = '2026-11-11';
+		mockStore = [bill()];
+	});
+
+	it('pular outubro não lança nada: registra o mês e paidThrough passa por cima dele', async () => {
+		const api = await mount();
+		let skipped: string | null = null;
+		await act(async () => {
+			skipped = await api().skipMonth('plano', '2026-10');
+		});
+
+		expect(skipped).toBe('2026-10');
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(mockLedger).toEqual([]);
+		expect(mockRefreshData).not.toHaveBeenCalled();
+		expect(months()).toEqual([['2026-10', 'skipped', null]]);
+		expect(live()[0].amountCents).toBeNull();
+		expect(stored()?.paidThrough).toBe('2026-10');
+		// O que a tela mostra: outubro fora do atraso, novembro ainda R$ 500.
+		expect(api().payments).toHaveLength(1);
+		expect(api().month.dueCents).toBe(50_000);
+		expect(api().month.rows[0].status).toBe('late');
+	});
+
+	it('com outubro pulado, o "Já paguei" quita novembro', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().skipMonth('plano');
+		});
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano');
+		});
+
+		expect(result).toMatchObject({ kind: 'post', posted: true, month: '2026-11' });
+		expect(mockLedger.map((tx) => [tx.id, tx.amountCents])).toEqual([[november(), 50_000]]);
+		expect(months()).toEqual([
+			['2026-10', 'skipped', null],
+			['2026-11', 'paid', november()],
+		]);
+		expect(stored()).toMatchObject({ paidThrough: '2026-11', paidByRef: november() });
+	});
+
+	it('pagar só novembro com outubro em aberto: lança novembro, registra, e outubro continua atrasado', async () => {
+		const api = await mount();
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano', { month: '2026-11' });
+		});
+
+		expect(result).toMatchObject({ kind: 'post', posted: true, month: '2026-11' });
+		expect(mockLedger.map((tx) => [tx.id, tx.amountCents])).toEqual([[november(), 50_000]]);
+		expect(live()).toEqual([
+			expect.objectContaining({
+				month: '2026-11',
+				status: 'paid',
+				transactionId: november(),
+				amountCents: 50_000,
+			}),
+		]);
+		// O trecho contínuo não anda: outubro está em aberto.
+		expect(stored()?.paidThrough).toBe('2026-09');
+		expect(api().month.dueCents).toBe(0);
+		expect(api().month.rows[0].status).toBe('paid');
+	});
+
+	it('depois de novembro fora de ordem, o "Já paguei" quita outubro e paidThrough vai a novembro', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano', { month: '2026-11' });
+		});
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano');
+		});
+
+		expect(result).toMatchObject({ month: '2026-10' });
+		expect(mockLedger.map((tx) => tx.id)).toEqual([november(), october()]);
+		expect(stored()?.paidThrough).toBe('2026-11');
+	});
+
+	it('mês que não está em aberto não se paga nem se pula', async () => {
+		mockStore = [bill({ paidThrough: '2026-10' })];
+		const api = await mount();
+		let paid: Awaited<ReturnType<Api['markPaid']>> = null;
+		let skipped: string | null = 'x';
+		await act(async () => {
+			paid = await api().markPaid('plano', { month: '2026-10' });
+			skipped = await api().skipMonth('plano', '2026-12');
+		});
+		expect(paid).toBeNull();
+		expect(skipped).toBeNull();
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(mockPayments).toEqual([]);
+	});
+
+	it('desfazer novembro pago fora de ordem reabre só novembro e tira o lançamento dele', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano', { month: '2026-11' });
+		});
+		await act(async () => {
+			await api().undoPaid('plano', '2026-11');
+		});
+
+		expect(mockLedger).toEqual([]);
+		expect(live()).toEqual([]);
+		// A lápide fica, para os outros aparelhos saberem.
+		expect(mockPayments).toEqual([
+			expect.objectContaining({ month: '2026-11', deletedAt: expect.any(String) }),
+		]);
+		expect(stored()?.paidThrough).toBe('2026-09');
+	});
+
+	it('desfazer outubro pulado com novembro pago: outubro volta a atrasar e novembro continua pago', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().skipMonth('plano');
+		});
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		mockRefreshData.mockClear();
+		await act(async () => {
+			await api().undoPaid('plano', '2026-10');
+		});
+
+		expect(months()).toEqual([['2026-11', 'paid', november()]]);
+		expect(stored()?.paidThrough).toBe('2026-09');
+		// Nada lançado para outubro, nada a tirar: o lançamento de novembro fica.
+		expect(mockLedger.map((tx) => tx.id)).toEqual([november()]);
+		expect(deleteTransaction).not.toHaveBeenCalled();
+		expect(api().month.rows[0].status).toBe('paid');
+	});
+
+	it('desfazer outubro depois de reabrir o app, com novembro pago só por paidThrough (app antigo): novembro ganha o registro', async () => {
+		mockStore = [bill({ paidThrough: '2026-11', paidByRef: 'pix-de-outro-app' })];
+		mockPayments = [
+			{
+				id: 'pulado',
+				billId: 'plano',
+				month: '2026-10',
+				status: 'skipped',
+				transactionId: null,
+				amountCents: null,
+				updatedAt: '2026-11-01T00:00:00.000Z',
+			},
+		];
+		const api = await mount();
+		await act(async () => {
+			await api().undoPaid('plano', '2026-10');
+		});
+
+		expect(months()).toEqual([['2026-11', 'paid', null]]);
+		expect(stored()).toMatchObject({ paidThrough: '2026-09', paidByRef: 'pix-de-outro-app' });
+		expect(deleteTransaction).not.toHaveBeenCalled();
+	});
+
+	it('o lançamento que já pagou outro mês (registro) não vale como o pagamento deste', async () => {
+		mockStore = [bill({ paidThrough: '2026-09' })];
+		// O Pix de 05/11 pagou novembro (fora de ordem); o "Já paguei" de outubro não pode usá-lo.
+		mockLedger = [
+			{
+				id: 'pix-novembro',
+				amountCents: 50_000,
+				category: 'health',
+				date: '2026-11-05',
+				note: 'Plano de saúde',
+				isIncome: false,
+				accountId: null,
+				installmentGroup: null,
+				installmentIndex: null,
+				installmentCount: null,
+				cardLast4: null,
+				updatedAt: '2026-11-05T12:00:00.000Z',
+			} as Transaction,
+		];
+		mockPayments = [
+			{
+				id: 'novembro',
+				billId: 'plano',
+				month: '2026-11',
+				status: 'paid',
+				transactionId: 'pix-novembro',
+				amountCents: 50_000,
+				updatedAt: '2026-11-05T12:00:00.000Z',
+			},
+		];
+		const api = await mount();
+		let plan: Awaited<ReturnType<Api['planPayment']>> = null;
+		await act(async () => {
+			plan = await api().planPayment('plano');
+		});
+		expect(plan).toMatchObject({ kind: 'post', id: october() });
+	});
+
+	it('os lembretes recebem os registros: o mês pulado não avisa', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().skipMonth('plano', '2026-10');
+		});
+		const lastCall = schedule.mock.calls.at(-1) as [Bill[], Date, BillPayment[]];
+		expect(lastCall[2].map((payment) => payment.month)).toEqual(['2026-10']);
 	});
 });
