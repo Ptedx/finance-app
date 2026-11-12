@@ -6,6 +6,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import type { Account, AccountKind } from '../database/schema';
 import { parseCardNames } from '../utils/cardNames';
 import { SelectField, type SelectOption } from './SelectField';
+import { TourTarget } from './tour/TourContext';
 
 /**
  * De qual conta ou cartão saiu (ou entrou) o dinheiro. Um campo que abre a lista das contas
@@ -98,7 +99,7 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 			/>
 		</View>
 		{showCards ? (
-			<View style={styles.group}>
+			<TourTarget id="add.whichCard" style={styles.group}>
 				<Text style={styles.label}>{t('accounts.picker.cardLabel')}</Text>
 				<Text style={styles.hint}>{t('accounts.picker.cardHint')}</Text>
 				<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.picker.cardLabel')}>
@@ -118,7 +119,7 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 					placeholderTextColor="rgba(255,255,255,0.35)"
 					accessibilityLabel={t('accounts.picker.cardOther')}
 				/>
-			</View>
+			</TourTarget>
 		) : null}
 		</>
 	);

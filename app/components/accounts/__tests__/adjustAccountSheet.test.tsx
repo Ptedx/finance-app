@@ -269,12 +269,15 @@ describe('E2E-05 — fechar a folha com um valor digitado pergunta antes', () =>
 describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem perguntar', () => {
 	const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
 	const openTopic = jest.fn();
+	const startTrail = jest.fn();
 	const tour: TourContextValue = {
 		report: jest.fn(),
 		startTour: jest.fn(),
 		openTopic,
 		noticeVisible: false,
 		answerNotice: jest.fn(),
+		startTrail,
+		setTrailRecords: jest.fn(() => () => undefined),
 	};
 
 	/** A folha com o guia por perto, como no app (o `TourProvider` do `_layout` raiz). */
@@ -324,6 +327,7 @@ describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem 
 		expect(texts()).toContain('tutorial.tip.fullGuide');
 		expect(onClose).not.toHaveBeenCalled();
 		expect(openTopic).not.toHaveBeenCalled();
+		expect(startTrail).not.toHaveBeenCalled();
 		// O leitor de tela lê a dica quando ela abre.
 		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith('accounts.adjust.helpTip');
 
@@ -370,14 +374,15 @@ describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem 
 		expect(tipShown()).toBe(false);
 	});
 
-	it('"Ver o guia completo" sem nada digitado fecha a folha e abre o tópico direto', async () => {
+	it('"Ver o guia completo" sem nada digitado fecha a folha e abre a trilha de Contas no passo 9, na própria conta', async () => {
 		await openWithTour(NEW_ACCOUNT);
 		await pressHelp();
 		await pressFullGuide();
 
 		expect(alert).not.toHaveBeenCalled();
 		expect(onClose).toHaveBeenCalledTimes(1);
-		expect(openTopic).toHaveBeenCalledWith('accounts');
+		expect(startTrail).toHaveBeenCalledWith('accounts', { from: '9', here: { screen: 'account', params: { id: account.id } } });
+		expect(openTopic).not.toHaveBeenCalled();
 	});
 
 	it('"Ver o guia completo" com algo digitado pergunta antes; "Continuar editando" mantém os valores', async () => {
@@ -391,6 +396,7 @@ describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem 
 		expect(alert.mock.calls[0][0]).toBe('tutorial.tip.leaveTitle');
 		expect(onClose).not.toHaveBeenCalled();
 		expect(openTopic).not.toHaveBeenCalled();
+		expect(startTrail).not.toHaveBeenCalled();
 
 		const stay = lastButtons().find((button) => button.style === 'cancel');
 		expect(stay?.text).toBe('tutorial.tip.stay');
@@ -400,11 +406,12 @@ describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem 
 
 		expect(onClose).not.toHaveBeenCalled();
 		expect(openTopic).not.toHaveBeenCalled();
+		expect(startTrail).not.toHaveBeenCalled();
 		expect(shown('accounts.adjust.spent')).toBe('1.200,00');
 		expect(shown('accounts.adjust.balance')).toBe('5.000,00');
 	});
 
-	it('com algo digitado, "Sair" fecha a folha e abre o tópico', async () => {
+	it('com algo digitado, "Sair" fecha a folha e abre a trilha de Contas no passo 9', async () => {
 		await openWithTour(NEW_ACCOUNT);
 		await typeInto('accounts.adjust.spent', '1200');
 		await pressHelp();
@@ -417,6 +424,7 @@ describe('SPD-135 — o "?" mostra uma dica rápida e não perde o digitado sem 
 		});
 
 		expect(onClose).toHaveBeenCalledTimes(1);
-		expect(openTopic).toHaveBeenCalledWith('accounts');
+		expect(startTrail).toHaveBeenCalledWith('accounts', { from: '9', here: { screen: 'account', params: { id: account.id } } });
+		expect(openTopic).not.toHaveBeenCalled();
 	});
 });

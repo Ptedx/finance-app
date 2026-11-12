@@ -1,4 +1,5 @@
-import type { Rect, TourScreen } from '../../utils/tour';
+import type { Rect } from '../../utils/tour';
+import type { TourPlace } from '../../utils/trails';
 
 /**
  * Onde o guia acha os elementos que aponta (SPD-129).
@@ -32,7 +33,7 @@ export interface Scrollable {
 }
 
 const targets = new Map<string, Measurable[]>();
-const scrolls = new Map<TourScreen, Scrollable[]>();
+const scrolls = new Map<TourPlace, Scrollable[]>();
 
 const push = <K, V>(map: Map<K, V[]>, key: K, value: V): (() => void) => {
 	map.set(key, [...(map.get(key) ?? []), value]);
@@ -53,7 +54,7 @@ export const registerTarget = (id: string, node: Measurable): (() => void) =>
 	push(targets, id, node);
 
 /** Registra a rolagem de uma tela; devolve quem a tira. */
-export const registerScroll = (screen: TourScreen, node: Scrollable): (() => void) =>
+export const registerScroll = (screen: TourPlace, node: Scrollable): (() => void) =>
 	push(scrolls, screen, node);
 
 export const hasTarget = (id: string): boolean => last(targets, id) !== undefined;
@@ -87,11 +88,7 @@ export const measureTarget = (id: string): Promise<Rect | null> => {
  * não tem rolagem registrada ou o alvo não está dentro dela (a barra de abas): aí o passo
  * mostra o alvo onde ele está, ou é pulado se estiver fora da tela.
  */
-export const scrollToTarget = (
-	screen: TourScreen,
-	id: string,
-	offset: number
-): Promise<boolean> => {
+export const scrollToTarget = (screen: TourPlace, id: string, offset: number): Promise<boolean> => {
 	const scroll = last(scrolls, screen);
 	const node = last(targets, id);
 	if (!scroll || !node || typeof node.measureLayout !== 'function') return Promise.resolve(false);

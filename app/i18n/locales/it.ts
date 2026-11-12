@@ -2249,6 +2249,375 @@ account: {
 		searchLabel: 'Cerca in {{field}}',
 		noResults: 'Nessun risultato',
 	},
+	trails: {
+		help: 'Guida passo passo',
+		helpHint: 'Apre la guida "{{trail}}", che passa per le schermate e indica ogni pulsante',
+		back: 'Indietro',
+		backHint: 'Torna al passo precedente',
+		skipHint: 'Chiude la guida e torna dove eri',
+		attention: 'Attenzione',
+		accounts: {
+			title: 'Conti: registrazione, ruolo e saldo',
+			steps: {
+				'1': {
+					title: 'I tuoi soldi.',
+					body: '"Liquidità" sono i soldi dei conti di tutti i giorni. "Dopo gli estratti" è quello che resta dopo aver pagato le carte. Riserva e conto esterno restano fuori da "Liquidità".',
+				},
+				'2': {
+					title: 'Aggiungere un conto.',
+					body: "Qui aggiungi un conto bancario, un conto di risparmio o il portafoglio. Su Android, quando l'app di una banca invia un avviso e non hai ancora un conto di quella banca, la cattura crea il conto da sola.",
+				},
+				'3': {
+					title: 'Nome e tipo.',
+					body: 'Il tipo dice che cos\'è il conto: Conto corrente, Risparmio, Investimento o Contanti. La carta di credito non va qui: ha una registrazione a parte, in Impostazioni › Carte.',
+				},
+				'4': {
+					title: 'Il ruolo cambia il conto.',
+					body: 'Principale è dove arriva il reddito: Pix e debito che escono da lì sono spese del mese. Busta (il salvadanaio delle spese) ha un importo al mese: quell\'importo (o quello che ci mandi, se è di più) è la spesa del mese, e quello che si spende lì dentro non si somma di nuovo.',
+				},
+				'5': {
+					title: 'Riserva ed Esterno.',
+					body: "Riserva sono soldi messi da parte: quello che entra è risparmio, non spesa, e il rendimento è entrata da investimento. Esterno è un conto che l'app non segue, come quello dell'azienda: quello che manda ai tuoi conti conta come entrata.",
+				},
+				'6': {
+					title: 'Riserva o solo investimento.',
+					body: '"Riserva e investimento" riempie prima la riserva di emergenza, e quello che la supera diventa capitale di investimento. "Solo investimento" resta fuori dalla riserva, per soldi che non si possono ritirare in un imprevisto, come la previdenza.',
+				},
+				'7': {
+					title: 'Saldo di partenza.',
+					body: "Scrivi quello che l'app della banca mostra adesso. Entra come punto di partenza, non come entrata del mese. Se lo lasci vuoto, il conto parte da zero e lo allinei dopo.",
+				},
+				'8': {
+					title: 'Rendimento.',
+					body: 'Se il conto rende, indica la percentuale del CDI, come 100 o 120. Il saldo cresce da solo ogni giorno lavorativo; è una stima, e "Allinea con la banca" la corregge quando vuoi.',
+				},
+				'9': {
+					title: 'Allineare il saldo.',
+					body: 'Per quando l\'app e la banca non coincidono. Dici quanto hai già speso nel mese e quanto hai ancora: la differenza nella spesa diventa un movimento "Ajuste com o saldo do banco" (rettifica con il saldo della banca), e il resto cambia solo il saldo di partenza, senza diventare entrata né spesa.',
+					missing: "Nella schermata di ogni conto, 'Allinea con la banca' rende il saldo dell'app uguale a quello della banca.",
+				},
+				'10': {
+					title: 'Attenzione: conto creato dalla cattura.',
+					body: 'Il conto che l\'app ha creato da sola parte da zero, perché non sa quanto c\'era. Finché non allinei il saldo (o ignori l\'avviso), mostra "Saldo non indicato". In una riserva, l\'allineamento chiede solo il saldo di oggi e non registra mai spese.',
+				},
+				'11': {
+					title: 'Attenzione: due conti della stessa banca.',
+					body: 'Quando ci sono esattamente due conti della stessa banca e solo uno riceve gli avvisi, l\'app suggerisce di unirli. "Unisci i due" porta tutto in quello che scegli; "Sono conti diversi" (quello personale e quello dell\'azienda, per esempio) toglie l\'avviso per sempre. Se quello creato dalla cattura è vuoto e nessuno l\'ha toccato, l\'app li unisce da sola e avvisa "Abbiamo unito … a …".',
+				},
+				'12': {
+					title: 'Unire, archiviare, eliminare.',
+					body: 'Unire porta movimenti, catture e trasferimenti nell\'altro conto e somma i saldi; il totale non cambia. Archiviare nasconde il conto dalla schermata iniziale e dai totali, senza cancellare nulla. Eliminare mantiene i movimenti, che diventano "Senza conto", e cancella i trasferimenti del conto.',
+				},
+			},
+		},
+		cardSetup: {
+			title: 'Carte: registrazione',
+			steps: {
+				'1': {
+					title: 'Le tue carte.',
+					body: '"Da pagare ora" somma gli estratti chiusi non ancora pagati. "Estratti aperti" sono quelli che ricevono ancora acquisti. Il limite disponibile compare quando indichi il limite.',
+				},
+				'2': {
+					title: 'Aggiungere una carta.',
+					body: 'Qui aggiungi una carta di credito. Su Android, quando l\'app della banca avvisa un acquisto a credito con le ultime cifre e non hai nessuna carta di quella banca, l\'app crea la carta da sola, con il nome "Banca · finale 1234". Se ne hai già una, le nuove cifre entrano in quella.',
+				},
+				'3': {
+					title: 'Credito o debito.',
+					body: 'La carta di debito non ha estratto né limite: l\'acquisto esce subito dal conto, e non serve registrarla. Gli acquisti con il debito entrano già nel conto della banca.',
+				},
+				'4': {
+					title: 'Banca e soprannome.',
+					body: 'Scegli la banca dalla lista o "Altra"; il colore della carta viene dalla banca della lista. Il soprannome è facoltativo e aiuta quando hai più di una carta della stessa banca; senza, il nome è la banca e le ultime cifre, come "Nubank · 1234".',
+				},
+				'5': {
+					title: 'Ultime cifre della carta.',
+					body: 'Le ultime 4 cifre. È con queste che gli avvisi della banca trovano la carta giusta.',
+				},
+				'6': {
+					title: 'Circuito e limite.',
+					body: 'Il circuito compare nel disegno della carta. Il limite mostra quanto puoi ancora spendere: l\'usato conta l\'estratto e anche le rate che devono ancora arrivare.',
+				},
+				'7': {
+					title: 'Chiusura e scadenza.',
+					body: 'Sono entrambe sull\'estratto, nell\'app o sul sito della banca. L\'acquisto fatto il giorno di chiusura, o dopo, va già all\'estratto successivo. La scadenza che cade nel fine settimana o in un festivo passa al giorno lavorativo successivo.',
+				},
+				'8': {
+					title: 'Controlla le date.',
+					body: 'Con entrambi i giorni compilati, l\'app mostra l\'estratto di oggi: confrontalo con l\'app della banca. L\'estratto prende il nome del mese in cui chiude.',
+				},
+				'9': {
+					title: 'Attenzione: da 1 a 20 giorni.',
+					body: 'La scadenza deve cadere da 1 a 20 giorni dopo la chiusura; altrimenti la carta non viene salvata. Hai compilato uno dei giorni? Compila anche l\'altro.',
+				},
+				'10': {
+					title: 'Quanto devi già.',
+					body: 'Solo nella registrazione: scrivi quello che l\'app della banca mostra adesso. L\'aperto diventa il punto di partenza della carta, senza diventare un acquisto. Se compili anche il chiuso, l\'aperto entra come movimento "Ajuste com a fatura do banco" (rettifica con l\'estratto della banca). Il chiuso compare solo tra la sua chiusura e la sua scadenza; lascialo vuoto se è già pagato.',
+				},
+				'11': {
+					title: 'Attenzione: carta senza chiusura.',
+					body: 'La carta creata dalla cattura arriva senza i giorni di chiusura e di scadenza. Senza di essi, l\'app non divide gli acquisti per estratto né avvisa della scadenza: modifica la carta e indica i due giorni.',
+				},
+			},
+		},
+		cardInvoice: {
+			title: 'Carta: estratto, pagamento e allineamenti',
+			steps: {
+				noCard: {
+					title: 'Nessuna carta ancora.',
+					body: "Aggiungi una carta per vedere l'estratto, pagare e allinearlo con la banca. Poi il '?' della schermata della carta mostra ogni pulsante.",
+				},
+				'1': {
+					title: "L'estratto attuale.",
+					body: 'La carta mostra l\'estratto aperto, quando chiude e scade e, se c\'è, quello chiuso da pagare. Il limite rimasto compare quando hai indicato il limite.',
+				},
+				'2': {
+					title: 'Paga estratto.',
+					body: 'Registra il pagamento come trasferimento dal conto alla carta: non conta come spesa, perché gli acquisti sono già stati contati. Salda prima l\'estratto chiuso; quello che avanza anticipa l\'aperto. La data può essere oggi, ieri o l\'altro ieri.',
+				},
+				'3': {
+					title: 'Attenzione: da quale conto è uscito.',
+					body: 'L\'app segna già il conto corrente della banca della carta, quando sa qual è; se non lo sa, nessuno viene segnato. Se l\'avviso della banca di questo pagamento arriva dopo (stesso importo, fino a 1 giorno di differenza), l\'app lo riconosce e non lo registra di nuovo.',
+				},
+				'4': {
+					title: 'Allinea con la banca.',
+					body: 'I campi arrivano con quello che l\'app pensa oggi: correggili con il numero dell\'app della banca. Un campo vuoto vuol dire "non l\'ho indicato", e quell\'estratto resta com\'è. Nell\'estratto aperto, quello che manca o avanza entra come "Ajuste com a fatura do banco" (rettifica con l\'estratto della banca); in quello chiuso, cambia solo il punto di partenza della carta. Non si cancella nulla.',
+				},
+				'5': {
+					title: "Attenzione: l'app chiede.",
+					body: 'Quando la banca mostra più dell\'app, l\'app chiede. "Sì, è un onere" registra la differenza come onere; "No, è una rettifica" (un acquisto che l\'app non ha visto, per esempio) allinea come nel passo precedente.',
+				},
+				'6': {
+					title: 'Onere.',
+					body: 'Interessi, IOF, canone annuale, penale o commissione addebitati dalla banca: tipo, importo e il giorno in cui compare sull\'estratto della banca. Entra nell\'estratto di quella data, nell\'importo da pagare e nel limite, e non conta come acquisto.',
+				},
+				'7': {
+					title: 'Rata vecchia.',
+					body: 'Per acquisti a rate fatti prima dell\'app, che non arriveranno con un avviso. Indica l\'importo della rata, quale è quella di questo estratto (4, se l\'estratto riporta 4/10) e il totale, fino a 48. Se hai già indicato l\'importo dell\'estratto aperto (nella registrazione o in "Allinea"), l\'app capisce che la rata attuale è già lì e crea solo le successive.',
+				},
+				'8': {
+					title: 'Estratti per mese.',
+					body: 'Fino a sei estratti precedenti, quello attuale e i prossimi che hanno già rate. Ogni scheda riporta l\'importo; sotto, il periodo degli acquisti e la lista.',
+				},
+				'9': {
+					title: 'Quello che resta da pagare.',
+					body: 'Compare quando qualcosa ha già cambiato l\'estratto: un pagamento, l\'importo indicato, un saldo precedente o un credito. Quello che è rimasto aperto di un estratto scaduto entra nel successivo quando chiude, come "Saldo precedente non pagato".',
+				},
+				'10': {
+					title: 'Attenzione: acquisti da rivedere.',
+					body: 'L\'acquisto arrivato con un avviso e ancora in "Rivedi" conta già nell\'estratto e nel limite; solo la categoria aspetta te. Scartarlo toglie l\'importo.',
+				},
+				'11': {
+					title: 'Attenzione: probabile ripetuto.',
+					body: 'Due movimenti della stessa carta, stesso importo, con fino a 1 giorno di differenza, vengono segnati. L\'app non cancella nulla da sola: apri quello in più e cancellalo, oppure usa "Non è ripetuto".',
+				},
+				'12': {
+					title: 'Limite e giorno migliore.',
+					body: '"Prossimi estratti" sono le rate che devono ancora arrivare e occupano già il limite. Il giorno migliore per acquistare è proprio il giorno di chiusura: l\'acquisto fatto quel giorno va già all\'estratto successivo, con quasi un mese in più per pagare.',
+				},
+			},
+		},
+		cardExtras: {
+			title: 'Carte: virtuali, debito, unire e archiviare',
+			steps: {
+				'1': {
+					title: 'Fisica e virtuali.',
+					body: 'Quando l\'estratto ha acquisti di più di un finale (la carta fisica e quelle virtuali), qui compare quanto ha speso ciascuno. L\'estratto è uno solo; toccare un finale filtra la lista.',
+				},
+				'2': {
+					title: 'Dare un nome a un finale.',
+					body: 'Un finale può avere un nome, come "iFood/99" o "Abbonamenti". Cancellare il nome mostra di nuovo il finale.',
+				},
+				'3': {
+					title: 'Quale finale ha comprato.',
+					body: 'La fisica e le virtuali finiscono nello stesso estratto; questo dice solo quale ha fatto l\'acquisto. Anche "Non so" va bene, e "Un\'altra carta: ultime 4 cifre" registra un finale nuovo.',
+				},
+				'4': {
+					title: 'Carte di debito.',
+					body: 'Senza estratto: ogni acquisto esce direttamente dal conto. L\'app elenca da sola i finali di debito che compaiono nei movimenti di ogni conto, con quanto hanno speso nel mese.',
+				},
+				'5': {
+					title: 'Storico del debito.',
+					body: 'Il saldo del conto mostra già ogni acquisto; qui c\'è lo storico di quanto ha speso questa carta, mese per mese. Si può anche rinominare.',
+				},
+				'6': {
+					title: 'Registrata come credito per errore?',
+					body: 'In una carta già salvata, scegli Debito e il conto da cui escono i soldi: i movimenti passano a quel conto, i pagamenti dell\'estratto della carta vengono cancellati e la carta esce dalla lista.',
+				},
+				'7': {
+					title: 'Unire due carte.',
+					body: 'Acquisti, rate, oneri e pagamenti passano all\'altra, e questa viene cancellata. Quella che resta mantiene la sua chiusura, il suo limite e l\'estratto indicato; l\'allineamento con la banca fatto su quella cancellata se ne va con lei.',
+				},
+				'8': {
+					title: 'Attenzione: dopo aver unito.',
+					body: 'Lo stesso acquisto può essere rimasto da entrambe le parti. Se succede, l\'app avvisa quanti movimenti potrebbero essere ripetuti, e compaiono segnati nella schermata della carta.',
+				},
+				'9': {
+					title: 'Archiviare o eliminare.',
+					body: 'Archiviare nasconde la carta dalla schermata iniziale e dai totali. Eliminare mantiene gli acquisti, ma diventano "Senza conto"; i pagamenti del suo estratto vengono cancellati.',
+				},
+			},
+		},
+		add: {
+			title: 'Registrare: spesa, entrata e trasferimento',
+			steps: {
+				'1': {
+					title: 'Registrare a mano.',
+					body: 'Per quello che non arriva con un avviso della banca: contanti, un acquisto di un\'altra persona, un\'entrata.',
+				},
+				'2': {
+					title: 'Uscito, entrato o cambiato conto.',
+					body: 'Spesa sono soldi usciti, Entrata sono soldi entrati. Trasferimento sono soldi che vanno da un tuo conto a un altro.',
+				},
+				'3': {
+					title: 'Importo.',
+					body: 'I centesimi si completano da soli quando esci dal campo.',
+				},
+				'4': {
+					title: 'Categoria.',
+					body: 'È lei che dice dove sono andati i soldi nei report, e se la spesa è essenziale per la riserva. "Modifica categorie" porta alla lista delle categorie.',
+				},
+				'5': {
+					title: 'Da dove è uscito.',
+					body: 'Il conto o la carta. Anche "Senza conto" va bene: nel mese conta come se fosse del conto principale, e dopo si può spostare.',
+				},
+				'6': {
+					title: 'Rate.',
+					body: 'Compare solo in una nuova spesa su una carta di credito. 1 è in un\'unica soluzione; fino a 48, una per estratto. Se l\'importo non si divide esatto, la prima rata prende la differenza.',
+					missing: 'Scegliendo una carta di credito, compare il campo delle rate: una cade in ogni estratto.',
+				},
+				'7': {
+					title: 'Data.',
+					body: 'Sulla carta, la data decide l\'estratto: un acquisto il giorno di chiusura, o dopo, va al successivo.',
+				},
+				'8': {
+					title: 'Nota.',
+					body: 'La ricerca della scheda Movimenti cerca nella nota e nel nome della categoria.',
+				},
+				'9': {
+					title: 'Trasferimento.',
+					body: 'Cambia il saldo dei due conti, ma non entra tra entrate né spese. Servono almeno due conti registrati.',
+				},
+				'10': {
+					title: 'Attenzione: verso una carta.',
+					body: 'Trasferire verso una carta di credito è pagare l\'estratto, come "Paga estratto": riduce quello che deve e non conta come spesa. Se lo stesso pagamento era già registrato dall\'avviso, non viene registrato di nuovo.',
+				},
+				'11': {
+					title: 'Modificare e cancellare.',
+					body: 'In una rata, quello che cambi vale solo per lei; quando cancelli, l\'app chiede "Solo questa rata" o "Tutte le rate". Nella modifica, una spesa o un\'entrata non diventa un trasferimento.',
+				},
+				'12': {
+					title: 'Attenzione: conti da pagare.',
+					body: 'Una spesa in un\'unica soluzione registrata a mano, da 10 giorni prima a 5 dopo la scadenza di un conto da pagare, dal conto che paga (se c\'è), con il suo importo e il nome nella nota (o l\'importo esatto), segna il conto come pagato. Nel dubbio, non lo segna.',
+				},
+			},
+		},
+		capture: {
+			title: "Cattura automatica: attivarla e cosa decide l'app da sola",
+			steps: {
+				ios: {
+					title: 'Solo su Android.',
+					body: "La cattura automatica legge le notifiche della banca ed è disponibile solo su Android. Su iPhone, registra con il '+' o importa l'estratto OFX.",
+				},
+				'1': {
+					title: 'Solo su Android.',
+					body: 'Spendr legge le notifiche che le app della tua banca già inviano (acquisti, Pix, trasferimenti) e le trasforma in movimenti.',
+				},
+				'2': {
+					title: "Attivare l'accesso.",
+					body: "Questa voce apre la schermata di Android: trova Spendr nella lista e consenti l'accesso alle notifiche.",
+				},
+				'3': {
+					title: 'Attenzione: cosa viene conservato.',
+					body: "Vengono conservate solo le notifiche che riportano un importo in denaro (R$ 120,00, US$ 15,99); le altre l'app le ignora.",
+				},
+				'4': {
+					title: 'Cosa va in revisione.',
+					body: 'Acquisti e Pix diventano voci in "Rivedi", tranne quello che l\'app decide da sola (passo successivo). Mentre aspettano, contano già nel saldo, nell\'estratto e nel mese, tranne quelle con una domanda aperta o senza conto; confermare fissa la categoria.',
+				},
+				'5': {
+					title: "Cosa decide l'app da sola.",
+					body: 'Lo stesso acquisto avvisato dal portafoglio del telefono e dalla banca diventa uno solo, quando si può esserne certi. Il pagamento dell\'estratto e l\'investimento o il riscatto non diventano entrata né spesa. I soldi che escono da un tuo conto ed entrano in un altro della stessa banca, con lo stesso importo e pochi minuti dopo, diventano un trasferimento.',
+				},
+				'6': {
+					title: 'Il tuo nome in banca.',
+					body: 'Scrivi il tuo nome come compare negli avvisi dei Pix. Un Pix con quel nome dall\'altra parte diventa un trasferimento tra i tuoi conti, senza chiedere. Maiuscole e accenti non contano, e un\'iniziale vale per il secondo nome.',
+				},
+				'7': {
+					title: 'Attenzione: nome esatto.',
+					body: 'Con un nome in più o in meno, l\'app continua a chiedere. Conta anche il nome del tuo account Spendr. Con un account, il nome va sugli altri dispositivi; entra anche nel backup.',
+				},
+				'8': {
+					title: 'Attenzione: conto archiviato.',
+					body: 'Se il conto collegato all\'app della banca è archiviato, l\'app non ne crea un altro al suo posto: l\'avviso entra "Senza conto", e scegli tu nella revisione.',
+				},
+				'9': {
+					title: 'In quale conto arrivano gli avvisi.',
+					body: 'Con due conti della stessa banca, qui scegli in quale entrano gli acquisti che l\'app della banca avvisa. Quello che è già registrato resta dov\'è.',
+				},
+				'10': {
+					title: 'Conto aziendale su Nubank.',
+					body: 'Nubank scrive "da conta Nu Empresas" negli avvisi del conto aziendale. Segna qui il conto dell\'azienda, e quegli avvisi cominciano ad arrivare lì. Oggi solo Nubank ha questo segno.',
+				},
+				'11': {
+					title: 'Cattura disattivata.',
+					body: 'Compare quando Spendr non ha accesso alle notifiche: mai attivato, tolto da te o da una reinstallazione. "Attiva" apre la schermata di Android; "Non avvisare più" nasconde l\'avviso.',
+				},
+				'12': {
+					title: 'Attenzione: cattura ferma.',
+					body: 'A volte Android disattiva la lettura senza avvisare. Se hai un conto collegato a una banca e passano 3 giorni senza nessun avviso della banca, l\'app mostra questo. "Riconnetti" chiede ad Android di riattivarla e apre la schermata dell\'accesso; se resta ferma, disattiva e riattiva l\'accesso di Spendr. "Ignora per 7 giorni" la nasconde.',
+				},
+			},
+		},
+		review: {
+			title: "Rivedere: le domande e quello che l'app impara",
+			steps: {
+				'1': {
+					title: 'Da rivedere.',
+					body: 'Gli avvisi della banca che aspettano te. Quelli con un conto e nessuna domanda aperta contano già nel saldo, nell\'estratto e nel mese; la revisione conferma la categoria o la corregge.',
+				},
+				'2': {
+					title: 'Un avviso della banca.',
+					body: 'Il tipo (Acquisto, Pix inviato, Storno…), l\'importo, l\'app della banca e l\'ora. Quando l\'avviso riporta solo l\'importo in un\'altra valuta, arriva segnato: controlla l\'importo nella tua valuta prima di confermare.',
+				},
+				'3': {
+					title: 'Correggere il conto.',
+					body: 'Qui cambi il conto o la carta in cui entra il movimento.',
+				},
+				'4': {
+					title: 'Categoria.',
+					body: "L'app ne suggerisce una; qui la cambi prima di confermare.",
+				},
+				'5': {
+					title: 'Tre risposte.',
+					body: 'Conferma aggiunge con la categoria. Trasferimento toglie l\'importo da entrate e spese, e il prossimo avviso con lo stesso nome diventa già un trasferimento. Ignora scarta l\'avviso e toglie l\'importo dal saldo; si può ripristinare dalla cronologia.',
+				},
+				'6': {
+					title: "Quello che l'app ha letto.",
+					body: 'Mostra il testo della notifica, perché tu possa controllarlo.',
+				},
+				'7': {
+					title: 'Attenzione: domande con un tocco.',
+					body: 'Due avvisi con lo stesso importo vicini tra loro: "Stessa voce, tienine una" o "Voci diverse, tienile entrambe". Uscita ed entrata dello stesso importo in banche diverse: "Sì, è un trasferimento" o "No, due voci separate". Finché chiede, la voce non entra nel saldo.',
+				},
+				'8': {
+					title: 'Attenzione: avviso incompleto.',
+					body: "Acquisto a credito che non dice su quale delle tue carte è finito, acquisto che non dice se è stato a debito o a credito, Pix che non dice se è entrato o uscito, pagamento dell'estratto che non dice da quale conto è uscito: l'app chiede invece di indovinare.",
+				},
+				'9': {
+					title: "L'app impara.",
+					body: 'La risposta a un avviso incompleto vale per il prossimo avviso uguale: arriva già con il conto, la carta o la direzione che hai scelto, segnato "Deciso dalla tua scelta su una notifica uguale"; correggerlo cambia la regola. Tre conferme di fila dallo stesso posto con la stessa categoria fanno entrare da sole le successive.',
+				},
+				'10': {
+					title: 'Quello che è entrato da solo.',
+					body: 'I movimenti automatici degli ultimi 7 giorni restano qui, con "Annulla". Ignorare 3 volte gli avvisi di un\'app che non è di una banca, degli SMS né il portafoglio del telefono fa sì che l\'app la ignori; "Annulla" la mostra di nuovo.',
+				},
+				'11': {
+					title: 'Cronologia.',
+					body: 'Tutto quello che è già stato deciso, da te o dall\'app. "Ripristina" riporta la voce in revisione e toglie quello che aveva creato.',
+				},
+			},
+		},
+	},
 } as const;
 
 export default it;

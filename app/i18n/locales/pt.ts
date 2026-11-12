@@ -2245,6 +2245,375 @@ const pt = {
 		searchLabel: 'Buscar em {{field}}',
 		noResults: 'Nada encontrado',
 	},
+	trails: {
+		help: 'Guia passo a passo',
+		helpHint: 'Abre o guia "{{trail}}", que passa pelas telas e aponta cada botão',
+		back: 'Voltar',
+		backHint: 'Volta ao passo anterior',
+		skipHint: 'Fecha o guia e volta para onde você estava',
+		attention: 'Atenção',
+		accounts: {
+			title: 'Contas: cadastro, papel e saldo',
+			steps: {
+				'1': {
+					title: 'Seu dinheiro.',
+					body: '"Em caixa" é o dinheiro das contas do dia a dia. "Depois das faturas" é o que sobra depois de pagar os cartões. Reserva e conta externa ficam de fora de "Em caixa".',
+				},
+				'2': {
+					title: 'Cadastrar uma conta.',
+					body: 'Aqui você cadastra uma conta do banco, uma poupança ou a carteira. No Android, quando o app de um banco avisa e você ainda não tem conta dele, a captura cria a conta sozinha.',
+				},
+				'3': {
+					title: 'Nome e tipo.',
+					body: 'O tipo diz o que a conta é: Conta corrente, Poupança, Investimento ou Dinheiro. Cartão de crédito não entra aqui: ele tem cadastro próprio, em Configurações › Cartões.',
+				},
+				'4': {
+					title: 'O papel muda a conta.',
+					body: 'Principal é onde a renda cai: Pix e débito saindo dela são gastos do mês. Envelope (a caixinha de gastos) tem um valor por mês: esse valor (ou o que você mandar, se for mais) é o gasto do mês, e o que se gasta lá dentro não soma de novo.',
+				},
+				'5': {
+					title: 'Reserva e Externa.',
+					body: 'Reserva é dinheiro guardado: o que entra é poupança, não gasto, e o rendimento é receita de investimento. Externa é uma conta que o app não acompanha, como a da empresa: o que ela manda para as suas contas conta como receita.',
+				},
+				'6': {
+					title: 'Reserva ou só investimento.',
+					body: '"Reserva e investimento" enche primeiro a reserva de emergência, e o que passar dela vira capital de investimento. "Só investimento" fica fora da reserva, para dinheiro que não dá para resgatar num imprevisto, como previdência.',
+				},
+				'7': {
+					title: 'Saldo de partida.',
+					body: 'Digite o que o app do banco mostra agora. Ele entra como ponto de partida, não como receita do mês. Em branco, a conta começa zerada e você acerta depois.',
+				},
+				'8': {
+					title: 'Rendimento.',
+					body: 'Se a conta rende, informe o percentual do CDI, como 100 ou 120. O saldo cresce sozinho a cada dia útil; é uma estimativa, e o "Acertar com o banco" a corrige quando você quiser.',
+				},
+				'9': {
+					title: 'Acertar o saldo.',
+					body: 'Para quando o app e o banco não batem. Você diz quanto já gastou no mês e quanto ainda tem: a diferença no gasto vira um lançamento "Ajuste com o saldo do banco", e o resto só muda o saldo de partida, sem virar receita nem gasto.',
+					missing: "Na tela de cada conta, 'Acertar com o banco' iguala o saldo do app ao do banco.",
+				},
+				'10': {
+					title: 'Atenção: conta criada pela captura.',
+					body: 'A conta que o app criou sozinho começa do zero, porque ele não sabe quanto havia nela. Até você acertar o saldo (ou dispensar o aviso), ela mostra "Saldo não informado". Numa reserva, o acerto pede só o saldo de hoje e nunca lança gasto.',
+				},
+				'11': {
+					title: 'Atenção: duas contas do mesmo banco.',
+					body: 'Quando há exatamente duas contas do mesmo banco e só uma recebe os avisos, o app sugere juntar. "Juntar as duas" leva tudo para a que você escolher; "São contas diferentes" (a pessoal e a da empresa, por exemplo) tira o aviso de vez. Se a que a captura criou está vazia e ninguém mexeu nela, o app junta sozinho e avisa "Juntamos … em …".',
+				},
+				'12': {
+					title: 'Juntar, arquivar, excluir.',
+					body: 'Juntar leva lançamentos, capturas e transferências para a outra conta e soma os saldos; o total não muda. Arquivar esconde a conta da tela inicial e dos totais, sem apagar nada. Excluir mantém os lançamentos, que viram "Sem conta", e apaga as transferências da conta.',
+				},
+			},
+		},
+		cardSetup: {
+			title: 'Cartões: cadastro',
+			steps: {
+				'1': {
+					title: 'Seus cartões.',
+					body: '"A pagar agora" soma as faturas fechadas que ainda não foram pagas. "Faturas abertas" são as que ainda recebem compras. O limite disponível aparece quando você informa o limite.',
+				},
+				'2': {
+					title: 'Cadastrar um cartão.',
+					body: 'Aqui você cadastra um cartão de crédito. No Android, quando o app do banco avisa uma compra no crédito com o final e você não tem nenhum cartão daquele banco, o app cria o cartão sozinho, com o nome "Banco · final 1234". Se já tem um, o final novo entra nele.',
+				},
+				'3': {
+					title: 'Crédito ou débito.',
+					body: 'Cartão de débito não tem fatura nem limite: a compra sai na hora da conta, e não precisa cadastrar. As compras no débito já entram na conta do banco.',
+				},
+				'4': {
+					title: 'Banco e apelido.',
+					body: 'Escolha o banco na lista ou "Outro"; a cor do cartão vem do banco da lista. O apelido é opcional e ajuda quando há mais de um cartão do mesmo banco; sem ele, o nome fica o banco e o final, como "Nubank · 1234".',
+				},
+				'5': {
+					title: 'Final do cartão.',
+					body: 'Os 4 últimos números. É por eles que os avisos do banco acham o cartão certo.',
+				},
+				'6': {
+					title: 'Bandeira e limite.',
+					body: 'A bandeira aparece no desenho do cartão. O limite mostra quanto ainda dá para gastar: o usado conta a fatura e também as parcelas que ainda vão cair.',
+				},
+				'7': {
+					title: 'Fechamento e vencimento.',
+					body: 'Os dois estão na fatura, no app ou no site do banco. A compra feita no dia do fechamento, ou depois, já vai para a fatura seguinte. Vencimento em fim de semana ou feriado passa para o próximo dia útil.',
+				},
+				'8': {
+					title: 'Confira as datas.',
+					body: 'Com os dois dias preenchidos, o app mostra a fatura de hoje: confira com o app do banco. A fatura leva o nome do mês em que fecha.',
+				},
+				'9': {
+					title: 'Atenção: 1 a 20 dias.',
+					body: 'O vencimento tem que cair de 1 a 20 dias depois do fechamento; fora disso, o cartão não é salvo. Preencheu um dos dias? Preencha também o outro.',
+				},
+				'10': {
+					title: 'Quanto já deve.',
+					body: 'Só no cadastro: digite o que o app do banco mostra agora. A aberta vira o ponto de partida do cartão, sem virar compra. Se você preencher também a fechada, a aberta entra como um lançamento "Ajuste com a fatura do banco". A fechada só aparece entre o fechamento e o vencimento dela; deixe em branco se já foi paga.',
+				},
+				'11': {
+					title: 'Atenção: cartão sem fechamento.',
+					body: 'O cartão criado pela captura vem sem os dias de fechamento e vencimento. Sem ele, o app não separa as compras por fatura nem avisa o vencimento: edite o cartão e informe os dois dias.',
+				},
+			},
+		},
+		cardInvoice: {
+			title: 'Cartão: fatura, pagamento e acertos',
+			steps: {
+				noCard: {
+					title: 'Nenhum cartão ainda.',
+					body: "Cadastre um cartão para ver a fatura, pagar e acertar com o banco. Depois, o '?' da tela do cartão mostra cada botão.",
+				},
+				'1': {
+					title: 'A fatura atual.',
+					body: 'O cartão mostra a fatura aberta, quando ela fecha e vence e, se houver, a fechada a pagar. O limite que sobra aparece quando você informou o limite.',
+				},
+				'2': {
+					title: 'Pagar fatura.',
+					body: 'Registra o pagamento como transferência da conta para o cartão: não conta como gasto, porque as compras já contaram. Quita primeiro a fatura fechada; o que passar adianta a aberta. A data pode ser hoje, ontem ou anteontem.',
+				},
+				'3': {
+					title: 'Atenção: de qual conta saiu.',
+					body: 'O app já marca a conta corrente do banco do cartão, quando sabe qual é; se não souber, nenhuma vem marcada. Se o aviso do banco desse pagamento chegar depois (mesmo valor, até 1 dia de diferença), o app reconhece e não lança de novo.',
+				},
+				'4': {
+					title: 'Acertar com o banco.',
+					body: 'Os campos vêm com o que o app acha hoje: corrija com o número do app do banco. Campo em branco quer dizer "não informei", e aquela fatura fica como está. Na fatura aberta, o que faltar ou sobrar entra como "Ajuste com a fatura do banco"; na fechada, só muda o ponto de partida do cartão. Nada é apagado.',
+				},
+				'5': {
+					title: 'Atenção: o app pergunta.',
+					body: 'Quando o banco mostra mais do que o app, ele pergunta. "Sim, é encargo" lança a diferença como encargo; "Não, é ajuste" (uma compra que o app não viu, por exemplo) acerta como no passo anterior.',
+				},
+				'6': {
+					title: 'Encargo.',
+					body: 'Juros, IOF, anuidade, multa ou tarifa que o banco cobrou: tipo, valor e o dia em que aparece na fatura do banco. Entra na fatura daquela data, no valor a pagar e no limite, e não conta como compra.',
+				},
+				'7': {
+					title: 'Parcela antiga.',
+					body: 'Para compras parceladas feitas antes do app, que não vão chegar por aviso. Informe o valor da parcela, qual é a desta fatura (4, se a fatura traz 4/10) e o total, até 48. Se você já informou o valor da fatura aberta (no cadastro ou no "Acertar valor"), o app entende que a parcela atual está nele e cria só as seguintes.',
+				},
+				'8': {
+					title: 'Faturas por mês.',
+					body: 'Até seis faturas anteriores, a atual e as próximas que já têm parcelas. Cada aba traz o valor; abaixo, o período das compras e a lista.',
+				},
+				'9': {
+					title: 'O que falta pagar.',
+					body: 'Aparece quando algo já mexeu na fatura: um pagamento, o valor informado, saldo anterior ou crédito. O que ficou em aberto de uma fatura vencida entra na seguinte quando ela fecha, como "Saldo anterior não pago".',
+				},
+				'10': {
+					title: 'Atenção: compras para revisar.',
+					body: 'A compra que chegou pelo aviso e ainda está em "Revisar" já soma na fatura e no limite; só a categoria espera você. Descartar tira o valor.',
+				},
+				'11': {
+					title: 'Atenção: provável repetido.',
+					body: 'Dois lançamentos do mesmo cartão, mesmo valor, com até 1 dia de diferença, ficam marcados. O app não apaga nada sozinho: abra o que sobrou e apague, ou use "Não é repetido".',
+				},
+				'12': {
+					title: 'Limite e melhor dia.',
+					body: '"Próximas faturas" são as parcelas que ainda vão cair e já ocupam o limite. O melhor dia de compra é o próprio dia do fechamento: a compra feita nele já vai para a fatura seguinte, com quase um mês a mais para pagar.',
+				},
+			},
+		},
+		cardExtras: {
+			title: 'Cartões: virtuais, débito, juntar e arquivar',
+			steps: {
+				'1': {
+					title: 'Físico e virtuais.',
+					body: 'Quando a fatura tem compras de mais de um final (o cartão físico e os virtuais), aqui aparece quanto cada um gastou. A fatura é uma só; tocar num final filtra a lista.',
+				},
+				'2': {
+					title: 'Dar nome a um final.',
+					body: 'Um final pode ganhar nome, como "iFood/99" ou "Assinaturas". Apagar o nome volta a mostrar o final.',
+				},
+				'3': {
+					title: 'Qual final comprou.',
+					body: 'O físico e os virtuais caem na mesma fatura; isto só diz qual deles comprou. "Não sei" também vale, e "Outro cartão: os 4 últimos dígitos" registra um final novo.',
+				},
+				'4': {
+					title: 'Cartões de débito.',
+					body: 'Sem fatura: cada compra sai direto da conta. O app lista sozinho os finais de débito que aparecem nos lançamentos de cada conta, com quanto gastaram no mês.',
+				},
+				'5': {
+					title: 'Histórico do débito.',
+					body: 'O saldo da conta já mostra cada compra; aqui fica o histórico do que este cartão gastou, mês a mês. Dá para renomear também.',
+				},
+				'6': {
+					title: 'Cadastrou como crédito por engano?',
+					body: 'Num cartão já salvo, escolha Débito e a conta de onde sai o dinheiro: os lançamentos vão para ela, os pagamentos de fatura dele são apagados e o cartão sai da lista.',
+				},
+				'7': {
+					title: 'Juntar dois cartões.',
+					body: 'Compras, parcelas, encargos e pagamentos passam para o outro, e este é apagado. O que fica mantém o fechamento, o limite e a fatura informada dele; o acerto com o banco feito no apagado sai junto.',
+				},
+				'8': {
+					title: 'Atenção: depois de juntar.',
+					body: 'A mesma compra pode ter ficado dos dois lados. Se houver, o app avisa quantos lançamentos podem estar repetidos, e eles aparecem marcados na tela do cartão.',
+				},
+				'9': {
+					title: 'Arquivar ou excluir.',
+					body: 'Arquivar esconde o cartão da tela inicial e dos totais. Excluir mantém as compras, mas elas viram "Sem conta"; os pagamentos da fatura dele são apagados.',
+				},
+			},
+		},
+		add: {
+			title: 'Lançar: despesa, receita e transferência',
+			steps: {
+				'1': {
+					title: 'Lançar à mão.',
+					body: 'Para o que não chega por aviso do banco: dinheiro, uma compra de outra pessoa, uma receita.',
+				},
+				'2': {
+					title: 'Saiu, entrou ou trocou de conta.',
+					body: 'Despesa é dinheiro que saiu, Receita é dinheiro que entrou. Transferência é dinheiro indo de uma conta sua para outra.',
+				},
+				'3': {
+					title: 'Valor.',
+					body: 'Os centavos completam sozinhos quando você sai do campo.',
+				},
+				'4': {
+					title: 'Categoria.',
+					body: 'É ela que diz para onde foi o dinheiro nos relatórios, e se o gasto é essencial para a reserva. "Editar categorias" leva à lista de categorias.',
+				},
+				'5': {
+					title: 'De onde saiu.',
+					body: 'A conta ou o cartão. "Sem conta" também vale: no mês, conta como se fosse da conta principal, e depois dá para mover.',
+				},
+				'6': {
+					title: 'Parcelas.',
+					body: 'Aparece só numa despesa nova num cartão de crédito. 1 é à vista; até 48, uma por fatura. Se o valor não divide exato, a primeira parcela fica com a diferença.',
+					missing: 'Escolhendo um cartão de crédito, aparece o campo das parcelas: uma cai em cada fatura.',
+				},
+				'7': {
+					title: 'Data.',
+					body: 'No cartão, a data decide a fatura: compra no dia do fechamento, ou depois, vai para a seguinte.',
+				},
+				'8': {
+					title: 'Descrição.',
+					body: 'A busca da aba Lançamentos procura na descrição e no nome da categoria.',
+				},
+				'9': {
+					title: 'Transferência.',
+					body: 'Muda o saldo das duas contas, mas não entra em receitas nem despesas. Precisa de pelo menos duas contas cadastradas.',
+				},
+				'10': {
+					title: 'Atenção: para um cartão.',
+					body: 'Transferir para um cartão de crédito é pagar a fatura, igual ao "Pagar fatura": abate o que ele deve e não conta como gasto. Se o mesmo pagamento já estava registrado pelo aviso, nada é lançado de novo.',
+				},
+				'11': {
+					title: 'Editar e apagar.',
+					body: 'Numa parcela, o que você muda vale só para ela; ao apagar, o app pergunta "Só esta parcela" ou "Todas as parcelas". Na edição, uma despesa ou receita não vira transferência.',
+				},
+				'12': {
+					title: 'Atenção: conta a pagar.',
+					body: 'Uma despesa à vista lançada à mão, de 10 dias antes a 5 depois do vencimento de uma conta a pagar, da conta que paga (se houver), com o valor dela e o nome na descrição (ou o valor exato), marca a conta como paga. Na dúvida, não marca.',
+				},
+			},
+		},
+		capture: {
+			title: 'Captura automática: ligar e o que o app decide sozinho',
+			steps: {
+				ios: {
+					title: 'Só no Android.',
+					body: "A captura automática lê as notificações do banco e só está disponível no Android. No iPhone, lance pelo '+' ou importe o extrato OFX.",
+				},
+				'1': {
+					title: 'Só no Android.',
+					body: 'O Spendr lê as notificações que os apps do seu banco já mandam (compras, Pix, transferências) e as transforma em lançamentos.',
+				},
+				'2': {
+					title: 'Ligar o acesso.',
+					body: 'Este item abre a tela do Android: encontre o Spendr na lista e permita o acesso às notificações.',
+				},
+				'3': {
+					title: 'Atenção: o que fica guardado.',
+					body: 'Só as notificações que trazem um valor em dinheiro (R$ 120,00, US$ 15,99) são guardadas; as outras o app ignora.',
+				},
+				'4': {
+					title: 'O que vai para a revisão.',
+					body: 'Compras e Pix viram itens em "Revisar", menos o que o app decide sozinho (próximo passo). Enquanto esperam, já contam no saldo, na fatura e no mês, menos os que têm uma pergunta em aberto ou estão sem conta; confirmar fixa a categoria.',
+				},
+				'5': {
+					title: 'O que o app decide sozinho.',
+					body: 'A mesma compra avisada pela carteira do celular e pelo banco vira uma só, quando dá para ter certeza. Pagamento de fatura e aplicação ou resgate não viram receita nem despesa. Dinheiro que sai de uma conta sua e entra noutra do mesmo banco, com o mesmo valor e minutos depois, vira transferência.',
+				},
+				'6': {
+					title: 'Seu nome no banco.',
+					body: 'Escreva seu nome como aparece nos avisos de Pix. Um Pix com esse nome do outro lado vira transferência entre suas contas, sem perguntar. Maiúsculas e acentos não importam, e uma inicial vale pelo nome do meio.',
+				},
+				'7': {
+					title: 'Atenção: nome exato.',
+					body: 'Com um nome a mais ou a menos, o app continua perguntando. O nome da sua conta do Spendr também conta. Com conta, o nome vai para os outros aparelhos; ele também entra no backup.',
+				},
+				'8': {
+					title: 'Atenção: conta arquivada.',
+					body: 'Se a conta ligada ao app do banco está arquivada, o app não cria outra no lugar: o aviso entra "Sem conta", e você escolhe na revisão.',
+				},
+				'9': {
+					title: 'Em qual conta caem os avisos.',
+					body: 'Com duas contas do mesmo banco, aqui você escolhe em qual delas entram as compras que o app do banco avisa. O que já está lançado fica onde está.',
+				},
+				'10': {
+					title: 'Conta PJ no Nubank.',
+					body: 'O Nubank escreve "da conta Nu Empresas" nos avisos da PJ. Marque aqui a conta da empresa, e esses avisos passam a cair nela. Hoje só o Nubank tem essa marca.',
+				},
+				'11': {
+					title: 'Captura desligada.',
+					body: 'Aparece quando o Spendr está sem acesso às notificações: nunca ligado, tirado por você ou por uma reinstalação. "Ligar" abre a tela do Android; "Não avisar mais" esconde o aviso.',
+				},
+				'12': {
+					title: 'Atenção: captura parada.',
+					body: 'O Android às vezes desliga a leitura sem avisar. Se você tem conta ligada a um banco e passam 3 dias sem nenhum aviso de banco, o app mostra isto. "Reconectar" pede ao Android para religar e abre a tela do acesso; se continuar parado, desligue e ligue o acesso do Spendr. "Dispensar por 7 dias" esconde.',
+				},
+			},
+		},
+		review: {
+			title: 'Revisar: as perguntas e o que o app aprende',
+			steps: {
+				'1': {
+					title: 'Para revisar.',
+					body: 'Os avisos do banco que esperam você. Os que têm conta e nenhuma pergunta em aberto já contam no saldo, na fatura e no mês; a revisão confirma a categoria ou corrige.',
+				},
+				'2': {
+					title: 'Um aviso do banco.',
+					body: 'O tipo (Compra, Pix enviado, Estorno…), o valor, o app do banco e a hora. Quando o aviso traz só o valor em outra moeda, ele vem marcado: confira o valor em reais antes de confirmar.',
+				},
+				'3': {
+					title: 'Corrigir a conta.',
+					body: 'Aqui você troca a conta ou o cartão em que o lançamento entra.',
+				},
+				'4': {
+					title: 'Categoria.',
+					body: 'O app sugere uma; aqui você troca antes de confirmar.',
+				},
+				'5': {
+					title: 'Três respostas.',
+					body: 'Confirmar adiciona com a categoria. Transferência tira o valor das receitas e despesas, e o próximo aviso com o mesmo nome já vira transferência. Descartar ignora o aviso e tira o valor do saldo; dá para reverter pelo histórico.',
+				},
+				'6': {
+					title: 'O que o app leu.',
+					body: 'Mostra o texto da notificação, para você conferir.',
+				},
+				'7': {
+					title: 'Atenção: perguntas de um toque.',
+					body: 'Dois avisos de mesmo valor perto um do outro: "É o mesmo, ficar com um" ou "São dois, ficar com os dois". Saída e entrada do mesmo valor em bancos diferentes: "Sim, é transferência" ou "Não, são dois lançamentos". Enquanto pergunta, o item não entra no saldo.',
+				},
+				'8': {
+					title: 'Atenção: aviso incompleto.',
+					body: 'Compra no crédito que não diz em qual dos seus cartões caiu, compra que não diz se foi no débito ou no crédito, Pix que não diz se entrou ou saiu, pagamento de fatura que não diz de qual conta saiu: o app pergunta em vez de adivinhar.',
+				},
+				'9': {
+					title: 'O app aprende.',
+					body: 'A resposta a um aviso incompleto vale para o próximo aviso igual: ele já vem com a conta, o cartão ou a direção que você escolheu, marcado "Decidido pela sua escolha num aviso igual"; corrigir muda a regra. Três confirmações seguidas do mesmo lugar com a mesma categoria fazem os próximos entrarem sozinhos.',
+				},
+				'10': {
+					title: 'O que entrou sozinho.',
+					body: 'Os lançamentos automáticos dos últimos 7 dias ficam aqui, com "Desfazer". Descartar 3 vezes os avisos de um app que não é de banco, de SMS nem a carteira do celular faz o app ignorá-lo; "Desfazer" volta a mostrar.',
+				},
+				'11': {
+					title: 'Histórico.',
+					body: 'Tudo o que já foi decidido, por você ou pelo app. "Reverter" devolve o item à revisão e tira o que ele criou.',
+				},
+			},
+		},
+	},
 } as const;
 
 export default pt;

@@ -29,6 +29,7 @@ import {
 import { accountSelectOptions } from './AccountPicker';
 import DatePickerModal from './DatePickerModal';
 import { SelectField, type SelectOption } from './SelectField';
+import { TourTarget } from './tour/TourContext';
 
 /** Cor da transferência: nem o vermelho da despesa, nem o verde da receita. */
 const ACCENT = '#15E8FE';
@@ -223,7 +224,7 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 			...accountSelectOptions(options),
 		];
 		return (
-			<View style={styles.formGroup}>
+			<TourTarget id={`add.${side}`} style={styles.formGroup}>
 				<SelectField
 					testID={`transfer-form-${side}`}
 					optionTestID={`transfer-${side}-`}
@@ -233,7 +234,7 @@ const TransferForm: React.FC<TransferFormProps> = ({ initialTransfer, onSubmit, 
 					onSelect={(value) => pick(side, value === OUTSIDE ? null : value)}
 					error={error ? messageOf(error) : undefined}
 				/>
-			</View>
+			</TourTarget>
 		);
 	};
 

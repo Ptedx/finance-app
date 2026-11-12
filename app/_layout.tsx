@@ -9,6 +9,7 @@ import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
 import RootStack from './components/RootStack';
 import TourProvider from './components/tour/TourProvider';
+import TrailRecordsSource from './components/tour/TrailRecordsSource';
 import { AuthProvider } from './contexts/AuthContext';
 import { BillsProvider } from './contexts/BillsContext';
 import { BudgetProvider } from './contexts/BudgetContext';
@@ -230,6 +231,8 @@ export default function RootLayout() {
 									{/* O guia na tela (SPD-129) desenha por cima da pilha; parado enquanto a trava por biometria está aberta. */}
 									<TourProvider paused={showBiometricAuth}>
 										<RootStack />
+										{/* Os registros que as trilhas (SPD-131) usam para abrir a conta, o cartão, o aviso. */}
+										<TrailRecordsSource />
 									</TourProvider>
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
 								</BillsProvider>

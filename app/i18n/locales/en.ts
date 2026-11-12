@@ -2246,6 +2246,375 @@ account: {
 		searchLabel: 'Search {{field}}',
 		noResults: 'Nothing found',
 	},
+	trails: {
+		help: 'Step-by-step guide',
+		helpHint: 'Opens the "{{trail}}" guide, which goes through the screens and points at each button',
+		back: 'Back',
+		backHint: 'Goes back to the previous step',
+		skipHint: 'Closes the guide and goes back to where you were',
+		attention: 'Watch out',
+		accounts: {
+			title: 'Accounts: setup, role and balance',
+			steps: {
+				'1': {
+					title: 'Your money.',
+					body: '"Cash" is the money in your everyday accounts. "After card bills" is what is left after paying the cards. Reserve and external accounts are left out of "Cash".',
+				},
+				'2': {
+					title: 'Add an account.',
+					body: 'Here you add a bank account, a savings account or your wallet. On Android, when a bank app sends a notification and you do not have an account from that bank yet, capture creates the account by itself.',
+				},
+				'3': {
+					title: 'Name and type.',
+					body: 'The type says what the account is: Checking, Savings, Investment or Cash. Credit cards do not go here: they have their own setup, in Settings › Cards.',
+				},
+				'4': {
+					title: 'The role changes the account.',
+					body: 'Main is where your income lands: Pix and debit going out of it are spending for the month. Envelope (the spending pot) has an amount per month: that amount (or what you send, if more) is the spending for the month, and what you spend inside it is not counted again.',
+				},
+				'5': {
+					title: 'Reserve and External.',
+					body: 'Reserve is money put aside: what goes in is saving, not spending, and the yield is investment income. External is an account the app does not track, like your company account: what it sends to your accounts counts as income.',
+				},
+				'6': {
+					title: 'Reserve or investment only.',
+					body: '"Reserve and investment" fills the emergency reserve first, and whatever goes past it becomes investment capital. "Investment only" stays out of the reserve, for money you cannot withdraw in an emergency, such as a pension plan.',
+				},
+				'7': {
+					title: 'Starting balance.',
+					body: 'Type what the bank app shows right now. It goes in as a starting point, not as income for the month. Left blank, the account starts at zero and you match it later.',
+				},
+				'8': {
+					title: 'Yield.',
+					body: 'If the account earns interest, enter the percentage of the CDI, such as 100 or 120. The balance grows by itself every business day; it is an estimate, and "Match the bank" corrects it whenever you want.',
+				},
+				'9': {
+					title: 'Match the balance.',
+					body: 'For when the app and the bank do not agree. You say how much you have already spent this month and how much you still have: the difference in spending becomes an entry "Ajuste com o saldo do banco" (bank balance adjustment), and the rest only changes the starting balance, without becoming income or spending.',
+					missing: "On each account's screen, 'Match the bank' makes the app's balance equal the bank's.",
+				},
+				'10': {
+					title: 'Watch out: account created by capture.',
+					body: 'An account the app created by itself starts from zero, because it does not know how much was in it. Until you match the balance (or dismiss the warning), it shows "Balance not set". For a reserve, matching asks only for today\'s balance and never records spending.',
+				},
+				'11': {
+					title: 'Watch out: two accounts at the same bank.',
+					body: 'When there are exactly two accounts at the same bank and only one gets the notifications, the app suggests merging. "Merge them" moves everything into the one you choose; "They are different accounts" (personal and business, for example) removes the warning for good. If the one capture created is empty and nobody touched it, the app merges by itself and says "We merged … into …".',
+				},
+				'12': {
+					title: 'Merge, archive, delete.',
+					body: 'Merging moves entries, captures and transfers to the other account and adds up the balances; the total does not change. Archiving hides the account from the home screen and the totals, without deleting anything. Deleting keeps the entries, which become "No account", and deletes the account\'s transfers.',
+				},
+			},
+		},
+		cardSetup: {
+			title: 'Cards: setup',
+			steps: {
+				'1': {
+					title: 'Your cards.',
+					body: '"To pay now" adds up the closed bills not yet paid. "Open bills" are the ones still taking purchases. The available limit shows when you enter the limit.',
+				},
+				'2': {
+					title: 'Add a card.',
+					body: 'Here you add a credit card. On Android, when the bank app announces a credit purchase with the card ending and you have no card from that bank, the app creates the card by itself, named "Bank · ending 1234". If you already have one, the new ending goes into it.',
+				},
+				'3': {
+					title: 'Credit or debit.',
+					body: 'A debit card has no bill and no limit: the purchase leaves the account right away, and you do not need to add it. Debit purchases already go into the bank account.',
+				},
+				'4': {
+					title: 'Bank and nickname.',
+					body: 'Pick the bank from the list or "Other"; the card color comes from the bank on the list. The nickname is optional and helps when you have more than one card from the same bank; without it, the name is the bank and the ending, like "Nubank · 1234".',
+				},
+				'5': {
+					title: 'Card ending.',
+					body: 'The last 4 digits. That is how the bank notifications find the right card.',
+				},
+				'6': {
+					title: 'Network and limit.',
+					body: 'The network shows on the card drawing. The limit shows how much you can still spend: what is used counts the bill and also the installments still to come.',
+				},
+				'7': {
+					title: 'Closing and due dates.',
+					body: 'Both are on the bill, in the bank app or website. A purchase made on the closing day, or later, goes to the next bill. A due date on a weekend or holiday moves to the next business day.',
+				},
+				'8': {
+					title: 'Check the dates.',
+					body: 'With both days filled in, the app shows today\'s bill: check it against the bank app. The bill is named after the month it closes in.',
+				},
+				'9': {
+					title: 'Watch out: 1 to 20 days.',
+					body: 'The due date has to fall 1 to 20 days after closing; otherwise, the card is not saved. Filled in one of the days? Fill in the other too.',
+				},
+				'10': {
+					title: 'How much you already owe.',
+					body: 'Only when adding the card: type what the bank app shows right now. The open bill becomes the card\'s starting point, without becoming a purchase. If you also fill in the closed one, the open one goes in as an entry "Ajuste com a fatura do banco" (bank bill adjustment). The closed one only shows between its closing and due dates; leave it blank if it is already paid.',
+				},
+				'11': {
+					title: 'Watch out: card without a closing day.',
+					body: 'A card created by capture comes without the closing and due days. Without them, the app does not split purchases by bill or remind you of the due date: edit the card and enter both days.',
+				},
+			},
+		},
+		cardInvoice: {
+			title: 'Card: bill, payment and matching',
+			steps: {
+				noCard: {
+					title: 'No card yet.',
+					body: "Add a card to see the bill, pay and match it with the bank. Then the card screen's '?' shows each button.",
+				},
+				'1': {
+					title: 'The current bill.',
+					body: 'The card shows the open bill, when it closes and is due and, if there is one, the closed bill to pay. The remaining limit shows when you entered the limit.',
+				},
+				'2': {
+					title: 'Pay bill.',
+					body: 'Records the payment as a transfer from the account to the card: it does not count as spending, because the purchases already did. It pays off the closed bill first; anything beyond that goes toward the open one. The date can be today, yesterday or the day before.',
+				},
+				'3': {
+					title: 'Watch out: which account it came from.',
+					body: 'The app already selects the card bank\'s checking account, when it knows which one it is; if it does not, none is selected. If the bank notification for this payment arrives later (same amount, up to 1 day apart), the app recognizes it and does not record it again.',
+				},
+				'4': {
+					title: 'Match the bank.',
+					body: 'The fields come with what the app thinks today: correct them with the number from the bank app. A blank field means "I did not say", and that bill stays as it is. On the open bill, whatever is missing or extra goes in as "Ajuste com a fatura do banco" (bank bill adjustment); on the closed one, it only changes the card\'s starting point. Nothing is deleted.',
+				},
+				'5': {
+					title: 'Watch out: the app asks.',
+					body: 'When the bank shows more than the app, it asks. "Yes, it is a charge" records the difference as a charge; "No, it is an adjustment" (a purchase the app did not see, for example) matches as in the previous step.',
+				},
+				'6': {
+					title: 'Charge.',
+					body: 'Interest, IOF, annual fee, penalty or fee the bank charged: type, amount and the day it shows on the bank bill. It goes into that date\'s bill, the amount to pay and the limit, and does not count as a purchase.',
+				},
+				'7': {
+					title: 'Old installment.',
+					body: 'For installment purchases made before the app, which will not arrive by notification. Enter the installment amount, which one is on this bill (4, if the bill shows 4/10) and the total, up to 48. If you already entered the open bill amount (when adding the card or in "Match bank"), the app understands the current installment is in it and creates only the following ones.',
+				},
+				'8': {
+					title: 'Bills by month.',
+					body: 'Up to six previous bills, the current one and the next ones that already have installments. Each tab shows the amount; below it, the purchase period and the list.',
+				},
+				'9': {
+					title: 'What is left to pay.',
+					body: 'Shows when something has already changed the bill: a payment, the amount you entered, a previous balance or a credit. What was left unpaid on an overdue bill goes into the next one when it closes, as "Unpaid previous balance".',
+				},
+				'10': {
+					title: 'Watch out: purchases to review.',
+					body: 'A purchase that came from a notification and is still in "Review" already counts on the bill and the limit; only the category waits for you. Discarding removes the amount.',
+				},
+				'11': {
+					title: 'Watch out: likely repeat.',
+					body: 'Two entries on the same card, same amount, up to 1 day apart, get marked. The app does not delete anything by itself: open the extra one and delete it, or use "Not a repeat".',
+				},
+				'12': {
+					title: 'Limit and best day.',
+					body: '"Upcoming bills" are the installments still to come that already take up the limit. The best day to buy is the closing day itself: a purchase made on it goes to the next bill, with almost a month more to pay.',
+				},
+			},
+		},
+		cardExtras: {
+			title: 'Cards: virtual, debit, merge and archive',
+			steps: {
+				'1': {
+					title: 'Physical and virtual.',
+					body: 'When the bill has purchases from more than one ending (the physical card and the virtual ones), this shows how much each one spent. There is only one bill; tapping an ending filters the list.',
+				},
+				'2': {
+					title: 'Name an ending.',
+					body: 'An ending can get a name, like "iFood/99" or "Subscriptions". Deleting the name shows the ending again.',
+				},
+				'3': {
+					title: 'Which ending bought it.',
+					body: 'The physical and virtual cards fall on the same bill; this only says which one made the purchase. "Not sure" works too, and "Another card: last 4 digits" records a new ending.',
+				},
+				'4': {
+					title: 'Debit cards.',
+					body: 'No bill: each purchase leaves the account directly. The app lists by itself the debit endings that show up in each account\'s entries, with how much they spent this month.',
+				},
+				'5': {
+					title: 'Debit history.',
+					body: 'The account balance already shows each purchase; here is the history of what this card spent, month by month. You can rename it too.',
+				},
+				'6': {
+					title: 'Added it as credit by mistake?',
+					body: 'On a card already saved, choose Debit and the account the money comes from: the entries move to it, the card\'s bill payments are deleted and the card leaves the list.',
+				},
+				'7': {
+					title: 'Merge two cards.',
+					body: 'Purchases, installments, charges and payments move to the other card, and this one is deleted. The one that stays keeps its closing day, limit and entered bill; the bank matching done on the deleted one goes with it.',
+				},
+				'8': {
+					title: 'Watch out: after merging.',
+					body: 'The same purchase may have ended up on both sides. If so, the app says how many entries may be repeats, and they show marked on the card screen.',
+				},
+				'9': {
+					title: 'Archive or delete.',
+					body: 'Archiving hides the card from the home screen and the totals. Deleting keeps the purchases, but they become "No account"; the card\'s bill payments are deleted.',
+				},
+			},
+		},
+		add: {
+			title: 'Adding: expense, income and transfer',
+			steps: {
+				'1': {
+					title: 'Add by hand.',
+					body: 'For what does not arrive as a bank notification: cash, a purchase by someone else, an income.',
+				},
+				'2': {
+					title: 'Went out, came in or changed accounts.',
+					body: 'Expense is money that went out, Income is money that came in. Transfer is money going from one of your accounts to another.',
+				},
+				'3': {
+					title: 'Amount.',
+					body: 'The cents fill in by themselves when you leave the field.',
+				},
+				'4': {
+					title: 'Category.',
+					body: 'It says where the money went in the reports, and whether the spending is essential for the reserve. "Edit Categories" takes you to the list of categories.',
+				},
+				'5': {
+					title: 'Where it came from.',
+					body: 'The account or the card. "No account" works too: for the month, it counts as if it were from the main account, and you can move it later.',
+				},
+				'6': {
+					title: 'Installments.',
+					body: 'Shows only on a new expense on a credit card. 1 is a single payment; up to 48, one per bill. If the amount does not divide evenly, the first installment takes the difference.',
+					missing: 'When you choose a credit card, the installments field appears: one falls on each bill.',
+				},
+				'7': {
+					title: 'Date.',
+					body: 'On a card, the date decides the bill: a purchase on the closing day, or later, goes to the next one.',
+				},
+				'8': {
+					title: 'Note.',
+					body: 'The search in the Transactions tab looks in the note and in the category name.',
+				},
+				'9': {
+					title: 'Transfer.',
+					body: 'Changes the balance of both accounts, but does not count as income or expense. It needs at least two accounts.',
+				},
+				'10': {
+					title: 'Watch out: to a card.',
+					body: 'Transferring to a credit card is paying the bill, just like "Pay bill": it reduces what the card owes and does not count as spending. If the same payment was already recorded from a notification, nothing is recorded again.',
+				},
+				'11': {
+					title: 'Edit and delete.',
+					body: 'On an installment, what you change applies only to it; when deleting, the app asks "Only this one" or "All installments". When editing, an expense or income does not turn into a transfer.',
+				},
+				'12': {
+					title: 'Watch out: bills to pay.',
+					body: 'A single-payment expense added by hand, from 10 days before to 5 days after a bill\'s due date, from the paying account (if any), with the bill\'s amount and its name in the note (or the exact amount), marks the bill as paid. When in doubt, it does not.',
+				},
+			},
+		},
+		capture: {
+			title: 'Automatic capture: turning it on and what the app decides by itself',
+			steps: {
+				ios: {
+					title: 'Android only.',
+					body: "Automatic capture reads bank notifications and is only available on Android. On iPhone, add entries with the '+' or import the OFX statement.",
+				},
+				'1': {
+					title: 'Android only.',
+					body: 'Spendr reads the notifications your bank apps already send (purchases, Pix, transfers) and turns them into entries.',
+				},
+				'2': {
+					title: 'Turn on access.',
+					body: 'This item opens the Android screen: find Spendr on the list and allow access to notifications.',
+				},
+				'3': {
+					title: 'Watch out: what is kept.',
+					body: 'Only notifications that carry an amount of money (R$ 120,00, US$ 15.99) are kept; the app ignores the others.',
+				},
+				'4': {
+					title: 'What goes to review.',
+					body: 'Purchases and Pix become items in "Review", except what the app decides by itself (next step). While they wait, they already count in the balance, the bill and the month, except those with an open question or with no account; confirming locks in the category.',
+				},
+				'5': {
+					title: 'What the app decides by itself.',
+					body: 'The same purchase announced by the phone wallet and by the bank becomes one, when it can be sure. Bill payments and investing or withdrawing do not become income or expense. Money that leaves one of your accounts and enters another at the same bank, with the same amount and minutes later, becomes a transfer.',
+				},
+				'6': {
+					title: 'Your name at the bank.',
+					body: 'Write your name as it appears on Pix notifications. A Pix with that name on the other side becomes a transfer between your accounts, without asking. Upper case and accents do not matter, and an initial counts for a middle name.',
+				},
+				'7': {
+					title: 'Watch out: exact name.',
+					body: 'With one name too many or too few, the app keeps asking. The name on your Spendr account also counts. With an account, the name goes to your other devices; it also goes into the backup.',
+				},
+				'8': {
+					title: 'Watch out: archived account.',
+					body: 'If the account linked to the bank app is archived, the app does not create another one in its place: the notification comes in as "No account", and you choose in the review.',
+				},
+				'9': {
+					title: 'Which account gets the notifications.',
+					body: 'With two accounts at the same bank, here you choose which one gets the purchases the bank app announces. What is already recorded stays where it is.',
+				},
+				'10': {
+					title: 'Business account at Nubank.',
+					body: 'Nubank writes "da conta Nu Empresas" on business account notifications. Mark the business account here, and those notifications start landing in it. Today only Nubank has this mark.',
+				},
+				'11': {
+					title: 'Capture is off.',
+					body: 'Shows when Spendr has no access to notifications: never turned on, removed by you or by a reinstall. "Turn on" opens the Android screen; "Do not warn again" hides the warning.',
+				},
+				'12': {
+					title: 'Watch out: capture stalled.',
+					body: 'Android sometimes turns off reading without telling you. If you have an account linked to a bank and 3 days go by without any bank notification, the app shows this. "Reconnect" asks Android to turn it back on and opens the access screen; if it stays stalled, turn Spendr\'s access off and on. "Dismiss for 7 days" hides it.',
+				},
+			},
+		},
+		review: {
+			title: 'Review: the questions and what the app learns',
+			steps: {
+				'1': {
+					title: 'To review.',
+					body: 'The bank notifications waiting for you. Those with an account and no open question already count in the balance, the bill and the month; the review confirms the category or corrects it.',
+				},
+				'2': {
+					title: 'A bank notification.',
+					body: 'The type (Purchase, Pix sent, Refund…), the amount, the bank app and the time. When the notification brings only the amount in another currency, it comes marked: check the amount in your currency before confirming.',
+				},
+				'3': {
+					title: 'Correct the account.',
+					body: 'Here you change the account or card the entry goes into.',
+				},
+				'4': {
+					title: 'Category.',
+					body: 'The app suggests one; here you change it before confirming.',
+				},
+				'5': {
+					title: 'Three answers.',
+					body: 'Confirm adds it with the category. Transfer takes the amount out of income and expenses, and the next notification with the same name already becomes a transfer. Dismiss ignores the notification and takes the amount out of the balance; you can revert it from the history.',
+				},
+				'6': {
+					title: 'What the app read.',
+					body: 'Shows the notification text, so you can check it.',
+				},
+				'7': {
+					title: 'Watch out: one-tap questions.',
+					body: 'Two notifications of the same amount close together: "Same entry, keep one" or "Different entries, keep both". Money out and in of the same amount at different banks: "Yes, it is a transfer" or "No, two separate entries". While it asks, the item does not count in the balance.',
+				},
+				'8': {
+					title: 'Watch out: incomplete notification.',
+					body: 'A credit purchase that does not say which of your cards it went to, a purchase that does not say whether it was debit or credit, a Pix that does not say whether it came in or went out, a bill payment that does not say which account it came from: the app asks instead of guessing.',
+				},
+				'9': {
+					title: 'The app learns.',
+					body: 'Your answer to an incomplete notification applies to the next identical one: it already comes with the account, card or direction you chose, marked "Decided by your choice on an identical notification"; correcting it changes the rule. Three confirmations in a row from the same place with the same category make the next ones come in by themselves.',
+				},
+				'10': {
+					title: 'What came in by itself.',
+					body: 'Automatic entries from the last 7 days stay here, with "Undo". Dismissing 3 times the notifications of an app that is not a bank, SMS or the phone wallet makes the app ignore it; "Undo" shows it again.',
+				},
+				'11': {
+					title: 'History.',
+					body: 'Everything already decided, by you or by the app. "Revert" sends the item back to review and removes what it created.',
+				},
+			},
+		},
+	},
 } as const;
 
 export default en;

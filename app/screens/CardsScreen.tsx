@@ -6,6 +6,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CardFace from '../components/cards/CardFace';
 import DebitCardFace from '../components/cards/DebitCardFace';
 import { Button } from '../components/cards/formParts';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { getMonthName } from '../utils/dateUtils';
@@ -21,6 +23,10 @@ const CardsScreen = () => {
 	const { accounts, creditCards, debitCards, cardSummaries, cardsTotals } = useAccounts();
 	const { selectedMonth } = usePeriod();
 	const archived = accounts.filter((account) => account.kind === 'credit_card' && account.archived);
+	// As trilhas dos cartões (SPD-131) passam por aqui: "?" ao lado do título e na seção Débito.
+	useScreenTour('cards');
+	const tourScroll = useTourScroll('cards');
+	const totalsTarget = useTourTarget('cards.totals');
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -32,11 +38,13 @@ const CardsScreen = () => {
 				<Text style={styles.headerTitle} accessibilityRole="header">
 					{t('cards.sectionTitle')}
 				</Text>
+				<HelpButton trail="cardSetup" here={{ screen: 'cards' }} />
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{creditCards.length > 0 ? (
 					<View
+						{...totalsTarget}
 						style={styles.totals}
 						accessible
 						accessibilityLabel={`${t('cards.toPayNow')} ${formatCents(cardsTotals.toPayCents)}. ${t('cards.openInvoices')} ${formatCents(cardsTotals.openInvoicesCents)}`}
@@ -57,7 +65,9 @@ const CardsScreen = () => {
 					<Text style={styles.empty}>{t('cards.emptyBody')}</Text>
 				)}
 
-				<Button label={t('cards.add')} icon="add" onPress={() => router.push('/cards/new')} />
+				<TourTarget id="cards.add">
+					<Button label={t('cards.add')} icon="add" onPress={() => router.push('/cards/new')} />
+				</TourTarget>
 
 				{creditCards.map((card, index) => (
 					<CardFace
@@ -71,9 +81,12 @@ const CardsScreen = () => {
 
 				{debitCards.length > 0 ? (
 					<>
-						<Text style={styles.sectionTitle} accessibilityRole="header">
-							{t('cards.debit.sectionTitle')}
-						</Text>
+						<TourTarget id="cards.debit" style={styles.titleRow}>
+							<Text style={styles.sectionTitle} accessibilityRole="header">
+								{t('cards.debit.sectionTitle')}
+							</Text>
+							<HelpButton trail="cardExtras" here={{ screen: 'cards' }} from="4" />
+						</TourTarget>
 						<Text style={styles.empty}>{t('cards.debit.sectionHint')}</Text>
 						{debitCards.map((card, index) => (
 							<DebitCardFace
@@ -127,6 +140,11 @@ const styles = StyleSheet.create({
 		height: 48,
 		alignItems: 'center',
 		justifyContent: 'center',
+	},
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
 	},
 	headerTitle: {
 		flex: 1,

@@ -17,7 +17,7 @@ import { accountSelectOptions } from '../components/AccountPicker';
 import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
 import { SelectSheet } from '../components/SelectField';
 import HelpButton from '../components/tour/HelpButton';
-import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -204,6 +204,16 @@ export const ambiguityLine = (
 };
 
 /**
+ * Se o cartão do aviso traz uma pergunta (repetido, transferência, entrou ou saiu, de qual
+ * conta saiu a fatura): a trilha da revisão (SPD-131) aponta a primeira que aparece.
+ */
+export const asksQuestion = (capture: Pick<Capture, 'question' | 'reason'>): boolean => {
+	if (capture.question === 'duplicate' || capture.question === 'transfer') return true;
+	const ambiguity = ambiguityOfReason(capture.reason);
+	return Boolean(ambiguity && !ambiguity.learned && (ambiguity.case === 'pix_direction' || ambiguity.case === 'invoice_payment'));
+};
+
+/**
  * O detalhe de um item do histórico: a categoria do confirmado, o porquê do resto. O que a
  * regra aprendida num aviso ambíguo lançou diz as duas coisas (SPD-123): é por esse porquê
  * que o usuário acha o lançamento a corrigir.
@@ -275,6 +285,12 @@ interface CaptureCardProps {
 	onAnswerDirection: (capture: Capture, direction: CaptureDirection) => void;
 	/** De qual conta saiu o pagamento da fatura, ou `null` para não lançar (SPD-123). */
 	onResolveInvoice: (capture: Capture, fromAccountId: string | null) => void;
+	/**
+	 * Os alvos da trilha da revisão (SPD-131): `main` no primeiro cartão (conta, categoria,
+	 * botões, texto original), `question` no primeiro com pergunta, `ambiguity` no primeiro com
+	 * a linha do porquê. Só marcam: não mudam nada do cartão.
+	 */
+	tour?: { main?: boolean; question?: boolean; ambiguity?: boolean };
 }
 
 const CaptureCard: React.FC<CaptureCardProps> = ({
@@ -290,8 +306,15 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onAnswerTransfer,
 	onAnswerDirection,
 	onResolveInvoice,
+	tour,
 }) => {
 	const { t } = useTranslation();
+	const accountTarget = useTourTarget(tour?.main ? 'inbox.account' : undefined);
+	const categoryTarget = useTourTarget(tour?.main ? 'inbox.category' : undefined);
+	const buttonsTarget = useTourTarget(tour?.main ? 'inbox.buttons' : undefined);
+	const rawTarget = useTourTarget(tour?.main ? 'inbox.raw' : undefined);
+	const questionTarget = useTourTarget(tour?.question ? 'inbox.question' : undefined);
+	const ambiguityTarget = useTourTarget(tour?.ambiguity ? 'inbox.ambiguity' : undefined);
 	const ledgerSuspect = isLedgerSuspect(capture);
 	const { accounts, activeAccounts } = useAccounts();
 	const isIncome = capture.direction === 'in';
@@ -380,7 +403,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 				{/* Por que o aviso ambíguo está aqui, ou que a escolha anterior decidiu (SPD-123).
 				    Ícone e texto, dentro do resumo que o leitor de tela lê. */}
 				{explained.text !== '' && (
-					<View style={styles.ambiguity}>
+					<View {...ambiguityTarget} style={styles.ambiguity}>
 						<Ionicons
 							name={ambiguity?.learned ? 'school-outline' : 'help-circle-outline'}
 							size={16}
@@ -395,6 +418,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			    com todas as letras quando o app não soube de onde saiu o dinheiro. Fora do
 			    resumo (que já diz a conta) porque é um controle: abre o seletor (SPD-111). */}
 			<Pressable
+				{...accountTarget}
 				onPress={() => setAccountPickerOpen(true)}
 				disabled={!canPickAccount}
 				accessibilityRole="button"
@@ -427,7 +451,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			)}
 
 			{capture.question === 'duplicate' && (
-				<View style={styles.question} accessibilityLiveRegion="polite">
+				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.questionDuplicateTitle')}</Text>
 					<Text style={styles.questionBody}>
 						{ledgerSuspect
@@ -456,7 +480,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			)}
 
 			{capture.question === 'transfer' && (
-				<View style={styles.question} accessibilityLiveRegion="polite">
+				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.questionTransferTitle')}</Text>
 					<Text style={styles.questionBody}>
 						{t('captures.questionTransferBody', {
@@ -483,7 +507,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			)}
 
 			{askedCase === 'pix_direction' && (
-				<View style={styles.question} accessibilityLiveRegion="polite">
+				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.directionQuestionTitle')}</Text>
 					<Text style={styles.questionBody}>{explained.remember}</Text>
 					<View style={styles.questionActions}>
@@ -510,7 +534,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			{/* "Recebemos o pagamento da fatura" sem dizer de onde (X-2): de qual conta saiu,
 			    escolhida no seletor acima, ou não lançar. Categoria e "confirmar" não cabem. */}
 			{isInvoiceQuestion && (
-				<View style={styles.question} accessibilityLiveRegion="polite">
+				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.invoiceQuestionTitle')}</Text>
 					<Text style={styles.questionBody}>
 						{accountId ? explained.remember : t('captures.invoiceChooseAccount')}
@@ -536,6 +560,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			{!isInvoiceQuestion && (
 				<>
 					<Pressable
+						{...categoryTarget}
 						onPress={() => setPickerOpen(true)}
 						accessibilityRole="button"
 						accessibilityLabel={t('captures.categoryLabel', { category: category.name })}
@@ -562,7 +587,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 						onClose={() => setPickerOpen(false)}
 					/>
 
-					<View style={styles.actions}>
+					<View {...buttonsTarget} style={styles.actions}>
 						<ActionButton
 							label={t('captures.confirm')}
 							hint={t('captures.confirmHint', { category: category.name })}
@@ -587,6 +612,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			)}
 
 			<Pressable
+				{...rawTarget}
 				onPress={() => setRawOpen((open) => !open)}
 				accessibilityRole="button"
 				accessibilityLabel={rawSourceLabel(capture, t)}
@@ -705,6 +731,12 @@ const CaptureInboxScreen = () => {
 	// O guia da revisão (SPD-129): o primeiro cartão e o "o app aprende".
 	useScreenTour('inbox', { ready: !isLoading });
 	const tourScroll = useTourScroll('inbox');
+	// A trilha da revisão (SPD-131): o primeiro aviso com pergunta e o primeiro com a linha do porquê.
+	const questionTourId = useMemo(() => pending.find(asksQuestion)?.id, [pending]);
+	const ambiguityTourId = useMemo(() => pending.find((capture) => ambiguityLine(capture, t).text !== '')?.id, [pending, t]);
+	const autoTarget = useTourTarget('inbox.auto');
+	const ignoredTarget = useTourTarget('inbox.ignored');
+	const historyTarget = useTourTarget('inbox.history');
 	// As pendentes que um extrato importado casou (SPD-117), relidas quando a fila muda.
 	const [claimedByStatement, setClaimedByStatement] = useState<ReadonlySet<string>>(() => new Set());
 	const pendingIds = useMemo(() => pending.map((capture) => capture.id).join(','), [pending]);
@@ -869,7 +901,7 @@ const CaptureInboxScreen = () => {
 				<Text style={styles.headerCount} accessibilityLabel={t('captures.pendingCount', { count: pending.length })}>
 					{pending.length > 0 ? pending.length : ''}
 				</Text>
-				<HelpButton screen="inbox" />
+				<HelpButton trail="review" here={{ screen: 'inbox' }} />
 			</View>
 
 			<ScrollView
@@ -927,6 +959,11 @@ const CaptureInboxScreen = () => {
 						onAnswerTransfer={handleAnswerTransfer}
 						onAnswerDirection={handleAnswerDirection}
 						onResolveInvoice={handleResolveInvoice}
+						tour={{
+							main: index === 0,
+							question: capture.id === questionTourId,
+							ambiguity: capture.id === ambiguityTourId,
+						}}
 					/>
 					</TourTarget>
 				))}
@@ -938,7 +975,7 @@ const CaptureInboxScreen = () => {
 				)}
 
 				{autoApproved.length > 0 && (
-					<View style={styles.section}>
+					<View {...autoTarget} style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('captures.autoApprovedTitle')}
 						</Text>
@@ -958,7 +995,7 @@ const CaptureInboxScreen = () => {
 				{/* SPD-022: o app que o usuário descartou três vezes fica calado, mas à vista e com
 				    "desfazer" — um aviso de banco repassado por ele não pode sumir sem rastro. */}
 				{ignoredApps.length > 0 && (
-					<View style={styles.section}>
+					<View {...ignoredTarget} style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('captures.ignoredAppsTitle', { defaultValue: 'Avisos ignorados' })}
 						</Text>
@@ -988,6 +1025,7 @@ const CaptureInboxScreen = () => {
 				{resolved.length > 0 && (
 					<View style={styles.section}>
 						<Pressable
+							{...historyTarget}
 							onPress={() => setHistoryOpen((open) => !open)}
 							accessibilityRole="button"
 							accessibilityLabel={historyOpen ? t('captures.hideHistory') : t('captures.showHistory')}

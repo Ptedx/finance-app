@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import HelpButton from '../components/tour/HelpButton';
+import { useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
@@ -22,6 +24,10 @@ export default function TransactionDetailScreen() {
 	const [transaction, setTransaction] = useState<Transaction | null>(null);
 	// biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
 	const [category, setCategory] = useState<any>(null);
+	// A trilha de lançar (SPD-131) passa por aqui: "Editar" e "Apagar".
+	useScreenTour('transaction', { ready: Boolean(transaction && category) });
+	const tourScroll = useTourScroll('transaction');
+	const actionsTarget = useTourTarget('transaction.actions');
 
 	useEffect(() => {
 		if (typeof id !== 'string') return;
@@ -84,7 +90,7 @@ export default function TransactionDetailScreen() {
 	};
 
 	// A pilha da raiz não desenha cabeçalho: a tela desenha o seu, como Dívida e Cartão.
-	const topBar = (title: string) => (
+	const topBar = (title: string, help?: boolean) => (
 		<View style={styles.topBar}>
 			<Pressable
 				onPress={() => router.back()}
@@ -97,6 +103,7 @@ export default function TransactionDetailScreen() {
 			<Text style={styles.topBarTitle} accessibilityRole="header" numberOfLines={1}>
 				{title}
 			</Text>
+			{help && typeof id === 'string' ? <HelpButton trail="add" here={{ screen: 'transaction', params: { id } }} from="11" /> : null}
 		</View>
 	);
 
@@ -155,9 +162,10 @@ export default function TransactionDetailScreen() {
 					headerShadowVisible: false,
 				}}
 			/>
-			{topBar(title)}
+			{topBar(title, true)}
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 16 }]}
 				showsVerticalScrollIndicator={false}
 			>
@@ -219,7 +227,7 @@ export default function TransactionDetailScreen() {
 					</View>
 				) : null}
 
-				<View style={styles.actions}>
+				<View {...actionsTarget} style={styles.actions}>
 					<TouchableOpacity style={[styles.actionButton, styles.editButton]} onPress={handleEdit}>
 						<Ionicons name="pencil" size={20} color="#FFFFFF" />
 						<Text style={styles.actionButtonText}>{t('transactionDetail.edit')}</Text>

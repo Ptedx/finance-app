@@ -98,6 +98,8 @@ jest.mock('../../components/tour/TourProvider', () => ({
 	__esModule: true,
 	default: ({ children }: { children: React.ReactNode }) => children,
 }));
+// Os registros das trilhas (SPD-131) leem as contas, que aqui só repassam os filhos.
+jest.mock('../../components/tour/TrailRecordsSource', () => () => null);
 
 // Os providers da raiz só repassam os filhos: o que importa é o que o `_layout` faz ao abrir.
 jest.mock('../../contexts/AuthContext', () => ({ AuthProvider: ({ children }: { children: React.ReactNode }) => children }));

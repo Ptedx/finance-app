@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text } from 'react-native';
 import { requestCaptureRebind } from '../../modules/spendr-captures';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useCaptures } from '../contexts/CapturesContext';
@@ -14,7 +14,8 @@ import {
 	parseStalledDismissedAt,
 } from '../utils/captureHealth';
 import { STORAGE_KEYS } from '../utils/storageUtils';
-import { useTourTarget } from './tour/TourContext';
+import HelpButton from './tour/HelpButton';
+import { TourTarget, useTourTarget } from './tour/TourContext';
 
 /**
  * "3 lançamentos para revisar" no topo da tela inicial.
@@ -46,8 +47,11 @@ const WarningBanner: React.FC<{
 	dismissLabel: string;
 	onPress: () => void;
 	onDismiss: () => void;
-}> = ({ icon, text, action, hint, dismissLabel, onPress, onDismiss }) => (
-	<View style={[styles.banner, styles.warning]}>
+	/** O alvo da trilha da captura (SPD-131) e o "?" dela. */
+	tourId?: string;
+	help?: React.ReactNode;
+}> = ({ icon, text, action, hint, dismissLabel, onPress, onDismiss, tourId, help }) => (
+	<TourTarget id={tourId} style={[styles.banner, styles.warning]}>
 		<Ionicons name={icon} size={22} color="#000000" />
 		<Pressable
 			onPress={onPress}
@@ -59,6 +63,7 @@ const WarningBanner: React.FC<{
 			<Text style={styles.text}>{text}</Text>
 			<Text style={styles.action}>{action}</Text>
 		</Pressable>
+		{help}
 		<Pressable
 			onPress={onDismiss}
 			accessibilityRole="button"
@@ -68,7 +73,7 @@ const WarningBanner: React.FC<{
 		>
 			<Ionicons name="close" size={20} color="#000000" />
 		</Pressable>
-	</View>
+	</TourTarget>
 );
 
 const CaptureReviewBanner: React.FC = () => {
@@ -129,6 +134,8 @@ const CaptureReviewBanner: React.FC = () => {
 				action={t('captures.accessOffAction')}
 				hint={t('captures.accessOffHint')}
 				dismissLabel={t('captures.accessOffDismiss')}
+				tourId="home.captureOff"
+				help={<HelpButton trail="capture" here={{ screen: 'home' }} from="11" color="#000000" />}
 				onPress={openSettings}
 				onDismiss={() => {
 					setDismissals((current) => ({ off: true, stalledAt: current?.stalledAt ?? null }));
@@ -146,6 +153,8 @@ const CaptureReviewBanner: React.FC = () => {
 				action={t('captures.stalledAction')}
 				hint={t('captures.stalledHint')}
 				dismissLabel={t('captures.stalledDismiss')}
+				tourId="home.captureStalled"
+				help={<HelpButton trail="capture" here={{ screen: 'home' }} from="12" color="#000000" />}
 				// O pedido de religar é silencioso e o Android pode ignorá-lo; a tela do sistema
 				// fica aberta para o usuário desligar e ligar o acesso, que sempre funciona.
 				onPress={() => {
@@ -177,6 +186,8 @@ const CaptureReviewBanner: React.FC = () => {
 			<Ionicons name="notifications-outline" size={22} color="#000000" />
 			<Text style={styles.text}>{label}</Text>
 			<Text style={styles.action}>{t('captures.homeReview')}</Text>
+			{/* O "?" da trilha da revisão (SPD-131), ao lado de "Revisar". */}
+			<HelpButton trail="review" here={{ screen: 'home' }} color="#000000" />
 			<Ionicons name="chevron-forward" size={20} color="#000000" />
 		</Pressable>
 	);

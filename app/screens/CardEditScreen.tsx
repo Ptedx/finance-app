@@ -433,7 +433,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 						{existing ? t('cards.edit.title') : t('cards.edit.newTitle')}
 					</Text>
-					<HelpButton screen="cardEdit" />
+					<HelpButton trail="cardSetup" here={existing ? { screen: 'cardEdit', params: { id: existing.id } } : { screen: 'cardNew' }} />
 				</View>
 
 				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -441,6 +441,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						<CardFace card={preview} summary={undefined} />
 					</View>
 
+					<TourTarget id="cardEdit.type">
 					<ChipGroup
 						label={t('cards.edit.type')}
 						options={[
@@ -450,6 +451,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						selected={cardType}
 						onSelect={(value) => setCardType(value)}
 					/>
+					</TourTarget>
 
 					{cardType === 'debit' ? (
 						<View style={styles.debit} accessibilityLiveRegion="polite">
@@ -463,12 +465,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 											selected={chosenDebitAccount?.id ?? null}
 											onSelect={(value) => setDebitAccountId(value)}
 										/>
+										<TourTarget id="cardEdit.debitConvert">
 										<Button
 											label={t('cards.edit.debitConvert')}
 											icon="swap-horizontal"
 											onPress={handleConvertToDebit}
 											disabled={!chosenDebitAccount}
 										/>
+										</TourTarget>
 									</>
 								) : (
 									<Text style={styles.debitBody}>{t('cards.edit.debitNoAccount')}</Text>
@@ -482,6 +486,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					{cardType === 'credit' ? (
 					<>
 					{/* Lista que abre de baixo (SPD-130): 11 bancos em botões ocupavam meia tela. */}
+					<TourTarget id="cardEdit.bank">
 					<SelectField
 						label={t('cards.edit.bank')}
 						options={bankOptions}
@@ -489,6 +494,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						onSelect={(value) => setBankId(value)}
 						error={bankId !== OTHER ? errors.bank : undefined}
 					/>
+					</TourTarget>
 					{bankId === OTHER ? (
 						<Field
 							label={t('cards.edit.bankName')}
@@ -499,6 +505,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						/>
 					) : null}
 
+					<TourTarget id="cardEdit.nickname">
 					<Field
 						label={t('cards.edit.nickname')}
 						optionalLabel={t('cards.edit.optional')}
@@ -507,6 +514,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						placeholder={t('cards.edit.nicknamePlaceholder')}
 						hint={t('cards.edit.nicknameHint')}
 					/>
+					</TourTarget>
 
 					<TourTarget id="cardEdit.last4">
 					<Field
@@ -521,13 +529,16 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					/>
 					</TourTarget>
 
+					<TourTarget id="cardEdit.network">
 					<ChipGroup
 						label={t('cards.edit.network')}
 						options={networkOptions}
 						selected={network}
 						onSelect={(value) => setNetwork(value === network ? null : value)}
 					/>
+					</TourTarget>
 
+					<TourTarget id="cardEdit.limit">
 					<Field
 						label={t('cards.edit.limit')}
 						optionalLabel={t('cards.edit.optional')}
@@ -537,6 +548,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						hint={t('cards.edit.limitHint')}
 						error={errors.limit}
 					/>
+					</TourTarget>
 
 					<TourTarget id="cardEdit.days" style={styles.twoColumns}>
 						<View style={styles.column}>
@@ -549,7 +561,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								error={errors.closing}
 							/>
 						</View>
-						<View style={styles.column}>
+						<TourTarget id="cardEdit.due" style={styles.column}>
 							<Field
 								label={t('cards.edit.dueDay')}
 								value={dueDay}
@@ -558,10 +570,11 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								maxLength={2}
 								error={errors.due}
 							/>
-						</View>
+						</TourTarget>
 					</TourTarget>
 					<Text style={styles.explain}>{t('cards.edit.cycleHint')}</Text>
 					{cyclePreview ? (
+						<TourTarget id="cardEdit.cycle">
 						<Text style={styles.cyclePreview} accessibilityLiveRegion="polite">
 							{t('cards.edit.cyclePreview', {
 								month: formatMonthLong(`${cyclePreview.key}-01`),
@@ -569,6 +582,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								due: formatDayMonth(cyclePreview.dueDate),
 							})}
 						</Text>
+						</TourTarget>
 					) : dueGapInvalid(typedGap) && !errors.due ? (
 						// Os dois dias digitados dão um prazo fora de 1 a 20: no lugar da linha das datas,
 						// o porquê, já enquanto se digita — antes ela sumia calada e o aviso só vinha no
@@ -579,6 +593,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					) : null}
 
 					{!existing && asked?.closed ? (
+						<TourTarget id="cardEdit.closedInvoice">
 						<Field
 							label={t('cards.edit.closedInvoice', {
 								month: formatMonthLong(`${asked.closed.key}-01`),
@@ -591,8 +606,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 							hint={t('cards.edit.closedInvoiceHint')}
 							error={errors.closedInvoice}
 						/>
+						</TourTarget>
 					) : null}
 					{!existing ? (
+						<TourTarget id="cardEdit.openInvoice">
 						<Field
 							label={
 								asked
@@ -609,12 +626,14 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 							hint={asked ? t('cards.edit.openInvoiceHint') : t('cards.edit.currentInvoiceHint')}
 							error={errors.invoice}
 						/>
+						</TourTarget>
 					) : null}
 
 					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
 
 					{existing ? (
 						<View style={styles.secondary}>
+							<TourTarget id="cardEdit.archive">
 							<Button
 								label={existing.archived ? t('cards.edit.unarchive') : t('cards.edit.archive')}
 								hint={t('cards.edit.archiveHint')}
@@ -622,16 +641,24 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								variant="secondary"
 								icon={existing.archived ? 'arrow-undo-outline' : 'archive-outline'}
 							/>
+							</TourTarget>
 							{mergeCandidates.length > 0 ? (
-								<Button
-									label={t('cards.edit.merge')}
-									hint={t('cards.edit.mergeHint')}
-									onPress={handleMerge}
-									variant="secondary"
-									icon="git-merge-outline"
-								/>
+								<View style={styles.mergeRow}>
+									<TourTarget id="cardEdit.merge" style={styles.mergeButton}>
+									<Button
+										label={t('cards.edit.merge')}
+										hint={t('cards.edit.mergeHint')}
+										onPress={handleMerge}
+										variant="secondary"
+										icon="git-merge-outline"
+									/>
+									</TourTarget>
+									<HelpButton trail="cardExtras" here={{ screen: 'cardEdit', params: { id: existing.id } }} from="7" />
+								</View>
 							) : null}
+							<TourTarget id="cardEdit.delete">
 							<Button label={t('cards.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							</TourTarget>
 						</View>
 					) : null}
 					</>
@@ -700,6 +727,14 @@ const styles = StyleSheet.create({
 	},
 	secondary: {
 		gap: 10,
+	},
+	mergeRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
+	},
+	mergeButton: {
+		flex: 1,
 	},
 	cyclePreview: {
 		fontSize: 15,

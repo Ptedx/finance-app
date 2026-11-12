@@ -22,6 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
 import OwnNameSheet from '../components/OwnNameSheet';
+import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useBills } from '../contexts/BillsContext';
@@ -647,7 +648,11 @@ const SettingsScreen = () => {
 				    Ligar é do sistema, não do app — o item leva para a tela do Android. */}
 				{captureSupported && (
 					<View style={styles.section}>
-						<Text style={styles.sectionTitle}>{t('captures.settingsSection')}</Text>
+						{/* O "?" da trilha da captura (SPD-131), ao lado do título da seção. */}
+						<TourTarget id="settings.captureSection" style={styles.sectionTitleRow}>
+							<Text style={[styles.sectionTitle, styles.sectionTitleInRow]}>{t('captures.settingsSection')}</Text>
+							<HelpButton trail="capture" here={{ screen: 'settings' }} />
+						</TourTarget>
 						{renderSettingsItem(
 							'notifications-circle-outline',
 							t('captures.settingsCapture'),
@@ -663,7 +668,8 @@ const SettingsScreen = () => {
 							() => router.push('/inbox'),
 							capturePending > 0 ? (
 								<Text style={styles.accountStatus}>{capturePending}</Text>
-							) : undefined
+							) : undefined,
+							'settings.review'
 						)}
 						{renderSettingsItem(
 							'person-circle-outline',
@@ -754,6 +760,14 @@ const styles = StyleSheet.create({
 	accountStatus: {
 		color: '#8E8E93',
 		fontSize: 12,
+	},
+	sectionTitleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+	},
+	sectionTitleInRow: {
+		marginBottom: 0,
 	},
 	sectionTitle: {
 		fontSize: 14,

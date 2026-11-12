@@ -56,8 +56,8 @@ const AdjustAccountSheet: React.FC<{
 	const [typed, setTyped] = useState({ spent: false, balance: false });
 	const [error, setError] = useState<string | undefined>();
 	// O "?" do acertar (SPD-129): mostra uma dica rápida dentro da folha (SPD-135), e o link
-	// dela fecha a folha e abre "Primeiros passos: contas e saldo" — perguntando antes, se
-	// algo foi digitado (`confirmDiscard`).
+	// dela fecha a folha e abre a trilha de Contas no passo 9, "Acertar o saldo", na própria
+	// conta (SPD-131) — perguntando antes, se algo foi digitado (`confirmDiscard`).
 	const tour = useTour();
 	const help = tour
 		? {
@@ -65,7 +65,7 @@ const AdjustAccountSheet: React.FC<{
 				tip: balanceOnly ? t('accounts.adjust.helpTipBalanceOnly') : t('accounts.adjust.helpTip'),
 				onPress: () => {
 					onClose();
-					tour.openTopic('accounts');
+					tour.startTrail('accounts', { from: '9', here: { screen: 'account', params: { id: account.id } } });
 				},
 			}
 		: undefined;

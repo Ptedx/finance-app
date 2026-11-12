@@ -20,6 +20,7 @@ import { ACCOUNT_KIND_ICONS } from '../components/AccountPicker';
 import TransactionItem from '../components/TransactionItem';
 import AdjustAccountSheet from '../components/accounts/AdjustAccountSheet';
 import MergeTargetSheet from '../components/MergeTargetSheet';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import {
@@ -104,6 +105,15 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 	const [saving, setSaving] = useState(false);
 	// A folha de "Juntar com outra conta" aberta.
 	const [merging, setMerging] = useState(false);
+	// As trilhas de Contas e da captura (SPD-131) passam por aqui: a conta nova e a de uma conta.
+	useScreenTour('account', { blocked: adjusting || merging });
+	const tourScroll = useTourScroll('account');
+	const unsetTarget = useTourTarget('account.unset');
+	const adjustTarget = useTourTarget('account.adjust');
+	const reserveTarget = useTourTarget('accountEdit.roleReserve');
+	const archiveTarget = useTourTarget('account.archive');
+	const mergeTarget = useTourTarget('account.merge');
+	const deleteTarget = useTourTarget('account.delete');
 
 	// Quando a conta chega depois (a lista ainda carregava), preenche o formulário.
 	useEffect(() => {
@@ -349,9 +359,17 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 		label: string,
 		value: string,
 		onChange: (text: string) => void,
-		options: { placeholder?: string; keyboardType?: 'default' | 'number-pad' | 'decimal-pad'; hint?: string; error?: string; optional?: boolean } = {}
+		options: {
+			placeholder?: string;
+			keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
+			hint?: string;
+			error?: string;
+			optional?: boolean;
+			/** O alvo das trilhas (SPD-131). */
+			tourId?: string;
+		} = {}
 	) => (
-		<View style={styles.field}>
+		<TourTarget id={options.tourId} style={styles.field}>
 			<Text style={styles.label}>
 				{label}
 				{options.optional ? <Text style={styles.optional}> · {t('accounts.edit.optional')}</Text> : null}
@@ -371,7 +389,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					{options.error}
 				</Text>
 			) : null}
-		</View>
+		</TourTarget>
 	);
 
 	// Aberta com uma conta que não existe mais (juntada, excluída): dizer isso, com o voltar, em
@@ -419,7 +437,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					</Text>
 				</View>
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 					{existing && (
 						<View style={styles.balanceCard}>
 							<Text style={styles.balanceLabel}>{t('accounts.balance')}</Text>
@@ -427,7 +445,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								{formatCents(balanceCents)}
 							</Text>
 							{balanceUnset ? (
-								<View style={styles.balanceUnset}>
+								<View {...unsetTarget} style={styles.balanceUnset}>
 									<View style={styles.balanceUnsetTitleRow}>
 										<Ionicons name="alert-circle-outline" size={18} color="#000000" />
 										<Text style={styles.balanceUnsetTitle}>{t('accounts.balanceUnset.badge')}</Text>
@@ -464,6 +482,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							) : null}
 
 							<Pressable
+								{...adjustTarget}
 								onPress={() => setAdjusting(true)}
 								accessibilityRole="button"
 								accessibilityLabel={t('accounts.edit.setBalance')}
@@ -478,9 +497,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					{field(t('accounts.edit.name'), name, setName, {
 						placeholder: t('accounts.edit.namePlaceholder'),
 						error: errors.name,
+						tourId: 'accountEdit.name',
 					})}
 
-					<View style={styles.field}>
+					<TourTarget id="accountEdit.kind" style={styles.field}>
 						<Text style={styles.label}>{t('accounts.edit.kind')}</Text>
 						<View style={styles.kinds} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.kind')}>
 							{KINDS.map((option) => {
@@ -505,9 +525,9 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								);
 							})}
 						</View>
-					</View>
+					</TourTarget>
 
-					<View style={styles.field}>
+					<TourTarget id="accountEdit.role" style={styles.field}>
 						<Text style={styles.label}>{t('accounts.edit.role')}</Text>
 						<Text style={styles.roleHint}>{t('accounts.edit.roleHint')}</Text>
 						<View style={styles.kinds} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.role')}>
@@ -516,6 +536,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								return (
 									<Pressable
 										key={option}
+										{...(option === 'reserve' ? reserveTarget : {})}
 										onPress={() => setRole(option)}
 										accessibilityRole="radio"
 										accessibilityState={{ selected }}
@@ -536,10 +557,10 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 						<Text style={styles.roleDescription} accessibilityLiveRegion="polite">
 							{t(`accounts.roleDescription.${role}`)}
 						</Text>
-					</View>
+					</TourTarget>
 
 					{role === 'reserve' ? (
-						<View style={styles.field}>
+						<TourTarget id="accountEdit.purpose" style={styles.field}>
 							<Text style={styles.label}>{t('accounts.edit.reservePurpose')}</Text>
 							<View style={styles.kinds} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.edit.reservePurpose')}>
 								{(['cascade', 'investment'] as const).map((option) => {
@@ -570,7 +591,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							<Text style={styles.roleDescription} accessibilityLiveRegion="polite">
 								{t(`accounts.reservePurposeDescription.${reservePurpose}`)}
 							</Text>
-						</View>
+						</TourTarget>
 					) : null}
 
 					{role === 'envelope' &&
@@ -588,6 +609,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								hint: t('accounts.edit.openingBalanceHint'),
 								error: errors.balance,
 								optional: true,
+								tourId: 'accountEdit.opening',
 							})}
 							<Text style={styles.fieldNote}>{t('accounts.edit.openingBalanceHint')}</Text>
 						</>
@@ -601,6 +623,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								hint: t('accounts.edit.yieldCdiHint'),
 								error: errors.yieldCdi,
 								optional: true,
+								tourId: 'accountEdit.yield',
 							})}
 							<Text style={styles.fieldNote}>
 								{cdi
@@ -629,6 +652,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					{existing && (
 						<View style={styles.secondaryActions}>
 							<Pressable
+								{...archiveTarget}
 								onPress={handleArchive}
 								accessibilityRole="button"
 								accessibilityLabel={existing.archived ? t('accounts.edit.unarchive') : t('accounts.edit.archive')}
@@ -642,6 +666,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 							</Pressable>
 							{mergeCandidates.length > 0 ? (
 								<Pressable
+									{...mergeTarget}
 									onPress={handleMerge}
 									accessibilityRole="button"
 									accessibilityLabel={t('accounts.edit.merge')}
@@ -653,6 +678,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								</Pressable>
 							) : null}
 							<Pressable
+								{...deleteTarget}
 								onPress={handleDelete}
 								accessibilityRole="button"
 								accessibilityLabel={t('accounts.edit.delete')}
@@ -665,7 +691,7 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 					)}
 
 					{existing && feedOwner ? (
-						<View style={styles.section}>
+						<TourTarget id="account.feed" style={styles.section}>
 							<Text style={styles.sectionTitle} accessibilityRole="header">
 								{t('accounts.edit.feedTitle')}
 							</Text>
@@ -687,9 +713,12 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 								</Pressable>
 							)}
 							{businessPlan && businessHere ? (
-								<Text style={styles.empty}>{t('accounts.edit.businessHere', { label: businessPlan.label })}</Text>
+								<TourTarget id="account.business">
+									<Text style={styles.empty}>{t('accounts.edit.businessHere', { label: businessPlan.label })}</Text>
+								</TourTarget>
 							) : null}
 							{businessPlan && !businessHere ? (
+								<TourTarget id="account.business">
 								<Pressable
 									onPress={handleTakeBusiness}
 									accessibilityRole="button"
@@ -702,8 +731,9 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 										{t('accounts.edit.businessTake', { label: businessPlan.label })}
 									</Text>
 								</Pressable>
+								</TourTarget>
 							) : null}
-						</View>
+						</TourTarget>
 					) : null}
 
 					{existing && (

@@ -173,6 +173,11 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 	const transferTarget = useTourTarget('add.transfer');
 	const amountTarget = useTourTarget('add.amount');
 	const installmentsTarget = useTourTarget('add.installments');
+	// A trilha de lançar (SPD-131): os campos que o guia curto não apontava.
+	const categoryTarget = useTourTarget('add.category');
+	const dateTarget = useTourTarget('add.date');
+	const noteTarget = useTourTarget('add.note');
+	const saveTarget = useTourTarget('add.save');
 	// Onde cada campo começa dentro da rolagem, medido no layout.
 	const fieldY = useRef<Partial<Record<keyof FormErrors, number>>>({});
 
@@ -460,7 +465,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					{errors.amount ? <Text style={styles.errorText}>{errors.amount}</Text> : null}
 				</View>
 
-				<View onLayout={measure('category')} testID="transaction-form-category-group">
+				<View {...categoryTarget} onLayout={measure('category')} testID="transaction-form-category-group">
 					<CategoryPicker
 						categories={categories}
 						selectedCategoryId={category}
@@ -518,7 +523,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					</View>
 				) : null}
 
-				<View style={styles.formGroup}>
+				<View {...dateTarget} style={styles.formGroup}>
 					<Text style={styles.label}>{t('transactionForm.date')}</Text>
 					<TouchableOpacity style={styles.dateButton} onPress={() => setShowDateModal(true)} accessibilityRole="button">
 						{/* `getISODate` e não `toISOString`: depois das 21h em UTC-3 o segundo já
@@ -528,7 +533,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					</TouchableOpacity>
 				</View>
 
-				<View style={styles.formGroup}>
+				<View {...noteTarget} style={styles.formGroup}>
 					<Text style={styles.label}>{t('transactionForm.note')}</Text>
 					<TextInput
 						testID="transaction-form-note"
@@ -549,7 +554,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 					</Text>
 				) : null}
 
-				<View style={styles.buttonsRow}>
+				<View {...saveTarget} style={styles.buttonsRow}>
 					<TouchableOpacity
 						style={[styles.button, styles.cancelButton]}
 						onPress={onCancel}

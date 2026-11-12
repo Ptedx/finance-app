@@ -116,6 +116,14 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 	// O guia da tela do cartão (SPD-129): abre com o cartão carregado e sem folha aberta.
 	useScreenTour('card', { ready: Boolean(card && summary), blocked: sheet !== null || renaming !== null });
 	const tourScroll = useTourScroll('card');
+	// As trilhas do cartão (SPD-131): os alvos que o guia curto não tinha.
+	const noClosingTarget = useTourTarget('card.noClosing');
+	const leftToPayTarget = useTourTarget('card.leftToPay');
+	const byCardTarget = useTourTarget('card.byCard');
+	const renameTarget = useTourTarget('card.rename');
+	const pendingTarget = useTourTarget('card.pending');
+	const limitTarget = useTourTarget('card.limit');
+	const datesTarget = useTourTarget('card.dates');
 
 	// Abre na fatura atual, e volta para ela quando a escolhida some da lista (virou o
 	// ciclo, ou uma fatura futura zerou) — senão o painel sumiria.
@@ -387,7 +395,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 					{card.name}
 				</Text>
-				<HelpButton screen="card" />
+				<HelpButton trail="cardInvoice" here={{ screen: 'card', params: { id: card.id } }} />
 				<Pressable
 					onPress={() => router.push({ pathname: '/cards/edit/[id]', params: { id: card.id } })}
 					accessibilityRole="button"
@@ -412,6 +420,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 
 				{summary && !summary.configured ? (
 					<Pressable
+						{...noClosingTarget}
 						onPress={() => router.push({ pathname: '/cards/edit/[id]', params: { id: card.id } })}
 						accessibilityRole="button"
 						accessibilityLabel={`${t('cards.setupTitle')}. ${t('cards.setupBody')}`}
@@ -514,7 +523,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								) : null}
 
 								{showLeftToPay ? (
-									<View style={styles.anchorRow} accessible accessibilityLabel={`${t('cards.invoice.leftToPay')}, ${formatCents(dueCents)}`}>
+									<View {...leftToPayTarget} style={styles.anchorRow} accessible accessibilityLabel={`${t('cards.invoice.leftToPay')}, ${formatCents(dueCents)}`}>
 										<Ionicons name="wallet-outline" size={18} color="#FFFFFF" />
 										<Text style={styles.anchorText}>{t('cards.invoice.leftToPay')}</Text>
 										<Text style={styles.anchorAmount}>{formatCents(dueCents)}</Text>
@@ -529,10 +538,13 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 								) : null}
 
 								{showUsage ? (
-									<View style={styles.usage}>
-										<Text style={styles.usageTitle} accessibilityRole="header">
-											{t('cards.byCard.title')}
-										</Text>
+									<View {...byCardTarget} style={styles.usage}>
+										<View style={styles.usageHeader}>
+											<Text style={styles.usageTitle} accessibilityRole="header">
+												{t('cards.byCard.title')}
+											</Text>
+											<HelpButton trail="cardExtras" here={{ screen: 'card', params: { id: card.id } }} />
+										</View>
 										{usage.map((item) => {
 											const selectedRow = cardFilter !== undefined && cardFilter === item.last4;
 											const label = cardLabel(item.last4, item.name);
@@ -559,6 +571,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 													</Pressable>
 													{item.last4 ? (
 														<Pressable
+															{...(item.last4 === usage.find((other) => other.last4)?.last4 ? renameTarget : {})}
 															onPress={() => setRenaming({ last4: item.last4 as string, name: item.name })}
 															accessibilityRole="button"
 															accessibilityLabel={t('cards.rename.actionFor', { card: label })}
@@ -573,9 +586,10 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 									</View>
 								) : null}
 
-								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4) && !showOnlyDuplicates).map((entry) => (
+								{selectedPending.filter((entry) => matchesFilter(entry.cardLast4) && !showOnlyDuplicates).map((entry, index) => (
 									<Pressable
 										key={entry.id}
+										{...(index === 0 ? pendingTarget : {})}
 										onPress={() => router.push('/inbox')}
 										accessibilityRole="button"
 										accessibilityLabel={`${entry.note}, ${formatCents(entry.amountCents)}. ${t('cards.invoice.pendingReview')}`}
@@ -669,7 +683,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				</View>
 
 				{summary ? (
-					<View style={styles.section}>
+					<View {...limitTarget} style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('cards.limit.title')}
 						</Text>
@@ -749,7 +763,7 @@ const CardDetailScreen: React.FC<CardDetailScreenProps> = ({ cardId }) => {
 				) : null}
 
 				{summary?.configured && summary.openCycle && card.closingDay ? (
-					<View style={styles.section}>
+					<View {...datesTarget} style={styles.section}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('cards.dates.title')}
 						</Text>
@@ -1484,6 +1498,11 @@ const styles = StyleSheet.create({
 	},
 	section: {
 		gap: 10,
+	},
+	usageHeader: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
 	},
 	sectionTitle: {
 		fontSize: 18,

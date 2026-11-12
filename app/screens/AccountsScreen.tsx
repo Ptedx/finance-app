@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AccountRow, useDismissedBalanceUnset } from '../components/AccountsOverview';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
@@ -57,6 +59,13 @@ const AccountsScreen = () => {
 	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
 	// "Saldo não informado" (SPD-114): a conta que a captura criou com saldo 0, até ser acertada.
 	const dismissedBalanceUnset = useDismissedBalanceUnset();
+	// A trilha de Contas (SPD-131) passa por aqui; "?" ao lado do título.
+	useScreenTour('accounts');
+	const tourScroll = useTourScroll('accounts');
+	const totalsTarget = useTourTarget('accounts.totals');
+	const addTarget = useTourTarget('accounts.add');
+	// A conta ligada ao app de um banco (Trilha 6, "conta arquivada").
+	const linkedId = bankOnly.find((account) => account.packageName !== null)?.id;
 
 	/**
 	 * "Juntamos X em Y" (SPD-116): a ficha duplicada vazia que o app juntou sozinho. Aparece
@@ -117,10 +126,12 @@ const AccountsScreen = () => {
 				<Text style={styles.headerTitle} accessibilityRole="header">
 					{t('accounts.screenTitle')}
 				</Text>
+				<HelpButton trail="accounts" here={{ screen: 'accounts' }} />
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				<View
+					{...totalsTarget}
 					style={styles.totals}
 					accessible
 					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}${cashPending ? `, ${cashPending}` : ''}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}${netPending ? `, ${netPending}` : ''}`}
@@ -159,8 +170,8 @@ const AccountsScreen = () => {
 					</View>
 				)}
 
-				{duplicates.map((pair) => (
-					<View key={pair.loose.id} style={styles.duplicate}>
+				{duplicates.map((pair, index) => (
+					<TourTarget key={pair.loose.id} id={index === 0 ? 'accounts.duplicate' : undefined} style={styles.duplicate}>
 						<Text style={styles.duplicateTitle} accessibilityRole="header">
 							{t('accounts.duplicate.title')}
 						</Text>
@@ -186,10 +197,11 @@ const AccountsScreen = () => {
 						>
 							<Text style={styles.duplicateButtonText}>{t('accounts.duplicate.distinct')}</Text>
 						</Pressable>
-					</View>
+					</TourTarget>
 				))}
 
 				<Pressable
+					{...addTarget}
 					onPress={() => router.push('/accounts/new')}
 					accessibilityRole="button"
 					accessibilityLabel={t('accounts.add')}
@@ -199,17 +211,22 @@ const AccountsScreen = () => {
 					<Text style={styles.addButtonText}>{t('accounts.add')}</Text>
 				</Pressable>
 
-				{active.length === 0 && <Text style={styles.empty}>{t('accounts.empty')}</Text>}
+				{active.length === 0 && (
+					<TourTarget id="accounts.empty">
+						<Text style={styles.empty}>{t('accounts.empty')}</Text>
+					</TourTarget>
+				)}
 
 				<View style={styles.list}>
 					{active.map((account) => (
-						<AccountRow
-							key={account.id}
-							account={account}
-							balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-							balanceUnset={showsBalanceUnset(account, dismissedBalanceUnset)}
-							onPress={openAccount}
-						/>
+						<TourTarget key={account.id} id={account.id === linkedId ? 'accounts.linked' : undefined}>
+							<AccountRow
+								account={account}
+								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+								balanceUnset={showsBalanceUnset(account, dismissedBalanceUnset)}
+								onPress={openAccount}
+							/>
+						</TourTarget>
 					))}
 				</View>
 
@@ -219,12 +236,13 @@ const AccountsScreen = () => {
 							{t('accounts.archived')}
 						</Text>
 						{archived.map((account) => (
-							<AccountRow
-								key={account.id}
-								account={account}
-								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-								onPress={openAccount}
-							/>
+							<TourTarget key={account.id} id={account.id === linkedId ? 'accounts.linked' : undefined}>
+								<AccountRow
+									account={account}
+									balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+									onPress={openAccount}
+								/>
+							</TourTarget>
 						))}
 					</View>
 				)}

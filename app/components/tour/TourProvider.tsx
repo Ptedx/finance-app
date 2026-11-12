@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
+import { type Href, router } from 'expo-router';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
@@ -17,6 +17,7 @@ import {
 	serializeTourState,
 	shouldAutoOpen,
 	shouldShowNotice,
+	TOUR_GUIDES,
 	type TopicId,
 	type TourOrigin,
 	type TourRequest,
@@ -24,9 +25,27 @@ import {
 	type TourState,
 	targetsOf,
 } from '../../utils/tour';
+import {
+	hrefOf,
+	type PlannedTrailStep,
+	planTrail,
+	startIndexOf,
+	type TourPlace,
+	TRAIL_SCREENS,
+	TRAILS,
+	type TrailId,
+	type TrailLocation,
+	type TrailNavAction,
+} from '../../utils/trails';
 import { measureTarget } from './registry';
-import { type ScreenReport, TourContext, type TourContextValue } from './TourContext';
+import {
+	type ScreenReport,
+	TourContext,
+	type TourContextValue,
+	type TrailRecordsSource,
+} from './TourContext';
 import TourOverlay from './TourOverlay';
+import TrailOverlay, { type TrailNavigator } from './TrailOverlay';
 
 /**
  * O dono do guia na tela (SPD-129): guarda no aparelho o que já foi visto, decide quando um
@@ -39,16 +58,65 @@ import TourOverlay from './TourOverlay';
  * Espera um pouco depois do foco antes de medir: a tela acabou de aparecer e ainda está
  * assentando. Nunca dois guias ao mesmo tempo, e nada enquanto a trava por biometria está na
  * tela (`paused`).
+ *
+ * As trilhas (SPD-131) também moram aqui: o "?" pede uma trilha (`startTrail`), o provider
+ * monta o plano com os registros do usuário (quem os sabe se inscreve em `setTrailRecords`) e
+ * desenha a `TrailOverlay`, que anda pelas telas. Com uma trilha aberta (e logo depois dela),
+ * o guia de primeira visita de cada tela não abre.
  */
 
 /** Depois do foco, quanto esperar a tela assentar antes de abrir o guia sozinho. */
 const SETTLE_MS = 700;
 
-/** A tela está em foco, carregada e sem folha aberta. */
-const isReady = (reports: ReadonlyMap<TourScreen, ScreenReport>, screen: TourScreen): boolean => {
-	const report = reports.get(screen);
-	return Boolean(report?.focused && report.ready && !report.blocked);
+/** Depois de uma trilha, quanto tempo o guia de primeira visita ainda espera. */
+const TRAIL_QUIET_MS = 1500;
+/** Entre duas navegações da trilha, o tempo do `expo-router` trocar de tela. */
+const NAV_GAP_MS = 60;
+
+/** O que cada montagem de tela disse por último (a mesma tela pode estar duas vezes na pilha). */
+type Reports = Map<number | string, ScreenReport & { screen: TourPlace; instance: number }>;
+
+/** Alguma montagem da tela está em foco, carregada e sem folha aberta (aberta a partir de `minInstance`). */
+const isReady = (reports: Reports, screen: TourPlace, minInstance = 0): boolean => {
+	for (const report of reports.values())
+		if (
+			report.screen === screen &&
+			report.instance >= minInstance &&
+			report.focused &&
+			report.ready &&
+			!report.blocked
+		)
+			return true;
+	return false;
 };
+
+/** As telas com guia de primeira visita (SPD-129); as outras só as trilhas visitam. */
+const hasGuide = (screen: TourPlace): screen is TourScreen => Object.hasOwn(TOUR_GUIDES, screen);
+
+/** A navegação de verdade das trilhas, pelo `expo-router`. */
+const routerNavigator: TrailNavigator = {
+	run: async (action: TrailNavAction) => {
+		if (action.type === 'push') router.push(hrefOf(action.location) as Href);
+		else if (action.type === 'pop') router.dismiss(action.count);
+		else if (action.type === 'root') router.dismissAll();
+		else router.navigate(TRAIL_SCREENS[action.screen].path as Href);
+		await new Promise<void>((resolve) => setTimeout(resolve, NAV_GAP_MS));
+	},
+};
+
+export interface TrailOptions {
+	/** Para os testes: quem navega, e quanto esperar a tela assentar e ficar pronta. */
+	navigator?: TrailNavigator;
+	settleMs?: number;
+	readyTimeoutMs?: number;
+}
+
+interface ActiveTrail {
+	plan: PlannedTrailStep[];
+	start: number;
+	origin: TrailLocation;
+	key: number;
+}
 
 interface ActiveTour {
 	screen: TourScreen;
@@ -58,20 +126,26 @@ interface ActiveTour {
 	key: number;
 }
 
-export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNode }> = ({
-	paused = false,
-	children,
-}) => {
+export const TourProvider: React.FC<{
+	paused?: boolean;
+	trailOptions?: TrailOptions;
+	children: React.ReactNode;
+}> = ({ paused = false, trailOptions, children }) => {
 	const [state, setState] = useState<TourState | null>(null);
 	const [onboardingDone, setOnboardingDone] = useState(false);
 	const [active, setActive] = useState<ActiveTour | null>(null);
+	const [trail, setTrail] = useState<ActiveTrail | null>(null);
 
 	// O que as decisões assíncronas leem: o valor da hora, não o do render que as agendou.
 	const stateRef = useRef<TourState | null>(null);
 	const activeRef = useRef<ActiveTour | null>(null);
 	const pausedRef = useRef(paused);
 	const startingRef = useRef(false);
-	const reports = useRef(new Map<TourScreen, ScreenReport>());
+	const reports = useRef<Reports>(new Map());
+	const trailRef = useRef<ActiveTrail | null>(null);
+	const trailStarting = useRef(false);
+	const quietUntil = useRef(0);
+	const recordSources = useRef<TrailRecordsSource[]>([]);
 	const request = useRef<TourRequest | null>(null);
 	const timers = useRef(new Map<TourScreen, ReturnType<typeof setTimeout>>());
 	const counter = useRef(0);
@@ -94,6 +168,9 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 				activeRef.current ||
 				pausedRef.current ||
 				startingRef.current ||
+				trailRef.current ||
+				trailStarting.current ||
+				Date.now() < quietUntil.current ||
 				!isReady(reports.current, screen)
 			)
 				return;
@@ -115,8 +192,14 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 				const rects = Object.fromEntries(
 					await Promise.all(ids.map(async (id) => [id, await measureTarget(id)] as const))
 				);
-				// Enquanto media, a tela pode ter perdido o foco ou aberto uma folha.
-				if (activeRef.current || pausedRef.current || !isReady(reports.current, screen)) return;
+				// Enquanto media, a tela pode ter perdido o foco, aberto uma folha ou uma trilha.
+				if (
+					activeRef.current ||
+					pausedRef.current ||
+					trailRef.current ||
+					!isReady(reports.current, screen)
+				)
+					return;
 				if (asked) request.current = null;
 
 				const steps = planSteps(screen, rects, only);
@@ -152,9 +235,12 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 	);
 
 	const report = useCallback(
-		(screen: TourScreen, next: ScreenReport) => {
-			reports.current.set(screen, next);
-			if (next.focused && next.ready && !next.blocked) {
+		(screen: TourPlace, next: ScreenReport, instance?: number) => {
+			const key = instance ?? screen;
+			if (next.gone) reports.current.delete(key);
+			else reports.current.set(key, { ...next, screen, instance: instance ?? 0 });
+			if (!hasGuide(screen)) return;
+			if (isReady(reports.current, screen)) {
 				schedule(screen, SETTLE_MS);
 			} else {
 				const timer = timers.current.get(screen);
@@ -177,6 +263,55 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 			if (isReady(reports.current, screen)) schedule(screen, 50);
 		},
 		[schedule]
+	);
+
+	const setTrailRecords = useCallback((source: TrailRecordsSource) => {
+		recordSources.current = [...recordSources.current, source];
+		return () => {
+			recordSources.current = recordSources.current.filter((item) => item !== source);
+		};
+	}, []);
+
+	const startTrail = useCallback(
+		(id: TrailId, { here, from }: { here: TrailLocation; from?: string }) => {
+			if (trailRef.current || trailStarting.current || activeRef.current) return;
+			trailStarting.current = true;
+			// O guia de primeira visita não abre por cima da trilha.
+			request.current = null;
+			for (const timer of timers.current.values()) clearTimeout(timer);
+			timers.current.clear();
+			(async () => {
+				try {
+					const source = recordSources.current[recordSources.current.length - 1];
+					const records = source ? await source().catch(() => ({})) : {};
+					const plan = planTrail(TRAILS[id], records, here);
+					if (plan.length === 0) return;
+					counter.current += 1;
+					const next: ActiveTrail = {
+						plan,
+						start: startIndexOf(plan, from),
+						origin: here,
+						key: counter.current,
+					};
+					trailRef.current = next;
+					setTrail(next);
+				} finally {
+					trailStarting.current = false;
+				}
+			})();
+		},
+		[]
+	);
+
+	const handleTrailEnd = useCallback(() => {
+		trailRef.current = null;
+		quietUntil.current = Date.now() + TRAIL_QUIET_MS;
+		setTrail(null);
+	}, []);
+
+	const trailReady = useCallback(
+		(place: TourPlace, minInstance: number) => isReady(reports.current, place, minInstance),
+		[]
 	);
 
 	const answerNotice = useCallback(
@@ -235,8 +370,8 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 	const loaded = state !== null;
 	useEffect(() => {
 		if (!loaded || paused) return;
-		for (const screen of reports.current.keys())
-			if (isReady(reports.current, screen)) schedule(screen, SETTLE_MS);
+		for (const { screen } of reports.current.values())
+			if (hasGuide(screen) && isReady(reports.current, screen)) schedule(screen, SETTLE_MS);
 	}, [loaded, paused, schedule]);
 
 	useEffect(
@@ -253,11 +388,13 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 			openTopic,
 			noticeVisible: state ? shouldShowNotice(state, onboardingDone) : false,
 			answerNotice,
+			startTrail,
+			setTrailRecords,
 		}),
-		[report, startTour, openTopic, state, onboardingDone, answerNotice]
+		[report, startTour, openTopic, state, onboardingDone, answerNotice, startTrail, setTrailRecords]
 	);
 
-	const showing = Boolean(active && !paused);
+	const showing = Boolean((active || trail) && !paused);
 
 	return (
 		<TourContext.Provider value={value}>
@@ -275,6 +412,20 @@ export const TourProvider: React.FC<{ paused?: boolean; children: React.ReactNod
 					screen={active.screen}
 					steps={active.steps}
 					onFinish={handleFinish}
+				/>
+			) : null}
+			{trail ? (
+				<TrailOverlay
+					key={trail.key}
+					plan={trail.plan}
+					start={trail.start}
+					origin={trail.origin}
+					navigator={trailOptions?.navigator ?? routerNavigator}
+					isReady={trailReady}
+					onEnd={handleTrailEnd}
+					hidden={paused}
+					settleMs={trailOptions?.settleMs}
+					readyTimeoutMs={trailOptions?.readyTimeoutMs}
 				/>
 			) : null}
 		</TourContext.Provider>
