@@ -194,14 +194,20 @@ describe('"Já paguei" que lança a saída', () => {
 });
 
 describe('"Já paguei" que não lança', () => {
-	it('já há lançamento que casa: marca direto, sem perguntar', async () => {
-		mockPlanPayment.mockResolvedValue({ kind: 'matched', ref: 'pix' });
-		mockMarkPaid.mockResolvedValue({ kind: 'matched', ref: 'pix', posted: false });
+	it('já há lançamento que casa: marca direto, sem perguntar, e diz que achou (SPD-145)', async () => {
+		const matched = { kind: 'matched', ref: 'pix', amountCents: 12_000, date: '2026-11-05' };
+		mockPlanPayment.mockResolvedValue(matched);
+		mockMarkPaid.mockResolvedValue({ ...matched, posted: false, month: '2026-11' });
 		await mount();
 		await press('bills.markPaid');
 
-		expect(alertSpy).not.toHaveBeenCalled();
 		expect(mockMarkPaid).toHaveBeenCalledWith('internet', undefined);
+		// A única janela vem depois de marcar: é o aviso de que o pagamento já estava lançado.
+		expect(alertSpy).toHaveBeenCalledTimes(1);
+		const [title, body] = alertSpy.mock.calls[0];
+		expect(title).toBe('bills.pay.foundTitle');
+		expect(body).toContain(formatCents(12_000));
+		expect(body).toContain('"month":"November"');
 	});
 
 	it('o aviso do banco está na caixa de entrada: marca e diz que o lançamento vem de lá', async () => {
@@ -220,5 +226,73 @@ describe('"Já paguei" que não lança', () => {
 		await press('bills.undoPaid');
 		expect(mockUndoPaid).toHaveBeenCalledWith('internet');
 		expect(mockPlanPayment).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * SPD-145: com outubro em aberto, o "Já paguei" do mês atual quita outubro primeiro — e diz
+ * isso antes, no botão e na pergunta ("Quitar outubro?").
+ */
+describe('"Já paguei" com outubro em aberto', () => {
+	beforeEach(() => {
+		mockRows = [{ bill: { ...INTERNET, paidThrough: '2026-09' }, status: 'upcoming', dueDate: '2026-11-10' }];
+	});
+
+	const markOlder = 'bills.markPaidOlder{"month":"October"}';
+
+	it('o botão diz que quita outubro', async () => {
+		await mount();
+		const shown = renderer.root.findAll(isHostText).map((node) => node.props.children);
+		expect(shown).toContain(markOlder);
+		expect(shown).not.toContain('bills.markPaid');
+	});
+
+	it('lançar: a pergunta tem o mês no título, e "Lançar" marca', async () => {
+		await mount();
+		await press(markOlder);
+
+		expect(mockMarkPaid).not.toHaveBeenCalled();
+		const [title, body, buttons] = alertSpy.mock.calls.at(-1) ?? [];
+		expect(title).toBe('bills.pay.titleMonth{"month":"October"}');
+		expect(body).toContain('bills.pay.olderBody');
+		expect(body).toContain(formatCents(12_000));
+		expect((buttons as AlertButton[]).map((button) => button.text)).toEqual([
+			'bills.pay.cancel',
+			'bills.pay.onlyMark',
+			'bills.pay.post',
+		]);
+		await pressAlertButton('bills.pay.post');
+		expect(mockMarkPaid).toHaveBeenCalledWith('internet', { post: true });
+	});
+
+	it('pagamento de outubro já lançado: pergunta, dizendo o que achou, antes de marcar', async () => {
+		const matched = { kind: 'matched', ref: 'pix', amountCents: 12_000, date: '2026-10-20' };
+		mockPlanPayment.mockResolvedValue(matched);
+		mockMarkPaid.mockResolvedValue({ ...matched, posted: false, month: '2026-10' });
+		await mount();
+		await press(markOlder);
+
+		expect(mockMarkPaid).not.toHaveBeenCalled();
+		const [title, body, buttons] = alertSpy.mock.calls.at(-1) ?? [];
+		expect(title).toBe('bills.pay.titleMonth{"month":"October"}');
+		expect(body).toContain('bills.pay.foundBody');
+		expect((buttons as AlertButton[]).map((button) => button.text)).toEqual([
+			'bills.pay.cancel',
+			'bills.pay.confirmMonth{"month":"October"}',
+		]);
+		await pressAlertButton('bills.pay.confirmMonth{"month":"October"}');
+		expect(mockMarkPaid).toHaveBeenCalledWith('internet', undefined);
+		// Já disse o que achou na pergunta: não repete depois.
+		expect(alertSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it('valor que varia: pergunta e, cancelado, não marca', async () => {
+		mockPlanPayment.mockResolvedValue({ kind: 'none' });
+		await mount();
+		await press(markOlder);
+
+		expect(alertSpy.mock.calls.at(-1)?.[1]).toContain('bills.pay.olderBody');
+		await pressAlertButton('bills.pay.cancel');
+		expect(mockMarkPaid).not.toHaveBeenCalled();
 	});
 });

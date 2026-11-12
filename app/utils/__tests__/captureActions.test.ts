@@ -1019,21 +1019,32 @@ describe('editar o lançamento que deu a baixa refaz a baixa (SPD-067)', () => {
 		expect(changed).toHaveBeenCalledTimes(1);
 	});
 
-	it('a data editada para fora da janela do vencimento desfaz a baixa', async () => {
+	it('a data editada para fora da janela do vencimento, sem o nome no texto, desfaz a baixa', async () => {
 		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 
-		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30' });
+		// SPD-145: depois da janela, só o nome/dica no texto ainda paga o mês atrasado.
+		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30', text: 'Pix enviado' });
 
 		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
 	});
 
-	it('a data editada para o mês seguinte tira a baixa de outubro e dá a de novembro', async () => {
+	it('a data editada para depois da janela, com o nome no texto, continua pagando outubro, atrasado (SPD-145)', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30' });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+	});
+
+	it('a data editada para o mês seguinte, com outubro em aberto, quita outubro: nenhum mês é pulado (SPD-145)', async () => {
 		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 
 		const match = await resettleBillPayment(TIM, { ...TIM, date: '2026-11-13' });
 
-		expect(match).toMatchObject({ month: '2026-11' });
-		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+		// A baixa de outubro sai com a data de antes e volta com a nova: outubro é o mais antigo em
+		// aberto, e o pagamento com "TIM" no texto o quita (antes ia para novembro e outubro sumia).
+		expect(match).toMatchObject({ month: '2026-10' });
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 		// Uma remarcação de lembretes e um aviso pela edição inteira, não um por gravação.
 		expect(scheduleBillReminders).toHaveBeenCalledTimes(1);
 		expect(changed).toHaveBeenCalledTimes(1);

@@ -69,6 +69,29 @@ export const billDueDate = (bill: Pick<Bill, 'dueDay'>, month: string): string =
 const isMonthPaid = (bill: Pick<Bill, 'paidThrough'>, month: string): boolean =>
 	bill.paidThrough !== null && bill.paidThrough !== undefined && bill.paidThrough >= month;
 
+/**
+ * Até quantos meses antes do corrente uma conta em aberto ainda conta como atrasada (SPD-145).
+ * Quem nunca tocou em "Já paguei" pode ter um `paidThrough` muito antigo: sem o limite, veria
+ * dezenas de meses vermelhos de uma vez.
+ */
+export const BILL_OVERDUE_MONTHS = 3;
+
+/**
+ * O mês em aberto mais antigo de uma conta, visto do mês `current` (`YYYY-MM`): o seguinte ao
+ * pago (`paidThrough + 1`), nunca antes de 3 meses atrás. É por ele que "Já paguei", a baixa
+ * automática e o "Em atraso" andam, um mês por vez. Sem mês pago nenhum (a conta de dívida
+ * que ainda não ganhou o mês de partida), o corrente: o passado não vira atraso.
+ *
+ * Como o modelo é "pago até", os meses antes dele contam como pagos — inclusive os de antes
+ * do começo da conta e os além do limite.
+ */
+export const firstOpenMonth = (bill: Pick<Bill, 'paidThrough'>, current: string): string => {
+	if (bill.paidThrough === null || bill.paidThrough === undefined) return current;
+	const next = shiftMonthKey(bill.paidThrough, 1);
+	const floor = shiftMonthKey(current, -BILL_OVERDUE_MONTHS);
+	return next > floor ? next : floor;
+};
+
 /** Conta que pode avisar: ativa e não apagada. */
 const isLive = (bill: Bill): boolean => bill.active && !bill.deletedAt;
 
@@ -83,7 +106,9 @@ const atReminderHour = (isoDate: string): Date => {
  *
  * Só entram horários depois de `now`. Um vencimento que já passou sem ser pago ainda gera
  * os avisos de atraso que faltam (até D+3); conta inativa, apagada ou com o mês pago não
- * gera nada daquele mês.
+ * gera nada daquele mês. Passado o D+3, o atraso não avisa mais: quem lembra dele até ser
+ * quitado é a linha "Em atraso" da tela inicial (SPD-145). Um mês anterior em aberto não
+ * cala os avisos do mês corrente, que segue sem pagar.
  */
 export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
 	const horizon = new Date(now);
@@ -118,10 +143,12 @@ export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
 
 /**
  * Situação de uma conta num mês `YYYY-MM`, vista do dia `today` (`YYYY-MM-DD`, data local
- * do calendário, como `todayISO()`).
+ * do calendário, como `todayISO()`). Pago é o mês antes do mais antigo em aberto
+ * (`firstOpenMonth`): o atraso vai no máximo 3 meses para trás, e a conta sem mês pago não
+ * tem passado atrasado.
  */
 export const billStatus = (bill: Bill, month: string, today: string): BillStatus => {
-	if (isMonthPaid(bill, month)) return 'paid';
+	if (month < firstOpenMonth(bill, monthKeyOf(today.slice(0, 10)))) return 'paid';
 
 	const dueDate = billDueDate(bill, month);
 	const day = today.slice(0, 10);

@@ -188,11 +188,13 @@ describe('o bloqueio da conta que vem de uma dívida', () => {
 });
 
 describe('"Já paguei" e desfazer', () => {
-	it('"Já paguei" leva o mês pago até o mês atual e não mexe na baixa', () => {
+	it('"Já paguei" quita só o mês mais antigo em aberto e não mexe na baixa (SPD-145)', () => {
+		// Pago até agosto, hoje em outubro: setembro, não outubro — outubro não vira pago sem pagamento.
 		expect(markedPaid(bill({ paidThrough: '2026-08', paidByRef: 'tx-1' }), '2026-10')).toEqual({
-			paidThrough: '2026-10',
+			paidThrough: '2026-09',
 			paidByRef: 'tx-1',
 		});
+		expect(markedPaid(bill({ paidThrough: '2026-09' }), '2026-10').paidThrough).toBe('2026-10');
 	});
 
 	it('"Já paguei" nunca volta um mês pago que já estava adiante', () => {

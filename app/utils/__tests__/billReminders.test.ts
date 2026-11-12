@@ -199,7 +199,15 @@ describe('billStatus', () => {
 		expect(billStatus(conta, '2026-11', '2026-11-10')).toBe('due_today');
 		expect(billStatus(conta, '2026-11', '2026-11-11')).toBe('late');
 		// Mês seguinte, ainda não pago: continua atrasada.
-		expect(billStatus(conta, '2026-11', '2026-12-01')).toBe('late');
+		expect(billStatus(bill({ dueDay: 10, paidThrough: '2026-10' }), '2026-11', '2026-12-01')).toBe('late');
+	});
+
+	it('sem mês pago nenhum, o passado não fica atrasado; e o atraso vai até 3 meses para trás (SPD-145)', () => {
+		// A conta de dívida antes de ganhar o mês de partida: novembro visto de dezembro.
+		expect(billStatus(bill({ dueDay: 10 }), '2026-11', '2026-12-01')).toBe('paid');
+		const velha = bill({ dueDay: 10, paidThrough: '2026-05' });
+		expect(billStatus(velha, '2026-07', '2026-11-11')).toBe('paid');
+		expect(billStatus(velha, '2026-08', '2026-11-11')).toBe('late');
 	});
 
 	it('mês pago é paid, inclusive pago adiantado', () => {

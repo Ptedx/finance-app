@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBills } from '../../contexts/BillsContext';
-import { homeBills, type MonthBillRow } from '../../utils/billRules';
+import { homeBills, type MonthBillRow, overdueBills } from '../../utils/billRules';
 import { formatDayMonth, monthKeyOf } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import BillStatusPill from './BillStatusPill';
@@ -20,6 +20,11 @@ import BillStatusPill from './BillStatusPill';
  * Nada atrasado nem vencendo em 7 dias: uma linha só ("Nada vence nos próximos 7 dias ·
  * Falta pagar R$ 1.500,00"). Sem contas: uma linha com "Cadastrar". Tocar abre a tela de
  * contas a pagar, com todas as contas.
+ *
+ * Mês passado em aberto (SPD-145): a conta entra na lista como atrasada, com a data do mês
+ * dela ("10/10"), e o rodapé ganha a linha "Em atraso" — o valor dos meses anteriores e
+ * quantas contas —, separada de "Falta pagar este mês", que continua só o mês. Os avisos de
+ * atraso param no D+3; é essa linha que lembra até quitar.
  */
 
 const ACCENT = '#15E8FE';
@@ -43,6 +48,7 @@ const BillsMonthCard: React.FC = () => {
 	const router = useRouter();
 	const { activeBills, month, today, isLoading } = useBills();
 	const soon = useMemo(() => homeBills(activeBills, today), [activeBills, today]);
+	const overdue = useMemo(() => overdueBills(activeBills, month.month), [activeBills, month.month]);
 
 	if (isLoading) return null;
 
@@ -99,6 +105,14 @@ const BillsMonthCard: React.FC = () => {
 	}
 
 	const more = soon.moreCount > 0 ? t('bills.home.more', { count: soon.moreCount }) : null;
+	// "Em atraso": os meses anteriores em aberto, à parte do mês. Só de valor variável, sem soma.
+	const hasOverdue = overdue.billCount > 0;
+	const overdueValue = overdue.cents > 0 ? formatCents(overdue.cents) : t('bills.variable');
+	const overdueCount = hasOverdue ? t('bills.home.overdueBills', { count: overdue.billCount }) : null;
+	const overdueVariable =
+		hasOverdue && overdue.cents > 0 && overdue.variableCount > 0
+			? t('bills.variableNote', { count: overdue.variableCount })
+			: null;
 	const summary = [
 		t('bills.home.title'),
 		...soon.rows.map(
@@ -108,6 +122,9 @@ const BillsMonthCard: React.FC = () => {
 		`${t('bills.toPay')}, ${allPaid ? t('bills.allPaid') : formatCents(month.dueCents)}`,
 		variableNote,
 		lateNote,
+		hasOverdue ? `${t('bills.home.overdue')}, ${overdueValue}` : null,
+		overdueCount,
+		overdueVariable,
 	]
 		.filter(Boolean)
 		.join('. ');
@@ -152,6 +169,17 @@ const BillsMonthCard: React.FC = () => {
 				{variableNote ? <Text style={styles.footerSub}>{variableNote}</Text> : null}
 				{lateNote ? <Text style={[styles.footerSub, styles.late, styles.lateStrong]}>{lateNote}</Text> : null}
 			</View>
+
+			{hasOverdue ? (
+				<View style={styles.overdue}>
+					<View style={styles.footerLine}>
+						<Text style={[styles.footerLabel, styles.late]}>{t('bills.home.overdue')}</Text>
+						<Text style={[styles.footerValue, styles.late]}>{overdueValue}</Text>
+					</View>
+					<Text style={styles.footerSub}>{overdueCount}</Text>
+					{overdueVariable ? <Text style={styles.footerSub}>{overdueVariable}</Text> : null}
+				</View>
+			) : null}
 		</Pressable>
 	);
 };
@@ -243,6 +271,13 @@ const styles = StyleSheet.create({
 	footerSub: {
 		fontSize: 12,
 		color: 'rgba(255,255,255,0.6)',
+	},
+	overdue: {
+		marginTop: 8,
+		paddingTop: 10,
+		borderTopWidth: 1,
+		borderTopColor: 'rgba(255,107,107,0.4)',
+		gap: 2,
 	},
 	inviteButton: {
 		flexDirection: 'row',

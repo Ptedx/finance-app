@@ -181,7 +181,7 @@ describe('troca de mês', () => {
 		expect(texts()).toContain('bills.markPaid');
 	});
 
-	it('‹ volta para outubro: status e total de outubro, sem "Já paguei" nem "Desfazer"', async () => {
+	it('‹ volta para outubro: status e total de outubro; "Desfazer" só onde outubro é o último mês pago', async () => {
 		await mount();
 		await pressLabel('bills.monthNav.previous');
 		const shown = texts();
@@ -191,7 +191,8 @@ describe('troca de mês', () => {
 		expect(shown.filter((text) => text.startsWith('pill:'))).toEqual(['pill:paid', 'pill:paid', 'pill:paid', 'pill:paid']);
 		expect(shown).toContain('bills.allPaidIn{"month":"October"}');
 		expect(shown).not.toContain('bills.markPaid');
-		expect(shown).not.toContain('bills.undoPaid');
+		// SPD-145: as três pagas só até outubro podem reabrir outubro; a paga até novembro, não.
+		expect(shown.filter((text) => text === 'bills.undoPaid')).toHaveLength(3);
 		expect(shown).toContain('bills.otherMonthNote');
 	});
 
@@ -202,6 +203,55 @@ describe('troca de mês', () => {
 		const shown = texts();
 		expect(shown).toContain('pill:late');
 		expect(shown).toContain(formatCents(10_000));
+	});
+
+	it('SPD-145: em outubro, "Já paguei" só na conta cujo mês mais antigo em aberto é outubro', async () => {
+		mockState.bills = [
+			bill({ id: 'velha', name: 'Atrasada', dueDay: 5, amountCents: 10_000, paidThrough: '2026-09' }),
+			bill({ id: 'antiga', name: 'Depois', dueDay: 20, amountCents: 30_000, paidThrough: '2026-08' }),
+		];
+		await mount();
+		await pressLabel('bills.monthNav.previous');
+		const shown = texts();
+		expect(shown.filter((text) => text === 'bills.markPaid')).toHaveLength(1);
+		// A de setembro em aberto não tem ação em outubro: diz para quitar setembro antes.
+		expect(shown).toContain('bills.payOlderFirst{"month":"September"}');
+	});
+
+	it('SPD-145: no mês atual, o atraso de meses anteriores aparece à parte e leva ao mês mais antigo', async () => {
+		mockState.bills = [
+			bill({ id: 'velha', name: 'Atrasada', dueDay: 5, amountCents: 10_000, paidThrough: '2026-09' }),
+			bill({ id: 'depois', name: 'Depois', dueDay: 20, amountCents: 30_000, paidThrough: '2026-10' }),
+		];
+		await mount();
+		const shown = texts();
+		// "Falta pagar este mês" é só novembro.
+		expect(shown).toContain(formatCents(10_000 + 30_000));
+		const overdue = shown.find((text) => text.startsWith('bills.overdueNote'));
+		expect(overdue).toContain(formatCents(10_000));
+		const target = renderer.root.find(
+			(node: ReactTestInstance) =>
+				typeof node.props.onPress === 'function' && node.props.accessibilityHint === 'bills.overdueOpen'
+		);
+		await act(async () => {
+			target.props.onPress();
+		});
+		expect(texts()).toContain('October 2026');
+	});
+
+	it('SPD-145: volta no máximo 3 meses', async () => {
+		await mount();
+		await pressLabel('bills.monthNav.previous');
+		await pressLabel('bills.monthNav.previous');
+		await pressLabel('bills.monthNav.previous');
+		expect(texts()).toContain('August 2026');
+		const previous = renderer.root.find(
+			(node: ReactTestInstance) =>
+				typeof node.props.onPress === 'function' && node.props.accessibilityLabel === 'bills.monthNav.previous'
+		);
+		expect(previous.props.disabled).toBe(true);
+		await pressLabel('bills.monthNav.previous');
+		expect(texts()).toContain('August 2026');
 	});
 
 	it('› vai para dezembro: tudo a vencer, total de dezembro', async () => {

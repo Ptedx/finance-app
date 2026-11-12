@@ -9,8 +9,17 @@ import BillStatusPill from '../components/bills/BillStatusPill';
 import { useAccounts } from '../contexts/AccountsContext';
 import { type BillPaymentPlan, markPaidTransactionId, useBills } from '../contexts/BillsContext';
 import type { Bill } from '../database/schema';
-import { type BillFilter, billsOfMonth, filterMonthRows, type MonthBillRow } from '../utils/billRules';
-import { getMonthName, shiftMonthKey } from '../utils/dateUtils';
+import { BILL_OVERDUE_MONTHS } from '../utils/billReminders';
+import {
+	type BillFilter,
+	billsOfMonth,
+	canUndoMonth,
+	filterMonthRows,
+	type MonthBillRow,
+	overdueBills,
+	payableMonth,
+} from '../utils/billRules';
+import { formatDayMonth, getMonthName, shiftMonthKey } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 
 /**
@@ -26,10 +35,16 @@ import { formatCents } from '../utils/money';
  * "Desfazer" tira o lançamento que o "Já paguei" criou.
  *
  * As setas ‹ › trocam o mês (SPD-142): o total e a lista seguem o mês escolhido
- * (`billsOfMonth`). "Já paguei" e "Desfazer" só aparecem no mês atual: `markPaid` marca pago
- * até o mês de hoje e lança com a data de hoje, e `undoPaid` reabre o mês de hoje — num mês
- * passado marcaria também os meses seguintes, e num futuro marcaria o atual. Em cima da lista,
+ * (`billsOfMonth`). Para trás, no máximo 3 meses — o mesmo limite do atraso. Em cima da lista,
  * os filtros Todas / A vencer / Atrasadas / Pagas ("A vencer" inclui a que vence hoje).
+ *
+ * Mês atrasado (SPD-145): a conta guarda só "pago até", então "Já paguei" quita sempre o mês
+ * mais antigo em aberto, um por vez, com a data de hoje, e "Desfazer" reabre o último mês pago.
+ * Por isso "Já paguei" aparece no mês mais antigo em aberto de cada conta e, no mês atual, também
+ * quando há um mês anterior em aberto — aí o botão diz "Quitar outubro" e a pergunta diz o mês
+ * antes de marcar. Num mês passado, a conta com um mês ainda mais antigo em aberto fica sem ação,
+ * com uma frase dizendo qual quitar antes; "Desfazer" fica no mês que é o último pago. No mês
+ * atual, o atraso de meses anteriores aparece à parte do total, e tocar nele vai ao mais antigo.
  */
 
 /** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
@@ -41,6 +56,10 @@ const FILTERS: BillFilter[] = ['all', 'upcoming', 'late', 'paid'];
 
 /** O nome do mês de uma chave `YYYY-MM`, como o idioma escreve ("novembro", "November"). */
 const monthNameOf = (key: string): string => getMonthName(Number(key.slice(5, 7)));
+
+/** Quantos meses de `from` até `to` (chaves `YYYY-MM`); negativo quando `to` vem antes. */
+const monthsBetween = (from: string, to: string): number =>
+	Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7)) - (Number(from.slice(0, 4)) * 12 + Number(from.slice(5, 7)));
 
 /** "Novembro 2026": o título das setas. */
 const monthTitleOf = (key: string): string => {
@@ -72,26 +91,72 @@ const BillsScreen: React.FC = () => {
 	const [monthOffset, setMonthOffset] = useState(0);
 	const [filter, setFilter] = useState<BillFilter>('all');
 
+	const currentKey = month.month;
 	const isCurrentMonth = monthOffset === 0;
-	const shownKey = shiftMonthKey(month.month, monthOffset);
+	const shownKey = shiftMonthKey(currentKey, monthOffset);
 	const shown = isCurrentMonth ? month : billsOfMonth(bills, shownKey, today);
 	const shownRows = filterMonthRows(shown.rows, filter);
 	const shownName = monthNameOf(shownKey);
 	const toPayLabel = isCurrentMonth ? t('bills.toPay') : t('bills.toPayIn', { month: shownName });
 	const allPaidLabel = isCurrentMonth ? t('bills.allPaid') : t('bills.allPaidIn', { month: shownName });
+	const isPastMonth = shownKey < currentKey;
+	// Para trás, só até onde o atraso conta (3 meses).
+	const canGoBack = monthOffset > -BILL_OVERDUE_MONTHS;
+	// O atraso de meses anteriores, à parte do total do mês (só no mês atual).
+	const overdue = isCurrentMonth ? overdueBills(bills, currentKey) : null;
+	const overdueText =
+		overdue && overdue.billCount > 0
+			? overdue.cents > 0
+				? t('bills.overdueNote', { amount: formatCents(overdue.cents), count: overdue.billCount })
+				: t('bills.overdueNoteVariable', { count: overdue.billCount })
+			: null;
 
 	const inactive = bills.filter((bill) => !bill.active);
 	const openBill = (bill: Bill) =>
 		router.push({ pathname: '/bills/edit/[id]', params: { id: bill.id } });
 
-	/** "Lançar a saída de R$ 120,00 da conta Corrente Teste, com a data de hoje?" */
-	const askToPost = (plan: Extract<BillPaymentPlan, { kind: 'post' }>): Promise<PostChoice> =>
+	/**
+	 * A ação de uma linha no mês mostrado: "Já paguei" no mês mais antigo em aberto da conta (e,
+	 * no mês atual, também quando o mais antigo é de antes: aí quita ele); "Desfazer" no último
+	 * mês pago. `target` é o mês que o "Já paguei" quita; `blockedBy`, num mês passado, o mês
+	 * mais antigo que tem de ser quitado antes.
+	 */
+	const actionOf = (
+		row: MonthBillRow
+	): { kind: 'pay' | 'undo' | null; target: string | null; blockedBy: string | null } => {
+		if (row.status === 'paid') {
+			return { kind: canUndoMonth(row.bill, shownKey) ? 'undo' : null, target: null, blockedBy: null };
+		}
+		const target = payableMonth(row.bill, currentKey);
+		if (target !== null && (target === shownKey || (isCurrentMonth && target < shownKey))) {
+			return { kind: 'pay', target, blockedBy: null };
+		}
+		return { kind: null, target: null, blockedBy: isPastMonth && target !== null && target < shownKey ? target : null };
+	};
+
+	/** "Achamos a saída de R$ 500,00 em 20/10: ela fica como o pagamento de outubro." */
+	const foundBodyOf = (plan: Extract<BillPaymentPlan, { kind: 'matched' }>, target: string): string =>
+		t('bills.pay.foundBody', {
+			amount: formatCents(plan.amountCents),
+			date: formatDayMonth(plan.date),
+			month: monthNameOf(target),
+		});
+
+	/**
+	 * "Lançar a saída de R$ 120,00 da conta Corrente Teste, com a data de hoje?" Quitando um
+	 * mês que não é o atual, o título diz qual ("Quitar outubro?") e o texto, por quê.
+	 */
+	const askToPost = (
+		plan: Extract<BillPaymentPlan, { kind: 'post' }>,
+		older: { month: string; name: string } | null
+	): Promise<PostChoice> =>
 		new Promise((resolve) => {
 			const amount = formatCents(plan.draft.amountCents);
 			const account = accounts.find((item) => item.id === plan.draft.accountId)?.name;
+			const body = account ? t('bills.pay.body', { amount, account }) : t('bills.pay.bodyNoAccount', { amount });
 			Alert.alert(
-				t('bills.pay.title'),
-				account ? t('bills.pay.body', { amount, account }) : t('bills.pay.bodyNoAccount', { amount }),
+				older ? t('bills.pay.titleMonth', { month: older.month }) : t('bills.pay.title'),
+				older ? `${t('bills.pay.olderBody', older)}\n\n${body}` : body,
 				[
 					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve('cancel') },
 					{ text: t('bills.pay.onlyMark'), onPress: () => resolve('onlyMark') },
@@ -101,27 +166,56 @@ const BillsScreen: React.FC = () => {
 			);
 		});
 
+	/** "Quitar outubro?" — quando o "Já paguei" não lança nada, mas o mês quitado não é o atual. */
+	const confirmOlder = (plan: BillPaymentPlan, bill: Bill, target: string): Promise<boolean> =>
+		new Promise((resolve) => {
+			const month = monthNameOf(target);
+			Alert.alert(
+				t('bills.pay.titleMonth', { month }),
+				plan.kind === 'matched' ? foundBodyOf(plan, target) : t('bills.pay.olderBody', { month, name: bill.name }),
+				[
+					{ text: t('bills.pay.cancel'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('bills.pay.confirmMonth', { month }), onPress: () => resolve(true) },
+				],
+				{ cancelable: true, onDismiss: () => resolve(false) }
+			);
+		});
+
 	const pay = async (bill: Bill) => {
+		const target = payableMonth(bill, currentKey);
+		if (!target) return;
+		const older = target !== currentKey;
 		const plan = await planPayment(bill.id);
 		if (!plan) return;
 
 		let options: { post: boolean } | undefined;
 		if (plan.kind === 'post') {
-			const choice = await askToPost(plan);
+			const choice = await askToPost(plan, older ? { month: monthNameOf(target), name: bill.name } : null);
 			if (choice === 'cancel') return;
 			options = { post: choice === 'post' };
+		} else if (older && !(await confirmOlder(plan, bill, target))) {
+			return;
 		}
 
 		const result = await markPaid(bill.id, options);
 		if (!result) return;
+		const paidMonth = result.month ?? target;
 		if (result.posted && result.kind === 'post') {
 			AccessibilityInfo.announceForAccessibility(
 				t('bills.pay.posted', { name: bill.name, amount: formatCents(result.draft.amountCents) })
+			);
+		} else if (older) {
+			AccessibilityInfo.announceForAccessibility(
+				t('bills.markedPaidMonth', { name: bill.name, month: monthNameOf(paidMonth) })
 			);
 		} else {
 			AccessibilityInfo.announceForAccessibility(t('bills.markedPaid', { name: bill.name }));
 		}
 		if (result.kind === 'inbox') Alert.alert(t('bills.pay.inboxTitle'), t('bills.pay.inboxBody'));
+		// O pagamento já estava lançado: diz o que achou (num mês anterior, a pergunta já disse).
+		if (result.kind === 'matched' && !older) {
+			Alert.alert(t('bills.pay.foundTitle'), foundBodyOf(result, paidMonth));
+		}
 	};
 
 	const toggle = async (row: MonthBillRow) => {
@@ -129,7 +223,7 @@ const BillsScreen: React.FC = () => {
 		try {
 			if (row.status === 'paid') {
 				// Desfazer tira o lançamento quando foi o "Já paguei" que o criou (o id diz).
-				const removesPayment = row.bill.paidByRef === markPaidTransactionId(row.bill.id, month.month);
+				const removesPayment = row.bill.paidByRef === markPaidTransactionId(row.bill.id, shownKey);
 				await undoPaid(row.bill.id);
 				AccessibilityInfo.announceForAccessibility(
 					t(removesPayment ? 'bills.pay.undonePosted' : 'bills.unmarkedPaid', { name: row.bill.name })
@@ -189,10 +283,12 @@ const BillsScreen: React.FC = () => {
 				{shown.rows.length > 0 ? (
 					<View style={styles.monthNav}>
 						<Pressable
-							onPress={() => setMonthOffset((offset) => offset - 1)}
+							onPress={() => setMonthOffset((offset) => Math.max(offset - 1, -BILL_OVERDUE_MONTHS))}
+							disabled={!canGoBack}
 							accessibilityRole="button"
 							accessibilityLabel={t('bills.monthNav.previous')}
-							style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+							accessibilityState={{ disabled: !canGoBack }}
+							style={({ pressed }) => [styles.iconButton, !canGoBack && styles.disabled, pressed && styles.pressed]}
 						>
 							<Ionicons name="chevron-back" size={24} color="#FFFFFF" />
 						</Pressable>
@@ -263,6 +359,20 @@ const BillsScreen: React.FC = () => {
 					</View>
 				) : null}
 
+				{overdue?.oldestMonth && overdueText ? (
+					<Pressable
+						onPress={() => setMonthOffset(monthsBetween(currentKey, overdue.oldestMonth ?? currentKey))}
+						accessibilityRole="button"
+						accessibilityLabel={overdueText}
+						accessibilityHint={t('bills.overdueOpen')}
+						style={({ pressed }) => [styles.overdue, pressed && styles.pressed]}
+					>
+						<Ionicons name="alert-circle-outline" size={18} color="#FF6B6B" />
+						<Text style={[styles.overdueText, styles.late]}>{overdueText}</Text>
+						<Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.5)" />
+					</Pressable>
+				) : null}
+
 				{shown.rows.length > 0 ? (
 					<View
 						style={styles.filters}
@@ -305,6 +415,20 @@ const BillsScreen: React.FC = () => {
 						{shownRows.map((row) => {
 							const paid = row.status === 'paid';
 							const subtitle = subtitleOf(row.bill, row.dueDate, t);
+							const action = actionOf(row);
+							// No mês atual, com um mês anterior em aberto, o botão diz que quita esse.
+							const olderTarget =
+								action.kind === 'pay' && action.target !== shownKey ? action.target : null;
+							const actionLabel = paid
+								? t('bills.undoPaid')
+								: olderTarget
+									? t('bills.markPaidOlder', { month: monthNameOf(olderTarget) })
+									: t('bills.markPaid');
+							const actionHint = paid
+								? t('bills.undoPaidHint', { name: row.bill.name, month: shownName })
+								: olderTarget
+									? t('bills.markPaidOlderHint', { name: row.bill.name, month: monthNameOf(olderTarget) })
+									: t('bills.markPaidHint', { name: row.bill.name, month: shownName });
 							return (
 								<View
 									key={row.bill.id}
@@ -324,15 +448,18 @@ const BillsScreen: React.FC = () => {
 										</View>
 										<BillStatusPill status={row.status} />
 									</Pressable>
-									{isCurrentMonth ? (
+									{action.blockedBy ? (
+										<Text style={styles.rowNote}>
+											{t('bills.payOlderFirst', { month: monthNameOf(action.blockedBy) })}
+										</Text>
+									) : null}
+									{action.kind ? (
 										<Pressable
 											onPress={() => toggle(row)}
 											disabled={busyId === row.bill.id}
 											accessibilityRole="button"
-											accessibilityLabel={paid ? t('bills.undoPaid') : t('bills.markPaid')}
-											accessibilityHint={t(paid ? 'bills.undoPaidHint' : 'bills.markPaidHint', {
-												name: row.bill.name,
-											})}
+											accessibilityLabel={actionLabel}
+											accessibilityHint={actionHint}
 											style={({ pressed }) => [
 												styles.rowAction,
 												paid ? styles.rowActionUndo : styles.rowActionPay,
@@ -345,7 +472,7 @@ const BillsScreen: React.FC = () => {
 												color={paid ? '#FFFFFF' : '#000000'}
 											/>
 											<Text style={[styles.rowActionText, !paid && styles.rowActionTextPay]}>
-												{paid ? t('bills.undoPaid') : t('bills.markPaid')}
+												{actionLabel}
 											</Text>
 										</Pressable>
 									) : null}
@@ -468,6 +595,32 @@ const styles = StyleSheet.create({
 	late: {
 		color: '#FF6B6B',
 		fontWeight: '600',
+	},
+	overdue: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 8,
+		minHeight: 48,
+		marginTop: -8,
+		paddingHorizontal: 14,
+		paddingVertical: 10,
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: 'rgba(255,107,107,0.6)',
+		backgroundColor: '#1E1E1E',
+	},
+	overdueText: {
+		flex: 1,
+		fontSize: 14,
+	},
+	disabled: {
+		opacity: 0.3,
+	},
+	rowNote: {
+		fontSize: 12,
+		color: 'rgba(255,255,255,0.65)',
+		paddingHorizontal: 14,
+		paddingBottom: 10,
 	},
 	monthNav: {
 		flexDirection: 'row',

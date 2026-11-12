@@ -125,9 +125,12 @@ jest.mock('../SyncContext', () => ({
 	useSync: () => ({ lastSyncedAt: mockLastSyncedAt }),
 }));
 
+/** Hoje: 24/10 nos testes antigos; os de mês atrasado (SPD-145) usam 11/11. */
+let mockToday = '2026-10-24';
+
 jest.mock('../../utils/dateUtils', () => ({
 	...jest.requireActual('../../utils/dateUtils'),
-	todayISO: () => '2026-10-24',
+	todayISO: () => mockToday,
 }));
 
 import { AppState, type AppStateStatus } from 'react-native';
@@ -216,6 +219,7 @@ const lastScheduledIds = (): string[] =>
 	(schedule.mock.calls.at(-1)?.[0] as Bill[]).map((item) => item.id);
 
 beforeEach(() => {
+	mockToday = '2026-10-24';
 	mockStore = [bill(), { ...FINANCING }];
 	mockNextId = 1;
 	mockLastSyncedAt = null;
@@ -697,6 +701,171 @@ describe('"Já paguei" lança o pagamento (E2E-23)', () => {
 		expect(restoreTransaction).toHaveBeenCalledTimes(2);
 		expect(mockLedger.map((tx) => tx.id)).toEqual([ours()]);
 		expect(stored('internet')).toMatchObject({ paidThrough: '2026-10', paidByRef: ours() });
+	});
+});
+
+/**
+ * SPD-145: outubro em aberto e hoje 11/11. "Já paguei" marcava novembro (outubro virava pago
+ * sem pagamento), procurava pagamento só na janela de novembro (e lançava de novo o de
+ * outubro) e o desfazer depois de reabrir o app deixava outubro pago.
+ */
+describe('mês atrasado: hoje 11/11, Plano pago até setembro', () => {
+	const october = (): string => markPaidTransactionId('plano', '2026-10');
+	const november = (): string => markPaidTransactionId('plano', '2026-11');
+	const stored = (): Bill | undefined => mockStore.find((item) => item.id === 'plano');
+
+	const expense = (overrides: Partial<Transaction> = {}): Transaction => ({
+		id: 'pix-outubro',
+		amountCents: 50_000,
+		category: 'health',
+		date: '2026-10-20',
+		note: 'Plano de saúde',
+		isIncome: false,
+		accountId: null,
+		installmentGroup: null,
+		installmentIndex: null,
+		installmentCount: null,
+		cardLast4: null,
+		updatedAt: '2026-10-20T12:00:00.000Z',
+		...overrides,
+	});
+
+	beforeEach(() => {
+		mockToday = '2026-11-11';
+		mockStore = [bill()];
+	});
+
+	it('"Já paguei" quita outubro, com o id de outubro e a data de hoje; novembro segue em aberto', async () => {
+		const api = await mount();
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano');
+		});
+
+		expect(result).toMatchObject({ kind: 'post', posted: true, month: '2026-10' });
+		expect(restoreTransaction).toHaveBeenCalledWith(
+			expect.objectContaining({ amountCents: 50_000, date: '2026-11-11' }),
+			october()
+		);
+		expect(stored()).toMatchObject({ paidThrough: '2026-10', paidByRef: october() });
+		expect(api().month.rows[0].status).toBe('late');
+	});
+
+	it('o segundo "Já paguei" quita novembro: dois lançamentos de R$ 500 no total', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+
+		expect(mockLedger.map((tx) => [tx.id, tx.amountCents])).toEqual([
+			[october(), 50_000],
+			[november(), 50_000],
+		]);
+		expect(stored()).toMatchObject({ paidThrough: '2026-11', paidByRef: november() });
+		expect(api().month.rows[0].status).toBe('paid');
+	});
+
+	it('com tudo pago até o mês atual, "Já paguei" não faz nada', async () => {
+		mockStore = [bill({ paidThrough: '2026-11' })];
+		const api = await mount();
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano');
+		});
+		expect(result).toBeNull();
+		expect(updateBill).not.toHaveBeenCalled();
+		expect(restoreTransaction).not.toHaveBeenCalled();
+	});
+
+	it('desfazer depois de reabrir o app reabre novembro, depois outubro, e tira o lançamento de cada um', async () => {
+		let api = await mount();
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		await act(async () => {
+			renderer?.unmount();
+		});
+		api = await mount();
+
+		await act(async () => {
+			await api().undoPaid('plano');
+		});
+		expect(stored()).toMatchObject({ paidThrough: '2026-10', paidByRef: null });
+		expect(mockLedger.map((tx) => tx.id)).toEqual([october()]);
+
+		// A baixa de outubro já não aponta para o lançamento dele: o id diz que foi o "Já paguei".
+		await act(async () => {
+			await api().undoPaid('plano');
+		});
+		expect(stored()).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
+		expect(mockLedger).toEqual([]);
+		expect(deleteTransaction).toHaveBeenCalledTimes(2);
+	});
+
+	it('desfazer não usa o estado guardado quando outra baixa veio depois dele', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano', { post: false });
+		});
+		// A baixa automática quitou novembro depois do "Já paguei" de outubro.
+		mockStore = [bill({ paidThrough: '2026-11', paidByRef: 'tx-novembro' })];
+		await act(async () => {
+			emitBillsChanged();
+		});
+		await act(async () => {
+			await api().undoPaid('plano');
+		});
+		// Só novembro reabre; outubro, que foi marcado, continua pago.
+		expect(stored()).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-novembro' });
+	});
+
+	it('o pagamento de outubro já lançado (20/10, sem baixa) não é lançado de novo', async () => {
+		mockLedger = [expense()];
+		const api = await mount();
+		let result: Awaited<ReturnType<Api['markPaid']>> = null;
+		await act(async () => {
+			result = await api().markPaid('plano');
+		});
+
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(mockLedger.map((tx) => tx.id)).toEqual(['pix-outubro']);
+		expect(result).toMatchObject({ kind: 'matched', ref: 'pix-outubro', amountCents: 50_000, date: '2026-10-20' });
+		expect(stored()).toMatchObject({ paidThrough: '2026-10', paidByRef: 'pix-outubro' });
+	});
+
+	it('só pelo valor exato, sem o nome, também é o pagamento (quem diz que pagou é o usuário)', async () => {
+		mockLedger = [expense({ id: 'debito', note: '', date: '2026-10-28' })];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(stored()?.paidByRef).toBe('debito');
+	});
+
+	it('o lançamento de outubro feito por outro aparelho (o mesmo id) não é lançado de novo', async () => {
+		mockLedger = [expense({ id: october(), note: 'Plano', amountCents: 50_000, date: '2026-11-02' })];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		expect(restoreTransaction).not.toHaveBeenCalled();
+		expect(stored()).toMatchObject({ paidThrough: '2026-10', paidByRef: october() });
+	});
+
+	it('a saída de novembro do mesmo aparelho não vale como o pagamento de outubro', async () => {
+		mockLedger = [expense({ id: november(), date: '2026-11-11' })];
+		const api = await mount();
+		await act(async () => {
+			await api().markPaid('plano');
+		});
+		expect(restoreTransaction).toHaveBeenCalledWith(expect.anything(), october());
 	});
 });
 

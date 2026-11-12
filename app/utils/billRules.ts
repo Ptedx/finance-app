@@ -17,10 +17,15 @@
  *   (`billsOfMonth`) e filtra por situação (`filterMonthRows`).
  * - **Tela inicial** (SPD-142): só as atrasadas e as que vencem nos próximos 7 dias, no
  *   máximo 3 (`homeBills`).
+ * - **Mês atrasado** (SPD-145): a conta guarda só "pago até" (`paidThrough`), então "Já
+ *   paguei" e desfazer andam um mês por vez, sempre pelo mês mais antigo em aberto
+ *   (`firstOpenMonth`, até 3 meses para trás): com outubro em aberto, "Já paguei" em novembro
+ *   quita outubro. O atraso de meses anteriores aparece à parte (`overdueBills`, "Em
+ *   atraso"), fora de "Falta pagar este mês" e do custo fixo.
  */
 
 import type { Bill, BillDraft } from '../database/schema';
-import { type BillStatus, billDueDate, billStatus } from './billReminders';
+import { type BillStatus, billDueDate, billStatus, firstOpenMonth } from './billReminders';
 import { addDays, monthKeyOf, shiftMonthKey } from './dateUtils';
 
 /** O que a tela de cadastro edita. */
@@ -128,24 +133,40 @@ export const editedBillDraft = (bill: Bill, input: BillInput): BillDraft => {
 	};
 };
 
-/** "Já paguei": pago até o mês atual. Um mês pago já adiante fica; a baixa não muda. */
-export const markedPaid = (bill: Bill, month: string): PaidState => ({
-	paidThrough: bill.paidThrough !== null && bill.paidThrough > month ? bill.paidThrough : month,
+/**
+ * O mês que o "Já paguei" quita, visto do mês `current`: o mais antigo em aberto
+ * (`firstOpenMonth`). `null` quando tudo até o mês atual está pago — o "Já paguei" não paga
+ * mês adiante.
+ */
+export const payableMonth = (bill: Pick<Bill, 'paidThrough'>, current: string): string | null => {
+	const month = firstOpenMonth(bill, current);
+	return month <= current ? month : null;
+};
+
+/**
+ * "Já paguei": quita o mês mais antigo em aberto (`payableMonth`) — um só, nunca pulando um
+ * mês em aberto. Com tudo pago até o mês atual, nada muda. A baixa não muda.
+ */
+export const markedPaid = (bill: Bill, current: string): PaidState => ({
+	paidThrough: payableMonth(bill, current) ?? bill.paidThrough,
 	paidByRef: bill.paidByRef,
 });
 
+/** "Desfazer" só reabre o último mês pago: reabrir um do meio deixaria um buraco que "pago até" não guarda. */
+export const canUndoMonth = (bill: Pick<Bill, 'paidThrough'>, month: string): boolean =>
+	bill.paidThrough !== null && bill.paidThrough !== undefined && bill.paidThrough === month;
+
 /**
- * Desfazer o "Já paguei": volta ao estado de antes quando a tela o guardou; senão (o app
- * reabriu), deixa o mês atual em aberto. A baixa fica: se veio de um lançamento, é ela que
- * impede o mesmo lançamento de casar de novo.
+ * Desfazer o "Já paguei" de `month`, que tem de ser o último mês pago: volta ao estado de
+ * antes quando a tela o guardou; senão (o app reabriu), `month` volta para em aberto e só ele.
+ * Outro mês não muda nada — reabrir o mês atual de quem está pago só até setembro deixaria
+ * outubro pago sem pagamento. A baixa fica: se veio de um lançamento, é ela que impede o
+ * mesmo lançamento de casar de novo.
  */
 export const undonePaid = (bill: Bill, month: string, previous?: PaidState): PaidState => {
 	if (previous) return previous;
 	return {
-		paidThrough:
-			bill.paidThrough !== null && bill.paidThrough >= month
-				? shiftMonthKey(month, -1)
-				: bill.paidThrough,
+		paidThrough: canUndoMonth(bill, month) ? shiftMonthKey(month, -1) : bill.paidThrough,
 		paidByRef: bill.paidByRef,
 	};
 };
@@ -187,7 +208,8 @@ export const monthBills = (bills: Bill[], today: string): MonthBills =>
  * As contas ativas num mês `YYYY-MM` qualquer, com o status visto de `today`, e o que falta
  * pagar nele — a troca de mês de Contas a pagar. Mês passado não pago está atrasado; o
  * seguinte, a vencer (salvo pago adiante). Como `paidThrough` é "pago até", os meses de antes
- * do mês pago de partida de uma conta aparecem pagos.
+ * do mês pago de partida de uma conta aparecem pagos, e também os de mais de 3 meses atrás
+ * (`firstOpenMonth`).
  */
 export const billsOfMonth = (bills: Bill[], month: string, today: string): MonthBills => {
 	const rows = bills
@@ -206,6 +228,46 @@ export const billsOfMonth = (bills: Bill[], month: string, today: string): Month
 	}
 
 	return { month, rows, dueCents, variableCount, lateCount };
+};
+
+/** O atraso de meses anteriores ao corrente, à parte do mês (SPD-145). */
+export interface OverdueBills {
+	/** Soma dos meses em aberto antes do corrente, das contas com valor: dois meses contam duas vezes. */
+	cents: number;
+	/** Contas com algum mês anterior em aberto. */
+	billCount: number;
+	/** Delas, as de valor variável: contadas, fora da soma. */
+	variableCount: number;
+	/** O mês em aberto mais antigo entre elas, `YYYY-MM`; `null` sem atraso. */
+	oldestMonth: string | null;
+}
+
+/**
+ * O que está em atraso de meses anteriores a `current` (`YYYY-MM`): de cada conta ativa, os
+ * meses do mais antigo em aberto (no máximo 3 para trás) até o anterior ao corrente.
+ *
+ * Fica fora de "Falta pagar este mês" (`monthBills`) e do custo fixo, que são o compromisso
+ * de um mês: somar o atraso neles contaria a mesma conta duas vezes.
+ */
+export const overdueBills = (bills: Bill[], current: string): OverdueBills => {
+	let cents = 0;
+	let billCount = 0;
+	let variableCount = 0;
+	let oldestMonth: string | null = null;
+
+	for (const bill of bills.filter(isLiveActive)) {
+		const first = firstOpenMonth(bill, current);
+		if (first >= current) continue;
+		billCount += 1;
+		if (oldestMonth === null || first < oldestMonth) oldestMonth = first;
+		if (bill.amountCents === null) {
+			variableCount += 1;
+			continue;
+		}
+		for (let month = first; month < current; month = shiftMonthKey(month, 1)) cents += bill.amountCents;
+	}
+
+	return { cents, billCount, variableCount, oldestMonth };
 };
 
 /** O filtro de Contas a pagar. "A vencer" inclui a que vence hoje. */
@@ -236,10 +298,10 @@ export interface HomeBills {
 /**
  * O que a tela inicial mostra: as atrasadas e as que vencem de hoje a 7 dias, no máximo 3.
  *
- * Cada conta entra uma vez, pelo vencimento em aberto mais próximo: o deste mês, ou — já pago
- * este mês, perto da virada — o do mês seguinte (hoje 28/11, a do dia 3 vence em 3/12). Paga
- * no mês e sem vencimento perto, fica fora. "Atrasada" é a do mês corrente, como em
- * `monthBills`.
+ * Cada conta entra uma vez, pelo vencimento em aberto mais antigo: o de um mês passado ainda
+ * em aberto (SPD-145: atrasada, com a data dele — outubro em novembro), o deste mês, ou — já
+ * pago este mês, perto da virada — o do mês seguinte (hoje 28/11, a do dia 3 vence em 3/12).
+ * Paga no mês e sem vencimento perto, fica fora.
  */
 export const homeBills = (bills: Bill[], today: string): HomeBills => {
 	const day = today.slice(0, 10);
@@ -249,6 +311,11 @@ export const homeBills = (bills: Bill[], today: string): HomeBills => {
 
 	const due: MonthBillRow[] = [];
 	for (const bill of bills.filter(isLiveActive)) {
+		const first = firstOpenMonth(bill, month);
+		if (first < month) {
+			due.push(monthRow(bill, first, day));
+			continue;
+		}
 		const current = monthRow(bill, month, day);
 		const row = current.status === 'paid' ? monthRow(bill, next, day) : current;
 		if (row.status === 'paid') continue;

@@ -163,6 +163,69 @@ describe('com contas para os próximos 7 dias', () => {
 	});
 });
 
+/**
+ * SPD-145: outubro em aberto e hoje 11/11. Antes a tela inicial só olhava novembro: o atraso
+ * de outubro não aparecia em lugar nenhum.
+ */
+describe('conta de mês passado em aberto', () => {
+	beforeEach(() => {
+		mockState.bills = [
+			bill({ id: 'plano', name: 'Plano', dueDay: 10, amountCents: 50_000, paidThrough: '2026-09' }),
+			bill({ id: 'longe', name: 'Longe', dueDay: 25, amountCents: 100_000 }),
+		];
+	});
+
+	it('"Em atraso" numa linha à parte, com o valor e quantas contas', async () => {
+		await mount();
+		const shown = texts();
+		expect(shown).toContain('bills.home.overdue');
+		expect(shown).toContain('bills.home.overdueBills{"count":1}');
+		const overdueAt = shown.indexOf('bills.home.overdue');
+		expect(shown[overdueAt + 1]).toBe(formatCents(50_000));
+	});
+
+	it('"Falta pagar este mês" não soma o atraso: é só novembro', async () => {
+		await mount();
+		const shown = texts();
+		expect(shown).toContain('bills.toPay');
+		expect(shown).toContain(formatCents(50_000 + 100_000));
+		expect(shown).not.toContain(formatCents(100_000 + 100_000));
+	});
+
+	it('a de outubro entra na lista como atrasada, com a data de outubro', async () => {
+		await mount();
+		const shown = texts();
+		expect(shown).toContain('Plano');
+		expect(shown.some((text) => text.includes('10/10'))).toBe(true);
+	});
+
+	it('o rótulo do card diz o atraso, e tocar abre Contas a pagar', async () => {
+		await mount();
+		const [card] = pressables();
+		expect(card.props.accessibilityLabel).toContain('bills.home.overdue');
+		expect(card.props.accessibilityLabel).toContain(formatCents(50_000));
+		await act(async () => {
+			card.props.onPress();
+		});
+		expect(mockPush).toHaveBeenCalledWith('/bills');
+	});
+
+	it('valor que varia em atraso: a linha aparece sem somar', async () => {
+		mockState.bills = [bill({ id: 'celular', name: 'Celular', dueDay: 15, amountCents: null, paidThrough: '2026-09' })];
+		await mount();
+		const shown = texts();
+		const overdueAt = shown.indexOf('bills.home.overdue');
+		expect(overdueAt).toBeGreaterThanOrEqual(0);
+		expect(shown[overdueAt + 1]).toBe('bills.variable');
+	});
+
+	it('sem atraso, sem a linha', async () => {
+		mockState.bills = [bill({ id: 'plano', name: 'Plano', dueDay: 12, paidThrough: '2026-10' })];
+		await mount();
+		expect(texts()).not.toContain('bills.home.overdue');
+	});
+});
+
 describe('nada vencendo em 7 dias e nada atrasado', () => {
 	it('vira uma linha: "Nada vence nos próximos 7 dias · Falta pagar R$ 1.500,00"', async () => {
 		mockState.bills = [
