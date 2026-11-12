@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AccountRow, useDismissedBalanceUnset } from '../components/AccountsOverview';
+import ClosedReviewPanel from '../components/accounts/ClosedReviewPanel';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
@@ -180,6 +181,8 @@ const AccountsScreen = () => {
 						</Pressable>
 					</View>
 				)}
+
+				<ClosedReviewPanel />
 
 				{duplicates.map((pair, index) => (
 					<TourTarget key={pair.loose.id} id={index === 0 ? 'accounts.duplicate' : undefined} style={styles.duplicate}>

@@ -1,13 +1,22 @@
 import { AccountInUseError, type AccountContents, isAccountEmpty } from '../utils/accountClosing';
+import { addRevivalNotice, type RevivalNotice, type RevivedAccount, revivalMonthEffects, revivalMonthRange } from '../utils/accountRevival';
 import { brandFor } from '../utils/bankBrands';
-import { CARD_ADJUSTMENT_NOTE, CARD_CHARGE_NOTE, CARD_CHARGE_NOTE_GLOB } from '../utils/cardMath';
+import {
+	buildCardSummary,
+	CARD_ADJUSTMENT_NOTE,
+	CARD_CHARGE_NOTE,
+	CARD_CHARGE_NOTE_GLOB,
+	type CardEntry,
+	type CardMovement,
+} from '../utils/cardMath';
 import { parseCardNames, planDebitCardConversions, withCardName } from '../utils/cardNames';
 import { planLedgerRepair } from '../utils/notificationTarget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import { generateUniqueId } from '../utils/categoryEditUtils';
-import { addDays, nowTimestamp, todayISO } from '../utils/dateUtils';
+import { addDays, monthKeyOf, nowTimestamp, todayISO } from '../utils/dateUtils';
 import { firstDueOnOrAfter, nextDueAfterEdit, type RecurrenceRule } from '../utils/recurrence';
+import { investmentIncomeRows, monthRangeOf, toCardEntry } from '../utils/reportSeries';
 import { STORAGE_KEYS, SYNCED_PREFERENCE_KEYS } from '../utils/storageUtils';
 import { nextStamp, nextStampSql } from '../utils/syncStamp';
 import { isMirroredPreference, type PreferenceRow, planPreferenceReconcile } from '../sync/preferences';
@@ -1288,13 +1297,19 @@ const runInitDatabase = async (): Promise<void> => {
 
 		await seedMissingDefaultCategories();
 
-		// O que a exclusão antiga deixou apontando para conta apagada (SPD-144). Falhar aqui
-		// não impede o app de abrir: o reparo roda de novo na próxima carga.
+		// O que a exclusão antiga deixou apontando para conta apagada (SPD-144), e a conta apagada
+		// com lançamento vivo, que volta encerrada (SPD-149). Falhar aqui não impede o app de
+		// abrir: o reparo roda de novo na próxima carga.
 		try {
 			const repaired = await repairDeadAccountLinks();
-			if (repaired.unlinked > 0 || repaired.orphaned > 0) {
-				console.log(`Dead account links: ${repaired.unlinked} cleared, ${repaired.orphaned} entry(ies) left on deleted accounts`);
+			if (repaired.unlinked > 0 || repaired.orphaned > 0 || repaired.revived.length > 0) {
+				console.log(
+					`Dead account links: ${repaired.unlinked} cleared, ${repaired.revived.length} account(s) back as closed, ${repaired.orphaned} entry(ies) left on deleted accounts`
+				);
 			}
+			// O aviso único: o histórico pode ter mudado, e o usuário precisa saber quanto. A conta
+			// já voltou; sem o efeito em R$, o aviso diz só que ela voltou.
+			await storeRevivalNotice(repaired.revived);
 		} catch (error) {
 			console.error('Error repairing links to deleted accounts:', error);
 		}
@@ -1865,10 +1880,10 @@ export const retireMergedAccount = async (id: string): Promise<void> => {
  * A conta apagada que ainda tem lançamento ou transferência viva volta **encerrada** (sem
  * lápide, `archived = 1`, carimbo depois da lápide e suja, para o sync levar): o dinheiro
  * não some. Fica fora dos totais de hoje, como estava, e o histórico a vê de novo.
- * Devolve quantas voltaram.
+ * Devolve as que voltaram.
  */
-const reviveAccountsWithMoney = async (ids: Iterable<string>, timestamp: string): Promise<number> => {
-	let revived = 0;
+const reviveAccountsWithMoney = async (ids: Iterable<string>, timestamp: string): Promise<string[]> => {
+	const revived: string[] = [];
 	for (const id of new Set(ids)) {
 		const result = await db.runAsync(
 			`UPDATE accounts SET deletedAt = NULL, archived = 1, updatedAt = ${NEXT_STAMP}, dirty = 1
@@ -1877,10 +1892,29 @@ const reviveAccountsWithMoney = async (ids: Iterable<string>, timestamp: string)
            OR EXISTS (SELECT 1 FROM transfers WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL))`,
 			[timestamp, id, id, id, id]
 		);
-		revived += result?.changes ?? 0;
+		if ((result?.changes ?? 0) > 0) revived.push(id);
 	}
 	return revived;
 };
+
+/**
+ * O que o aviso conta de cada conta (SPD-149): lançamentos e transferências vivos nela, e as
+ * datas do primeiro e do último. `where` escolhe as contas (`a` é a tabela de contas).
+ */
+const revivalCandidates = (where: string, params: string[] = []): Promise<RevivedAccount[]> =>
+	db.getAllAsync<RevivedAccount>(
+		`SELECT a.id, a.name,
+              (SELECT COUNT(*) FROM transactions t WHERE t.accountId = a.id AND t.deletedAt IS NULL) AS transactions,
+              (SELECT COUNT(*) FROM transfers x WHERE (x.fromAccountId = a.id OR x.toAccountId = a.id) AND x.deletedAt IS NULL) AS transfers,
+              (SELECT MIN(d) FROM (SELECT date AS d FROM transactions WHERE accountId = a.id AND deletedAt IS NULL
+                                   UNION ALL SELECT date FROM transfers WHERE (fromAccountId = a.id OR toAccountId = a.id) AND deletedAt IS NULL)) AS firstDate,
+              (SELECT MAX(d) FROM (SELECT date AS d FROM transactions WHERE accountId = a.id AND deletedAt IS NULL
+                                   UNION ALL SELECT date FROM transfers WHERE (fromAccountId = a.id OR toAccountId = a.id) AND deletedAt IS NULL)) AS lastDate
+       FROM accounts a
+       WHERE ${where}
+       ORDER BY a.sortOrder ASC, a.name ASC`,
+		params
+	);
 
 /**
  * Contas a pagar, dívidas e capturas **pendentes** vivas que apontam para uma conta apagada
@@ -1906,29 +1940,144 @@ const unlinkDeadAccounts = async (timestamp: string, ids?: Iterable<string>): Pr
 };
 
 /**
- * O reparo, na carga, do que a exclusão antiga deixou apontando para conta apagada
- * (SPD-144): conta a pagar, dívida e captura pendente ficam sem conta. Idempotente.
+ * O reparo, na carga, do que a exclusão antiga deixou apontando para conta apagada.
+ * Idempotente.
  *
- * Nenhum número muda: a conta a pagar e a dívida não entram em saldo, e a captura pendente
- * de conta apagada já não contava como provisória (não há conta onde contar).
- *
- * O lançamento ou a transferência viva numa conta apagada (o "Já paguei" e a captura
- * confirmada gravavam o id morto) **não** é tocado: hoje ele não aparece em número nenhum,
- * e trazê-lo de volta mudaria o gasto do mês dele. Só é contado (`orphaned`), para o log.
+ * - Conta a pagar, dívida e captura pendente ficam sem conta (SPD-144). Nenhum número muda:
+ *   a conta a pagar e a dívida não entram em saldo, e a captura pendente de conta apagada já
+ *   não contava como provisória (não há conta onde contar). Vem antes da volta da conta: um
+ *   "Já paguei" numa conta encerrada lançaria fora dos totais de hoje.
+ * - A conta apagada com lançamento ou transferência viva (o "Já paguei" e a captura confirmada
+ *   gravavam o id morto) volta **encerrada**, a mesma regra do pull (SPD-149,
+ *   `reviveAccountsWithMoney`). O saldo das contas vivas e o patrimônio não mudam: a perna
+ *   viva da transferência já contava, e encerrada fica fora dos totais de hoje. O histórico
+ *   passa a ver esses lançamentos — por isso a carga guarda o aviso único
+ *   (`buildRevivalNotice`), com o efeito em R$ de cada mês.
+ * - O **cartão** apagado volta do mesmo jeito, mas ele muda o Patrimônio de hoje: a tela soma
+ *   o devido de todo cartão, inclusive o encerrado. O aviso diz quanto, e o cartão entra na
+ *   lista "Encerradas com saldo" para o usuário decidir (pagar, reabrir, zerar).
  */
-export const repairDeadAccountLinks = async (): Promise<{ unlinked: number; orphaned: number }> => {
+export const repairDeadAccountLinks = async (): Promise<{ unlinked: number; orphaned: number; revived: RevivedAccount[] }> => {
 	const timestamp = nowTimestamp();
-	let outcome = { unlinked: 0, orphaned: 0 };
+	let outcome: { unlinked: number; orphaned: number; revived: RevivedAccount[] } = { unlinked: 0, orphaned: 0, revived: [] };
 	await runInTransaction(async () => {
 		const unlinked = await unlinkDeadAccounts(timestamp);
+		const candidates = await revivalCandidates('a.deletedAt IS NOT NULL');
+		const revived = candidates.filter((account) => account.transactions > 0 || account.transfers > 0);
+		await reviveAccountsWithMoney(
+			revived.map((account) => account.id),
+			timestamp
+		);
 		const orphans = await db.getFirstAsync<{ n: number }>(
 			`SELECT (SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL AND accountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL))
             + (SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL AND (fromAccountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL)
                 OR toAccountId IN (SELECT id FROM accounts WHERE deletedAt IS NOT NULL))) AS n`
 		);
-		outcome = { unlinked, orphaned: orphans?.n ?? 0 };
+		outcome = { unlinked, orphaned: orphans?.n ?? 0, revived };
 	});
 	return outcome;
+};
+
+const noticeAccountOf = (account: RevivedAccount): RevivalNotice['accounts'][number] => ({
+	id: account.id,
+	name: account.name,
+	transactions: account.transactions,
+	transfers: account.transfers,
+});
+
+/**
+ * O que o Patrimônio de hoje muda com os cartões que voltaram: a tela de Patrimônio soma o
+ * devido mais as parcelas futuras de todo cartão, inclusive o encerrado. Mesma conta do
+ * `AccountsContext` (`buildCardSummary` com os lançamentos e as transferências do cartão).
+ * Conta que não é cartão volta encerrada e fica fora dos totais de hoje: não entra.
+ */
+const revivedCardsWorthDelta = async (cards: Account[], today: string): Promise<number> => {
+	let delta = 0;
+	for (const card of cards) {
+		const [transactions, transfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
+		const movements: CardMovement[] = transfers.map((transfer) => ({
+			amountCents: transfer.amountCents,
+			date: transfer.date,
+			inbound: transfer.toAccountId === card.id,
+		}));
+		const summary = buildCardSummary(card, transactions.map(toCardEntry), movements, today);
+		delta -= summary.owedCents + summary.futureCommittedCents;
+	}
+	return delta;
+};
+
+/**
+ * O aviso das contas que voltaram (SPD-149), na carga ou no pull: quais, quantos lançamentos e
+ * transferências, o que cada mês passou a mostrar — a série dos Relatórios com as contas
+ * menos a série sem elas, dos mesmos dados (`revivalMonthEffects`) — e o que o Patrimônio de
+ * hoje mudou (só o cartão muda). Roda depois da volta.
+ */
+export const buildRevivalNotice = async (revived: RevivedAccount[]): Promise<RevivalNotice> => {
+	const accounts = revived.map(noticeAccountOf);
+	if (revived.length === 0) return { accounts, months: [], worthDeltaCents: 0 };
+	const today = todayISO();
+	const firstDate = revived.reduce((first, account) => (account.firstDate < first ? account.firstDate : first), revived[0].firstDate);
+	const lastDate = revived.reduce((last, account) => (account.lastDate > last ? account.lastDate : last), revived[0].lastDate);
+	const months = revivalMonthRange(firstDate, lastDate, today);
+	const { startDate, endDate } = monthRangeOf(months);
+
+	const live = await getAccounts();
+	const cardIds = live.filter((account) => account.kind === 'credit_card').map((account) => account.id);
+	const reserveIds = live.filter((account) => account.kind !== 'credit_card' && account.role === 'reserve').map((account) => account.id);
+	const [activity, transfers, ledger, transferLines] = await Promise.all([
+		getMonthlyAccountActivity(startDate, endDate),
+		getMonthlyTransferActivity(startDate, endDate),
+		getTransactionsForAccounts([...cardIds, ...reserveIds]),
+		getTransfersByDateRange(startDate, endDate),
+	]);
+	const cardEntries = new Map<string, CardEntry[]>();
+	for (const transaction of ledger) {
+		if (!transaction.accountId || !cardIds.includes(transaction.accountId)) continue;
+		cardEntries.set(transaction.accountId, [...(cardEntries.get(transaction.accountId) ?? []), toCardEntry(transaction)]);
+	}
+	const revivedIds = new Set(revived.map((account) => account.id));
+	const worthDeltaCents = await revivedCardsWorthDelta(
+		live.filter((account) => account.kind === 'credit_card' && revivedIds.has(account.id)),
+		today
+	);
+	return {
+		accounts,
+		worthDeltaCents,
+		months: revivalMonthEffects(
+			{
+				months,
+				accounts: live,
+				activity,
+				transfers,
+				cardEntries,
+				transferLines,
+				investmentIncome: investmentIncomeRows(ledger),
+				currentMonth: monthKeyOf(today),
+			},
+			revived.map((account) => account.id)
+		),
+	};
+};
+
+/**
+ * Guarda o aviso único das contas que voltaram, na carga e no pull. A conta já voltou: se a
+ * conta do efeito falhar, o aviso diz só que ela voltou. Nunca lança — o aviso não pode
+ * impedir a carga nem o pull.
+ */
+const storeRevivalNotice = async (revived: RevivedAccount[]): Promise<void> => {
+	if (revived.length === 0) return;
+	try {
+		let notice: RevivalNotice;
+		try {
+			notice = await buildRevivalNotice(revived);
+		} catch (error) {
+			console.error('Error measuring what the revived accounts change:', error);
+			notice = { accounts: revived.map(noticeAccountOf), months: null, worthDeltaCents: null };
+		}
+		await addRevivalNotice(notice);
+	} catch (error) {
+		console.error('Error storing the revived accounts notice:', error);
+	}
 };
 
 /**
@@ -4051,6 +4200,8 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 	const moneyRefs = new Set<string>();
 	/** Contas de contas a pagar, dívidas e capturas pendentes vivas que chegaram. */
 	const linkRefs = new Set<string>();
+	/** As contas que a transação trouxe de volta encerradas (SPD-149), para o aviso. */
+	let revivedIds: string[] = [];
 
 	await runInTransaction(async () => {
 		// Categorias primeiro: um lançamento pode vir na mesma leva que a categoria dele.
@@ -4493,8 +4644,20 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
 			);
 		}
 
-		await settleDeadAccountRefs(accountTombstones, moneyRefs, linkRefs);
+		revivedIds = await settleDeadAccountRefs(accountTombstones, moneyRefs, linkRefs);
 	});
+
+	// A conta que voltou pelo pull recebe o mesmo aviso único da carga (SPD-149): o histórico
+	// e, no cartão, o Patrimônio mudaram, e o usuário precisa saber quanto. Depois da
+	// transação, com a volta já gravada.
+	if (revivedIds.length > 0) {
+		const placeholders = revivedIds.map(() => '?').join(', ');
+		const revived = await revivalCandidates(`a.id IN (${placeholders})`, revivedIds).catch((error) => {
+			console.error('Error reading the accounts back from the pull:', error);
+			return [] as RevivedAccount[];
+		});
+		await storeRevivalNotice(revived);
+	}
 };
 
 /**
@@ -4515,9 +4678,11 @@ export const applyPulledChanges = async (changes: SyncChanges): Promise<void> =>
  *
  * Captura não ressuscita conta: as confirmadas antigas apontam para contas que o app antigo
  * apagou, e um pull completo traria todas de volta.
+ *
+ * Devolve as contas que voltaram, para o aviso (SPD-149).
  */
-const settleDeadAccountRefs = async (accountTombstones: Set<string>, moneyRefs: Set<string>, linkRefs: Set<string>): Promise<void> => {
-	if (accountTombstones.size === 0 && moneyRefs.size === 0 && linkRefs.size === 0) return;
+const settleDeadAccountRefs = async (accountTombstones: Set<string>, moneyRefs: Set<string>, linkRefs: Set<string>): Promise<string[]> => {
+	if (accountTombstones.size === 0 && moneyRefs.size === 0 && linkRefs.size === 0) return [];
 	const timestamp = nowTimestamp();
 	const revive = new Set(moneyRefs);
 	for (const id of accountTombstones) {
@@ -4528,8 +4693,9 @@ const settleDeadAccountRefs = async (accountTombstones: Set<string>, moneyRefs: 
 		);
 		if ((pending?.n ?? 0) > 0) revive.add(id);
 	}
-	await reviveAccountsWithMoney(revive, timestamp);
+	const revived = await reviveAccountsWithMoney(revive, timestamp);
 	await unlinkDeadAccounts(timestamp, [...linkRefs, ...accountTombstones]);
+	return revived;
 };
 
 // ---------------------------------------------------------------------------
@@ -4940,6 +5106,7 @@ export default {
 	getAccountContents,
 	retireMergedAccount,
 	repairDeadAccountLinks,
+	buildRevivalNotice,
 	getAccountActivity,
 	getAccountBalances,
 	getUnassignedNet,

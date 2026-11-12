@@ -6,6 +6,7 @@ import { Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, Vie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccountReminderBanner from '../components/AccountReminderBanner';
 import AccountsOverview from '../components/AccountsOverview';
+import ClosedReviewBanner from '../components/accounts/ClosedReviewBanner';
 import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
@@ -97,6 +98,7 @@ const HomeScreen = () => {
 				<TourNotice />
 				<AccountReminderBanner />
 				<CaptureReviewBanner />
+				<ClosedReviewBanner />
 				<TourTarget id="home.bills">
 					<BillsMonthCard />
 				</TourTarget>

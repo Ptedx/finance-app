@@ -998,7 +998,7 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 		});
 	});
 
-	it('reparo no carregamento: conta a pagar, dívida e captura pendente deixam de apontar para conta apagada, e nenhum número muda', async () => {
+	it('reparo no carregamento: conta a pagar, dívida e captura pendente deixam de apontar para conta apagada, e nenhum número de hoje muda', async () => {
 		// Como ficou nos aparelhos com a exclusão antiga: "Já paguei" e captura gravando o id
 		// morto — um lançamento de R$ 90 e uma compra pendente de R$ 12 na Vazia apagada.
 		await db.runAsync("UPDATE accounts SET deletedAt = '2026-11-02T00:00:00.000Z' WHERE id = ?", [
@@ -1015,14 +1015,23 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 		await reload();
 		const before = await fingerprint();
 
-		expect(await repairDeadAccountLinks()).toEqual({ unlinked: 3, orphaned: 1 });
+		const repaired = await repairDeadAccountLinks();
+		expect(repaired.unlinked).toBe(3);
+		expect(repaired.orphaned).toBe(0);
 		await reload();
 
-		// Nenhum número muda: o lançamento de R$ 90 fica onde estava (e fora de tudo, como
-		// estava), e a conta continua apagada.
-		expect(await fingerprint()).toEqual(before);
-		expect(await db.getFirstAsync('SELECT deletedAt FROM accounts WHERE id = ?', [vazia])).toEqual({
-			deletedAt: '2026-11-02T00:00:00.000Z',
+		// Nenhum número de hoje muda. O lançamento de R$ 90 fica onde estava, e a conta dele volta
+		// encerrada (SPD-149): o histórico de novembro passa a vê-lo, e o aviso único diz isso
+		// (`closedReviewSql.test.tsx`).
+		const after = await fingerprint({ skipBalances: [vazia] });
+		expect(after.balances).toEqual(before.balances);
+		expect(after.overview).toEqual(before.overview);
+		expect(after.netWorth).toBe(before.netWorth);
+		expect(after.cards).toEqual(before.cards);
+		expect(repaired.revived.map((account) => account.id)).toEqual([vazia]);
+		expect(await db.getFirstAsync('SELECT deletedAt, archived FROM accounts WHERE id = ?', [vazia])).toEqual({
+			deletedAt: null,
+			archived: 1,
 		});
 		expect(
 			await db.getFirstAsync(
@@ -1045,6 +1054,6 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 		).toEqual({ accountId: null, dirty: 1 });
 
 		// Idempotente: a segunda carga não acha mais nada.
-		expect(await repairDeadAccountLinks()).toEqual({ unlinked: 0, orphaned: 1 });
+		expect(await repairDeadAccountLinks()).toEqual({ unlinked: 0, orphaned: 0, revived: [] });
 	});
 });

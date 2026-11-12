@@ -56,6 +56,15 @@ import {
 } from '../utils/accountMath';
 import { type AccountContents, CLOSING_TRANSFER_NOTE, type ClosePlan, planAccountClose } from '../utils/accountClosing';
 import { canMergeAccounts, DebitFutureError, isDebitTarget, MergeRoleError } from '../utils/accountMerging';
+import { clearRevivalNotices, getRevivalNotices, type RevivalNotice } from '../utils/accountRevival';
+import {
+	type ClosedReviewItem,
+	type ClosedSettlement,
+	closedReviewItems,
+	getClosedReviewSeen,
+	markClosedReviewSeen,
+	unseenClosedReview,
+} from '../utils/closedReview';
 import { emitBillsChanged } from '../utils/billEvents';
 import {
 	buildCardSummary,
@@ -236,6 +245,33 @@ interface AccountsContextType {
 	closeAccount: (id: string, counterpartId: string | null) => Promise<void>;
 	/** Reabre uma conta encerrada. */
 	reopenAccount: (id: string) => Promise<void>;
+	/**
+	 * Encerradas com saldo (SPD-150): contas e cartões arquivados com saldo diferente de zero,
+	 * fora a externa (`closedReviewItems`). Nada muda nelas sem `settleClosedAccount`.
+	 */
+	closedReview: ClosedReviewItem[];
+	/**
+	 * A decisão do usuário para uma encerrada com saldo: transferir o saldo para outra conta (no
+	 * cartão devendo, pagar com ela), reabrir, ou zerar sem gasto nem receita no histórico
+	 * (conta: o saldo de partida; cartão: a fatura paga fora do app). Recusa — sem mudar nada —
+	 * compra a revisar ou lançamento futuro na conta.
+	 */
+	settleClosedAccount: (id: string, decision: ClosedSettlement) => Promise<void>;
+	/**
+	 * Há encerrada com saldo que a lista ainda não mostrou neste aparelho: o aviso curto da tela
+	 * inicial aparece até a tela de Contas mostrá-la (`markClosedReviewShown`).
+	 */
+	closedReviewUnseen: boolean;
+	/** A tela de Contas mostrou a lista: as encerradas de agora contam como vistas. */
+	markClosedReviewShown: () => void;
+	/**
+	 * "Voltou como encerrada" (SPD-149): as contas apagadas que o reparo da carga trouxe de
+	 * volta, com o efeito em R$ de cada mês. Ficam guardadas no aparelho até a tela de Contas
+	 * mostrá-las.
+	 */
+	revivalNotices: RevivalNotice[];
+	/** A tela mostrou: os avisos saem, aqui e no aparelho. */
+	dismissRevivalNotices: () => void;
 	/**
 	 * Acerta uma conta com o que o banco mostra: quanto já saiu neste mês e quanto ainda há
 	 * na conta. A diferença de gasto entra como lançamento de hoje (aparece no mês e na
@@ -428,6 +464,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [periodSpentByAccount, setPeriodSpentByAccount] = useState<Map<string, number>>(new Map());
 	const [periodTransfers, setPeriodTransfers] = useState<Transfer[]>([]);
+	const [revivalNotices, setRevivalNotices] = useState<RevivalNotice[]>([]);
 	// Lido dentro do acerto sem virar dependência dele.
 	const periodSpentRef = useRef(periodSpentByAccount);
 	periodSpentRef.current = periodSpentByAccount;
@@ -444,7 +481,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
 			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
 			const periodEnd = endDate < today ? endDate : today;
-			const [list, ledgerBalances, unassigned, unassignedPeriod, pendingCaptures, ledgerStartBalances, ledgerEndBalances, transfersInPeriod] =
+			const [list, ledgerBalances, unassigned, unassignedPeriod, pendingCaptures, ledgerStartBalances, ledgerEndBalances, transfersInPeriod, revived] =
 				await Promise.all([
 				getAccounts(),
 				getAccountBalances(today),
@@ -454,6 +491,9 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				getAccountBalances(addDays(startDate, -1)),
 				getAccountBalances(periodEnd),
 				getTransfersByDateRange(startDate, endDate),
+				// O aviso da conta que voltou encerrada (SPD-149) é guardado pela carga do banco, que
+				// pode terminar depois da primeira leitura daqui.
+				getRevivalNotices(),
 			]);
 
 			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período, e o
@@ -601,6 +641,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				new Map(activity.map((item) => [item.accountId, periodSpentCents(item, item.role)]))
 			);
 			setMonth(nextMonth);
+			setRevivalNotices((current) => (current.length === 0 && revived.length === 0 ? current : revived));
 			setProvisionalMonth(provisionalPart(nextMonth, buildMonthOverview({ accounts: ledgerActivity, unassigned: unassignedPeriod })));
 		} catch (error) {
 			console.error('Error loading accounts:', error);
@@ -817,6 +858,77 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		},
 		[refresh, refreshData]
 	);
+
+	/**
+	 * A decisão para uma encerrada com saldo (SPD-150). A lista mostrou antes o efeito em R$
+	 * (`closedDecisionEffect`); aqui ele acontece, sem gasto nem receita no histórico:
+	 *
+	 * - transferir: o encerramento do SPD-144 (`closeAccount`), uma transferência de hoje para
+	 *   a conta escolhida ou dela. No cartão devendo, a conta escolhida paga a fatura;
+	 * - reabrir: `reopenAccount`;
+	 * - zerar: a conta ganha um saldo de partida que a deixa em zero hoje (o passado dela some
+	 *   junto: o dinheiro não existe mais); o cartão recebe a fatura como paga fora do app (ou
+	 *   o crédito sai para fora), uma transferência de hoje com o outro lado vazio — mexer na
+	 *   âncora do cartão reescreveria as faturas dos meses fechados.
+	 *
+	 * Compra a revisar ou lançamento com data futura na conta recusam (o saldo ainda vai mudar),
+	 * como no encerrar; reabrir vale sempre.
+	 */
+	const settleClosedAccount = useCallback(
+		async (id: string, decision: ClosedSettlement) => {
+			const account = await getAccount(id);
+			if (!account || account.deletedAt || !account.archived) throw new Error('Conta encerrada não encontrada');
+			if (decision.kind === 'reopen') {
+				await reopenAccount(id);
+				return;
+			}
+			const plan = await planClose(id);
+			if (plan.kind === 'blocked' && plan.reason !== 'cardOwes') throw new Error(`Decisão recusada: ${plan.reason}`);
+			if (plan.kind === 'direct') {
+				await refresh();
+				return;
+			}
+			const today = todayISO();
+			const owes = plan.kind === 'blocked' || plan.direction === 'in';
+
+			if (decision.kind === 'transfer') {
+				if (plan.kind !== 'blocked') {
+					await closeAccount(id, decision.targetId);
+					return;
+				}
+				// O cartão devendo: a conta escolhida paga a fatura.
+				const payer = await getAccount(decision.targetId);
+				if (!payer || payer.deletedAt || payer.archived || payer.kind === 'credit_card' || payer.role === 'external') {
+					throw new Error('Pagar a fatura precisa de uma conta ativa');
+				}
+				await addTransfer({ fromAccountId: payer.id, toAccountId: id, amountCents: plan.amountCents, date: today, note: CLOSING_TRANSFER_NOTE });
+			} else if (account.kind === 'credit_card') {
+				await addTransfer({
+					fromAccountId: owes ? null : id,
+					toAccountId: owes ? id : null,
+					amountCents: plan.amountCents,
+					date: today,
+					note: CLOSING_TRANSFER_NOTE,
+				});
+			} else {
+				await setAccountBalanceToday(id, 0);
+			}
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[planClose, closeAccount, reopenAccount, refresh, refreshData]
+	);
+
+	const dismissRevivalNotices = useCallback(() => {
+		setRevivalNotices([]);
+		void clearRevivalNotices();
+	}, []);
+
+	// As encerradas com saldo que a lista já mostrou (só neste aparelho). Nulo até ler.
+	const [closedReviewSeen, setClosedReviewSeen] = useState<Set<string> | null>(null);
+	useEffect(() => {
+		void getClosedReviewSeen().then(setClosedReviewSeen);
+	}, []);
 
 	const adjustAccountMonth = useCallback(
 		async (id: string, input: { spentCents: number; balanceCents: number }) => {
@@ -1346,6 +1458,20 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		return { cashCents: overview.cashCents - withoutPending.cashCents, netCents: overview.netCents - withoutPending.netCents };
 	}, [accounts, balances, provisionalBalances, unassignedNetCents, overview]);
 
+	// O devido de cada cartão como o Patrimônio soma, para o efeito que a lista mostra.
+	const closedReview = useMemo(() => {
+		const cardOwed = new Map<string, number>();
+		for (const [cardId, summary] of cardSummaries) cardOwed.set(cardId, summary.owedCents);
+		return closedReviewItems(accounts, balances, cardOwed);
+	}, [accounts, balances, cardSummaries]);
+	const closedReviewUnseen = closedReviewSeen !== null && unseenClosedReview(closedReview, closedReviewSeen);
+	const markClosedReviewShown = useCallback(() => {
+		const ids = closedReview.map((item) => item.account.id);
+		if (ids.length === 0) return;
+		setClosedReviewSeen((current) => new Set([...(current ?? []), ...ids]));
+		void markClosedReviewSeen(ids);
+	}, [closedReview]);
+
 	const debitCards = useMemo<DebitCard[]>(() => {
 		const byKey = new Map<string, DebitCard>();
 		for (const account of bankAccounts) {
@@ -1422,6 +1548,12 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			planClose,
 			closeAccount,
 			reopenAccount,
+			closedReview,
+			settleClosedAccount,
+			closedReviewUnseen,
+			markClosedReviewShown,
+			revivalNotices,
+			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
 			addCardCharge,
@@ -1471,6 +1603,12 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			planClose,
 			closeAccount,
 			reopenAccount,
+			closedReview,
+			settleClosedAccount,
+			closedReviewUnseen,
+			markClosedReviewShown,
+			revivalNotices,
+			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
 			addCardCharge,
