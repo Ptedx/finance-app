@@ -18,6 +18,7 @@ import { getMonthName } from '../../utils/dateUtils';
 import type { Account } from '../../database/schema';
 import { formatCents } from '../../utils/money';
 import { useTourTarget } from '../tour/TourContext';
+import { SampleTag, useSampleHome } from '../tour/TrailSample';
 import CardFace from './CardFace';
 import DebitCardFace from './DebitCardFace';
 
@@ -35,6 +36,10 @@ import DebitCardFace from './DebitCardFace';
  * Acessibilidade: cada face é um botão com rótulo completo e "cartão 2 de 3"; os pontos
  * de paginação são decorativos e ficam fora do leitor de tela; no TalkBack e no
  * VoiceOver o gesto de próximo item percorre os cartões e rola a lista sozinho.
+ *
+ * Sem nenhum cartão, na Trilha 21 (SPD-160), a seção mostra o cartão de exemplo do SPD-147, com a
+ * fatura dele e o selo "Exemplo": os totais de cima são só os dele, tocar não abre nada, e os
+ * totais de verdade (`cardsTotals`, o Patrimônio, "Depois das faturas") nunca o veem.
  */
 
 const GUTTER = 16;
@@ -60,9 +65,10 @@ const CardsSection: React.FC = () => {
 		{ type: 'add' },
 	];
 	const cardCount = creditCards.length + debitCards.length;
+	const { card: sample } = useSampleHome({ card: isLoading || cardCount > 0 });
 	// A trilha da tela inicial (SPD-131c): o título com "Ver todos" e os totais; sem cartão, o
 	// "Adicionar cartão".
-	const headerTarget = useTourTarget(cardCount > 0 ? 'home.cards' : undefined);
+	const headerTarget = useTourTarget(cardCount > 0 || sample ? 'home.cards' : undefined);
 	const totalsTarget = useTourTarget('home.cardsTotals');
 	const addTarget = useTourTarget('home.cardsAdd');
 
@@ -79,6 +85,56 @@ const CardsSection: React.FC = () => {
 	if (isLoading) return null;
 
 	const hasCards = cardCount > 0;
+
+	if (sample) {
+		// Os totais do exemplo, do jeito de `cardsTotals`, só com o cartão de exemplo.
+		const { summary } = sample;
+		const toPay = summary.toPayCents;
+		const open = Math.max(0, summary.openInvoiceCents);
+		const available = summary.limitAvailableCents;
+		return (
+			<View style={styles.section}>
+				<View {...headerTarget} testID="home-sample-cards" style={styles.header}>
+					<Text style={styles.title} accessibilityRole="header">
+						{t('cards.sectionTitle')}
+					</Text>
+					<SampleTag />
+				</View>
+				<View
+					{...totalsTarget}
+					testID="home-sample-cards-totals"
+					style={styles.totals}
+					accessible
+					accessibilityLabel={[
+						t('trails.sample.tag'),
+						toPay > 0 ? `${t('cards.toPayNow')} ${formatCents(toPay)}` : null,
+						`${t('cards.openInvoices')} ${formatCents(open)}`,
+						available !== null ? `${t('cards.limitAvailable')} ${formatCents(available)}` : null,
+					]
+						.filter(Boolean)
+						.join('. ')}
+				>
+					{toPay > 0 ? (
+						<View style={styles.total}>
+							<Text style={styles.totalLabel}>{t('cards.toPayNow')}</Text>
+							<Text style={[styles.totalValue, styles.warning]}>{formatCents(toPay)}</Text>
+						</View>
+					) : null}
+					<View style={styles.total}>
+						<Text style={styles.totalLabel}>{t('cards.openInvoices')}</Text>
+						<Text style={styles.totalValue}>{formatCents(open)}</Text>
+					</View>
+					{available !== null ? (
+						<View style={styles.total}>
+							<Text style={styles.totalLabel}>{t('cards.limitAvailable')}</Text>
+							<Text style={styles.totalValue}>{formatCents(available)}</Text>
+						</View>
+					) : null}
+				</View>
+				<CardFace card={sample.card} summary={summary} style={{ width: cardWidth }} />
+			</View>
+		);
+	}
 
 	return (
 		<View style={styles.section}>

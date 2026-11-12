@@ -1,13 +1,17 @@
 import { ambiguityOfReason } from '../ambiguityReasons';
 import { isBalanceNeverInformed } from '../balanceUnset';
+import { billStatus } from '../billReminders';
+import { canUndoMonth, homeBills, monthBills, overdueBills, payableMonth } from '../billRules';
 import { buildCardSummary } from '../cardMath';
 import { debtStateOn, termsOf } from '../debt';
 import {
 	isSampleId,
+	SAMPLE_BILL_VALUES,
 	SAMPLE_IDS,
 	type SampleCaptureNames,
 	type SampleNames,
 	sampleAccount,
+	sampleBills,
 	sampleCaptures,
 	sampleDebt,
 	sampleTransaction,
@@ -336,5 +340,59 @@ describe('a revisão de exemplo (SPD-159)', () => {
 		// Todos chegaram antes de agora.
 		for (const capture of [purchase, duplicate, incomplete])
 			expect(new Date(capture.postedAt).getTime()).toBeLessThan(NOW.getTime());
+	});
+});
+
+describe('as contas a pagar de exemplo (SPD-160)', () => {
+	const billNames = { bill: 'Aluguel exemplo', billPaid: 'Internet exemplo' };
+
+	it('ids de exemplo; "Aluguel exemplo" em aberto, R$ 1.500, na conta de exemplo; "Internet exemplo" paga neste mês', () => {
+		const [open, paid] = sampleBills(billNames, TODAY);
+		expect([open.id, paid.id]).toEqual([SAMPLE_IDS.bill, SAMPLE_IDS.billPaid]);
+		expect([open.id, paid.id].every(isSampleId)).toBe(true);
+		expect(open).toMatchObject({
+			name: 'Aluguel exemplo',
+			dueDay: 10,
+			amountCents: 150_000,
+			accountId: SAMPLE_IDS.account,
+			debtId: null,
+			active: true,
+			paidThrough: '2026-10',
+		});
+		expect(paid).toMatchObject({
+			name: 'Internet exemplo',
+			amountCents: 10_000,
+			paidThrough: '2026-11',
+		});
+		expect(TRAIL_SAMPLE_RECORDS.bill).toEqual([{ id: SAMPLE_IDS.bill }]);
+	});
+
+	it.each([
+		'2026-11-07',
+		'2026-11-28',
+		'2026-11-29',
+		'2026-11-30',
+		'2026-12-31',
+		'2026-02-27',
+		'2028-02-29',
+		'2027-01-01',
+	])('em %s: o aluguel tem "Já paguei" neste mês, nunca atrasado, e está no card da tela inicial; a internet tem "Desfazer"', (today) => {
+		const month = today.slice(0, 7);
+		const [open, paid] = sampleBills(billNames, today);
+		expect(['upcoming', 'due_today']).toContain(billStatus(open, month, today));
+		expect(payableMonth(open, month)).toBe(month);
+		expect(billStatus(paid, month, today)).toBe('paid');
+		expect(canUndoMonth(paid, month)).toBe(true);
+		expect(homeBills([open, paid], today).rows.map((row) => row.bill.id)).toContain(
+			SAMPLE_IDS.bill
+		);
+		// O "Falta pagar" do exemplo é só o aluguel; nada em atraso.
+		const shown = monthBills([open, paid], today);
+		expect(shown).toMatchObject({
+			dueCents: SAMPLE_BILL_VALUES.openCents,
+			lateCount: 0,
+			variableCount: 0,
+		});
+		expect(overdueBills([open, paid], month).billCount).toBe(0);
 	});
 });

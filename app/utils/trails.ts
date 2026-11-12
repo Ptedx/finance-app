@@ -95,7 +95,13 @@ export type RecordKind =
 	| 'pending'
 	| 'capture'
 	| 'debt'
-	| 'bill';
+	| 'bill'
+	// As condições das Trilhas 8 e 21 (SPD-160): `{}` quando o usuário tem conta a pagar, cartão
+	// (crédito ou débito), conta, lançamento sem conta. Sem o dado, o passo vai para o exemplo.
+	| 'anyBill'
+	| 'anyCard'
+	| 'anyAccount'
+	| 'unassigned';
 
 /** Os parâmetros da rota de um registro (`{ id }`, ou `{ accountId, last4 }` no débito). */
 export type TrailParams = Readonly<Record<string, string>>;
@@ -178,8 +184,8 @@ export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
 		record: 'debt',
 		keep: true,
 	},
-	// Contas a pagar (SPD-131c): a lista, o cadastro e a edição de uma conta a pagar. Não há
-	// conta a pagar de exemplo: sem nenhuma, o passo da edição mostra o texto sem apontar.
+	// Contas a pagar (SPD-131c): a lista, o cadastro e a edição de uma conta a pagar. Sem nenhuma,
+	// a edição abre a conta a pagar de exemplo (SPD-160).
 	bills: { path: '/bills', report: 'bills', parent: 'settings' },
 	billNew: { path: '/bills/new', report: 'billEdit', parent: 'bills', keep: true },
 	billEdit: {
@@ -570,12 +576,20 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			s('10', 'reports', 'reports.export'),
 		],
 	},
-	// Trilha 8 — Contas a pagar e lembretes (SPD-131c). Começa em Início › "Contas do mês".
+	// Trilha 8 — Contas a pagar e lembretes (SPD-131c). Começa em Início › "Contas do mês". Sem
+	// nenhuma conta a pagar, os passos do card, do "Já paguei", do "Desfazer", da lista e da edição
+	// andam nas contas a pagar de exemplo (SPD-160): "Aluguel exemplo", em aberto, e "Internet
+	// exemplo", já paga — o estado depois do "Já paguei", com o "Desfazer".
 	bills: {
 		id: 'bills',
 		steps: [
-			// Sem nenhuma conta a pagar, o card vira o convite: aponta o "Cadastrar", com o texto próprio.
-			s('1', 'home', 'home.billsCard', { missing: 'alt', altTargets: 'home.billsInvite' }),
+			// O card; sem nenhuma conta a pagar, o de exemplo. Sem os dois (o plano sem exemplos), o
+			// convite: aponta o "Cadastrar", com o texto próprio.
+			s('1', 'home', 'home.billsCard', {
+				record: 'anyBill',
+				missing: 'alt',
+				altTargets: 'home.billsInvite',
+			}),
 			// "Cadastrar conta" (lista vazia) ou o "+" do topo, que fica fora da rolagem.
 			s('2', 'bills', 'bills.emptyAdd|bills.add', { fixed: true }),
 			s('3', 'billNew', 'billEdit.name+billEdit.dueDay'),
@@ -584,14 +598,14 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			s('5', 'billNew', 'billEdit.account+billEdit.category'),
 			s('6', 'billNew', 'billEdit.match'),
 			s('7', 'billNew', 'billEdit.dueDay', attention),
-			// O "Já paguei" e o "Desfazer" da primeira conta que tem o botão; sem nenhuma, o texto
-			// sem apontar.
-			s('8', 'bills', 'bills.pay'),
-			s('9', 'bills', 'bills.pay', attention),
-			s('10', 'bills', 'bills.undo'),
-			s('11', 'bills', 'bills.list', attention),
-			// "Desativar" e "Apagar", juntos. A conta de uma dívida ativa não tem nenhum dos dois:
-			// o passo mostra o texto sem apontar.
+			// O "Já paguei" e o "Desfazer" da primeira conta que tem o botão; sem nenhuma conta a
+			// pagar, os das contas de exemplo. Com contas e nenhuma com o botão, o texto sem apontar.
+			s('8', 'bills', 'bills.pay', { record: 'anyBill' }),
+			s('9', 'bills', 'bills.pay', { ...attention, record: 'anyBill' }),
+			s('10', 'bills', 'bills.undo', { record: 'anyBill' }),
+			s('11', 'bills', 'bills.list', { ...attention, record: 'anyBill' }),
+			// "Desativar" e "Apagar", juntos; sem nenhuma conta a pagar, os da de exemplo. A conta de
+			// uma dívida ativa não tem nenhum dos dois: o passo mostra o texto sem apontar.
 			s('12', 'billEdit', 'billEdit.actions'),
 		],
 	},
@@ -611,22 +625,31 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			text('7', 'settings', attention),
 		],
 	},
-	// Trilha 21 — Tela inicial: o que cada bloco mostra (SPD-131c). Começa no Início. Os blocos
-	// que só existem às vezes ("Revisar", "Proteja seus dados", "Sem conta") são olhados na tela
-	// antes do primeiro balão: sem eles, os passos saem.
+	// Trilha 21 — Tela inicial: o que cada bloco mostra (SPD-131c). Começa no Início. Cada bloco
+	// que falta aparece de exemplo, marcado "Exemplo" (SPD-160): a faixa "Revisar" com um aviso,
+	// as contas a pagar, um cartão, uma conta e a linha "Sem conta". "Proteja seus dados" não tem
+	// exemplo — só existe para quem não tem conta, e aí já aparece de verdade —: sem ele, o passo
+	// sai. Sem os exemplos (o plano dos testes), "Revisar" e "Sem conta" saem, e Cartões e Contas
+	// mostram o texto sem apontar.
 	home: {
 		id: 'home',
 		steps: [
-			s('1', 'home', 'home.review', { missing: 'skip' }),
+			s('1', 'home', 'home.review', { record: 'pending', missing: 'skip' }),
 			s('2', 'home', 'home.protect', { missing: 'skip' }),
-			s('3', 'home', 'home.billsCard', { missing: 'alt', altTargets: 'home.billsInvite' }),
+			s('3', 'home', 'home.billsCard', {
+				record: 'anyBill',
+				missing: 'alt',
+				altTargets: 'home.billsInvite',
+			}),
 			s('4', 'home', 'month.header'),
-			// Sem cartão, aponta "Adicionar cartão", com o mesmo texto.
-			s('5', 'home', 'home.cards+home.cardsTotals|home.cardsAdd'),
-			// Sem conta, aponta "Adicionar conta", com o mesmo texto.
-			s('6', 'home', 'home.accounts+home.accountsTotals|home.accountsAdd'),
-			s('7', 'home', 'home.unassigned', { missing: 'skip' }),
-			s('8', 'home', 'home.unassigned', { ...attention, missing: 'skip' }),
+			// O "Adicionar cartão" e o "Adicionar conta" ficam como o `[sem dado]` com o mesmo texto,
+			// para quando o bloco de exemplo não aparecer.
+			s('5', 'home', 'home.cards+home.cardsTotals|home.cardsAdd', { record: 'anyCard' }),
+			s('6', 'home', 'home.accounts+home.accountsTotals|home.accountsAdd', {
+				record: 'anyAccount',
+			}),
+			s('7', 'home', 'home.unassigned', { record: 'unassigned', missing: 'skip' }),
+			s('8', 'home', 'home.unassigned', { ...attention, record: 'unassigned', missing: 'skip' }),
 			// O "+" e as abas ficam fora da rolagem.
 			s('9', 'home', 'home.add+home.tabs', { fixed: true }),
 		],

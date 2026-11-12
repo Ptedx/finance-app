@@ -17,12 +17,18 @@
  * (SPD-159) não tem id na rota: com o exemplo ligado e a fila vazia, ela desenha os avisos de
  * `sampleCaptures`, com os mesmos botões sem efeito.
  *
+ * As contas a pagar (SPD-160) seguem os dois jeitos: a edição abre pelo id de exemplo
+ * (`/bills/edit/exemplo-conta-a-pagar`), e a lista de Contas a pagar e o card "Contas do mês" da
+ * tela inicial, que não abrem por id, desenham `sampleBills` no lugar da lista vazia enquanto a
+ * Trilha 8 (ou a 21) está aberta. A tela inicial da Trilha 21 faz o mesmo com cada bloco que
+ * falta: a faixa "Revisar", o cartão, a conta e a linha "Sem conta" de exemplo.
+ *
  * Os valores são inventados e redondos; os nomes vêm traduzidos de quem chama (`names`).
  */
 
-import type { Account, Capture, Debt, Transaction } from '../database/schema';
+import type { Account, Bill, Capture, Debt, Transaction } from '../database/schema';
 import { ambiguousReason } from './ambiguityReasons';
-import { addDays } from './dateUtils';
+import { addDays, monthKeyOf, shiftMonthKey } from './dateUtils';
 import { impliedRateBp } from './debt';
 import type { TrailRecords } from './trails';
 
@@ -40,6 +46,8 @@ export const SAMPLE_IDS = {
 	captureDuplicate: 'exemplo-aviso-repetido',
 	captureIncomplete: 'exemplo-aviso-incompleto',
 	category: 'exemplo-categoria',
+	bill: 'exemplo-conta-a-pagar',
+	billPaid: 'exemplo-conta-a-pagar-paga',
 } as const;
 
 /** O parâmetro da rota que abre um formulário de cadastro já preenchido com o exemplo. */
@@ -61,6 +69,12 @@ export const isSampleForm = (value: unknown): boolean => value === '1';
  * exemplo dela não entra em total nenhum. Sem nada para revisar, a Trilha 7 anda pela revisão
  * de sempre (`{}`, sem parâmetro) com os passos dos avisos marcados `sample`, e a tela, com o
  * exemplo ligado e a fila vazia, desenha os avisos de exemplo (`sampleCaptures`).
+ *
+ * As condições das Trilhas 8 e 21 (SPD-160) também: `anyBill`, `anyCard`, `anyAccount` e
+ * `unassigned` dizem só "há conta a pagar, cartão, conta, lançamento sem conta" (`{}`). Sem o
+ * dado, os passos da tela inicial e da lista de Contas a pagar ficam marcados `sample`, na
+ * mesma tela, e ela desenha o bloco de exemplo — com valores só do exemplo, fora de todo total
+ * de verdade. A edição de uma conta a pagar abre a de exemplo pelo id (`bill`).
  */
 export const TRAIL_SAMPLE_RECORDS: TrailRecords = {
 	account: [{ id: SAMPLE_IDS.account }],
@@ -70,6 +84,11 @@ export const TRAIL_SAMPLE_RECORDS: TrailRecords = {
 	transaction: [{ id: SAMPLE_IDS.transaction }],
 	debt: [{ id: SAMPLE_IDS.debt }],
 	pending: [{}],
+	bill: [{ id: SAMPLE_IDS.bill }],
+	anyBill: [{}],
+	anyCard: [{}],
+	anyAccount: [{}],
+	unassigned: [{}],
 };
 
 /** Os nomes do exemplo, no idioma do app (`trails.sample.*`). */
@@ -336,6 +355,67 @@ export const sampleCaptures = (names: SampleCaptureNames, now: Date): Capture[] 
 			amountCents: SAMPLE_CAPTURE_VALUES.creditCents,
 			counterparty: names.store,
 			reason: ambiguousReason('credit_no_last4'),
+		},
+	];
+};
+
+/** Os nomes das contas a pagar de exemplo (SPD-160), no idioma do app (`trails.sample.*`). */
+export interface SampleBillNames {
+	/** A conta em aberto, com "Já paguei". */
+	bill: string;
+	/** A conta já paga neste mês, com "Desfazer". */
+	billPaid: string;
+}
+
+/** Os números das contas a pagar de exemplo, redondos. */
+export const SAMPLE_BILL_VALUES = {
+	openCents: 150_000,
+	/** A conta em aberto vence daqui a 3 dias (presa ao fim do mês): nunca fica atrasada. */
+	openDaysAhead: 3,
+	paidCents: 10_000,
+	paidDueDay: 5,
+} as const;
+
+/**
+ * As contas a pagar de exemplo (SPD-160), na ordem da lista:
+ * 1. "Aluguel exemplo", em aberto neste mês e vencendo daqui a 3 dias (no fim do mês, no último
+ *    dia): tem "Já paguei", entra no card da tela inicial e no "Falta pagar" do exemplo;
+ * 2. "Internet exemplo", já paga neste mês: o estado depois do "Já paguei", com o "Desfazer".
+ *
+ * As duas saem da conta de exemplo e são cadastradas à mão (sem dívida): a edição tem
+ * "Desativar" e "Apagar". Só objetos: quem desenha não grava, não soma e não agenda nada disto.
+ */
+export const sampleBills = (names: SampleBillNames, today: string): Bill[] => {
+	const month = monthKeyOf(today);
+	const day = Number(today.slice(8, 10));
+	const base = {
+		accountId: SAMPLE_IDS.account,
+		category: null,
+		matchHint: null,
+		debtId: null,
+		paidByRef: null,
+		active: true,
+		updatedAt: '',
+	};
+	return [
+		{
+			...base,
+			id: SAMPLE_IDS.bill,
+			name: names.bill,
+			// O dia 31 num mês mais curto vale o último dia: no fim do mês, vence hoje.
+			dueDay: Math.min(day + SAMPLE_BILL_VALUES.openDaysAhead, 31),
+			amountCents: SAMPLE_BILL_VALUES.openCents,
+			paidThrough: shiftMonthKey(month, -1),
+			sortOrder: 0,
+		},
+		{
+			...base,
+			id: SAMPLE_IDS.billPaid,
+			name: names.billPaid,
+			dueDay: SAMPLE_BILL_VALUES.paidDueDay,
+			amountCents: SAMPLE_BILL_VALUES.paidCents,
+			paidThrough: month,
+			sortOrder: 1,
 		},
 	];
 };

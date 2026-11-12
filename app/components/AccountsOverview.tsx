@@ -6,12 +6,14 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
+import { summarizeAccounts } from '../utils/accountMath';
 import { showsBalanceUnset } from '../utils/balanceUnset';
 import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { formatCents } from '../utils/money';
 import type { EnvelopeMonth } from '../utils/monthOverview';
 import { ACCOUNT_KIND_ICONS } from './AccountPicker';
 import { useTourTarget } from './tour/TourContext';
+import { SampleTag, useSampleHome } from './tour/TrailSample';
 
 /**
  * "Contas" na tela inicial. Só contas: cartões têm a própria seção, com limite e fatura.
@@ -23,6 +25,11 @@ import { useTourTarget } from './tour/TourContext';
  *
  * Lista vertical: cada linha é um botão de 56 pontos com rótulo completo. Valores
  * negativos têm sinal no texto, não só cor.
+ *
+ * Na Trilha 21 (SPD-160), sem nenhuma conta, o bloco mostra a conta de exemplo, com "Em caixa" e
+ * "Depois das faturas" só do exemplo; sem lançamento sem conta, a linha "Sem conta" de exemplo.
+ * Os dois com o selo "Exemplo" e sem abrir nada. Os totais de verdade (`overview`) não mudam: o
+ * exemplo nunca entra no `AccountsContext`.
  */
 
 const ACCENT = '#15E8FE';
@@ -139,16 +146,118 @@ export const AccountRow: React.FC<AccountRowProps> = ({ account, balanceCents, e
 const AccountsOverview: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { bankAccounts, balances, overview, provisionalOverview, month, unassignedNetCents, isLoading } = useAccounts();
+	const {
+		bankAccounts,
+		balances,
+		overview,
+		provisionalOverview,
+		month,
+		unassignedNetCents,
+		creditCards = [],
+		debitCards = [],
+		isLoading,
+	} = useAccounts();
 	const dismissedBalanceUnset = useDismissedBalanceUnset();
+	// A Trilha 21 sem conta ou sem "Sem conta" (SPD-160): a conta, a linha e, para o "Depois das
+	// faturas" do exemplo, o cartão de exemplo quando também não há cartão.
+	const sample = useSampleHome({
+		account: isLoading || bankAccounts.length > 0,
+		card: isLoading || creditCards.length + debitCards.length > 0,
+		unassigned: isLoading || unassignedNetCents !== 0,
+	});
 	// A trilha da tela inicial (SPD-131c): o título com "Gerenciar" e os totais; sem conta, o
 	// "Adicionar conta"; e a linha "Sem conta".
-	const headerTarget = useTourTarget(bankAccounts.length > 0 ? 'home.accounts' : undefined);
+	const headerTarget = useTourTarget(
+		bankAccounts.length > 0 || sample.account ? 'home.accounts' : undefined
+	);
 	const totalsTarget = useTourTarget('home.accountsTotals');
 	const addTarget = useTourTarget('home.accountsAdd');
 	const unassignedTarget = useTourTarget('home.unassigned');
 
 	if (isLoading) return null;
+
+	/**
+	 * "Sem conta": a de verdade quando há lançamento sem conta; sem nenhum, na Trilha 21, a de
+	 * exemplo (o lançamento de exemplo), com o selo e sem abrir nada.
+	 */
+	const unassignedCents =
+		unassignedNetCents !== 0 ? unassignedNetCents : (sample.unassignedCents ?? 0);
+	const unassignedSample = unassignedNetCents === 0 && sample.unassignedCents !== undefined;
+	const unassignedRow =
+		unassignedCents !== 0 ? (
+			<Pressable
+				{...unassignedTarget}
+				testID={unassignedSample ? 'home-sample-unassigned' : undefined}
+				onPress={() => {
+					if (!unassignedSample) router.push('/accounts/unassigned');
+				}}
+				accessibilityRole="button"
+				accessibilityLabel={`${unassignedSample ? `${t('trails.sample.tag')}. ` : ''}${t('accounts.unassigned')}, ${formatCents(unassignedCents)}`}
+				accessibilityHint={unassignedSample ? undefined : t('accounts.unassignedAction')}
+				style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+			>
+				<View style={[styles.icon, styles.iconMuted]}>
+					<Ionicons name="help-outline" size={20} color="#FFFFFF" />
+				</View>
+				<View style={styles.info}>
+					<Text style={styles.name}>{t('accounts.unassigned')}</Text>
+					<Text style={styles.secondary}>{t('accounts.unassignedAction')}</Text>
+				</View>
+				{unassignedSample ? <SampleTag /> : null}
+				<Text style={[styles.amount, unassignedCents < 0 && styles.negative]}>
+					{`${unassignedCents < 0 ? '− ' : ''}${formatCents(Math.abs(unassignedCents))}`}
+				</Text>
+			</Pressable>
+		) : null;
+
+	if (sample.account) {
+		// Sem nenhuma conta: a conta de exemplo, com "Em caixa" e "Depois das faturas" só do exemplo
+		// (a conta, a linha "Sem conta" de exemplo e o cartão de exemplo, quando ele aparece).
+		const sampleAccount = sample.account;
+		const sampleOverview = summarizeAccounts(
+			sample.card ? [sampleAccount, sample.card.card] : [sampleAccount],
+			new Map(),
+			unassignedSample ? unassignedCents : 0
+		);
+		return (
+			<View style={styles.section}>
+				<View {...headerTarget} testID="home-sample-accounts" style={styles.header}>
+					<Text style={styles.title} accessibilityRole="header">
+						{t('accounts.groupAccounts')}
+					</Text>
+					<SampleTag />
+				</View>
+				<View style={styles.card}>
+					<View
+						{...totalsTarget}
+						testID="home-sample-accounts-totals"
+						style={styles.totals}
+						accessible
+						accessibilityLabel={`${t('trails.sample.tag')}. ${t('accounts.cash')} ${formatCents(sampleOverview.cashCents)}. ${t('accounts.afterCards')} ${formatCents(sampleOverview.netCents)}`}
+					>
+						<View style={styles.total}>
+							<Text style={styles.totalLabel}>{t('accounts.cash')}</Text>
+							<Text style={[styles.totalValue, sampleOverview.cashCents < 0 && styles.negative]}>
+								{formatCents(sampleOverview.cashCents)}
+							</Text>
+						</View>
+						<View style={styles.total}>
+							<Text style={styles.totalLabel}>{t('accounts.afterCards')}</Text>
+							<Text style={[styles.totalValue, sampleOverview.netCents < 0 && styles.negative]}>
+								{formatCents(sampleOverview.netCents)}
+							</Text>
+						</View>
+					</View>
+					<AccountRow
+						account={sampleAccount}
+						balanceCents={sampleAccount.openingBalanceCents}
+						onPress={() => {}}
+					/>
+					{unassignedRow}
+				</View>
+			</View>
+		);
+	}
 
 	// "Em caixa" e "Depois das faturas" já contam as compras a revisar (contas e cartões).
 	const pendingOf = (cents: number) =>
@@ -227,27 +336,7 @@ const AccountsOverview: React.FC = () => {
 							/>
 						))}
 
-						{unassignedNetCents !== 0 && (
-							<Pressable
-								{...unassignedTarget}
-								onPress={() => router.push('/accounts/unassigned')}
-								accessibilityRole="button"
-								accessibilityLabel={`${t('accounts.unassigned')}, ${formatCents(unassignedNetCents)}`}
-								accessibilityHint={t('accounts.unassignedAction')}
-								style={({ pressed }) => [styles.row, pressed && styles.pressed]}
-							>
-								<View style={[styles.icon, styles.iconMuted]}>
-									<Ionicons name="help-outline" size={20} color="#FFFFFF" />
-								</View>
-								<View style={styles.info}>
-									<Text style={styles.name}>{t('accounts.unassigned')}</Text>
-									<Text style={styles.secondary}>{t('accounts.unassignedAction')}</Text>
-								</View>
-								<Text style={[styles.amount, unassignedNetCents < 0 && styles.negative]}>
-									{`${unassignedNetCents < 0 ? '− ' : ''}${formatCents(Math.abs(unassignedNetCents))}`}
-								</Text>
-							</Pressable>
-						)}
+						{unassignedRow}
 					</>
 				)}
 			</View>

@@ -2445,6 +2445,8 @@ account: {
 			transaction: 'Spesa esempio',
 			wallet: 'Portafoglio esempio',
 			store: 'Farmacia esempio',
+			bill: 'Affitto esempio',
+			billPaid: 'Internet esempio',
 			category: 'Spesa',
 			purchaseTitle: 'Acquisto approvato',
 			purchaseText: 'Acquisto di {{amount}} con carta di debito approvato presso {{merchant}}.',

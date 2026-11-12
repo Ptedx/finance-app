@@ -1,16 +1,17 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import type React from 'react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BillStatusPill from '../components/bills/BillStatusPill';
 import HelpButton from '../components/tour/HelpButton';
 import { useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, SampleTag, useSampleBills } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { type BillPaymentPlan, markPaidTransactionId, useBills } from '../contexts/BillsContext';
-import type { Bill } from '../database/schema';
+import type { Bill, BillPayment } from '../database/schema';
 import { paymentFor } from '../utils/billPayments';
 import { BILL_OVERDUE_MONTHS } from '../utils/billReminders';
 import {
@@ -19,6 +20,7 @@ import {
 	canUndoMonth,
 	filterMonthRows,
 	type MonthBillRow,
+	monthBills,
 	overdueBills,
 	payableMonth,
 } from '../utils/billRules';
@@ -61,7 +63,16 @@ import { formatCents } from '../utils/money';
  * O "?" do topo abre a trilha das contas a pagar (SPD-131c) no passo desta tela. Os passos
  * apontam o "+" (ou o "Cadastrar conta"), o "Já paguei" e o "Desfazer" da primeira conta que
  * tem cada um, e a lista.
+ *
+ * Sem nenhuma conta a pagar, com a trilha aberta, a tela mostra as contas a pagar de exemplo
+ * (SPD-160) no lugar da lista vazia, com a faixa e o selo "Exemplo": "Aluguel exemplo", em aberto,
+ * com "Já paguei", e "Internet exemplo", já paga, com "Desfazer". O total, os status e as setas do
+ * mês saem só delas; "Já paguei", "Desfazer", "Não vou pagar", "Pagar só" e tocar na conta não
+ * fazem nada — nada passa pelo `BillsContext`, que grava, lança e agenda os lembretes.
  */
+
+/** O exemplo não tem mês registrado. */
+const NO_PAYMENTS: readonly BillPayment[] = [];
 
 /** A escolha na pergunta de lançar: lançar, só marcar, ou nada. */
 type PostChoice = 'post' | 'onlyMark' | 'cancel';
@@ -100,8 +111,26 @@ const subtitleOf = (
 const BillsScreen: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { bills, payments, month, today, isLoading, planPayment, markPaid, skipMonth, undoPaid } =
-		useBills();
+	const {
+		bills: ownBills,
+		payments: ownPayments,
+		month: ownMonth,
+		today,
+		isLoading,
+		planPayment,
+		markPaid,
+		skipMonth,
+		undoPaid,
+	} = useBills();
+	// As contas a pagar de exemplo (SPD-160): só na trilha, e só sem nenhuma conta de verdade.
+	const sampleBills = useSampleBills(isLoading || ownBills.some((bill) => !bill.deletedAt), today);
+	const sample = sampleBills !== undefined;
+	const bills = sampleBills ?? ownBills;
+	const payments = sample ? NO_PAYMENTS : ownPayments;
+	const month = useMemo(
+		() => (sampleBills ? monthBills(sampleBills, today) : ownMonth),
+		[sampleBills, today, ownMonth]
+	);
 	const { accounts } = useAccounts();
 	const [busyId, setBusyId] = useState<string | null>(null);
 	// Quantos meses longe do atual (0 = o atual): segue o mês certo quando o dia vira.
@@ -145,8 +174,11 @@ const BillsScreen: React.FC = () => {
 			: null;
 
 	const inactive = bills.filter((bill) => !bill.active);
-	const openBill = (bill: Bill) =>
+	const openBill = (bill: Bill) => {
+		// A conta de exemplo não abre: a trilha é quem leva à edição dela.
+		if (sample) return;
 		router.push({ pathname: '/bills/edit/[id]', params: { id: bill.id } });
+	};
 
 	/**
 	 * A ação de uma linha no mês mostrado: "Já paguei" no mês mais antigo em aberto da conta (e,
@@ -341,6 +373,8 @@ const BillsScreen: React.FC = () => {
 	};
 
 	const toggle = async (row: MonthBillRow) => {
+		// "Já paguei" e "Desfazer" do exemplo: sem efeito.
+		if (sample) return;
 		setBusyId(row.bill.id);
 		try {
 			if (row.status === 'skipped') {
@@ -369,6 +403,7 @@ const BillsScreen: React.FC = () => {
 
 	/** A ação de baixo (SPD-146): pular o mês mostrado, ou pagar só ele fora de ordem. */
 	const runSecondary = async (row: MonthBillRow, kind: 'skip' | 'payOnly') => {
+		if (sample) return;
 		setBusyId(row.bill.id);
 		try {
 			if (kind === 'skip') await skip(row.bill, shownKey);
@@ -413,6 +448,7 @@ const BillsScreen: React.FC = () => {
 				</Pressable>
 			</View>
 
+			{sample ? <SampleBanner /> : null}
 			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{empty ? (
 					<View style={styles.emptyBox}>
@@ -590,7 +626,14 @@ const BillsScreen: React.FC = () => {
 									<Pressable
 										onPress={() => openBill(row.bill)}
 										accessibilityRole="button"
-										accessibilityLabel={`${row.bill.name}, ${subtitle}, ${t(`bills.status.${row.status}`)}`}
+										accessibilityLabel={[
+											sample ? t('trails.sample.tag') : null,
+											row.bill.name,
+											subtitle,
+											t(`bills.status.${row.status}`),
+										]
+											.filter(Boolean)
+											.join(', ')}
 										style={({ pressed }) => [styles.rowMain, pressed && styles.pressed]}
 									>
 										<View style={styles.rowText}>
@@ -599,6 +642,7 @@ const BillsScreen: React.FC = () => {
 											</Text>
 											<Text style={styles.rowSub}>{subtitle}</Text>
 										</View>
+										{sample ? <SampleTag /> : null}
 										<BillStatusPill status={row.status} />
 									</Pressable>
 									{action.blockedBy ? (

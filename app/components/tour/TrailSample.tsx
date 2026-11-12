@@ -3,7 +3,8 @@ import type React from 'react';
 import { createContext, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
-import type { Account, Capture, Category, Debt, Transaction } from '../../database/schema';
+import type { Account, Bill, Capture, Category, Debt, Transaction } from '../../database/schema';
+import { buildCardSummary, type CardSummary } from '../../utils/cardMath';
 import { todayISO } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import {
@@ -11,12 +12,16 @@ import {
 	isSampleId,
 	SAMPLE_CAPTURE_VALUES,
 	SAMPLE_IDS,
+	SAMPLE_VALUES,
+	type SampleBillNames,
 	type SampleNames,
 	sampleAccount,
+	sampleBills,
 	sampleCaptures,
 	sampleDebt,
 	sampleTransaction,
 } from '../../utils/trailSample';
+import type { TrailId } from '../../utils/trails';
 
 /**
  * O exemplo das trilhas na tela (SPD-147). O `TourProvider` liga este contexto enquanto uma
@@ -26,14 +31,32 @@ import {
  * da captura (SPD-159) não abre por id: com o exemplo ligado e a fila vazia, ela lê daqui os
  * avisos de exemplo (`useSampleReview`).
  *
+ * As contas a pagar e a tela inicial (SPD-160) também não abrem por id: com a Trilha 8 ou a 21
+ * aberta e sem conta a pagar, a lista e o card "Contas do mês" leem daqui as contas de exemplo
+ * (`useSampleBills`); com a 21, cada bloco da tela inicial que falta lê daqui o seu exemplo. Por
+ * isso o contexto guarda qual trilha está aberta, e não só que há uma: o "+" (Trilha 5) e a
+ * revisão (Trilha 7) passam pela tela inicial e não a enchem de exemplo.
+ *
  * Fora da trilha, ou sem o `TourProvider` (os testes das telas), os ganchos devolvem nada e a
  * tela é a de sempre. Nada aqui grava: o exemplo é montado na hora, só em memória.
  */
 
-export const TrailSampleContext = createContext(false);
+/** A trilha aberta que mostra exemplo agora; nula sem nenhuma. */
+export const TrailSampleContext = createContext<TrailId | null>(null);
 
 /** Há uma trilha mostrando exemplo agora. */
-export const useTrailSampleOn = (): boolean => useContext(TrailSampleContext);
+export const useTrailSampleOn = (): boolean => useContext(TrailSampleContext) !== null;
+
+/** A trilha aberta com exemplo é uma destas (SPD-160). */
+export const useTrailSampleFor = (trails: readonly TrailId[]): boolean => {
+	const open = useContext(TrailSampleContext);
+	return open !== null && trails.includes(open);
+};
+
+/** As trilhas que mostram as contas a pagar de exemplo: a 8 e a 21, que passa pelo card. */
+const BILL_TRAILS: readonly TrailId[] = ['bills', 'home'];
+/** A trilha que mostra os blocos de exemplo da tela inicial: a 21. */
+const HOME_TRAILS: readonly TrailId[] = ['home'];
 
 /**
  * Os nomes no idioma do app. O memo vai pelos textos, não pelo `t`: um `t` novo a cada desenho
@@ -176,6 +199,98 @@ export const useSampleReview = (hasOwn: boolean): SampleReview | undefined => {
 	);
 };
 
+const useSampleBillNames = (): SampleBillNames => {
+	const { t } = useTranslation();
+	const bill = t('trails.sample.bill');
+	const billPaid = t('trails.sample.billPaid');
+	return useMemo(() => ({ bill, billPaid }), [bill, billPaid]);
+};
+
+/**
+ * As contas a pagar de exemplo (SPD-160), enquanto a Trilha 8 ou a 21 está aberta e o usuário
+ * não tem nenhuma (`hasOwn`: tem alguma, ou a lista ainda está carregando). O "Falta pagar" e os
+ * status que a tela mostra com elas saem só delas: o `BillsContext`, que soma, grava e agenda os
+ * lembretes, nunca as vê.
+ */
+export const useSampleBills = (hasOwn: boolean, today: string): Bill[] | undefined => {
+	const show = useTrailSampleFor(BILL_TRAILS) && !hasOwn;
+	const names = useSampleBillNames();
+	return useMemo(() => (show ? sampleBills(names, today) : undefined), [show, names, today]);
+};
+
+/** A conta a pagar de exemplo deste id (a edição que a trilha abre), enquanto a trilha a mostra. */
+export const useSampleBill = (id: string | undefined): Bill | undefined => {
+	const on = useTrailSampleOn();
+	const names = useSampleBillNames();
+	const today = todayISO();
+	return useMemo(
+		() =>
+			on && isSampleId(id) ? sampleBills(names, today).find((bill) => bill.id === id) : undefined,
+		[on, id, names, today]
+	);
+};
+
+/** O cartão de exemplo da tela inicial e a fatura dele, como a tela do cartão de exemplo mostra. */
+export interface SampleHomeCard {
+	card: Account;
+	summary: CardSummary;
+}
+
+/**
+ * O que a tela inicial da Trilha 21 desenha no lugar de cada bloco que falta (SPD-160). Cada
+ * campo existe só com a trilha aberta e sem o dado de verdade daquele bloco (`own` falso):
+ * - `reviewCount`: a faixa "Revisar", com 1 aviso;
+ * - `card`: o cartão de exemplo do SPD-147, com a fatura dele;
+ * - `account`: a conta de exemplo;
+ * - `unassignedCents`: a linha "Sem conta", com o lançamento de exemplo (uma despesa).
+ *
+ * Nenhum entra em "Este mês", Patrimônio, Relatórios, nos totais de cartões e contas de verdade,
+ * nos contadores nem nos selos: esses vêm dos contextos de dados, onde o exemplo nunca entra.
+ */
+export interface SampleHome {
+	reviewCount?: number;
+	card?: SampleHomeCard;
+	account?: Account;
+	unassignedCents?: number;
+}
+
+export const useSampleHome = (own: {
+	review?: boolean;
+	card?: boolean;
+	account?: boolean;
+	unassigned?: boolean;
+}): SampleHome => {
+	const show = useTrailSampleFor(HOME_TRAILS);
+	const names = useSampleNames();
+	const today = todayISO();
+	const missing = (has: boolean | undefined) => show && has === false;
+	const review = missing(own.review);
+	const card = missing(own.card);
+	const account = missing(own.account);
+	const unassigned = missing(own.unassigned);
+	return useMemo(() => {
+		const cardAccount = card ? sampleAccount(SAMPLE_IDS.card, names, today) : null;
+		return {
+			reviewCount: review ? 1 : undefined,
+			card: cardAccount
+				? { card: cardAccount, summary: buildCardSummary(cardAccount, [], [], today) }
+				: undefined,
+			account: account ? (sampleAccount(SAMPLE_IDS.account, names, today) ?? undefined) : undefined,
+			unassignedCents: unassigned ? -SAMPLE_VALUES.transactionCents : undefined,
+		};
+	}, [review, card, account, unassigned, names, today]);
+};
+
+/** O selo "Exemplo" de um bloco de exemplo (SPD-160): a tela inicial e a lista de Contas a pagar. */
+export const SampleTag: React.FC = () => {
+	const { t } = useTranslation();
+	return (
+		<View testID="trail-sample-block-tag" style={styles.tag}>
+			<Text style={styles.tagText}>{t('trails.sample.tag')}</Text>
+		</View>
+	);
+};
+
 /** A faixa "Exemplo" no topo da tela de exemplo: nada aqui é do usuário, e nada é salvo. */
 export const SampleBanner: React.FC = () => {
 	const { t } = useTranslation();
@@ -212,6 +327,20 @@ const styles = StyleSheet.create({
 		flex: 1,
 		fontSize: 14,
 		fontWeight: '600',
+		color: SAMPLE_COLOR,
+	},
+	tag: {
+		alignSelf: 'center',
+		paddingHorizontal: 8,
+		paddingVertical: 2,
+		borderRadius: 8,
+		borderWidth: 1,
+		borderColor: 'rgba(255,176,32,0.5)',
+		backgroundColor: 'rgba(255,176,32,0.12)',
+	},
+	tagText: {
+		fontSize: 12,
+		fontWeight: '700',
 		color: SAMPLE_COLOR,
 	},
 });

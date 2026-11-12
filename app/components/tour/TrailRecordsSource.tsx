@@ -49,29 +49,46 @@ export const billRecords = (bills: readonly Bill[]) => {
 
 const TrailRecordsSource: React.FC = () => {
 	const tour = useTour();
-	const { accounts, creditCards, debitCards } = useAccounts();
+	const { accounts, bankAccounts = [], creditCards, debitCards, unassignedNetCents = 0 } = useAccounts();
 	const { transactions } = useTransactions();
 	const { pending, supported } = useCaptures();
 	// Lido sem exigir o provider: fora dele (num teste do guia), não há dívida.
 	const debts = useContext(DebtsContext)?.debts ?? [];
 	// As contas a pagar, do mesmo jeito (SPD-131c): fora do provider, nenhuma.
 	const bills = useContext(BillsContext)?.bills ?? [];
-	const latest = useRef({ accounts, creditCards, debitCards, transactions, pending, supported, debts, bills });
-	latest.current = { accounts, creditCards, debitCards, transactions, pending, supported, debts, bills };
+	const current = {
+		accounts,
+		bankAccounts,
+		creditCards,
+		debitCards,
+		unassignedNetCents,
+		transactions,
+		pending,
+		supported,
+		debts,
+		bills,
+	};
+	const latest = useRef(current);
+	latest.current = current;
 
 	useEffect(() => {
 		if (!tour) return;
 		return tour.setTrailRecords(async (): Promise<TrailRecords> => {
 			const {
 				accounts: all,
+				bankAccounts: banks,
 				creditCards: cards,
 				debitCards: debit,
+				unassignedNetCents: unassigned,
 				transactions: entries,
 				pending: queue,
 				supported: capture,
 				debts: owed,
 				bills: payable,
 			} = latest.current;
+			// As condições da tela inicial e de Contas a pagar (SPD-160): o mesmo que cada bloco
+			// olha para decidir se desenha o de verdade ou o de exemplo.
+			const has = (yes: boolean) => (yes ? [{}] : []);
 			// As contas que a tela de Contas lista (cartão de crédito tem tela própria): as ativas
 			// primeiro, na ordem do app.
 			const live = all.filter((account) => account.kind !== 'credit_card' && !account.deletedAt);
@@ -98,6 +115,10 @@ const TrailRecordsSource: React.FC = () => {
 				capture: capture ? [{}] : [],
 				debt: debtRecords(owed, todayISO()),
 				bill: billRecords(payable),
+				anyBill: has(payable.some((bill) => !bill.deletedAt)),
+				anyCard: has(cards.length + debit.length > 0),
+				anyAccount: has(banks.length > 0),
+				unassigned: has(unassigned !== 0),
 			};
 		});
 	}, [tour]);

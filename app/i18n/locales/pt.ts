@@ -2443,6 +2443,8 @@ const pt = {
 			transaction: 'Mercado exemplo',
 			wallet: 'Carteira exemplo',
 			store: 'Farmácia exemplo',
+			bill: 'Aluguel exemplo',
+			billPaid: 'Internet exemplo',
 			category: 'Mercado',
 			purchaseTitle: 'Compra aprovada',
 			purchaseText: 'Compra de {{amount}} aprovada em {{merchant}} no débito.',

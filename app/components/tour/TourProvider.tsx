@@ -144,8 +144,9 @@ export const TourProvider: React.FC<{
 	const [onboardingDone, setOnboardingDone] = useState(false);
 	const [active, setActive] = useState<ActiveTour | null>(null);
 	const [trail, setTrail] = useState<ActiveTrail | null>(null);
-	// O exemplo das trilhas (SPD-147): ligado enquanto a trilha aberta tem passo de exemplo.
-	const [sampleOn, setSampleOn] = useState(false);
+	// O exemplo das trilhas (SPD-147): ligado enquanto a trilha aberta tem passo de exemplo. Guarda
+	// qual é a trilha (SPD-160): a tela inicial só mostra os blocos de exemplo na Trilha 21.
+	const [sampleOn, setSampleOn] = useState<TrailId | null>(null);
 	const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// O que as decisões assíncronas leem: o valor da hora, não o do render que as agendou.
@@ -301,7 +302,7 @@ export const TourProvider: React.FC<{
 					if (plan.some((step) => step.sample)) {
 						if (sampleTimer.current) clearTimeout(sampleTimer.current);
 						sampleTimer.current = null;
-						setSampleOn(true);
+						setSampleOn(id);
 					}
 					counter.current += 1;
 					const next: ActiveTrail = {
@@ -328,7 +329,7 @@ export const TourProvider: React.FC<{
 		if (sampleTimer.current) clearTimeout(sampleTimer.current);
 		sampleTimer.current = setTimeout(() => {
 			sampleTimer.current = null;
-			setSampleOn(false);
+			setSampleOn(null);
 		}, SAMPLE_LINGER_MS);
 	}, []);
 

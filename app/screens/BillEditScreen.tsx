@@ -21,6 +21,7 @@ import { categoryChoices } from '../components/CategoryPicker';
 import { Button, Field } from '../components/cards/formParts';
 import { SelectField } from '../components/SelectField';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount, useSampleBill } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -41,6 +42,7 @@ import {
 	formatAmountInput,
 	parseAmountToCents,
 } from '../utils/money';
+import { SAMPLE_IDS } from '../utils/trailSample';
 
 /**
  * Cadastrar ou corrigir uma conta a pagar.
@@ -60,6 +62,10 @@ import {
  * Sair sem salvar (a seta do topo ou o voltar do Android) com algo digitado ou alterado
  * pergunta antes, como a dica do Acertar (SPD-142): "Sair e perder o que você digitou?". Sem
  * nada alterado sai direto; depois de salvar, não pergunta.
+ *
+ * A conta a pagar de exemplo (SPD-160): a trilha abre `/bills/edit/exemplo-conta-a-pagar` quando o
+ * usuário não tem nenhuma. A tela mostra os campos dela, com a faixa "Exemplo" e a conta de
+ * exemplo como "Conta que paga"; Salvar, Desativar e Apagar não fazem nada, e sair não pergunta.
  */
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
@@ -84,7 +90,14 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const { bills, createBill, saveBill, setBillActive, removeBill } = useBills();
 	const { accounts, bankAccounts } = useAccounts();
 	const { categories } = useTransactions();
-	const existing = useMemo(() => bills.find((bill) => bill.id === billId), [bills, billId]);
+	const sample = useSampleBill(billId);
+	const sampleAccount = useSampleAccount(sample ? SAMPLE_IDS.account : undefined);
+	const existing = useMemo(
+		() => sample ?? bills.find((bill) => bill.id === billId),
+		[sample, bills, billId]
+	);
+	// "Conta que paga": no exemplo, só a conta de exemplo, que nenhuma lista de verdade tem.
+	const payingAccounts = sampleAccount ? [sampleAccount] : bankAccounts;
 	const fromDebt = Boolean(existing?.debtId);
 	const locked = existing ? isLockedByDebt(existing) : false;
 
@@ -130,6 +143,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	}, [existing]);
 
 	const changed =
+		!sample &&
 		openedWith.current !== null &&
 		snapshotOf({ name, dueDay, amount, accountId, category, matchHint }) !== openedWith.current;
 
@@ -181,6 +195,8 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
 	const handleSave = async () => {
+		// O exemplo não grava nada.
+		if (sample) return;
 		const dueDayNumber = Number(dueDay);
 		const amountCents = amount.trim() === '' ? null : parseAmountToCents(amount);
 		const next: Record<string, string | undefined> = {};
@@ -250,14 +266,14 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	};
 
 	const handleToggleActive = async () => {
-		if (!existing || !canToggleActive(existing)) return;
+		if (sample || !existing || !canToggleActive(existing)) return;
 		await setBillActive(existing.id, !existing.active);
 		announce(existing.active ? t('bills.edit.deactivated') : t('bills.edit.activated'));
 		router.back();
 	};
 
 	const handleDelete = () => {
-		if (!existing || !canDeleteBill(existing)) return;
+		if (sample || !existing || !canDeleteBill(existing)) return;
 		Alert.alert(t('bills.edit.deleteTitle'), t('bills.edit.deleteBody', { name: existing.name }), [
 			{ text: t('bills.edit.cancel'), style: 'cancel' },
 			{
@@ -292,6 +308,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					</Text>
 				</View>
 
+				{sample ? <SampleBanner /> : null}
 				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					{existing && fromDebt ? (
 						<View style={styles.note} accessible>
@@ -360,12 +377,12 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 						/>
 					</TourTarget>
 
-					{bankAccounts.length > 0 && !fromDebt ? (
+					{payingAccounts.length > 0 && !fromDebt ? (
 						<TourTarget id="billEdit.account">
 							<SelectField
 								label={t('bills.edit.account')}
 								optionalLabel={t('bills.edit.optional')}
-								options={accountSelectOptions(bankAccounts)}
+								options={accountSelectOptions(payingAccounts)}
 								selected={accountId}
 								onSelect={setAccountId}
 								clearLabel={t('select.none')}

@@ -5,11 +5,13 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBills } from '../../contexts/BillsContext';
-import { homeBills, type MonthBillRow, overdueBills } from '../../utils/billRules';
+import type { BillPayment } from '../../database/schema';
+import { homeBills, type MonthBillRow, monthBills, overdueBills } from '../../utils/billRules';
 import { formatDayMonth, monthKeyOf } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import HelpButton from '../tour/HelpButton';
 import { useTourTarget } from '../tour/TourContext';
+import { SampleTag, useSampleBills } from '../tour/TrailSample';
 import BillStatusPill from './BillStatusPill';
 
 /**
@@ -32,8 +34,13 @@ import BillStatusPill from './BillStatusPill';
  * (SPD-156).
  *
  * O "?" abre a trilha das contas a pagar (SPD-131c). O card é um passo dela e da trilha da tela
- * inicial; sem contas, o passo aponta o "Cadastrar".
+ * inicial. Sem nenhuma conta a pagar, com a trilha 8 ou a 21 aberta, o card mostra as contas a pagar
+ * de exemplo (SPD-160), com o selo "Exemplo": o "Falta pagar" é só o delas, e tocar não abre nada.
+ * Fora da trilha, sem contas, o card é a linha com "Cadastrar".
  */
+
+/** O exemplo não tem mês registrado. */
+const NO_PAYMENTS: readonly BillPayment[] = [];
 
 const ACCENT = '#15E8FE';
 
@@ -54,7 +61,22 @@ const subtitleOf = (row: MonthBillRow, month: string, t: Translate): string =>
 const BillsMonthCard: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { activeBills, payments, month, today, isLoading } = useBills();
+	const {
+		bills,
+		activeBills: ownActive,
+		payments: ownPayments,
+		month: ownMonth,
+		today,
+		isLoading,
+	} = useBills();
+	// As contas a pagar de exemplo (SPD-160): só na trilha, e só sem nenhuma conta de verdade.
+	const sample = useSampleBills(isLoading || bills.some((bill) => !bill.deletedAt), today);
+	const activeBills = sample ?? ownActive;
+	const payments = sample ? NO_PAYMENTS : ownPayments;
+	const month = useMemo(
+		() => (sample ? monthBills(sample, today) : ownMonth),
+		[sample, today, ownMonth]
+	);
 	// Os meses pulados ou pagos fora de ordem (SPD-146) não são atraso nem "vence logo".
 	const soon = useMemo(
 		() => homeBills(activeBills, today, payments),
@@ -75,7 +97,10 @@ const BillsMonthCard: React.FC = () => {
 		</View>
 	);
 
-	const open = () => router.push('/bills');
+	const open = () => {
+		if (!sample) router.push('/bills');
+	};
+	const tag = sample ? <SampleTag /> : null;
 
 	if (activeBills.length === 0) {
 		return (
@@ -120,15 +145,23 @@ const BillsMonthCard: React.FC = () => {
 		return (
 			<Pressable
 				{...cardTarget}
+				testID={sample ? 'home-sample-bills' : undefined}
 				onPress={open}
 				accessibilityRole="button"
-				accessibilityLabel={[`${t('bills.home.title')}. ${line}`, variableNote].filter(Boolean).join('. ')}
+				accessibilityLabel={[
+					sample ? t('trails.sample.tag') : null,
+					`${t('bills.home.title')}. ${line}`,
+					variableNote,
+				]
+					.filter(Boolean)
+					.join('. ')}
 				accessibilityHint={t('bills.home.open')}
 				style={({ pressed }) => [styles.container, styles.line, pressed && styles.pressed]}
 			>
 				<Text style={styles.lineText} numberOfLines={2}>
 					{line}
 				</Text>
+				{tag}
 				{help}
 				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
 			</Pressable>
@@ -145,6 +178,7 @@ const BillsMonthCard: React.FC = () => {
 			? t('bills.variableNote', { count: overdue.variableCount })
 			: null;
 	const summary = [
+		sample ? t('trails.sample.tag') : null,
 		t('bills.home.title'),
 		...soon.rows.map(
 			(row) => `${row.bill.name}, ${subtitleOf(row, month.month, t)}, ${t(`bills.status.${row.status}`)}`
@@ -163,6 +197,7 @@ const BillsMonthCard: React.FC = () => {
 	return (
 		<Pressable
 			{...cardTarget}
+			testID={sample ? 'home-sample-bills' : undefined}
 			onPress={open}
 			accessibilityRole="button"
 			accessibilityLabel={summary}
@@ -173,6 +208,7 @@ const BillsMonthCard: React.FC = () => {
 				<Text style={[styles.title, styles.headerTitle]} accessibilityRole="header">
 					{t('bills.home.title')}
 				</Text>
+				{tag}
 				{help}
 				<Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.5)" />
 			</View>

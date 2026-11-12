@@ -2442,6 +2442,8 @@ account: {
 			transaction: 'Sample groceries',
 			wallet: 'Sample wallet',
 			store: 'Sample pharmacy',
+			bill: 'Sample rent',
+			billPaid: 'Sample internet',
 			category: 'Groceries',
 			purchaseTitle: 'Purchase approved',
 			purchaseText: 'Debit purchase of {{amount}} approved at {{merchant}}.',

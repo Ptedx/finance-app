@@ -39,14 +39,20 @@ const full: TrailRecords = {
 	pending: [{}],
 	capture: [{}],
 	bill: [{ id: 'internet' }, { id: 'plano' }],
+	// As condições da tela inicial e de Contas a pagar (SPD-160).
+	anyBill: [{}],
+	anyCard: [{}],
+	anyAccount: [{}],
+	unassigned: [{}],
 };
 
 const home: TrailLocation = { screen: 'home' };
+// Os parâmetros vazios (`{}`, as condições do SPD-160) são a mesma tela, sem parâmetro.
 const locations = (plan: ReturnType<typeof planTrail>) =>
-	plan.map(
-		(step) =>
-			`${step.id}@${step.location.screen}${step.location.params ? `:${Object.values(step.location.params).join('/')}` : ''}`
-	);
+	plan.map((step) => {
+		const params = Object.values(step.location.params ?? {});
+		return `${step.id}@${step.location.screen}${params.length > 0 ? `:${params.join('/')}` : ''}`;
+	});
 const stepOf = (plan: ReturnType<typeof planTrail>, id: string) => {
 	const found = plan.find((candidate) => candidate.id === id);
 	if (!found) throw new Error(`passo ${id} fora do plano`);
@@ -56,10 +62,16 @@ const stepOf = (plan: ReturnType<typeof planTrail>, id: string) => {
 const NEW_TRAILS: TrailId[] = ['bills', 'ofx', 'home'];
 
 describe('o app sem nenhum dado', () => {
-	it.each(NEW_TRAILS)('%s: nenhum passo pede uma tela de registro que não existe, e nenhum sai do plano', (id) => {
+	it.each(
+		NEW_TRAILS
+	)('%s: nenhum passo pede uma tela de registro que não existe; com o exemplo, nenhum sai do plano', (id) => {
 		for (const samples of [undefined, TRAIL_SAMPLE_RECORDS]) {
 			const plan = planTrail(TRAILS[id], {}, home, samples);
-			expect(plan.map((step) => step.id)).toEqual(TRAILS[id].steps.map((step) => step.id));
+			// Sem os exemplos (SPD-160), "Revisar" e "Sem conta" da tela inicial saem pelos dados.
+			const out = samples === undefined && id === 'home' ? ['1', '7', '8'] : [];
+			expect(plan.map((step) => step.id)).toEqual(
+				TRAILS[id].steps.map((step) => step.id).filter((step) => !out.includes(step))
+			);
 			for (const step of plan) {
 				const kind = TRAIL_SCREENS[step.location.screen].record;
 				// Tela de registro sem o registro: o passo é texto, na tela anterior.
@@ -102,16 +114,82 @@ describe('Trilha 8 — Contas a pagar e lembretes', () => {
 		});
 	});
 
-	it('sem nenhuma conta a pagar: o 12 vira o texto sem apontar, em Contas a pagar; o resto fica', () => {
-		const plan = planTrail(TRAILS.bills, { ...full, bill: [] }, home);
+	it('sem nenhuma conta a pagar e sem os exemplos: o card, "Já paguei", "Desfazer", a lista e a edição viram texto sem apontar', () => {
+		const plan = planTrail(TRAILS.bills, { ...full, bill: [], anyBill: [] }, home);
 		expect(plan).toHaveLength(12);
-		expect(stepOf(plan, '12')).toMatchObject({
-			textOnly: true,
-			bodyKey: 'trails.bills.steps.12.body',
-			location: { screen: 'bills' },
+		expect(plan.filter((step) => step.textOnly).map((step) => step.id)).toEqual([
+			'1',
+			'8',
+			'9',
+			'10',
+			'11',
+			'12',
+		]);
+		expect(stepOf(plan, '1')).toMatchObject({
+			bodyKey: 'trails.bills.steps.1.missing',
+			location: home,
 		});
-		// Não há conta a pagar de exemplo: nem com os exemplos o 12 abre uma conta.
-		expect(stepOf(planTrail(TRAILS.bills, {}, home, TRAIL_SAMPLE_RECORDS), '12')).toMatchObject({ textOnly: true, sample: false });
+		expect(stepOf(plan, '12')).toMatchObject({
+			bodyKey: 'trails.bills.steps.12.body',
+			location: { screen: 'billNew' },
+		});
+		expect(plan.some((step) => step.sample)).toBe(false);
+	});
+
+	it('sem nenhuma conta a pagar, com os exemplos (SPD-160): o card, a lista e a edição de exemplo, e cada passo aponta', () => {
+		const plan = planTrail(
+			TRAILS.bills,
+			{ ...full, bill: [], anyBill: [] },
+			home,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(locations(plan)).toEqual([
+			'1@home',
+			'2@bills',
+			'3@billNew',
+			'4@billNew',
+			'5@billNew',
+			'6@billNew',
+			'7@billNew',
+			'8@bills',
+			'9@bills',
+			'10@bills',
+			'11@bills',
+			'12@billEdit:exemplo-conta-a-pagar',
+		]);
+		expect(plan.filter((step) => step.textOnly)).toEqual([]);
+		expect(plan.filter((step) => step.sample).map((step) => step.id)).toEqual([
+			'1',
+			'8',
+			'9',
+			'10',
+			'11',
+			'12',
+		]);
+		// A lista de exemplo é a lista de sempre: `{}` e sem parâmetro são a mesma tela.
+		let stack: TrailLocation[] = [home];
+		const actions: string[] = [];
+		for (const step of plan) {
+			const next = navigateTrail(stack, step.location);
+			for (const action of next.actions)
+				actions.push(action.type === 'push' ? `push ${action.location.screen}` : action.type === 'pop' ? `pop ${action.count}` : action.type);
+			stack = next.stack;
+		}
+		expect(actions).toEqual(['push bills', 'push billNew', 'pop 1', 'push billEdit']);
+	});
+
+	it('com contas a pagar de verdade, nada de exemplo, mesmo com os exemplos', () => {
+		const plan = planTrail(TRAILS.bills, full, home, TRAIL_SAMPLE_RECORDS);
+		expect(plan.some((step) => step.sample)).toBe(false);
+		expect(stepOf(plan, '12').location).toEqual({ screen: 'billEdit', params: { id: 'internet' } });
+		// Só desativadas: ainda são do usuário — o exemplo não entra.
+		const inactive = planTrail(
+			TRAILS.bills,
+			{ bill: [{ id: 'desligada' }], anyBill: [{}] },
+			home,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(inactive.some((step) => step.sample)).toBe(false);
 	});
 
 	it('passo 1: o card com contas; sem nenhuma, o "Cadastrar" com o texto próprio; sem os dois, o texto próprio sem apontar', () => {
@@ -264,5 +342,82 @@ describe('Trilha 21 — Tela inicial', () => {
 			ids: ['home.billsInvite'],
 			bodyKey: 'trails.home.steps.3.missing',
 		});
+	});
+});
+
+describe('Trilha 21 numa conta vazia: cada bloco que falta de exemplo (SPD-160)', () => {
+	const empty: TrailRecords = {};
+
+	it('"Revisar", as contas a pagar, Cartões, Contas e "Sem conta" marcados como exemplo; tudo no Início, sem trocar de tela', () => {
+		const plan = planTrail(TRAILS.home, empty, home, TRAIL_SAMPLE_RECORDS);
+		expect(plan.map((step) => step.id)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+		expect(plan.filter((step) => step.sample).map((step) => step.id)).toEqual([
+			'1',
+			'3',
+			'5',
+			'6',
+			'7',
+			'8',
+		]);
+		expect(plan.filter((step) => step.textOnly)).toEqual([]);
+		let stack: TrailLocation[] = [home];
+		for (const step of plan) {
+			expect(step.location.screen).toBe('home');
+			const next = navigateTrail(stack, step.location);
+			expect(next.actions).toEqual([]);
+			stack = next.stack;
+		}
+		// Com o bloco de exemplo na tela, cada passo aponta o bloco, com o texto de sempre.
+		const rects = {
+			'home.review': rect(0, 100, 360, 52),
+			'home.billsCard': rect(0, 170, 360, 120),
+			'home.cards': rect(0, 600, 360, 40),
+			'home.cardsTotals': rect(0, 640, 360, 60),
+			'home.accounts': rect(0, 900, 360, 40),
+			'home.accountsTotals': rect(0, 940, 360, 60),
+			'home.unassigned': rect(0, 1060, 360, 56),
+		};
+		expect(resolveTrailStep(stepOf(plan, '1'), rects)).toEqual({
+			kind: 'point',
+			ids: ['home.review'],
+			bodyKey: 'trails.home.steps.1.body',
+		});
+		expect(resolveTrailStep(stepOf(plan, '3'), rects)).toEqual({
+			kind: 'point',
+			ids: ['home.billsCard'],
+			bodyKey: 'trails.home.steps.3.body',
+		});
+		expect(resolveTrailStep(stepOf(plan, '5'), rects)).toMatchObject({
+			ids: ['home.cards', 'home.cardsTotals'],
+		});
+		expect(resolveTrailStep(stepOf(plan, '6'), rects)).toMatchObject({
+			ids: ['home.accounts', 'home.accountsTotals'],
+		});
+		expect(resolveTrailStep(stepOf(plan, '7'), rects)).toMatchObject({ ids: ['home.unassigned'] });
+		expect(resolveTrailStep(stepOf(plan, '8'), rects)).toMatchObject({ ids: ['home.unassigned'] });
+	});
+
+	it('"Proteja seus dados" não tem exemplo: com o usuário logado (sem o aviso na tela), o passo 2 sai', () => {
+		const plan = planTrail(TRAILS.home, empty, home, TRAIL_SAMPLE_RECORDS);
+		expect(stepOf(plan, '2').sample).toBe(false);
+		expect(resolveTrailStep(stepOf(plan, '2'), {})).toEqual({ kind: 'skip' });
+	});
+
+	it('com o dado de verdade, o bloco é o de verdade: nada de exemplo naquele passo', () => {
+		expect(
+			planTrail(TRAILS.home, full, home, TRAIL_SAMPLE_RECORDS).some((step) => step.sample)
+		).toBe(false);
+		const someReal = planTrail(
+			TRAILS.home,
+			{ pending: [{}], anyCard: [{}] },
+			home,
+			TRAIL_SAMPLE_RECORDS
+		);
+		expect(someReal.filter((step) => step.sample).map((step) => step.id)).toEqual([
+			'3',
+			'6',
+			'7',
+			'8',
+		]);
 	});
 });
