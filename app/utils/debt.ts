@@ -105,6 +105,12 @@ export const monthlyRateOf = (rateBp: number): number => {
 	return annualRateBpOf(typed) === rateBp ? typed : exact;
 };
 
+/**
+ * A taxa ao mês como as telas a mostram e o campo a preenche: em pontos-base mensais (duas
+ * casas, "1,51%"). A prévia do cadastro e a tela da dívida usam esta, e não cada uma a sua.
+ */
+export const monthlyRateBpOf = (rateBp: number): number => Math.round(monthlyRateOf(rateBp) * FULL_BASIS_POINTS);
+
 /** O inverso: a taxa anual, em pontos-base, de uma taxa mensal. */
 export const annualRateBpOf = (monthlyRate: number): number => Math.round(((1 + Math.max(0, safe(monthlyRate))) ** 12 - 1) * FULL_BASIS_POINTS);
 

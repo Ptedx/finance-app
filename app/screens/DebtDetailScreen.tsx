@@ -14,7 +14,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { formatDate, formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
-import { comparisonYield, debtStateOn, effectiveRateBp, monthlyRateOf, termsOf, worthPayingOff } from '../utils/debt';
+import { comparisonYield, debtStateOn, effectiveRateBp, monthlyRateBpOf, termsOf, worthPayingOff } from '../utils/debt';
 import { formatCents } from '../utils/money';
 import { formatPercentBp } from '../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
@@ -127,7 +127,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 						{isConsortium
 							? t('debts.detail.adjustmentRate', { rate: formatPercentBp(debt.rateBp) })
 							: t('debts.detail.rate', {
-									monthly: formatPercentBp(Math.round(monthlyRateOf(debt.rateBp) * 10_000), 2),
+									monthly: formatPercentBp(monthlyRateBpOf(debt.rateBp), 2),
 									rate: formatPercentBp(debt.rateBp),
 									system: t(`debts.system.${debt.system}`),
 								})}

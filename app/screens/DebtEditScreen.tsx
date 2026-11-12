@@ -15,19 +15,9 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { draftOf, useDebts } from '../contexts/DebtsContext';
 import type { AmortizationSystem, DebtDraft, DebtKind } from '../database/schema';
 import { formatMonthYear, todayISO } from '../utils/dateUtils';
-import {
-	annualRateBpOf,
-	buildSchedule,
-	DEFAULT_CONSORTIUM_ADJUSTMENT_BP,
-	debtStateOn,
-	impliedRateBp,
-	installmentFeeCents,
-	MAX_SCHEDULE_MONTHS,
-	monthlyRateOf,
-	principalFromRateCents,
-	termsOf,
-} from '../utils/debt';
-import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
+import { DEFAULT_CONSORTIUM_ADJUSTMENT_BP, debtStateOn, MAX_SCHEDULE_MONTHS, monthlyRateBpOf } from '../utils/debt';
+import { debtFieldsOfTerms, debtFormFieldsOf, deriveDebtForm, formRateBp, formTerms, type PrefilledRate, type RatePeriod } from '../utils/debtForm';
+import { finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
 import { SAMPLE_IDS } from '../utils/trailSample';
 
@@ -48,8 +38,6 @@ import { SAMPLE_IDS } from '../utils/trailSample';
  * (`debtId` de exemplo) ou o cadastro já preenchido com ela (`sampleForm`, o `exemplo=1` da
  * rota), para a prévia aparecer. Com o exemplo, nada grava: salvar, quitar e excluir não fazem nada.
  */
-
-type RatePeriod = 'month' | 'year';
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
 
@@ -76,6 +64,7 @@ const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ de
 	const [balance, setBalance] = useState('');
 	const [rate, setRate] = useState('');
 	const [ratePeriod, setRatePeriod] = useState<RatePeriod>('month');
+	const [prefilledRate, setPrefilledRate] = useState<PrefilledRate | null>(null);
 	const [adjustment, setAdjustment] = useState(bpToPercentInput(DEFAULT_CONSORTIUM_ADJUSTMENT_BP));
 	const [adminFee, setAdminFee] = useState('');
 	const [accountId, setAccountId] = useState<string | null>(null);
@@ -89,20 +78,20 @@ const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ de
 	// de exemplo abre do mesmo jeito, com a dívida de exemplo.
 	useEffect(() => {
 		if (!filled) return;
-		const state = debtStateOn(termsOf(filled), today);
+		const fields = debtFormFieldsOf(filled, today);
 		setKind(filled.kind);
 		setName(filled.name);
 		setSystem(filled.system === 'sac' ? 'sac' : 'price');
-		setInstallment(centsToDisplayInput(state.next?.installmentCents ?? filled.installmentCents));
-		setRemaining(String(state.remaining));
-		setTotal(String(filled.installmentsTotal));
-		setDueDay(String(filled.dueDay));
-		setBalance(centsToDisplayInput(state.balanceCents));
-		// Financiamento se fala ao mês: a taxa abre como no contrato.
-		setRate(bpToPercentInput(Math.round(monthlyRateOf(filled.rateBp) * 10_000)));
-		setRatePeriod('month');
-		if (filled.kind === 'consortium') setAdjustment(bpToPercentInput(filled.rateBp));
-		setAdminFee(filled.adminFeeBp !== null ? bpToPercentInput(filled.adminFeeBp) : '');
+		setInstallment(fields.installment);
+		setRemaining(fields.remaining);
+		setTotal(fields.total);
+		setDueDay(fields.dueDay);
+		setBalance(fields.balance);
+		setRate(fields.rate.text);
+		setRatePeriod(fields.rate.period);
+		setPrefilledRate(fields.rate);
+		if (fields.adjustment !== null) setAdjustment(fields.adjustment);
+		setAdminFee(fields.adminFee);
 		setAccountId(filled.accountId);
 	}, [filled, today]);
 
@@ -115,59 +104,20 @@ const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ de
 	const validDueDay = Number.isInteger(dueDayNumber) && dueDayNumber >= 1 && dueDayNumber <= 31;
 
 	// A taxa digitada, sempre convertida para "ao ano" em pontos-base.
-	const typedRateBp = (() => {
-		const bp = percentInputToBp(rate, ratePeriod === 'month' ? 20 : 1_000);
-		if (bp === null) return null;
-		return ratePeriod === 'month' ? annualRateBpOf(bp / 10_000) : bp;
-	})();
+	const typedRateBp = formRateBp(rate, ratePeriod, prefilledRate);
 
-	/**
-	 * O que a tela deriva: o saldo, a taxa e os encargos que valem, e de onde cada um veio.
-	 * `rateBp` nulo = os números não fecham (a parcela não paga o saldo nessa taxa).
-	 */
-	const derived = useMemo((): { balanceCents: number; rateBp: number | null; feeCents: number; estimated: 'rate' | 'balance' | null } | null => {
-		if (installmentCents === null || installmentCents <= 0 || !validRemaining) return null;
-		if (isConsortium) {
-			const rateBp = percentInputToBp(adjustment, 100) ?? 0;
-			const typed = balance.trim() === '' ? null : parseAmountToCents(balance);
-			return { balanceCents: typed ?? installmentCents * remainingCount, rateBp, feeCents: 0, estimated: null };
-		}
-		const balanceCents = balance.trim() === '' ? null : parseAmountToCents(balance);
-		const hasBalance = balanceCents !== null && balanceCents > 0;
+	/** O que a tela deriva: o saldo, a taxa e os encargos que valem, e de onde cada um veio. */
+	const derived = useMemo(
+		() => deriveDebtForm({ system: effectiveSystem, installmentCents, remaining: remainingCount, validRemaining, balance, typedRateBp, adjustment }),
+		[installmentCents, validRemaining, adjustment, balance, remainingCount, effectiveSystem, typedRateBp]
+	);
 
-		if (hasBalance && typedRateBp !== null) {
-			// Os dois: o que a parcela cobra além da taxa é seguro e tarifa.
-			const fee = installmentFeeCents({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount, rateBp: typedRateBp });
-			const tolerance = Math.max(100, Math.round(installmentCents * 0.005));
-			if (fee < -tolerance) return { balanceCents, rateBp: null, feeCents: 0, estimated: null };
-			return { balanceCents, rateBp: typedRateBp, feeCents: fee > tolerance ? fee : 0, estimated: null };
-		}
-		if (hasBalance) {
-			const rateBp = impliedRateBp({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount });
-			return { balanceCents, rateBp, feeCents: 0, estimated: 'rate' };
-		}
-		if (typedRateBp === null) return null;
-		return {
-			balanceCents: principalFromRateCents({ system: effectiveSystem, installmentCents, remaining: remainingCount, rateBp: typedRateBp }),
-			rateBp: typedRateBp,
-			feeCents: 0,
-			estimated: 'balance',
-		};
-	}, [installmentCents, validRemaining, isConsortium, adjustment, balance, remainingCount, effectiveSystem, typedRateBp]);
-
+	// A prévia é o estado de hoje dos termos que salvar grava, pela mesma conta da tela da dívida.
 	const preview = useMemo(() => {
-		if (!derived || derived.rateBp === null || !validDueDay || installmentCents === null) return null;
-		const schedule = buildSchedule({
-			system: effectiveSystem,
-			balanceCents: derived.balanceCents,
-			balanceDate: today,
-			installmentCents,
-			remaining: remainingCount,
-			dueDay: dueDayNumber,
-			rateBp: derived.rateBp,
-			feeCents: derived.feeCents,
-		});
-		return { schedule, rateBp: derived.rateBp, balanceCents: derived.balanceCents };
+		if (!validDueDay) return null;
+		const terms = formTerms(derived, { system: effectiveSystem, installmentCents, remaining: remainingCount, dueDay: dueDayNumber, today });
+		if (!terms || !derived) return null;
+		return { terms, state: debtStateOn(terms, today), balanceCents: derived.balanceCents };
 	}, [derived, validDueDay, installmentCents, effectiveSystem, today, remainingCount, dueDayNumber]);
 
 	const previewText = (() => {
@@ -178,18 +128,18 @@ const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ de
 		if (!isConsortium) {
 			lines.push(
 				t(derived.estimated === 'rate' ? 'debts.edit.previewRateEstimated' : 'debts.edit.previewRate', {
-					monthly: formatPercentBp(Math.round(monthlyRateOf(preview.rateBp) * 10_000), 2),
-					yearly: formatPercentBp(preview.rateBp),
+					monthly: formatPercentBp(monthlyRateBpOf(preview.terms.rateBp), 2),
+					yearly: formatPercentBp(preview.terms.rateBp),
 				})
 			);
 			if (derived.estimated === 'balance') lines.push(t('debts.edit.previewBalance', { amount: formatCents(preview.balanceCents) }));
 			if (derived.feeCents > 0) lines.push(t('debts.edit.previewFee', { amount: formatCents(derived.feeCents) }));
 		}
-		if (preview.schedule.payoffDate) {
+		if (preview.state.payoffDate) {
 			lines.push(
 				t(isConsortium ? 'debts.edit.previewPayoffConsortium' : 'debts.edit.previewPayoff', {
-					date: formatMonthYear(preview.schedule.payoffDate),
-					interest: formatCents(preview.schedule.totalInterestCents),
+					date: formatMonthYear(preview.state.payoffDate),
+					interest: formatCents(preview.state.interestAheadCents),
 				})
 			);
 		} else {
@@ -209,30 +159,24 @@ const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ de
 		const totalCount = total.trim() === '' ? remainingCount : Number(total);
 		if (!Number.isInteger(totalCount) || totalCount < remainingCount) next.total = t('debts.edit.errors.total');
 		if (!validDueDay) next.dueDay = t('debts.edit.errors.dueDay');
-		if (!derived || derived.rateBp === null || !preview?.schedule.amortizes) next.values = t('debts.edit.errors.values');
+		if (!derived || derived.rateBp === null || !preview?.state.amortizes) next.values = t('debts.edit.errors.values');
 		const adminFeeBp = adminFee.trim() === '' ? null : percentInputToBp(adminFee, 100);
 		if (adminFee.trim() !== '' && adminFeeBp === null) next.adminFee = t('debts.edit.errors.percent');
 
 		setErrors(next);
 		const messages = Object.values(next).filter(Boolean);
-		if (messages.length > 0 || !derived || derived.rateBp === null || installmentCents === null) {
+		if (messages.length > 0 || !preview) {
 			announce(messages.join('. '));
 			return;
 		}
 
+		// Grava exatamente os termos da prévia: o que ela mostrou é o que a tela da dívida vai mostrar.
 		const draft: DebtDraft = {
 			...(existing ? draftOf(existing) : { archived: false, sortOrder: debts.length, category: null }),
+			...debtFieldsOfTerms(preview.terms),
 			name: name.trim(),
 			kind,
-			system: effectiveSystem,
-			openingBalanceCents: derived.balanceCents,
-			openingBalanceDate: today,
-			installmentCents,
-			remainingAtOpening: remainingCount,
 			installmentsTotal: totalCount,
-			dueDay: dueDayNumber,
-			rateBp: derived.rateBp,
-			feeCents: derived.feeCents,
 			adminFeeBp: isConsortium ? adminFeeBp : null,
 			accountId,
 		};
