@@ -16,6 +16,7 @@ import { useAccounts } from '../contexts/AccountsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, AccountDraft } from '../database/schema';
 import { type ClosePlan, closeTargets, isAccountEmpty, mergeTargets } from '../utils/accountClosing';
+import { futureCardEntries, isDebitTarget } from '../utils/accountMerging';
 import {
 	BANK_BRANDS,
 	brandFor,
@@ -26,9 +27,18 @@ import {
 } from '../utils/bankBrands';
 import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
-import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform, isCardAdjustment } from '../utils/cardMath';
+import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform } from '../utils/cardMath';
 import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
-import { closeBlockedMessage, closeConfirmMessage, deleteConfirmMessage, deleteRefusedMessage, reopenMessage } from '../utils/deletionNotice';
+import {
+	cardMergeConfirmMessage,
+	closeBlockedMessage,
+	closeConfirmMessage,
+	debitBlockedFutureMessage,
+	debitConvertConfirmMessage,
+	deleteConfirmMessage,
+	deleteRefusedMessage,
+	reopenMessage,
+} from '../utils/deletionNotice';
 import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
 
 /**
@@ -319,8 +329,10 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		}
 	};
 
-	const sameBankAccount = bankAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
-	const chosenDebitAccount = bankAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
+	// Só conta principal (SPD-152): numa reserva, os pagamentos de fatura virariam "Guardado".
+	const debitAccounts = bankAccounts.filter(isDebitTarget);
+	const sameBankAccount = debitAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
+	const chosenDebitAccount = debitAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
 
 	/**
 	 * Sai de um cartão que deixou de existir (excluído, juntado, levado para o débito) sem
@@ -336,14 +348,49 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		else router.dismiss();
 	};
 
+	/**
+	 * A confirmação diz em R$ o que muda (SPD-152): o saldo da conta antes → depois (a dívida
+	 * do cartão passa a sair dela), o patrimônio igual e o efeito nos relatórios.
+	 */
 	const handleConvertToDebit = () => {
 		if (!existing || !chosenDebitAccount) return;
-		Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitConfirm', { account: chosenDebitAccount.name }), [
+		// Parcela por cair: no débito ela só sairia da conta no dia dela, e o patrimônio de hoje
+		// subiria esse valor. Não oferece levar; diz quantas e quanto, e quando dá.
+		const future = futureCardEntries(transactions, existing.id, todayISO());
+		if (future.count > 0) {
+			Alert.alert(t('cards.edit.debitConvert'), debitBlockedFutureMessage(existing.name, future.count, future.amountCents, t));
+			return;
+		}
+		const purchasesCents = transactions.reduce(
+			(total, tx) => (tx.accountId === existing.id && !tx.isIncome ? total + tx.amountCents : total),
+			0
+		);
+		const message = debitConvertConfirmMessage(
+			{
+				account: chosenDebitAccount.name,
+				cardBalanceCents: balances?.get(existing.id) ?? existing.openingBalanceCents,
+				accountBalanceCents: balances?.get(chosenDebitAccount.id) ?? chosenDebitAccount.openingBalanceCents,
+				cardOpeningBalanceCents: existing.openingBalanceCents,
+				purchasesCents,
+			},
+			t
+		);
+		Alert.alert(t('cards.edit.debitConvert'), message, [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.debitConvert'),
 				onPress: async () => {
-					await convertCardToDebit(existing.id, chosenDebitAccount.id);
+					try {
+						await convertCardToDebit(existing.id, chosenDebitAccount.id);
+					} catch (error) {
+						// Um pagamento de fatura agendado (transferência com data futura), ou a parcela
+						// lançada em outro aparelho depois de abrir a confirmação: nada mudou.
+						if (error instanceof Error && error.name === 'DebitFutureError') {
+							Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitBlockedScheduled', { name: existing.name }));
+							return;
+						}
+						throw error;
+					}
 					announce(t('cards.edit.debitDone', { account: chosenDebitAccount.name }));
 					leaveRemovedCard(existing.id);
 				},
@@ -469,8 +516,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	/**
 	 * O mesmo cartão do banco com duas fichas no app: a cadastrada à mão e a que o extrato
 	 * OFX criou, por exemplo (E2E-34). Como "Juntar com outra conta": este sai e o escolhido
-	 * fica, com o fechamento, o limite e a fatura informada dele (`mergeCards`). Só cartão
-	 * ativo com cartão ativo (`mergeTargets`).
+	 * fica, com o fechamento e o limite dele; a dívida dos dois soma (`mergeCards`, SPD-152).
+	 * Só cartão ativo com cartão ativo (`mergeTargets`).
 	 */
 	const mergeCandidates = existing && !existing.archived ? mergeTargets(accounts, existing) : [];
 
@@ -478,13 +525,13 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	 * Quantos lançamentos do cartão que fica podem estar repetidos depois de juntar (E2E-34): a
 	 * padaria digitada no Nubank Teste e a mesma padaria que o extrato pôs no duplicado. Conta
 	 * sobre a lista de antes de juntar, do jeito que `mergeCardInto` a deixa — a lista da tela
-	 * só se atualiza depois deste toque: o ajuste do que sai não vem, e o lançamento sem final
-	 * ganha o do cartão que sai.
+	 * só se atualiza depois deste toque: o lançamento sem final ganha o do cartão que sai. O
+	 * ajuste com a fatura do banco vem junto (SPD-152), mas nunca conta como repetido.
 	 */
 	const keptDuplicateCount = (from: Account, intoId: string, dismissed: ReadonlySet<string>): number => {
 		const kept = transactions.flatMap((tx) => {
 			if (tx.accountId === intoId) return [tx];
-			if (tx.accountId !== from.id || isCardAdjustment(tx)) return [];
+			if (tx.accountId !== from.id) return [];
 			return [{ ...tx, cardLast4: tx.cardLast4 ?? from.last4 }];
 		});
 		return summarizeCardDuplicates(findCardDuplicates(kept, dismissed).groups).count;
@@ -497,10 +544,17 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		setMerging(true);
 	};
 
+	/** A confirmação diz a soma das dívidas em R$ antes de juntar (SPD-152). */
 	const confirmMerge = (card: Account) => {
 		setMerging(false);
 		if (!existing) return;
-		Alert.alert(t('cards.edit.merge'), t('cards.edit.mergeConfirm', { from: existing.name, into: card.name }), [
+		const side = (account: Account) => ({
+			name: account.name,
+			balanceCents: balances?.get(account.id) ?? account.openingBalanceCents,
+			openingBalanceCents: account.openingBalanceCents,
+			openingBalanceDate: account.openingBalanceDate,
+		});
+		Alert.alert(t('cards.edit.merge'), cardMergeConfirmMessage(side(existing), side(card), t), [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.mergeAction'),
@@ -560,11 +614,11 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						<View style={styles.debit} accessibilityLiveRegion="polite">
 							<Text style={styles.debitBody}>{t('cards.edit.debitBody')}</Text>
 							{existing ? (
-								bankAccounts.length > 0 ? (
+								debitAccounts.length > 0 ? (
 									<>
 										<SelectField
 											label={t('cards.edit.debitAccount')}
-											options={accountSelectOptions(bankAccounts)}
+											options={accountSelectOptions(debitAccounts)}
 											selected={chosenDebitAccount?.id ?? null}
 											onSelect={(value) => setDebitAccountId(value)}
 										/>

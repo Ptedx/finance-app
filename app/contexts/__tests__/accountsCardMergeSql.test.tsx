@@ -200,7 +200,7 @@ describeSql('juntar o cartão duplicado do OFX no Nubank Teste (E2E-34)', () => 
 		jest.useRealTimers();
 	});
 
-	it('antes: dois "final 1111"; depois: só o Nubank Teste, com a fatura aberta de R$ 195,90 do banco', async () => {
+	it('antes: dois "final 1111"; depois: só o Nubank Teste, com a dívida dos dois somada (R$ 150 + R$ 195,90)', async () => {
 		expect(ctx().creditCards.map((card) => card.name)).toEqual(['Nubank Teste', 'NU PAGAMENTOS S.A. · cartão final 1111']);
 		expect(ctx().cardSummaries.get(nubank)?.openInvoiceCents).toBe(15_000);
 
@@ -211,10 +211,12 @@ describeSql('juntar o cartão duplicado do OFX no Nubank Teste (E2E-34)', () => 
 		expect(ctx().creditCards.map((card) => card.name)).toEqual(['Nubank Teste']);
 		expect(ctx().accounts.some((account) => account.id === duplicado)).toBe(false);
 		const summary = ctx().cardSummaries.get(nubank);
-		// Padaria 50 + Supermercado 100 + Drogasil 45,90; o ajuste de R$ 150 do duplicado não entra.
-		expect(summary?.openInvoiceCents).toBe(19_590);
-		expect(summary?.owedCents).toBe(19_590);
-		expect(summary?.limitAvailableCents).toBe(500_000 - 19_590);
+		// Padaria 50 + Supermercado 100 + Drogasil 45,90 + o ajuste de R$ 150 do duplicado: o que os
+		// dois deviam antes (SPD-152). Antes o ajuste sumia e a dívida caía R$ 150 sem aviso; se os
+		// dois eram a mesma fatura, a confirmação diz a soma e o "Acertar valor" corrige depois.
+		expect(summary?.openInvoiceCents).toBe(34_590);
+		expect(summary?.owedCents).toBe(34_590);
+		expect(summary?.limitAvailableCents).toBe(500_000 - 34_590);
 		expect(ctx().cardSummaries.has(duplicado)).toBe(false);
 		// O que fica mantém o próprio ciclo e limite.
 		expect(ctx().accounts.find((account) => account.id === nubank)).toEqual(

@@ -11,6 +11,8 @@
  * `scope` é o bloco do i18n: `accounts.edit` (conta) ou `cards.edit` (cartão).
  */
 import type { AccountContents, ClosePlan } from './accountClosing';
+import { cardMergeTotals, debitConvertTotals } from './accountMerging';
+import { formatShortDate } from './dateUtils';
 import { formatCents } from './money';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -82,6 +84,92 @@ export const closeBlockedMessage = (
 export const mergeConfirmMessage = (scope: NoticeScope, from: string, into: string, totalCents: number, t: Translate): string =>
 	t(`${scope}.mergeConfirm`, { from, into, total: formatCents(totalCents) });
 
+/** Juntar recusado (SPD-152): papéis diferentes mudariam o histórico; encerrar leva o saldo. */
+export const mergeRoleBlockedMessage = (from: string, into: string, t: Translate): string =>
+	t('accounts.edit.mergeRoleBlocked', { from, into });
+
+/** O que a confirmação de juntar cartões precisa de cada um. */
+export interface CardMergeSide {
+	name: string;
+	/** O saldo de hoje (negativo: deve). */
+	balanceCents: number;
+	/** A fatura informada (âncora, negativa quando deve) e o dia dela. */
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+}
+
+/**
+ * Juntar cartões (SPD-152): "Dívida do cartão: R$ 370 + R$ 500 = R$ 870; o patrimônio não
+ * muda." Com as faturas informadas em dias diferentes, a mais nova passa a contar a partir do
+ * dia da outra (`mergeCardInto`): os relatórios mudam esse valor de mês, e a frase diz quanto.
+ */
+export const cardMergeConfirmMessage = (from: CardMergeSide, into: CardMergeSide, t: Translate): string => {
+	const totals = cardMergeTotals(from.balanceCents, into.balanceCents);
+	const parts = [
+		t('cards.edit.mergeConfirmTotal', {
+			from: from.name,
+			into: into.name,
+			fromOwed: formatCents(totals.fromOwedCents),
+			intoOwed: formatCents(totals.intoOwedCents),
+			total: formatCents(totals.totalOwedCents),
+		}),
+	];
+	if (from.openingBalanceDate !== into.openingBalanceDate) {
+		const [earlier, later] = from.openingBalanceDate < into.openingBalanceDate ? [from, into] : [into, from];
+		if (later.openingBalanceCents !== 0) {
+			parts.push(
+				t('cards.edit.mergeAnchorShift', {
+					later: later.name,
+					earlier: earlier.name,
+					amount: formatCents(Math.abs(later.openingBalanceCents)),
+					laterDate: formatShortDate(later.openingBalanceDate),
+					earlierDate: formatShortDate(earlier.openingBalanceDate),
+				})
+			);
+		}
+	}
+	parts.push(t('cards.edit.mergeSameCard'));
+	return parts.join(' ');
+};
+
+export interface DebitConvertInput {
+	/** A conta que recebe as compras. */
+	account: string;
+	/** O saldo de hoje do cartão (negativo: deve) e o da conta. */
+	cardBalanceCents: number;
+	accountBalanceCents: number;
+	/** A fatura informada do cartão (âncora; negativa quando era dívida). */
+	cardOpeningBalanceCents: number;
+	/** As compras lançadas no cartão (sem estornos), que passam a contar no dia de cada uma. */
+	purchasesCents: number;
+}
+
+/**
+ * Levar o cartão para o débito (SPD-152): o saldo da conta antes → depois, o patrimônio igual
+ * e, quando há o que mudar, o efeito nos relatórios em R$ — no débito a compra conta no dia
+ * dela, e não no mês da fatura, e a fatura informada deixa de ser gasto do cartão.
+ */
+export const debitConvertConfirmMessage = (input: DebitConvertInput, t: Translate): string => {
+	const totals = debitConvertTotals(input.cardBalanceCents, input.accountBalanceCents);
+	const parts = [t('cards.edit.debitConfirmMoves', { account: input.account })];
+	const balances = { account: input.account, before: formatCents(totals.accountBeforeCents), after: formatCents(totals.accountAfterCents) };
+	if (totals.cardOwedCents > 0) parts.push(t('cards.edit.debitConfirmOwed', { ...balances, amount: formatCents(totals.cardOwedCents) }));
+	else if (totals.cardOwedCents < 0) parts.push(t('cards.edit.debitConfirmCredit', { ...balances, amount: formatCents(-totals.cardOwedCents) }));
+	else parts.push(t('cards.edit.debitConfirmEven', { account: input.account }));
+	if (input.purchasesCents > 0) parts.push(t('cards.edit.debitReportsPurchases', { amount: formatCents(input.purchasesCents) }));
+	const informedCents = Math.max(0, 0 - input.cardOpeningBalanceCents);
+	if (informedCents > 0) parts.push(t('cards.edit.debitReportsInformed', { amount: formatCents(informedCents), account: input.account }));
+	parts.push(t('cards.edit.debitConfirmContinue'));
+	return parts.join(' ');
+};
+
+/**
+ * Levar para o débito recusado (SPD-152): o cartão tem parcelas por cair. Quantas, quanto
+ * (o que o patrimônio de hoje subiria sem nada ter sido pago) e quando dá.
+ */
+export const debitBlockedFutureMessage = (name: string, count: number, amountCents: number, t: Translate): string =>
+	t('cards.edit.debitBlockedFuture', { name, count, amount: formatCents(Math.abs(amountCents)) });
+
 /**
  * Reabrir com saldo: ele volta aos totais de hoje (negativo — o cartão devendo —, como
  * dívida). Sem saldo, nada a perguntar (`null`).
@@ -92,4 +180,15 @@ export const reopenMessage = (scope: NoticeScope, name: string, balanceCents: nu
 	return balanceCents > 0 ? t(`${scope}.reopenBalance`, { name, amount }) : t(`${scope}.reopenOwing`, { name, amount });
 };
 
-export default { deleteConfirmMessage, deleteRefusedMessage, closeConfirmMessage, closeBlockedMessage, mergeConfirmMessage, reopenMessage };
+export default {
+	deleteConfirmMessage,
+	deleteRefusedMessage,
+	closeConfirmMessage,
+	closeBlockedMessage,
+	mergeConfirmMessage,
+	mergeRoleBlockedMessage,
+	cardMergeConfirmMessage,
+	debitConvertConfirmMessage,
+	debitBlockedFutureMessage,
+	reopenMessage,
+};

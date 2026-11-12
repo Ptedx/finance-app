@@ -10,7 +10,6 @@ import {
 	type UnassignedAssignment,
 	deleteAccount,
 	deleteTransfer,
-	deleteTransfersOf,
 	foldAccountBalance,
 	getAccountContents,
 	getAccount,
@@ -56,6 +55,7 @@ import {
 	withProvisionalBalances,
 } from '../utils/accountMath';
 import { type AccountContents, CLOSING_TRANSFER_NOTE, type ClosePlan, planAccountClose } from '../utils/accountClosing';
+import { canMergeAccounts, DebitFutureError, isDebitTarget, MergeRoleError } from '../utils/accountMerging';
 import { emitBillsChanged } from '../utils/billEvents';
 import {
 	buildCardSummary,
@@ -292,10 +292,15 @@ interface AccountsContextType {
 	addExistingInstallments: (input: ExistingInstallmentsInput) => Promise<number>;
 	/**
 	 * Cartão de débito cadastrado como cartão: leva os lançamentos para a conta de onde o
-	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
+	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite. O saldo do
+	 * cartão e as transferências vão junto: o patrimônio não muda (SPD-152). Com lançamento de
+	 * data futura no cartão (parcela por cair), recusa sem mudar nada (`DebitFutureError`).
 	 */
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
-	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
+	/**
+	 * Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. Papéis
+	 * diferentes, com a que sai não vazia, recusam com `MergeRoleError` (SPD-152).
+	 */
 	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
 	/**
 	 * "Juntamos X em Y": as fichas duplicadas vazias que o app juntou sozinho e que a tela de
@@ -306,8 +311,8 @@ interface AccountsContextType {
 	dismissAutoMergeNotices: () => void;
 	/**
 	 * Junta dois cartões de crédito do mesmo cartão do banco (E2E-34): compras, parcelas,
-	 * encargos e pagamentos vão para `intoId`, que mantém fechamento, limite e fatura
-	 * informada; o ajuste com a fatura do banco do que sai some com ele (`mergeCardInto`).
+	 * encargos, ajustes e pagamentos vão para `intoId`, que mantém fechamento e limite; a
+	 * dívida dos dois soma, e o patrimônio não muda (`mergeCardInto`, SPD-152).
 	 */
 	mergeCards: (fromId: string, intoId: string) => Promise<void>;
 	/** As compras que o app do banco avisa passam a cair nesta conta, e não na outra. */
@@ -1076,12 +1081,19 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	 * O total não muda (SPD-073): o saldo da que sai passa para a que fica. Se as duas
 	 * contavam o mesmo dinheiro, o total já estava dobrado antes de juntar, e "Acertar com o
 	 * banco" corrige; somar em silêncio menos do que havia é que não pode.
+	 *
+	 * Só do mesmo papel (SPD-152), ou com a que sai vazia: a reserva juntada na corrente
+	 * mantinha o total de hoje, mas o "Guardado" de outubro sumia do histórico. Papéis
+	 * diferentes com conteúdo recusam com `MergeRoleError`, sem mudar nada.
 	 */
 	const mergeAccounts = useCallback(
 		async (fromId: string, intoId: string) => {
 			const from = accounts.find((account) => account.id === fromId);
 			const into = accounts.find((account) => account.id === intoId);
 			if (!from || !into || fromId === intoId) return;
+			// Do mesmo papel nem precisa contar o que a que sai tem.
+			const sameRole = from.role === into.role && from.kind !== 'credit_card' && into.kind !== 'credit_card';
+			if (!sameRole && !canMergeAccounts(from, into, await getAccountContents(fromId))) throw new MergeRoleError();
 
 			await foldAccountBalance(fromId, intoId);
 			await moveAccountLedger(fromId, intoId, from.last4);
@@ -1188,9 +1200,8 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	/**
 	 * Dois cartões para o mesmo cartão do banco — o cadastrado à mão e o que o extrato OFX
-	 * criou, por exemplo. Não é o `mergeAccounts`: lá o saldo de uma soma no da outra, e aqui
-	 * a fatura do que fica é a que o banco mostra para ele, e não pode ganhar a âncora nem o
-	 * ajuste do outro. A regra inteira está em `mergeCardInto`.
+	 * criou, por exemplo. Como no `mergeAccounts`, a dívida de um soma na do outro e o
+	 * patrimônio não muda (SPD-152). A regra inteira está em `mergeCardInto`.
 	 */
 	const mergeCards = useCallback(
 		async (fromId: string, intoId: string) => {
@@ -1248,17 +1259,42 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[accounts, refresh]
 	);
 
+	/**
+	 * O "cartão de crédito" que era o débito de uma conta vira o cartão de débito dela: as
+	 * compras passam para a conta, e o cartão sai.
+	 *
+	 * O patrimônio não muda (SPD-152), como em `mergeAccounts`: o saldo do cartão — a dívida —
+	 * entra na âncora da conta (`foldAccountBalance`), e as transferências vêm junto
+	 * (`repointTransfers`). Antes elas eram apagadas: o pagamento de R$ 800 da Corrente ao
+	 * cartão voltava para a Corrente, e a fatura informada sumia — o saldo da conta e o
+	 * patrimônio subiam sem aviso. O pagamento da própria conta ao cartão vira transferência da
+	 * conta para ela mesma e some (o mesmo dinheiro com duas fichas); o de outra conta continua
+	 * saindo dela e passa a entrar nesta. A confirmação mostra o saldo da conta antes e depois.
+	 * Só para conta principal (`isDebitTarget`): em reserva ou externa o histórico mudaria.
+	 *
+	 * Com parcela por cair (lançamento ou transferência do cartão com data depois de hoje),
+	 * recusa (`DebitFutureError`) antes de mexer em qualquer coisa: no cartão ela já é dívida;
+	 * na conta, só sairia no dia dela — 2 × R$ 250 fariam o patrimônio de hoje subir R$ 500
+	 * sem nada ter sido pago. Depois da última, leva normalmente.
+	 */
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
 			const card = accounts.find((account) => account.id === cardId);
 			const checking = accounts.find((account) => account.id === accountId);
+			if (!card || !checking || card.kind !== 'credit_card' || !isDebitTarget(checking)) return;
+			const today = todayISO();
+			const [entries, moves] = await Promise.all([getAccountTransactions(cardId), getAccountTransfers(cardId)]);
+			if (entries.some((entry) => entry.date > today) || moves.some((move) => move.date > today)) {
+				throw new DebitFutureError();
+			}
 			// O nome do "cartão" vira o nome do cartão de débito da conta.
-			if (card?.last4 && checking) {
+			if (card.last4) {
 				await setAccountCardNames(checking.id, withCardName(checking.cardNames, card.last4, card.name));
 			}
-			await moveAccountLedger(cardId, accountId, card?.last4 ?? null);
-			// "Pagamentos" para um débito não existiram: tirá-los evita debitar a conta duas vezes.
-			await deleteTransfersOf(cardId);
+			// Antes de mover: depois o cartão não tem mais saldo para ler.
+			await foldAccountBalance(cardId, accountId);
+			await moveAccountLedger(cardId, accountId, card.last4);
+			await repointTransfers(cardId, accountId);
 			await retireMergedAccount(cardId);
 			syncQueue.schedule();
 			// Como em `mergeAccounts`: contas a pagar e dívidas do cartão foram para a conta.

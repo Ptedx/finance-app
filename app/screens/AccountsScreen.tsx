@@ -12,6 +12,7 @@ import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
 import { showsBalanceUnset } from '../utils/balanceUnset';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
+import { mergeRoleBlockedMessage } from '../utils/deletionNotice';
 import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
 import { formatCents } from '../utils/money';
 
@@ -87,6 +88,20 @@ const AccountsScreen = () => {
 		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);
 	};
 
+	/**
+	 * Juntar recusado (SPD-152): o aviso só pareia fichas do mesmo papel, mas o papel pode
+	 * mudar em outro aparelho entre abrir o aviso e tocar. Nada mudou; a frase diz por quê.
+	 */
+	const merge = (from: Account, into: Account) => {
+		mergeAccounts(from.id, into.id).catch((error: unknown) => {
+			if (error instanceof Error && error.name === 'MergeRoleError') {
+				Alert.alert(t('accounts.duplicate.title'), mergeRoleBlockedMessage(from.name, into.name, t));
+				return;
+			}
+			console.error('Error merging duplicate accounts:', error);
+		});
+	};
+
 	const askMerge = (pair: DuplicateAccounts) => {
 		Alert.alert(
 			t('accounts.duplicate.title'),
@@ -95,15 +110,11 @@ const AccountsScreen = () => {
 				{ text: t('accounts.duplicate.cancel'), style: 'cancel' },
 				{
 					text: t('accounts.duplicate.keep', { name: pair.fed.name }),
-					onPress: () => {
-						void mergeAccounts(pair.loose.id, pair.fed.id);
-					},
+					onPress: () => merge(pair.loose, pair.fed),
 				},
 				{
 					text: t('accounts.duplicate.keep', { name: pair.loose.name }),
-					onPress: () => {
-						void mergeAccounts(pair.fed.id, pair.loose.id);
-					},
+					onPress: () => merge(pair.fed, pair.loose),
 				},
 			]
 		);

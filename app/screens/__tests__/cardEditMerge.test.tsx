@@ -85,6 +85,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import Sheet from '../../components/cards/Sheet';
 import type { Account, Transaction } from '../../database/schema';
 import { CARD_ADJUSTMENT_NOTE } from '../../utils/cardMath';
+import { formatCents } from '../../utils/money';
 import CardEditScreen from '../CardEditScreen';
 
 jest.setTimeout(20_000);
@@ -126,6 +127,19 @@ const ITAU = account({ id: 'itau', name: 'Itaú Teste', bankName: 'Itaú', last4
 const C6 = account({ id: 'c6', name: 'C6 Teste', bankName: 'C6', last4: '4444', sortOrder: 5 });
 
 let renderer: ReactTestRenderer;
+
+/** A confirmação de juntar (SPD-152), com o `t` deste teste: a dívida de cada um e a soma. */
+const mergeMessage = (from: string, into: string, fromOwed: number, intoOwed: number): string =>
+	[
+		`cards.edit.mergeConfirmTotal ${JSON.stringify({
+			from,
+			into,
+			fromOwed: formatCents(fromOwed),
+			intoOwed: formatCents(intoOwed),
+			total: formatCents(fromOwed + intoOwed),
+		})}`,
+		'cards.edit.mergeSameCard',
+	].join(' ');
 
 const pressables = (label: string): ReactTestInstance[] =>
 	renderer.root.findAll((node) => typeof node.props.onPress === 'function' && node.props.accessibilityLabel === label);
@@ -213,11 +227,9 @@ describe('E2E-34 — juntar com outro cartão', () => {
 		expect(mockMergeCards).not.toHaveBeenCalled();
 
 		await pickTarget('Nubank Teste');
-		// Depois: a folha fecha e a confirmação diz o que sai e o que fica.
+		// Depois: a folha fecha e a confirmação diz o que sai, o que fica e a soma das dívidas.
 		expect(openSheet()).toBeUndefined();
-		expect(alertSpy.mock.calls[0]?.[1]).toBe(
-			`cards.edit.mergeConfirm ${JSON.stringify({ from: DUPLICADO.name, into: NUBANK.name })}`
-		);
+		expect(alertSpy.mock.calls[0]?.[1]).toBe(mergeMessage(DUPLICADO.name, NUBANK.name, 0, 0));
 		expect((alertSpy.mock.calls[0]?.[2] as AlertButton[]).map((button) => button.text)).toEqual([
 			'cards.cancel',
 			'cards.edit.mergeAction',
@@ -240,7 +252,7 @@ describe('E2E-34 — juntar com outro cartão', () => {
 
 		// O último da lista também se escolhe.
 		await pickTarget('C6 Teste');
-		expect(alertSpy.mock.calls[0]?.[1]).toBe(`cards.edit.mergeConfirm ${JSON.stringify({ from: DUPLICADO.name, into: C6.name })}`);
+		expect(alertSpy.mock.calls[0]?.[1]).toBe(mergeMessage(DUPLICADO.name, C6.name, 0, 0));
 		await act(async () => {
 			await alertButton(0, 'cards.edit.mergeAction').onPress?.();
 		});
@@ -256,6 +268,18 @@ describe('E2E-34 — juntar com outro cartão', () => {
 		});
 		expect(openSheet()).toBeUndefined();
 		expect(alertSpy).not.toHaveBeenCalled();
+		expect(mockMergeCards).not.toHaveBeenCalled();
+	});
+
+	it('SPD-152: a confirmação diz a soma das dívidas em R$ antes de juntar (R$ 370 + R$ 500 = R$ 870)', async () => {
+		mockAccounts.accounts = [
+			{ ...NUBANK, openingBalanceCents: -50_000 },
+			{ ...DUPLICADO, openingBalanceCents: -37_000 },
+		];
+		await mount('dup');
+		await openMerge();
+		await pickTarget('Nubank Teste');
+		expect(alertSpy.mock.calls[0]?.[1]).toBe(mergeMessage(DUPLICADO.name, NUBANK.name, 37_000, 50_000));
 		expect(mockMergeCards).not.toHaveBeenCalled();
 	});
 
@@ -412,7 +436,7 @@ describe('E2E-34 — depois de juntar, os prováveis repetidos (SPD-098)', () =>
 		expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(`cards.edit.merged ${JSON.stringify({ into: NUBANK.name })}`);
 	});
 
-	it('o acerto com a fatura do banco do duplicado é apagado ao juntar: não conta como repetido', async () => {
+	it('o acerto com a fatura do banco do duplicado vem junto (SPD-152), mas não conta como repetido', async () => {
 		mockAccounts.accounts = [NUBANK, DUPLICADO];
 		mockTransactions.list = [
 			tx('m-padaria', 'nubank', 5000, '2026-11-01', 'Padaria'),
@@ -433,5 +457,75 @@ describe('E2E-34 — depois de juntar, os prováveis repetidos (SPD-098)', () =>
 		await mergeDuplicateIntoNubank();
 		expect(alertSpy).toHaveBeenCalledTimes(2);
 		expect(alertSpy.mock.calls[1][1]).toBe(`cards.duplicates.afterMerge ${JSON.stringify({ count: 1, into: NUBANK.name })}`);
+	});
+});
+
+describe('SPD-152 — levar para o débito diz o efeito em R$', () => {
+	/** Abre "débito" e a lista de contas; devolve os nomes que a lista oferece. */
+	const openDebitList = async (): Promise<string[]> => {
+		await act(async () => {
+			pressables('cards.edit.debit')[0].props.onPress();
+		});
+		const [debitField] = renderer.root.findAll(
+			(node) =>
+				typeof node.props.onPress === 'function' &&
+				typeof node.props.accessibilityLabel === 'string' &&
+				node.props.accessibilityLabel.startsWith('cards.edit.debitAccount, ')
+		);
+		await act(async () => {
+			debitField.props.onPress();
+		});
+		return ['Corrente', 'Reserva'].filter((name) => pressables(name).length > 0);
+	};
+
+	it('a reserva não é oferecida (os pagamentos de fatura virariam "Guardado"); a confirmação diz Corrente R$ 1.000 → R$ 500 e o patrimônio igual', async () => {
+		const RESERVA = account({ id: 'reserva', name: 'Reserva', kind: 'savings', role: 'reserve', last4: null, sortOrder: 3 });
+		mockAccounts.accounts = [{ ...DUPLICADO, openingBalanceCents: -50_000 }, { ...CORRENTE, openingBalanceCents: 100_000 }, RESERVA];
+		mockTransactions.list = [tx('x-padaria', 'dup', 20_000, '2026-11-01', 'PADARIA')];
+		await mount('dup');
+		expect(await openDebitList()).toEqual(['Corrente']);
+		await act(async () => {
+			pressables('Corrente')[0].props.onPress();
+		});
+		await act(async () => {
+			pressables('cards.edit.debitConvert')[0].props.onPress();
+		});
+
+		expect(alertSpy.mock.calls[0]?.[1]).toBe(
+			[
+				`cards.edit.debitConfirmMoves ${JSON.stringify({ account: 'Corrente' })}`,
+				`cards.edit.debitConfirmOwed ${JSON.stringify({ account: 'Corrente', before: formatCents(100_000), after: formatCents(50_000), amount: formatCents(50_000) })}`,
+				`cards.edit.debitReportsPurchases ${JSON.stringify({ amount: formatCents(20_000) })}`,
+				`cards.edit.debitReportsInformed ${JSON.stringify({ amount: formatCents(50_000), account: 'Corrente' })}`,
+				'cards.edit.debitConfirmContinue',
+			].join(' ')
+		);
+		expect(mockConvertCardToDebit).not.toHaveBeenCalled();
+	});
+
+	it('com parcelas por cair (2 × R$ 250, dez e jan): diz quantas e quanto, e não oferece levar', async () => {
+		mockAccounts.accounts = [{ ...DUPLICADO, openingBalanceCents: -50_000 }, { ...CORRENTE, openingBalanceCents: 100_000 }];
+		mockTransactions.list = [
+			tx('x-padaria', 'dup', 20_000, '2026-11-01', 'PADARIA'),
+			tx('x-geladeira-2', 'dup', 25_000, '2026-12-10', 'GELADEIRA 2/3'),
+			tx('x-geladeira-3', 'dup', 25_000, '2027-01-10', 'GELADEIRA 3/3'),
+		];
+		await mount('dup');
+		await openDebitList();
+		await act(async () => {
+			pressables('Corrente')[0].props.onPress();
+		});
+		await act(async () => {
+			pressables('cards.edit.debitConvert')[0].props.onPress();
+		});
+
+		expect(alertSpy).toHaveBeenCalledTimes(1);
+		expect(alertSpy.mock.calls[0]?.[0]).toBe('cards.edit.debitConvert');
+		expect(alertSpy.mock.calls[0]?.[1]).toBe(
+			`cards.edit.debitBlockedFuture ${JSON.stringify({ name: DUPLICADO.name, count: 2, amount: formatCents(50_000) })}`
+		);
+		// Só "OK": nenhum botão que leve.
+		expect(((alertSpy.mock.calls[0]?.[2] ?? []) as AlertButton[]).map((button) => button.text)).not.toContain('cards.edit.debitConvert');
+		expect(mockConvertCardToDebit).not.toHaveBeenCalled();
 	});
 });

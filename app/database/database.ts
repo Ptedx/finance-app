@@ -1772,9 +1772,9 @@ export const updateAccount = async (edit: AccountEdit): Promise<void> => {
 };
 
 /**
- * Lápide em todas as transferências que entram ou saem de uma conta. Só a conversão de
- * cartão em conta (`deleteTransfersOf`) usa: apagar conta não apaga mais transferência
- * (SPD-144) — conta com transferência não é vazia, e não se apaga.
+ * Lápide em todas as transferências que entram ou saem de uma conta (`deleteTransfersOf`).
+ * Nenhum fluxo do app usa mais: apagar conta não apaga transferência (SPD-144), e levar o
+ * cartão para o débito as leva para a conta (SPD-152).
  */
 const TOMBSTONE_TRANSFERS_OF_ACCOUNT =
 	`UPDATE transfers SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE (fromAccountId = ? OR toAccountId = ?) AND deletedAt IS NULL`;
@@ -2020,16 +2020,20 @@ export const repointTransfers = async (fromId: string, toId: string): Promise<vo
  * Junta um cartão de crédito em outro (SPD-097): o extrato OFX criou "NU PAGAMENTOS S.A. ·
  * cartão final 1111" ao lado do "Nubank Teste" final 1111 que já existia (E2E-34).
  *
- * O critério é o número na tela bater com o do banco, e por isso não é o `mergeAccounts`
- * das contas. O que fica mantém fechamento, vencimento, limite e a âncora (a fatura
- * informada) dele — nada de somar a âncora do outro, que é outra leitura da mesma fatura.
- * Do que sai vêm as compras, parcelas, estornos, encargos, pagamentos de fatura, capturas
+ * O que fica mantém fechamento, vencimento e limite. Do que sai vêm as compras, parcelas,
+ * estornos, encargos, o ajuste com a fatura do banco, pagamentos de fatura, capturas
  * (inclusive as da caixa de entrada), contas a pagar e dívidas ligadas, e os finais e a
- * chave de extrato, para o próximo aviso ou OFX cair no que fica. O ajuste com a fatura do
- * banco do que sai (`isCardAdjustment`, mesmo critério de `getCardPurchasesOriginated`) não
- * vem: ele acertava a fatura **dele**, e no que fica seria diferença inventada. Ganha
- * lápide junto com o cartão. Compra datada até a âncora do que fica já está dentro da
- * fatura informada dele, como qualquer compra antiga dele mesmo.
+ * chave de extrato, para o próximo aviso ou OFX cair no que fica.
+ *
+ * A dívida dos dois soma, como o saldo em `mergeAccounts` (SPD-152): juntar é arrumação, e o
+ * patrimônio de antes tem que ser o de depois. Antes, a fatura informada (âncora) e o ajuste
+ * do que sai sumiam com ele — R$ 500 + R$ 370 viravam R$ 520, e o patrimônio subia R$ 350 em
+ * silêncio. Agora a âncora do que fica é a soma dos dois saldos na data da âncora mais antiga
+ * (o cálculo de `foldAccountBalance`), e o resto vem como lançamento: a dívida bate em
+ * qualquer data e, com o mesmo fechamento, cada fatura é a soma das duas (com fechamentos
+ * diferentes, as compras do que sai caem no ciclo do que fica). Se os dois eram leituras da
+ * mesma fatura, ela já estava contada duas vezes antes de juntar; a confirmação mostra a soma
+ * em R$, e o "Acertar valor" com a fatura do banco corrige.
  *
  * Uma transação só, toda linha mudada suja para o sync levar; o cartão que sai sai como
  * `deleteAccount` apaga (lápide). Fora de cartão para cartão, ou para ele mesmo, não faz nada.
@@ -2064,11 +2068,21 @@ export const mergeCardInto = async (fromId: string, intoId: string): Promise<voi
 
 	const timestamp = nowTimestamp();
 	await runInTransaction(async () => {
-		await db.runAsync(
-			`UPDATE transactions SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
-       WHERE accountId = ? AND installmentGroup IS NULL AND TRIM(COALESCE(note, '')) = ? AND deletedAt IS NULL`,
-			[timestamp, timestamp, fromId, CARD_ADJUSTMENT_NOTE]
-		);
+		// A âncora nova é a soma dos dois saldos na data da âncora **mais antiga** — lidos antes
+		// de mover os lançamentos, como em `foldAccountBalance`. Na mais antiga, e não sempre na
+		// do que fica: com a do que fica mais nova, o que o outro tinha entre as duas datas (a
+		// fatura de outubro, paga) sumia dentro da fatura informada, e o gasto de outubro com ela.
+		// Assim o resultado é o mesmo em qualquer direção, e a fatura informada mais nova passa a
+		// contar a partir da data da outra (a confirmação avisa, `cardMergeConfirmMessage`).
+		const anchorDate = from.openingBalanceDate < into.openingBalanceDate ? from.openingBalanceDate : into.openingBalanceDate;
+		const atAnchor = await getAccountBalances(anchorDate);
+		const anchorCents = (atAnchor.get(intoId) ?? 0) + (atAnchor.get(fromId) ?? 0);
+		if (anchorCents !== into.openingBalanceCents || anchorDate !== into.openingBalanceDate) {
+			await db.runAsync(
+				`UPDATE accounts SET openingBalanceCents = ?, openingBalanceDate = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`,
+				[anchorCents, anchorDate, timestamp, intoId]
+			);
+		}
 		// Como em `moveAccountLedger`: lançamento sem final ganha o do cartão que sai.
 		await db.runAsync(
 			`UPDATE transactions SET accountId = ?, cardLast4 = COALESCE(cardLast4, ?), updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE accountId = ? AND deletedAt IS NULL`,
@@ -2107,7 +2121,7 @@ export const mergeCardInto = async (fromId: string, intoId: string): Promise<voi
 				[identity.cardNames, identity.last4, identity.packageName, identity.accountKey, timestamp, intoId]
 			);
 		}
-		// A lápide do `deleteAccount`. Já não sobra lançamento nem transferência nele.
+		// A lápide do `deleteAccount`. Já não sobra lançamento, transferência nem saldo nele.
 		await db.runAsync(`UPDATE accounts SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE id = ?`, [timestamp, timestamp, fromId]);
 	});
 };
@@ -2547,7 +2561,11 @@ export const setAccountCardNames = async (accountId: string, cardNames: string |
 	]);
 };
 
-/** Lápide em todas as transferências que entram ou saem de uma conta. */
+/**
+ * Lápide em todas as transferências que entram ou saem de uma conta. Levar o cartão para o
+ * débito não usa mais (SPD-152): apagar os pagamentos de fatura devolvia o dinheiro à conta
+ * que pagou e mudava o patrimônio.
+ */
 export const deleteTransfersOf = async (accountId: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(TOMBSTONE_TRANSFERS_OF_ACCOUNT, [timestamp, timestamp, accountId, accountId]);

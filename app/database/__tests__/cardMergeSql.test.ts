@@ -3,10 +3,10 @@
  *
  * O extrato OFX do Nubank criou "NU PAGAMENTOS S.A. · cartão final 1111" ao lado do
  * "Nubank Teste" final 1111 que o usuário já tinha. `mergeCardInto` leva o que é do cartão
- * que sai — compras, parcelas, encargos, pagamentos de fatura, capturas, contas a pagar —
- * para o que fica, e apaga o que sai com lápide. O ajuste com a fatura do banco do que sai
- * não vem: ele acertava a fatura **dele** com o banco, e na fatura do que fica viraria
- * diferença inventada. Toda linha mudada fica suja, para o sync levar.
+ * que sai — compras, parcelas, encargos, o ajuste com a fatura do banco, pagamentos de fatura,
+ * capturas, contas a pagar — para o que fica, e apaga o que sai com lápide. A fatura informada
+ * (âncora) do que sai soma na do que fica (SPD-152): antes ela e o ajuste sumiam, e a dívida
+ * caía sem o usuário saber. Toda linha mudada fica suja, para o sync levar.
  *
  * Como em `accountSql.test.ts`, o `expo-sqlite` vira o `node:sqlite` em memória e a suíte
  * pede `NODE_OPTIONS=--experimental-sqlite`; sem a flag, é pulada com um aviso.
@@ -214,7 +214,7 @@ describeSql('juntar cartões no SQL (mergeCardInto, SPD-097)', () => {
 		);
 	});
 
-	it('o Nubank Teste fica com padaria, mercado e Drogasil; o ajuste do duplicado não vem', async () => {
+	it('o Nubank Teste fica com padaria, mercado e Drogasil, e com o ajuste do duplicado (SPD-152: a dívida não some)', async () => {
 		await mergeCardInto(duplicado, nubank);
 
 		const alive = (await rowsOf('transactions')).filter((row) => row.deletedAt === null);
@@ -223,13 +223,17 @@ describeSql('juntar cartões no SQL (mergeCardInto, SPD-097)', () => {
 			.map((row) => [row.note, row.amountCents])
 			.sort();
 		expect(purchases).toEqual([
+			[CARD_ADJUSTMENT_NOTE, 15_000],
 			['Drogasil', 4_590],
 			['Padaria', 5_000],
 			['Supermercado', 10_000],
 		]);
-		expect(alive.filter((row) => row.note === CARD_ADJUSTMENT_NOTE)).toEqual([]);
-		// Nada fica "sem conta": nem o ajuste, que tem lápide em vez de perder o cartão.
+		expect(alive.filter((row) => row.note === CARD_ADJUSTMENT_NOTE).map((row) => [row.accountId, row.amountCents])).toEqual([
+			[nubank, 15_000],
+		]);
+		// Nada fica "sem conta" nem com lápide: tudo passou para o Nubank Teste.
 		expect(alive.filter((row) => row.accountId !== nubank)).toEqual([]);
+		expect((await rowsOf('transactions')).filter((row) => row.deletedAt !== null)).toEqual([]);
 	});
 
 	it('parcelas, encargo, pagamento de fatura, captura e conta a pagar passam para o que fica', async () => {
@@ -249,7 +253,7 @@ describeSql('juntar cartões no SQL (mergeCardInto, SPD-097)', () => {
 		expect(bills.map((row) => row.accountId)).toEqual([nubank]);
 	});
 
-	it('o duplicado sai com lápide; o que fica mantém fechamento, limite e fatura informada', async () => {
+	it('o duplicado sai com lápide; o que fica mantém fechamento e limite, e a fatura informada soma a dos dois', async () => {
 		await mergeCardInto(duplicado, nubank);
 
 		expect((await getAccounts()).map((account) => account.name).sort()).toEqual(['Corrente', 'Nubank Teste']);
@@ -266,7 +270,8 @@ describeSql('juntar cartões no SQL (mergeCardInto, SPD-097)', () => {
 				closingDay: 25,
 				closingDaysBefore: 7,
 				creditLimitCents: 500_000,
-				openingBalanceCents: 0,
+				// R$ 0 do Nubank Teste + R$ 1.234,56 do duplicado, no mesmo dia (SPD-152).
+				openingBalanceCents: -123_456,
 				openingBalanceDate: '2026-10-31',
 				packageName: 'com.nu.production',
 				// A chave do extrato vem junto: o próximo OFX cai no Nubank Teste.

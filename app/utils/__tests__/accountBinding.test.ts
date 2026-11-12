@@ -29,7 +29,7 @@ const account = (overrides: Partial<Account>): Account => ({
 });
 
 const interApp = account({ id: 'inter-app', name: 'Inter', bankName: 'Inter', packageName: INTER });
-const interHand = account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter', role: 'envelope' });
+const interHand = account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter' });
 
 describe('quem recebe as compras do banco', () => {
 	it('é a própria conta quando ela tem o app', () => {
@@ -113,6 +113,15 @@ describe('fichas que parecem a mesma conta', () => {
 				account({ id: 'cofre', name: 'Cofre', kind: 'cash' }),
 			])
 		).toHaveLength(0);
+	});
+
+	it('papéis diferentes não são o mesmo par: a reserva e o envelope do banco ficam de fora (SPD-152)', () => {
+		const interReserve = account({ id: 'inter-reserva', name: 'Inter Reserva', kind: 'savings', role: 'reserve', bankName: 'Inter' });
+		const interEnvelope = account({ id: 'inter-envelope', name: 'Inter Mercado', role: 'envelope', bankName: 'Inter' });
+
+		expect(duplicateAccountPairs([interApp, interReserve])).toHaveLength(0);
+		expect(duplicateAccountPairs([interApp, interEnvelope])).toHaveLength(0);
+		expect(duplicateAccountPairs([interApp, { ...interReserve, role: 'main' }])).toHaveLength(1);
 	});
 });
 

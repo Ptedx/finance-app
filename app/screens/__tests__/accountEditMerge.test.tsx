@@ -229,6 +229,29 @@ describe('E2E-39 — juntar com outra conta: os destinos numa folha', () => {
 		expect(routerCalls()).toEqual([['back', []]]);
 	});
 
+	it('SPD-152: o banco recusou por papéis diferentes (o papel mudou no outro aparelho) — diz por quê e não fecha a tela', async () => {
+		mockMergeAccounts.mockImplementationOnce(async () => {
+			const error = new Error('papéis diferentes');
+			error.name = 'MergeRoleError';
+			throw error;
+		});
+		mockAccounts.accounts = [CORRENTE, DUPLICADA, CARTEIRA];
+		await mount('dup');
+		await act(async () => {
+			pressables('accounts.edit.merge')[0].props.onPress();
+		});
+		await pickTarget('Carteira');
+		await act(async () => {
+			await alertButton(0, 'accounts.edit.mergeAction').onPress?.();
+		});
+		expect(mockMergeAccounts).toHaveBeenCalledWith('dup', 'carteira');
+		expect(alertSpy.mock.calls[1]?.[1]).toBe(
+			`accounts.edit.mergeRoleBlocked ${JSON.stringify({ from: DUPLICADA.name, into: CARTEIRA.name })}`
+		);
+		expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+		expect(routerCalls()).toEqual([]);
+	});
+
 	it('fechar a folha não junta nada', async () => {
 		mockAccounts.accounts = [CORRENTE, DUPLICADA];
 		await mount('dup');

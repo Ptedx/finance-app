@@ -44,6 +44,7 @@ import {
 	deleteConfirmMessage,
 	deleteRefusedMessage,
 	mergeConfirmMessage,
+	mergeRoleBlockedMessage,
 	reopenMessage,
 } from '../utils/deletionNotice';
 import { brandFor } from '../utils/bankBrands';
@@ -366,7 +367,17 @@ const AccountEditScreen: React.FC<AccountEditScreenProps> = ({ accountId }) => {
 			{
 				text: t('accounts.edit.mergeAction'),
 				onPress: async () => {
-					await mergeAccounts(existing.id, account.id);
+					try {
+						await mergeAccounts(existing.id, account.id);
+					} catch (error) {
+						// Papéis diferentes (SPD-152): a lista já filtra, mas o papel pode ter mudado no
+						// outro aparelho entre abrir a folha e tocar. Nada mudou; a frase diz por quê.
+						if (error instanceof Error && error.name === 'MergeRoleError') {
+							Alert.alert(t('accounts.edit.merge'), mergeRoleBlockedMessage(existing.name, account.name, t));
+							return;
+						}
+						throw error;
+					}
 					announce(t('accounts.edit.merged', { into: account.name }));
 					// Esta tela é a da conta que saiu, e é a de cima: fechá-la não deixa nada dela na pilha.
 					router.back();
