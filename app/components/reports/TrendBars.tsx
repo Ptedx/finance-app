@@ -7,6 +7,7 @@ import { monthKeyName } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import type { ProvisionalPart } from '../../utils/monthOverview';
 import type { MonthPoint } from '../../utils/reportSeries';
+import HelpButton from '../tour/HelpButton';
 import { ACCENT, EXPENSE_COLOR, INCOME_COLOR, reportStyles } from './reportStyles';
 
 const BAR_MAX_HEIGHT = 110;
@@ -33,9 +34,12 @@ const TrendBars: React.FC<{ series: MonthPoint[]; provisional?: ProvisionalPart 
 
 	return (
 		<View style={reportStyles.card}>
-			<Text style={reportStyles.sectionTitle} accessibilityRole="header">
-				{t('reports.trend.title')}
-			</Text>
+			<View style={reportStyles.sectionHeader}>
+				<Text style={reportStyles.sectionTitle} accessibilityRole="header">
+					{t('reports.trend.title')}
+				</Text>
+				<HelpButton trail="freedom" here={{ screen: 'reports' }} from="7" />
+			</View>
 			<Text style={reportStyles.sectionSubtitle}>{t('reports.trend.subtitle')}</Text>
 
 			{series.length === 0 ? (

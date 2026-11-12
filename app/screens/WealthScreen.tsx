@@ -85,9 +85,11 @@ const WealthScreen = () => {
 		<View style={styles.container}>
 			<StatusBar barStyle="light-content" />
 			<View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-				<Text style={styles.headerTitle} accessibilityRole="header">
-					{t('netWorth.screenTitle')}
-				</Text>
+				<TourTarget id="wealth.title">
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('netWorth.screenTitle')}
+					</Text>
+				</TourTarget>
 				<Text style={styles.headerSubtitle}>{t('netWorth.screenSubtitle')}</Text>
 			</View>
 

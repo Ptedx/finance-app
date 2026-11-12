@@ -9,6 +9,8 @@ import PeriodSelector from '../components/PeriodSelector';
 import { SelectField } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import TransferItem from '../components/TransferItem';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -71,6 +73,8 @@ const TransactionListScreen = () => {
 	const [kind, setKind] = useState<Kind>(params.kind === 'income' || params.kind === 'expense' ? params.kind : 'all');
 	const [accountId, setAccountId] = useState<string | null>(null);
 	const [search, setSearch] = useState('');
+	// A trilha de Lançamentos (SPD-131) aponta a lista depois de carregada.
+	useScreenTour('transactions', { ready: !isLoading });
 
 	const categoryNames = useMemo(
 		() => new Map(categories.map((category) => [category.id, category.name.toLocaleLowerCase()])),
@@ -209,30 +213,32 @@ const TransactionListScreen = () => {
 
 	const header = (
 		<View style={styles.header}>
-			<View
-				style={styles.totals}
-				accessible
-				accessibilityLabel={[
-					`${t('transactionsList.income')} ${formatCents(totals.incomeCents)}`,
-					`${t('transactionsList.expense')} ${formatCents(totals.expenseCents)}`,
-					`${t('transactionsList.net')} ${formatCents(totals.netCents)}`,
-				].join('. ')}
-			>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.income')}</Text>
-					<Text style={[styles.totalValue, styles.income]}>{formatCents(totals.incomeCents)}</Text>
+			<TourTarget id="transactions.totals">
+				<View
+					style={styles.totals}
+					accessible
+					accessibilityLabel={[
+						`${t('transactionsList.income')} ${formatCents(totals.incomeCents)}`,
+						`${t('transactionsList.expense')} ${formatCents(totals.expenseCents)}`,
+						`${t('transactionsList.net')} ${formatCents(totals.netCents)}`,
+					].join('. ')}
+				>
+					<View style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.income')}</Text>
+						<Text style={[styles.totalValue, styles.income]}>{formatCents(totals.incomeCents)}</Text>
+					</View>
+					<TourTarget id="transactions.expense" style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.expense')}</Text>
+						<Text style={[styles.totalValue, styles.expense]}>{formatCents(totals.expenseCents)}</Text>
+					</TourTarget>
+					<View style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.net')}</Text>
+						<Text style={[styles.totalValue, totals.netCents < 0 && styles.expense]}>{formatCents(totals.netCents)}</Text>
+					</View>
 				</View>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.expense')}</Text>
-					<Text style={[styles.totalValue, styles.expense]}>{formatCents(totals.expenseCents)}</Text>
-				</View>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.net')}</Text>
-					<Text style={[styles.totalValue, totals.netCents < 0 && styles.expense]}>{formatCents(totals.netCents)}</Text>
-				</View>
-			</View>
+			</TourTarget>
 
-			<View style={styles.searchRow}>
+			<TourTarget id="transactions.search" style={styles.searchRow}>
 				<Ionicons name="search" size={18} color="rgba(255,255,255,0.6)" />
 				<TextInput
 					style={styles.search}
@@ -254,37 +260,41 @@ const TransactionListScreen = () => {
 						<Ionicons name="close-circle" size={20} color="rgba(255,255,255,0.7)" />
 					</Pressable>
 				) : null}
-			</View>
+			</TourTarget>
 
-			<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={t('transactionsList.filterLabel')}>
-				{kinds.map((option) => {
-					const selected = kind === option.value;
-					return (
-						<Pressable
-							key={option.value}
-							onPress={() => setKind(option.value)}
-							accessibilityRole="radio"
-							accessibilityState={{ checked: selected }}
-							accessibilityLabel={option.label}
-							style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
-						>
-							<Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
-						</Pressable>
-					);
-				})}
-			</View>
+			<TourTarget id="transactions.kinds">
+				<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={t('transactionsList.filterLabel')}>
+					{kinds.map((option) => {
+						const selected = kind === option.value;
+						return (
+							<Pressable
+								key={option.value}
+								onPress={() => setKind(option.value)}
+								accessibilityRole="radio"
+								accessibilityState={{ checked: selected }}
+								accessibilityLabel={option.label}
+								style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+							>
+								<Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
+							</Pressable>
+						);
+					})}
+				</View>
+			</TourTarget>
 
 			{/* A conta numa lista que abre de baixo (SPD-130): a rolagem de lado escondia as contas do fim. */}
 			{accountOptions.length > 1 ? (
-				<SelectField
-					compact
-					label={t('transactionsList.accountLabel')}
-					options={accountSelectOptions(accountOptions)}
-					selected={accountId}
-					onSelect={setAccountId}
-					clearLabel={t('transactionsList.allAccounts')}
-					onClear={() => setAccountId(null)}
-				/>
+				<TourTarget id="transactions.account">
+					<SelectField
+						compact
+						label={t('transactionsList.accountLabel')}
+						options={accountSelectOptions(accountOptions)}
+						selected={accountId}
+						onSelect={setAccountId}
+						clearLabel={t('transactionsList.allAccounts')}
+						onClear={() => setAccountId(null)}
+					/>
+				</TourTarget>
 			) : null}
 
 			<Text style={styles.count} accessibilityLiveRegion="polite">
@@ -294,7 +304,7 @@ const TransactionListScreen = () => {
 	);
 
 	const empty = (
-		<View style={styles.empty}>
+		<TourTarget id="transactions.empty" style={styles.empty}>
 			<Ionicons name={isLoading ? 'hourglass-outline' : 'receipt-outline'} size={32} color="rgba(255,255,255,0.5)" />
 			<Text style={styles.emptyText}>
 				{isLoading
@@ -315,51 +325,61 @@ const TransactionListScreen = () => {
 					<Text style={styles.clearFiltersText}>{t('transactionsList.clearFilters')}</Text>
 				</Pressable>
 			) : null}
-		</View>
+		</TourTarget>
 	);
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<View style={styles.titleRow}>
-				<Text style={styles.title} accessibilityRole="header">
-					{t('transactionsList.title')}
-				</Text>
-				<PeriodSelector />
+				<View style={styles.titleGroup}>
+					<Text style={styles.title} accessibilityRole="header">
+						{t('transactionsList.title')}
+					</Text>
+					<HelpButton trail="transactions" here={{ screen: 'transactions' }} />
+				</View>
+				<TourTarget id="transactions.period">
+					<PeriodSelector />
+				</TourTarget>
 			</View>
 
-			<SectionList
-				sections={sections}
-				keyExtractor={(item) => item.id}
-				renderItem={({ item }) =>
-					item.type === 'transaction' ? (
-						<TransactionItem transaction={item.transaction} onPress={openTransaction} />
-					) : (
-						<TransferItem transfer={item.transfer} accountsById={accountsById} onPress={openTransfer} />
-					)
-				}
-				renderSectionHeader={({ section }) => (
-					<View
-						style={styles.dayHeader}
-						accessible
-						accessibilityRole="header"
-						accessibilityLabel={`${section.title}, ${formatCents(section.totalCents)}`}
-					>
-						<Text style={styles.dayTitle}>{section.title}</Text>
-						<Text style={[styles.dayTotal, section.totalCents < 0 && styles.expense]}>{formatCents(section.totalCents)}</Text>
-					</View>
-				)}
-				ListHeaderComponent={header}
-				ListEmptyComponent={empty}
-				stickySectionHeadersEnabled
-				contentContainerStyle={styles.content}
-				refreshControl={
-					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />
-				}
-				keyboardShouldPersistTaps="handled"
-				initialNumToRender={12}
-				maxToRenderPerBatch={12}
-				windowSize={7}
-			/>
+			<TourTarget id="transactions.list" style={styles.list}>
+				<SectionList
+					sections={sections}
+					keyExtractor={(item) => item.id}
+					renderItem={({ item, index, section }) => (
+						// O primeiro do mês é o que a trilha (SPD-131) mostra para "tocar para ver e editar".
+						<TourTarget id={index === 0 && section === sections[0] ? 'transactions.first' : undefined}>
+							{item.type === 'transaction' ? (
+								<TransactionItem transaction={item.transaction} onPress={openTransaction} />
+							) : (
+								<TransferItem transfer={item.transfer} accountsById={accountsById} onPress={openTransfer} />
+							)}
+						</TourTarget>
+					)}
+					renderSectionHeader={({ section }) => (
+						<View
+							style={styles.dayHeader}
+							accessible
+							accessibilityRole="header"
+							accessibilityLabel={`${section.title}, ${formatCents(section.totalCents)}`}
+						>
+							<Text style={styles.dayTitle}>{section.title}</Text>
+							<Text style={[styles.dayTotal, section.totalCents < 0 && styles.expense]}>{formatCents(section.totalCents)}</Text>
+						</View>
+					)}
+					ListHeaderComponent={header}
+					ListEmptyComponent={empty}
+					stickySectionHeadersEnabled
+					contentContainerStyle={styles.content}
+					refreshControl={
+						<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />
+					}
+					keyboardShouldPersistTaps="handled"
+					initialNumToRender={12}
+					maxToRenderPerBatch={12}
+					windowSize={7}
+				/>
+			</TourTarget>
 		</SafeAreaView>
 	);
 };
@@ -378,7 +398,17 @@ const styles = StyleSheet.create({
 		paddingBottom: 4,
 		gap: 12,
 	},
+	// O título e o "?" da trilha (SPD-131), juntos; o mês fica à direita.
+	titleGroup: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexShrink: 1,
+	},
+	list: {
+		flex: 1,
+	},
 	title: {
+		flexShrink: 1,
 		fontSize: 26,
 		fontWeight: '700',
 		color: '#FFFFFF',

@@ -5,6 +5,8 @@ import { StyleSheet, Text, View } from 'react-native';
 import { formatCents } from '../../utils/money';
 import type { PriorityItem, PriorityStatus } from '../../utils/priorities';
 import { ACCENT } from '../cards/formParts';
+import HelpButton from '../tour/HelpButton';
+import { TourTarget } from '../tour/TourContext';
 
 const ICONS: Record<PriorityStatus, React.ComponentProps<typeof Ionicons>['name']> = {
 	done: 'checkmark-circle',
@@ -29,11 +31,15 @@ const PrioritiesCard: React.FC<{ items: PriorityItem[]; reserveMonths: number }>
 
 	return (
 		<View style={styles.card}>
-			<Text style={styles.title} accessibilityRole="header">
-				{t('priorities.title')}
-			</Text>
+			<View style={styles.titleRow}>
+				<Text style={styles.title} accessibilityRole="header">
+					{t('priorities.title')}
+				</Text>
+				<HelpButton trail="reserve" here={{ screen: 'wealth' }} from="8" />
+			</View>
 			<Text style={styles.subtitle}>{t('priorities.subtitle')}</Text>
-			{items.map((item, index) => {
+			<TourTarget id="priorities.steps" style={styles.steps}>
+				{items.map((item, index) => {
 				const label = t(`priorities.${item.id}.label`, { months: reserveMonths });
 				const detail =
 					item.status === 'done'
@@ -41,23 +47,24 @@ const PrioritiesCard: React.FC<{ items: PriorityItem[]; reserveMonths: number }>
 						: item.status === 'setup'
 							? t(`priorities.${item.id}.setup`)
 							: t(`priorities.${item.id}.missing`, { amount: formatCents(item.missingCents ?? 0) });
-				return (
-					<View
-						key={item.id}
-						style={[styles.row, item.status === 'doing' && styles.rowCurrent]}
-						accessible
-						accessibilityLabel={`${index + 1}. ${label}. ${t(`priorities.status.${item.status}`)}. ${detail}`}
-					>
-						<Ionicons name={ICONS[item.status]} size={22} color={COLORS[item.status]} />
-						<View style={styles.rowText}>
-							<Text style={[styles.label, item.status === 'next' && styles.dim]}>
-								{index + 1}. {label}
-							</Text>
-							<Text style={[styles.detail, item.status === 'next' && styles.dim]}>{detail}</Text>
+					return (
+						<View
+							key={item.id}
+							style={[styles.row, item.status === 'doing' && styles.rowCurrent]}
+							accessible
+							accessibilityLabel={`${index + 1}. ${label}. ${t(`priorities.status.${item.status}`)}. ${detail}`}
+						>
+							<Ionicons name={ICONS[item.status]} size={22} color={COLORS[item.status]} />
+							<View style={styles.rowText}>
+								<Text style={[styles.label, item.status === 'next' && styles.dim]}>
+									{index + 1}. {label}
+								</Text>
+								<Text style={[styles.detail, item.status === 'next' && styles.dim]}>{detail}</Text>
+							</View>
 						</View>
-					</View>
-				);
-			})}
+					);
+				})}
+			</TourTarget>
 		</View>
 	);
 };
@@ -70,7 +77,19 @@ const styles = StyleSheet.create({
 		marginBottom: 16,
 		gap: 8,
 	},
+	// O "?" da trilha (SPD-131) ao lado do título, sem crescer o cabeçalho do card.
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		marginVertical: -12,
+	},
+	// Os degraus juntos, para a trilha apontar; o mesmo espaço que o card dá entre as linhas.
+	steps: {
+		gap: 8,
+	},
 	title: {
+		flex: 1,
 		fontSize: 18,
 		fontWeight: '600',
 		color: '#FFFFFF',

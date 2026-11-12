@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
 import type { NetWorth } from '../../utils/accountMath';
 import { formatCents } from '../../utils/money';
+import HelpButton from '../tour/HelpButton';
+import { TourTarget } from '../tour/TourContext';
 
 export interface NetWorthParts {
 	cashCents: number;
@@ -36,26 +38,35 @@ const NetWorthCard: React.FC<{ worth: NetWorth; parts: NetWorthParts }> = ({ wor
 
 	return (
 		<View style={styles.card}>
-			<View
-				accessible
-				accessibilityLabel={`${t('netWorth.title')}: ${formatCents(worth.netCents)}. ${t('netWorth.have')} ${formatCents(worth.assetsCents)}. ${t('netWorth.owe')} ${formatCents(worth.liabilitiesCents)}.`}
-			>
-				<Text style={styles.label}>{t('netWorth.title')}</Text>
-				<Text style={[styles.hero, worth.netCents < 0 && styles.negative]}>{formatCents(worth.netCents)}</Text>
+			<View style={styles.totalRow}>
+				<TourTarget id="netWorth.total" style={styles.total}>
+					<View
+						accessible
+						accessibilityLabel={`${t('netWorth.title')}: ${formatCents(worth.netCents)}. ${t('netWorth.have')} ${formatCents(worth.assetsCents)}. ${t('netWorth.owe')} ${formatCents(worth.liabilitiesCents)}.`}
+					>
+						<Text style={styles.label}>{t('netWorth.title')}</Text>
+						<Text style={[styles.hero, worth.netCents < 0 && styles.negative]}>{formatCents(worth.netCents)}</Text>
+					</View>
+				</TourTarget>
+				<HelpButton trail="netWorth" here={{ screen: 'wealth' }} />
 			</View>
 
 			<View style={styles.columns}>
 				<View style={styles.column}>
-					<Text style={styles.columnTitle} accessibilityRole="header">
-						{t('netWorth.have')} · {formatCents(worth.assetsCents)}
-					</Text>
+					<TourTarget id="netWorth.have">
+						<Text style={styles.columnTitle} accessibilityRole="header">
+							{t('netWorth.have')} · {formatCents(worth.assetsCents)}
+						</Text>
+					</TourTarget>
 					{have.map((line) => (
-						<View key={line.key} style={styles.line} accessible accessibilityLabel={`${line.label}: ${formatCents(line.cents)}`}>
-							<Text style={styles.lineLabel} numberOfLines={2}>
-								{line.label}
-							</Text>
-							<Text style={styles.lineValue}>{formatCents(line.cents)}</Text>
-						</View>
+						<TourTarget key={line.key} id={`netWorth.${line.key}`}>
+							<View style={styles.line} accessible accessibilityLabel={`${line.label}: ${formatCents(line.cents)}`}>
+								<Text style={styles.lineLabel} numberOfLines={2}>
+									{line.label}
+								</Text>
+								<Text style={styles.lineValue}>{formatCents(line.cents)}</Text>
+							</View>
+						</TourTarget>
 					))}
 				</View>
 				<View style={styles.column}>
@@ -63,17 +74,21 @@ const NetWorthCard: React.FC<{ worth: NetWorth; parts: NetWorthParts }> = ({ wor
 						{t('netWorth.owe')} · {formatCents(worth.liabilitiesCents)}
 					</Text>
 					{owe.map((line) => (
-						<View key={line.key} style={styles.line} accessible accessibilityLabel={`${line.label}: ${formatCents(line.cents)}`}>
-							<Text style={styles.lineLabel} numberOfLines={2}>
-								{line.label}
-							</Text>
-							<Text style={styles.lineValue}>{formatCents(line.cents)}</Text>
-						</View>
+						<TourTarget key={line.key} id={`netWorth.${line.key}`}>
+							<View style={styles.line} accessible accessibilityLabel={`${line.label}: ${formatCents(line.cents)}`}>
+								<Text style={styles.lineLabel} numberOfLines={2}>
+									{line.label}
+								</Text>
+								<Text style={styles.lineValue}>{formatCents(line.cents)}</Text>
+							</View>
+						</TourTarget>
 					))}
 				</View>
 			</View>
 
-			<Text style={styles.note}>{t('netWorth.assetsNote')}</Text>
+			<TourTarget id="netWorth.note">
+				<Text style={styles.note}>{t('netWorth.assetsNote')}</Text>
+			</TourTarget>
 		</View>
 	);
 };
@@ -85,6 +100,15 @@ const styles = StyleSheet.create({
 		padding: 16,
 		marginBottom: 16,
 		gap: 12,
+	},
+	// O "?" da trilha (SPD-131) ao lado do total, fora da leitura do total.
+	totalRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		justifyContent: 'space-between',
+	},
+	total: {
+		flex: 1,
 	},
 	label: {
 		fontSize: 13,

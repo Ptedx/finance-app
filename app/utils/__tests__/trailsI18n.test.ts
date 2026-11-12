@@ -26,6 +26,7 @@ const everything: TrailRecords = {
 	transaction: [{ id: 't' }],
 	pending: [{}],
 	capture: [{}],
+	debt: [{ id: 'd' }],
 };
 
 /** As chaves de todos os planos: com tudo, sem nada (os `[sem dado]`) e as trilhas de fallback. */
@@ -80,5 +81,35 @@ describe('textos das trilhas', () => {
 			"Na tela de cada conta, 'Acertar com o banco' iguala o saldo do app ao do banco."
 		);
 		expect(read(pt, 'trails.review.steps.11.title')).toBe('Histórico.');
+	});
+
+	it('as trilhas 9 a 15 têm os textos aprovados do português (SPD-131b)', () => {
+		expect(read(pt, 'trails.debts.title')).toBe('Dívidas');
+		expect(read(pt, 'trails.debts.steps.10.body')).toBe(
+			'Compara o custo da dívida ao ano com o que o mesmo dinheiro renderia investido, já com 15% de IR: o rendimento da sua meta de aposentadoria, ou o CDI do Banco Central (10% ao ano, até o app obter o CDI). Diferença menor que meio ponto ao ano dá "Tanto faz".'
+		);
+		expect(read(pt, 'trails.debts.steps.9.missing')).toBe(
+			'Na tela de cada dívida: saldo de hoje, quando quita, juros que faltam e as próximas parcelas.'
+		);
+		expect(read(pt, 'trails.reserve.steps.7.missing')).toBe(
+			'Sem um mês fechado nem orçamento, informe o custo mensal para começar agora.'
+		);
+		expect(read(pt, 'trails.transactions.steps.3.title')).toBe('Não é o "Gastos" do Início.');
+		expect(read(pt, 'trails.transactions.steps.7.missing')).toBe(
+			'Quando houver lançamentos, tocar num deles abre para ver ou editar.'
+		);
+		expect(read(pt, 'trails.month.steps.8.title')).toBe('Orçamento.');
+		expect(read(pt, 'trails.freedom.steps.10.body')).toBe(
+			'Gera um CSV (com títulos em inglês) com o resumo de cada mês do ano, os totais por categoria e os lançamentos do mês escolhido, e abre o compartilhamento. Transferências não entram.'
+		);
+	});
+
+	it.each([
+		['pt', pt, /^Atenção/],
+		['en', en, /^Watch out/],
+		['it', itLocale, /^Attenzione/],
+	])('%s: o título de passo "Atenção" não repete o rótulo do balão', (_name, locale, prefix) => {
+		const titles = keys.filter((key) => key.endsWith('.title')).map((key) => String(read(locale, key)));
+		expect(titles.filter((title) => prefix.test(title))).toEqual([]);
 	});
 });

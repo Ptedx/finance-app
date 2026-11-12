@@ -8,6 +8,8 @@ import { formatCents } from '../../utils/money';
 import type { IncomeComposition } from '../../utils/reportSeries';
 import type { RetirementGoal, RetirementReadModel } from '../../utils/retirement';
 import { Button } from '../cards/formParts';
+import HelpButton from '../tour/HelpButton';
+import { TourTarget } from '../tour/TourContext';
 import { ACCENT, INCOME_COLOR, reportStyles } from './reportStyles';
 
 const percent = (bp: number): string => `${Math.round(bp / 100)}%`;
@@ -33,11 +35,18 @@ const FreedomHero: React.FC<{
 	if (!model || !goal) {
 		return (
 			<View style={reportStyles.card}>
-				<Text style={reportStyles.sectionTitle} accessibilityRole="header">
-					{t('reports.freedom.title')}
-				</Text>
+				<View style={reportStyles.sectionHeader}>
+					<TourTarget id="freedom.title" style={styles.flex}>
+						<Text style={reportStyles.sectionTitle} accessibilityRole="header">
+							{t('reports.freedom.title')}
+						</Text>
+					</TourTarget>
+					<HelpButton trail="freedom" here={{ screen: 'reports' }} />
+				</View>
 				<Text style={styles.unsetBody}>{t('reports.freedom.unsetBody')}</Text>
-				<Button label={t('reports.freedom.setGoal')} icon="flag" onPress={onEditGoal} />
+				<TourTarget id="freedom.goal">
+					<Button label={t('reports.freedom.setGoal')} icon="flag" onPress={onEditGoal} />
+				</TourTarget>
 			</View>
 		);
 	}
@@ -60,17 +69,22 @@ const FreedomHero: React.FC<{
 	return (
 		<View style={reportStyles.card}>
 			<View style={reportStyles.sectionHeader}>
-				<Text style={reportStyles.sectionTitle} accessibilityRole="header">
-					{t('reports.freedom.title')}
-				</Text>
-				<Pressable
-					onPress={onEditGoal}
-					accessibilityRole="button"
-					accessibilityLabel={t('reports.freedom.editGoal')}
-					style={({ pressed }) => [reportStyles.iconButton, pressed && reportStyles.pressed]}
-				>
-					<Ionicons name="create-outline" size={22} color="#FFFFFF" />
-				</Pressable>
+				<TourTarget id="freedom.title" style={styles.flex}>
+					<Text style={reportStyles.sectionTitle} accessibilityRole="header">
+						{t('reports.freedom.title')}
+					</Text>
+				</TourTarget>
+				<HelpButton trail="freedom" here={{ screen: 'reports' }} />
+				<TourTarget id="freedom.goal">
+					<Pressable
+						onPress={onEditGoal}
+						accessibilityRole="button"
+						accessibilityLabel={t('reports.freedom.editGoal')}
+						style={({ pressed }) => [reportStyles.iconButton, pressed && reportStyles.pressed]}
+					>
+						<Ionicons name="create-outline" size={22} color="#FFFFFF" />
+					</Pressable>
+				</TourTarget>
 			</View>
 
 			<View
@@ -83,12 +97,12 @@ const FreedomHero: React.FC<{
 					<View style={[reportStyles.fill, { width: `${Math.max(1, progress / 100)}%` }]} />
 				</View>
 				<View style={styles.capitalRow}>
-					<View style={styles.capitalCell}>
+					<TourTarget id="freedom.capital" style={styles.capitalCell}>
 						<Text style={reportStyles.muted}>{t('reports.freedom.capital')}</Text>
 						<Text style={reportStyles.rowValue}>{formatCents(model.capitalCents)}</Text>
 						{goal.outsideCapitalCents > 0 ? <Text style={reportStyles.rowSub}>{t('reports.freedom.capitalOutside', { amount: formatCents(goal.outsideCapitalCents) })}</Text> : null}
 						{reserveCents > 0 ? <Text style={reportStyles.rowSub}>{t('reports.freedom.inReserve', { amount: formatCents(reserveCents) })}</Text> : null}
-					</View>
+					</TourTarget>
 					<View style={[styles.capitalCell, styles.capitalCellRight]}>
 						<Text style={reportStyles.muted}>{t('reports.freedom.requiredCapital')}</Text>
 						<Text style={reportStyles.rowValue}>{model.requiredCapitalCents === null ? '—' : formatCents(model.requiredCapitalCents)}</Text>
@@ -126,11 +140,13 @@ const FreedomHero: React.FC<{
 			<Text style={styles.reach} accessibilityLiveRegion="polite">
 				{reach}
 			</Text>
-			<Text style={reportStyles.muted}>
-				{model.isWithdrawing
-					? t('reports.freedom.paceWithdrawing', { amount: formatCents(Math.abs(model.monthlyContributionCents)) })
-					: t('reports.freedom.pace', { amount: formatCents(model.monthlyContributionCents) })}
-			</Text>
+			<TourTarget id="freedom.pace">
+				<Text style={reportStyles.muted}>
+					{model.isWithdrawing
+						? t('reports.freedom.paceWithdrawing', { amount: formatCents(Math.abs(model.monthlyContributionCents)) })
+						: t('reports.freedom.pace', { amount: formatCents(model.monthlyContributionCents) })}
+				</Text>
+			</TourTarget>
 			{/* Quem está tirando da reserva não está esperando ela encher: as duas linhas abaixo
 			    contariam uma história que a linha de cima acabou de negar. */}
 			{model.isWithdrawing ? null : model.contributionDelayMonths === null ? (
@@ -148,17 +164,19 @@ const FreedomHero: React.FC<{
 			) : null}
 
 			{model.reach.kind !== 'reached' && model.contributionByHorizon.some((h) => h.monthlyCents !== null) ? (
-				<View style={styles.horizons} accessible accessibilityLabel={`${t('reports.freedom.horizonsTitle')} ${model.contributionByHorizon.map((h) => `${t('reports.freedom.horizon', { years: h.years })}: ${h.monthlyCents === null ? '—' : t('reports.freedom.perMonth', { amount: formatCents(h.monthlyCents) })}`).join('; ')}`}>
-					<Text style={styles.horizonsTitle}>{t('reports.freedom.horizonsTitle')}</Text>
-					<View style={styles.horizonRow}>
-						{model.contributionByHorizon.map((horizon) => (
-							<View key={horizon.years} style={styles.horizon}>
-								<Text style={styles.horizonYears}>{t('reports.freedom.horizon', { years: horizon.years })}</Text>
-								<Text style={styles.horizonValue}>{horizon.monthlyCents === null ? '—' : t('reports.freedom.perMonth', { amount: formatCents(horizon.monthlyCents) })}</Text>
-							</View>
-						))}
+				<TourTarget id="freedom.horizons">
+					<View style={styles.horizons} accessible accessibilityLabel={`${t('reports.freedom.horizonsTitle')} ${model.contributionByHorizon.map((h) => `${t('reports.freedom.horizon', { years: h.years })}: ${h.monthlyCents === null ? '—' : t('reports.freedom.perMonth', { amount: formatCents(h.monthlyCents) })}`).join('; ')}`}>
+						<Text style={styles.horizonsTitle}>{t('reports.freedom.horizonsTitle')}</Text>
+						<View style={styles.horizonRow}>
+							{model.contributionByHorizon.map((horizon) => (
+								<View key={horizon.years} style={styles.horizon}>
+									<Text style={styles.horizonYears}>{t('reports.freedom.horizon', { years: horizon.years })}</Text>
+									<Text style={styles.horizonValue}>{horizon.monthlyCents === null ? '—' : t('reports.freedom.perMonth', { amount: formatCents(horizon.monthlyCents) })}</Text>
+								</View>
+							))}
+						</View>
 					</View>
-				</View>
+				</TourTarget>
 			) : null}
 
 			<View style={reportStyles.hairline} accessible={false} />

@@ -10,6 +10,8 @@ import { getMonthName } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
 import BudgetEditor from './BudgetEditor';
 import PeriodSelector from './PeriodSelector';
+import HelpButton from './tour/HelpButton';
+import { TourTarget } from './tour/TourContext';
 
 /**
  * O quadro do mês: quanto entrou, quanto saiu de verdade e por onde, quanto foi
@@ -23,17 +25,23 @@ import PeriodSelector from './PeriodSelector';
 
 const ACCENT = '#15E8FE';
 
-const Row: React.FC<{ label: string; value: string; sub?: string; emphasis?: 'income' | 'expense' | 'neutral'; indent?: boolean }> = ({
-	label,
-	value,
-	sub,
-	emphasis = 'neutral',
-	indent,
-}) => (
+const Row: React.FC<{
+	label: string;
+	value: string;
+	sub?: string;
+	emphasis?: 'income' | 'expense' | 'neutral';
+	indent?: boolean;
+	/** O alvo da trilha (SPD-131) na linha de baixo, quando ela aparece. */
+	subTarget?: string;
+}> = ({ label, value, sub, emphasis = 'neutral', indent, subTarget }) => (
 	<View style={[styles.row, indent && styles.rowIndent]} accessible accessibilityLabel={`${label}, ${value}${sub ? `, ${sub}` : ''}`}>
 		<View style={styles.rowText}>
 			<Text style={[styles.rowLabel, indent && styles.rowLabelIndent]}>{label}</Text>
-			{sub ? <Text style={styles.rowSub}>{sub}</Text> : null}
+			{sub ? (
+				<TourTarget id={subTarget}>
+					<Text style={styles.rowSub}>{sub}</Text>
+				</TourTarget>
+			) : null}
 		</View>
 		<Text style={[styles.rowValue, emphasis === 'income' && styles.income, emphasis === 'expense' && styles.expense]}>{value}</Text>
 	</View>
@@ -65,108 +73,134 @@ const MonthOverviewCard: React.FC = () => {
 
 	return (
 		<View style={styles.container}>
-			<View style={styles.header}>
-				<Text style={styles.title} accessibilityRole="header">
-					{isCurrentMonth ? t('month.title') : t('month.otherTitle')}
-				</Text>
+			<TourTarget id="month.header" style={styles.header}>
+				<View style={styles.titleGroup}>
+					<Text style={styles.title} accessibilityRole="header">
+						{isCurrentMonth ? t('month.title') : t('month.otherTitle')}
+					</Text>
+					<HelpButton trail="month" here={{ screen: 'home' }} />
+				</View>
 				{/* Trocar de mês continua a um toque: o resumo antigo tinha o seletor, e o
 				    quadro do mês é quem mais precisa dele. */}
 				<PeriodSelector />
-			</View>
+			</TourTarget>
 
-			<Row label={t('month.income')} value={formatCents(month.incomeCents)} sub={incomePending} emphasis="income" />
+			<TourTarget id="month.income">
+				<Row
+					label={t('month.income')}
+					value={formatCents(month.incomeCents)}
+					sub={incomePending}
+					emphasis="income"
+					subTarget="month.pendingIncome"
+				/>
+			</TourTarget>
 
-			<View
-				style={styles.groupHeader}
-				accessible
-				accessibilityLabel={`${t('month.spending')}, ${formatCents(month.totalSpendCents)}${spendPending ? `, ${spendPending}` : ''}`}
-			>
-				<View style={styles.rowText}>
-					<Text style={styles.groupLabel}>{t('month.spending')}</Text>
-					{spendPending ? <Text style={styles.rowSub}>{spendPending}</Text> : null}
+			<TourTarget id="month.spending">
+				<View
+					style={styles.groupHeader}
+					accessible
+					accessibilityLabel={`${t('month.spending')}, ${formatCents(month.totalSpendCents)}${spendPending ? `, ${spendPending}` : ''}`}
+				>
+					<View style={styles.rowText}>
+						<Text style={styles.groupLabel}>{t('month.spending')}</Text>
+						{spendPending ? (
+							<TourTarget id="month.pendingSpend">
+								<Text style={styles.rowSub}>{spendPending}</Text>
+							</TourTarget>
+						) : null}
+					</View>
+					<Text style={[styles.groupValue, styles.expense]}>{formatCents(month.totalSpendCents)}</Text>
 				</View>
-				<Text style={[styles.groupValue, styles.expense]}>{formatCents(month.totalSpendCents)}</Text>
-			</View>
+			</TourTarget>
 			{/* O número da linha é a fatura que fecha no mês (é o que conta no Gastos); o de baixo, o
 			    que foi comprado no mês. São coisas diferentes e a linha diz qual é qual: antes os dois
 			    apareciam lado a lado sem nome e pareciam não bater. */}
-			{month.cards.map((card) => (
-				<Row
-					key={card.accountId}
-					label={card.name}
-					value={formatCents(card.spendCents)}
-					sub={
-						card.invoiceBased
-							? t('month.cardInvoiceLine', { month: getMonthName(selectedMonth), amount: formatCents(card.purchasesCents) })
-							: t('month.cardNoClosingLine', { amount: formatCents(card.purchasesCents) })
-					}
-					indent
-				/>
+			{month.cards.map((card, index) => (
+				<TourTarget key={card.accountId} id={index === 0 ? 'month.card' : undefined}>
+					<Row
+						label={card.name}
+						value={formatCents(card.spendCents)}
+						sub={
+							card.invoiceBased
+								? t('month.cardInvoiceLine', { month: getMonthName(selectedMonth), amount: formatCents(card.purchasesCents) })
+								: t('month.cardNoClosingLine', { amount: formatCents(card.purchasesCents) })
+						}
+						indent
+					/>
+				</TourTarget>
 			))}
 			<Row label={t('month.pixDebit')} value={formatCents(month.mainSpendCents)} indent />
-			{month.envelopes.map((envelope) => {
+			{month.envelopes.map((envelope, index) => {
 				const target = envelope.targetCents;
 				const percent = target > 0 ? Math.min(100, Math.round((envelope.spentCents / target) * 100)) : 0;
 				return (
-					<View key={envelope.accountId} style={[styles.row, styles.rowIndent, styles.envelopeRow]} accessible accessibilityLabel={`${envelope.name}, ${t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}, ${t('month.envelopeLeft', { amount: formatCents(envelope.remainingCents) })}`}>
-						<View style={styles.rowText}>
-							<Text style={[styles.rowLabel, styles.rowLabelIndent]}>{envelope.name}</Text>
-							<Text style={styles.rowSub}>
-								{t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}
-							</Text>
-							<View style={styles.track} accessible={false}>
-								<View style={[styles.fill, { width: `${percent}%` }, percent >= 100 && styles.fillFull]} />
+					<TourTarget key={envelope.accountId} id={index === 0 ? 'month.envelope' : undefined}>
+						<View style={[styles.row, styles.rowIndent, styles.envelopeRow]} accessible accessibilityLabel={`${envelope.name}, ${t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}, ${t('month.envelopeLeft', { amount: formatCents(envelope.remainingCents) })}`}>
+							<View style={styles.rowText}>
+								<Text style={[styles.rowLabel, styles.rowLabelIndent]}>{envelope.name}</Text>
+								<Text style={styles.rowSub}>
+									{t('month.envelopeUsed', { spent: formatCents(envelope.spentCents), funded: formatCents(target) })}
+								</Text>
+								<View style={styles.track} accessible={false}>
+									<View style={[styles.fill, { width: `${percent}%` }, percent >= 100 && styles.fillFull]} />
+								</View>
 							</View>
+							<Text style={styles.rowValue}>{formatCents(envelope.remainingCents)}</Text>
 						</View>
-						<Text style={styles.rowValue}>{formatCents(envelope.remainingCents)}</Text>
-					</View>
+					</TourTarget>
 				);
 			})}
 
-			<Row
-				label={t('month.saved')}
-				value={formatCents(month.savedCents)}
-				sub={month.yieldCents > 0 ? t('month.yield', { amount: formatCents(month.yieldCents) }) : undefined}
-				emphasis="income"
-			/>
+			<TourTarget id="month.saved">
+				<Row
+					label={t('month.saved')}
+					value={formatCents(month.savedCents)}
+					sub={month.yieldCents > 0 ? t('month.yield', { amount: formatCents(month.yieldCents) }) : undefined}
+					emphasis="income"
+				/>
+			</TourTarget>
 
-			<View style={styles.leftover} accessible accessibilityLabel={`${t('month.leftover')}, ${formatCents(month.leftoverCents)}. ${ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}`}>
-				<Text style={styles.leftoverLabel}>{t('month.leftover')}</Text>
-				<Text style={[styles.leftoverValue, month.leftoverCents < 0 && styles.expense]}>{formatCents(month.leftoverCents)}</Text>
-				<Text style={styles.leftoverSub}>
-					{ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}
-				</Text>
-			</View>
-
-			{budgetSet ? (
-				<View style={styles.budget} accessible accessibilityLabel={`${t('summary.budget')} ${formatCents(currentBudgetCents as number)}, ${t('summary.percentUsed', { percent: budgetPercent })}`}>
-					<View style={styles.budgetHeader}>
-						<Text style={styles.budgetLabel}>{t('summary.budget')}</Text>
-						<Pressable onPress={() => setShowBudgetEditor(true)} accessibilityRole="button" accessibilityLabel={t('summary.edit')} hitSlop={12} style={styles.budgetEdit}>
-							<Text style={styles.budgetEditText}>{t('summary.edit')}</Text>
-						</Pressable>
-					</View>
-					<View style={styles.track} accessible={false}>
-						<View style={[styles.fill, { width: `${Math.min(100, budgetPercent)}%` }, overBudget && styles.fillFull]} />
-					</View>
-					<Text style={[styles.budgetText, overBudget && styles.expense]}>
-						{t('summary.percentUsed', { percent: budgetPercent })} · {formatCents(month.totalSpendCents)} / {formatCents(currentBudgetCents as number)}
+			<TourTarget id="month.leftover">
+				<View style={styles.leftover} accessible accessibilityLabel={`${t('month.leftover')}, ${formatCents(month.leftoverCents)}. ${ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}`}>
+					<Text style={styles.leftoverLabel}>{t('month.leftover')}</Text>
+					<Text style={[styles.leftoverValue, month.leftoverCents < 0 && styles.expense]}>{formatCents(month.leftoverCents)}</Text>
+					<Text style={styles.leftoverSub}>
+						{ratePercent === null ? t('month.noIncome') : t('month.savingsRate', { percent: ratePercent })}
 					</Text>
 				</View>
-			) : (
-				<View style={styles.budgetEmpty}>
-					<Text style={styles.budgetEmptyText}>{t('summary.noBudget')}</Text>
-					<Pressable
-						onPress={() => setShowBudgetEditor(true)}
-						accessibilityRole="button"
-						accessibilityLabel={t('summary.setBudget')}
-						style={({ pressed }) => [styles.budgetButton, pressed && styles.pressed]}
-					>
-						<Ionicons name="flag-outline" size={16} color={ACCENT} />
-						<Text style={styles.budgetButtonText}>{t('summary.setBudget')}</Text>
-					</Pressable>
-				</View>
-			)}
+			</TourTarget>
+
+			<TourTarget id="month.budget">
+				{budgetSet ? (
+					<View style={styles.budget} accessible accessibilityLabel={`${t('summary.budget')} ${formatCents(currentBudgetCents as number)}, ${t('summary.percentUsed', { percent: budgetPercent })}`}>
+						<View style={styles.budgetHeader}>
+							<Text style={styles.budgetLabel}>{t('summary.budget')}</Text>
+							<Pressable onPress={() => setShowBudgetEditor(true)} accessibilityRole="button" accessibilityLabel={t('summary.edit')} hitSlop={12} style={styles.budgetEdit}>
+								<Text style={styles.budgetEditText}>{t('summary.edit')}</Text>
+							</Pressable>
+						</View>
+						<View style={styles.track} accessible={false}>
+							<View style={[styles.fill, { width: `${Math.min(100, budgetPercent)}%` }, overBudget && styles.fillFull]} />
+						</View>
+						<Text style={[styles.budgetText, overBudget && styles.expense]}>
+							{t('summary.percentUsed', { percent: budgetPercent })} · {formatCents(month.totalSpendCents)} / {formatCents(currentBudgetCents as number)}
+						</Text>
+					</View>
+				) : (
+					<View style={styles.budgetEmpty}>
+						<Text style={styles.budgetEmptyText}>{t('summary.noBudget')}</Text>
+						<Pressable
+							onPress={() => setShowBudgetEditor(true)}
+							accessibilityRole="button"
+							accessibilityLabel={t('summary.setBudget')}
+							style={({ pressed }) => [styles.budgetButton, pressed && styles.pressed]}
+						>
+							<Ionicons name="flag-outline" size={16} color={ACCENT} />
+							<Text style={styles.budgetButtonText}>{t('summary.setBudget')}</Text>
+						</Pressable>
+					</View>
+				)}
+			</TourTarget>
 
 			<BudgetEditor isVisible={showBudgetEditor} onClose={() => setShowBudgetEditor(false)} />
 		</View>
@@ -187,7 +221,15 @@ const styles = StyleSheet.create({
 		gap: 8,
 		marginBottom: 8,
 	},
+	// O título e o "?" da trilha (SPD-131), sem crescer o cabeçalho do card.
+	titleGroup: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexShrink: 1,
+		marginVertical: -6,
+	},
 	title: {
+		flexShrink: 1,
 		fontSize: 18,
 		fontWeight: '600',
 		color: '#FFFFFF',

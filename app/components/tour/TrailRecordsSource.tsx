@@ -1,13 +1,16 @@
 import type React from 'react';
-import { useEffect, useRef } from 'react';
+import { useContext, useEffect, useRef } from 'react';
 import { useAccounts } from '../../contexts/AccountsContext';
 import { useCaptures } from '../../contexts/CapturesContext';
+import DebtsContext from '../../contexts/DebtsContext';
 import { useTransactions } from '../../contexts/TransactionsContext';
-import type { Account } from '../../database/schema';
+import type { Account, Debt } from '../../database/schema';
 import { feedOwnerOf } from '../../utils/accountBinding';
 import { showsBalanceUnset } from '../../utils/balanceUnset';
 import { getDismissedBalanceUnset } from '../../utils/balanceUnsetDismissals';
 import { planBusinessFeed } from '../../utils/businessFeed';
+import { todayISO } from '../../utils/dateUtils';
+import { debtStateOn, termsOf } from '../../utils/debt';
 import type { TrailRecords } from '../../utils/trails';
 import { useTour } from './TourContext';
 
@@ -23,13 +26,24 @@ import { useTour } from './TourContext';
 
 const ids = (accounts: readonly Account[]) => accounts.map((account) => ({ id: account.id }));
 
+/**
+ * As dívidas na ordem do Patrimônio (SPD-131b): as que ainda estão sendo pagas primeiro, as
+ * quitadas depois — a tela de uma quitada não tem veredito nem "Simular" para mostrar.
+ */
+export const debtRecords = (debts: readonly Debt[], today: string) => {
+	const paidOff = (debt: Debt) => debt.archived || debtStateOn(termsOf(debt), today).settled;
+	return [...debts.filter((debt) => !paidOff(debt)), ...debts.filter(paidOff)].map((debt) => ({ id: debt.id }));
+};
+
 const TrailRecordsSource: React.FC = () => {
 	const tour = useTour();
 	const { accounts, creditCards, debitCards } = useAccounts();
 	const { transactions } = useTransactions();
 	const { pending, supported } = useCaptures();
-	const latest = useRef({ accounts, creditCards, debitCards, transactions, pending, supported });
-	latest.current = { accounts, creditCards, debitCards, transactions, pending, supported };
+	// Lido sem exigir o provider: fora dele (num teste do guia), não há dívida.
+	const debts = useContext(DebtsContext)?.debts ?? [];
+	const latest = useRef({ accounts, creditCards, debitCards, transactions, pending, supported, debts });
+	latest.current = { accounts, creditCards, debitCards, transactions, pending, supported, debts };
 
 	useEffect(() => {
 		if (!tour) return;
@@ -41,6 +55,7 @@ const TrailRecordsSource: React.FC = () => {
 				transactions: entries,
 				pending: queue,
 				supported: capture,
+				debts: owed,
 			} = latest.current;
 			// As contas que a tela de Contas lista (cartão de crédito tem tela própria): as ativas
 			// primeiro, na ordem do app.
@@ -66,6 +81,7 @@ const TrailRecordsSource: React.FC = () => {
 				transaction: entries.slice(0, 1).map((entry) => ({ id: entry.id })),
 				pending: queue.length > 0 ? [{}] : [],
 				capture: capture ? [{}] : [],
+				debt: debtRecords(owed, todayISO()),
 			};
 		});
 	}, [tour]);

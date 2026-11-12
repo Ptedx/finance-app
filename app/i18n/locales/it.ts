@@ -2314,11 +2314,11 @@ account: {
 					missing: "Nella schermata di ogni conto, 'Allinea con la banca' rende il saldo dell'app uguale a quello della banca.",
 				},
 				'10': {
-					title: 'Attenzione: conto creato dalla cattura.',
+					title: 'Conto creato dalla cattura.',
 					body: 'Il conto che l\'app ha creato da sola parte da zero, perché non sa quanto c\'era. Finché non allinei il saldo (o ignori l\'avviso), mostra "Saldo non indicato". In una riserva, l\'allineamento chiede solo il saldo di oggi e non registra mai spese.',
 				},
 				'11': {
-					title: 'Attenzione: due conti della stessa banca.',
+					title: 'Due conti della stessa banca.',
 					body: 'Quando ci sono esattamente due conti della stessa banca e solo uno riceve gli avvisi, l\'app suggerisce di unirli. "Unisci i due" porta tutto in quello che scegli; "Sono conti diversi" (quello personale e quello dell\'azienda, per esempio) toglie l\'avviso per sempre. Se quello creato dalla cattura è vuoto e nessuno l\'ha toccato, l\'app li unisce da sola e avvisa "Abbiamo unito … a …".',
 				},
 				'12': {
@@ -2363,7 +2363,7 @@ account: {
 					body: 'Con entrambi i giorni compilati, l\'app mostra l\'estratto di oggi: confrontalo con l\'app della banca. L\'estratto prende il nome del mese in cui chiude.',
 				},
 				'9': {
-					title: 'Attenzione: da 1 a 20 giorni.',
+					title: 'Da 1 a 20 giorni.',
 					body: 'La scadenza deve cadere da 1 a 20 giorni dopo la chiusura; altrimenti la carta non viene salvata. Hai compilato uno dei giorni? Compila anche l\'altro.',
 				},
 				'10': {
@@ -2371,7 +2371,7 @@ account: {
 					body: 'Solo nella registrazione: scrivi quello che l\'app della banca mostra adesso. L\'aperto diventa il punto di partenza della carta, senza diventare un acquisto. Se compili anche il chiuso, l\'aperto entra come movimento "Ajuste com a fatura do banco" (rettifica con l\'estratto della banca). Il chiuso compare solo tra la sua chiusura e la sua scadenza; lascialo vuoto se è già pagato.',
 				},
 				'11': {
-					title: 'Attenzione: carta senza chiusura.',
+					title: 'Carta senza chiusura.',
 					body: 'La carta creata dalla cattura arriva senza i giorni di chiusura e di scadenza. Senza di essi, l\'app non divide gli acquisti per estratto né avvisa della scadenza: modifica la carta e indica i due giorni.',
 				},
 			},
@@ -2392,7 +2392,7 @@ account: {
 					body: 'Registra il pagamento come trasferimento dal conto alla carta: non conta come spesa, perché gli acquisti sono già stati contati. Salda prima l\'estratto chiuso; quello che avanza anticipa l\'aperto. La data può essere oggi, ieri o l\'altro ieri.',
 				},
 				'3': {
-					title: 'Attenzione: da quale conto è uscito.',
+					title: 'Da quale conto è uscito.',
 					body: 'L\'app segna già il conto corrente della banca della carta, quando sa qual è; se non lo sa, nessuno viene segnato. Se l\'avviso della banca di questo pagamento arriva dopo (stesso importo, fino a 1 giorno di differenza), l\'app lo riconosce e non lo registra di nuovo.',
 				},
 				'4': {
@@ -2400,7 +2400,7 @@ account: {
 					body: 'I campi arrivano con quello che l\'app pensa oggi: correggili con il numero dell\'app della banca. Un campo vuoto vuol dire "non l\'ho indicato", e quell\'estratto resta com\'è. Nell\'estratto aperto, quello che manca o avanza entra come "Ajuste com a fatura do banco" (rettifica con l\'estratto della banca); in quello chiuso, cambia solo il punto di partenza della carta. Non si cancella nulla.',
 				},
 				'5': {
-					title: "Attenzione: l'app chiede.",
+					title: "L'app chiede.",
 					body: 'Quando la banca mostra più dell\'app, l\'app chiede. "Sì, è un onere" registra la differenza come onere; "No, è una rettifica" (un acquisto che l\'app non ha visto, per esempio) allinea come nel passo precedente.',
 				},
 				'6': {
@@ -2420,11 +2420,11 @@ account: {
 					body: 'Compare quando qualcosa ha già cambiato l\'estratto: un pagamento, l\'importo indicato, un saldo precedente o un credito. Quello che è rimasto aperto di un estratto scaduto entra nel successivo quando chiude, come "Saldo precedente non pagato".',
 				},
 				'10': {
-					title: 'Attenzione: acquisti da rivedere.',
+					title: 'Acquisti da rivedere.',
 					body: 'L\'acquisto arrivato con un avviso e ancora in "Rivedi" conta già nell\'estratto e nel limite; solo la categoria aspetta te. Scartarlo toglie l\'importo.',
 				},
 				'11': {
-					title: 'Attenzione: probabile ripetuto.',
+					title: 'Probabile ripetuto.',
 					body: 'Due movimenti della stessa carta, stesso importo, con fino a 1 giorno di differenza, vengono segnati. L\'app non cancella nulla da sola: apri quello in più e cancellalo, oppure usa "Non è ripetuto".',
 				},
 				'12': {
@@ -2465,7 +2465,7 @@ account: {
 					body: 'Acquisti, rate, oneri e pagamenti passano all\'altra, e questa viene cancellata. Quella che resta mantiene la sua chiusura, il suo limite e l\'estratto indicato; l\'allineamento con la banca fatto su quella cancellata se ne va con lei.',
 				},
 				'8': {
-					title: 'Attenzione: dopo aver unito.',
+					title: 'Dopo aver unito.',
 					body: 'Lo stesso acquisto può essere rimasto da entrambe le parti. Se succede, l\'app avvisa quanti movimenti potrebbero essere ripetuti, e compaiono segnati nella schermata della carta.',
 				},
 				'9': {
@@ -2515,7 +2515,7 @@ account: {
 					body: 'Cambia il saldo dei due conti, ma non entra tra entrate né spese. Servono almeno due conti registrati.',
 				},
 				'10': {
-					title: 'Attenzione: verso una carta.',
+					title: 'Verso una carta.',
 					body: 'Trasferire verso una carta di credito è pagare l\'estratto, come "Paga estratto": riduce quello che deve e non conta come spesa. Se lo stesso pagamento era già registrato dall\'avviso, non viene registrato di nuovo.',
 				},
 				'11': {
@@ -2523,7 +2523,7 @@ account: {
 					body: 'In una rata, quello che cambi vale solo per lei; quando cancelli, l\'app chiede "Solo questa rata" o "Tutte le rate". Nella modifica, una spesa o un\'entrata non diventa un trasferimento.',
 				},
 				'12': {
-					title: 'Attenzione: conti da pagare.',
+					title: 'Conti da pagare.',
 					body: 'Una spesa in un\'unica soluzione registrata a mano, da 10 giorni prima a 5 dopo la scadenza di un conto da pagare, dal conto che paga (se c\'è), con il suo importo e il nome nella nota (o l\'importo esatto), segna il conto come pagato. Nel dubbio, non lo segna.',
 				},
 			},
@@ -2544,7 +2544,7 @@ account: {
 					body: "Questa voce apre la schermata di Android: trova Spendr nella lista e consenti l'accesso alle notifiche.",
 				},
 				'3': {
-					title: 'Attenzione: cosa viene conservato.',
+					title: 'Cosa viene conservato.',
 					body: "Vengono conservate solo le notifiche che riportano un importo in denaro (R$ 120,00, US$ 15,99); le altre l'app le ignora.",
 				},
 				'4': {
@@ -2560,11 +2560,11 @@ account: {
 					body: 'Scrivi il tuo nome come compare negli avvisi dei Pix. Un Pix con quel nome dall\'altra parte diventa un trasferimento tra i tuoi conti, senza chiedere. Maiuscole e accenti non contano, e un\'iniziale vale per il secondo nome.',
 				},
 				'7': {
-					title: 'Attenzione: nome esatto.',
+					title: 'Nome esatto.',
 					body: 'Con un nome in più o in meno, l\'app continua a chiedere. Conta anche il nome del tuo account Spendr. Con un account, il nome va sugli altri dispositivi; entra anche nel backup.',
 				},
 				'8': {
-					title: 'Attenzione: conto archiviato.',
+					title: 'Conto archiviato.',
 					body: 'Se il conto collegato all\'app della banca è archiviato, l\'app non ne crea un altro al suo posto: l\'avviso entra "Senza conto", e scegli tu nella revisione.',
 				},
 				'9': {
@@ -2580,7 +2580,7 @@ account: {
 					body: 'Compare quando Spendr non ha accesso alle notifiche: mai attivato, tolto da te o da una reinstallazione. "Attiva" apre la schermata di Android; "Non avvisare più" nasconde l\'avviso.',
 				},
 				'12': {
-					title: 'Attenzione: cattura ferma.',
+					title: 'Cattura ferma.',
 					body: 'A volte Android disattiva la lettura senza avvisare. Se hai un conto collegato a una banca e passano 3 giorni senza nessun avviso della banca, l\'app mostra questo. "Riconnetti" chiede ad Android di riattivarla e apre la schermata dell\'accesso; se resta ferma, disattiva e riattiva l\'accesso di Spendr. "Ignora per 7 giorni" la nasconde.',
 				},
 			},
@@ -2613,11 +2613,11 @@ account: {
 					body: 'Mostra il testo della notifica, perché tu possa controllarlo.',
 				},
 				'7': {
-					title: 'Attenzione: domande con un tocco.',
+					title: 'Domande con un tocco.',
 					body: 'Due avvisi con lo stesso importo vicini tra loro: "Stessa voce, tienine una" o "Voci diverse, tienile entrambe". Uscita ed entrata dello stesso importo in banche diverse: "Sì, è un trasferimento" o "No, due voci separate". Finché chiede, la voce non entra nel saldo.',
 				},
 				'8': {
-					title: 'Attenzione: avviso incompleto.',
+					title: 'Avviso incompleto.',
 					body: "Acquisto a credito che non dice su quale delle tue carte è finito, acquisto che non dice se è stato a debito o a credito, Pix che non dice se è entrato o uscito, pagamento dell'estratto che non dice da quale conto è uscito: l'app chiede invece di indovinare.",
 				},
 				'9': {
@@ -2631,6 +2631,304 @@ account: {
 				'11': {
 					title: 'Cronologia.',
 					body: 'Tutto quello che è già stato deciso, da te o dall\'app. "Ripristina" riporta la voce in revisione e toglie quello che aveva creato.',
+				},
+			},
+		},
+		debts: {
+			title: 'Debiti',
+			steps: {
+				'1': {
+					title: 'I tuoi debiti.',
+					body: 'Finanziamenti, consorzi e prestiti, con quanto esce al mese in rate e fino a quando.',
+				},
+				'2': {
+					title: 'Tipo e calcolo.',
+					body: 'Price è una rata sempre uguale (comune per l\'auto); SAC è una rata che scende ogni mese (comune per la casa). Nel consorzio questa scelta non compare: non applica interessi.',
+				},
+				'3': {
+					title: 'Rata e durata.',
+					body: 'Conta la rata di questo mese se non l\'hai ancora pagata. "Rate totali" è facoltativo.',
+				},
+				'4': {
+					title: 'Basta uno dei due.',
+					body: 'Con il saldo (l\'importo per estinguere, nell\'app della banca), l\'app stima il tasso dalla rata. Con il tasso, stima il saldo. Con entrambi, la differenza diventa "assicurazione e spese".',
+				},
+				'5': {
+					title: 'Mese o anno.',
+					body: 'Indica se il tasso del contratto è mensile o annuo. Il tasso stimato dalla rata risulta più alto quando la rata include assicurazione e spese: se conosci quello del contratto, inseriscilo.',
+				},
+				'6': {
+					title: 'Controlla l\'anteprima.',
+					body: 'Il tasso mensile e annuo, quando finisce e quanti interessi pagherai ancora. Se i numeri non tornano, l\'anteprima avvisa e il debito non viene salvato.',
+				},
+				'7': {
+					title: 'Consorzio.',
+					body: 'Al posto degli interessi entra l\'adeguamento del gruppo (INCC per gli immobili, IPCA per gli altri). Il saldo è facoltativo: se vuoto, vale rata × rate rimanenti. La commissione di amministrazione è solo un dato registrato.',
+				},
+				'8': {
+					title: 'Da dove esce la rata.',
+					body: 'Facoltativo. Ogni debito attivo compare già in Conti da pagare, con il promemoria della scadenza; questo conto diventa il suo "Conto che paga".',
+				},
+				'9': {
+					title: 'Oggi e fino alla fine.',
+					body: 'Il saldo scende da solo mese per mese secondo il piano: le rate che scadono fino a oggi ne escono, senza dipendere dai movimenti. Sotto, "Prossime rate" mostra interessi e saldo di ogni mese.',
+					missing: 'Nella schermata di ogni debito: il saldo di oggi, quando si estingue, gli interessi che mancano e le prossime rate.',
+				},
+				'10': {
+					title: 'Anticipare o investire.',
+					body: 'Confronta il costo annuo del debito con quanto renderebbe lo stesso denaro investito, già al netto del 15% di imposte: il rendimento del tuo obiettivo di pensione, o il CDI della Banca Centrale (10% annuo, finché l\'app non ottiene il CDI). Una differenza inferiore a mezzo punto annuo dà "È uguale".',
+				},
+				'11': {
+					title: 'Simula.',
+					body: 'Indica quanto vuoi anticipare e se per "Ridurre la durata" o "Ridurre la rata"; l\'app mostra cosa cambia e quanti interessi smetti di pagare. "Registra questo anticipo" serve dopo aver anticipato in banca.',
+				},
+				'12': {
+					title: 'Estinto o eliminato.',
+					body: 'Un debito estinto sparisce dall\'elenco e dai report, ma resta nello storico. Elimina cancella il debito; i movimenti delle rate restano.',
+				},
+			},
+		},
+		reserve: {
+			title: 'Riserva di emergenza e "Da dove iniziare"',
+			steps: {
+				'1': {
+					title: 'Per gli imprevisti.',
+					body: 'Quanto hai messo da parte, quanto dovresti avere, e quanti mesi del tuo costo essenziale copre.',
+				},
+				'2': {
+					title: 'Costo essenziale.',
+					body: 'La media degli ultimi mesi chiusi con spese (fino a 3), solo con ciò che è essenziale: senza il superfluo né le partite di giro. Finché non si chiude il primo mese, l\'app stima dal budget, se ce n\'è uno.',
+				},
+				'3': {
+					title: 'La natura della categoria.',
+					body: 'L\'essenziale viene dalla natura di ogni categoria: Essenziale, Superfluo o Partita di giro. Una categoria nuova nasce Superfluo; controlla le tue nella schermata delle categorie.',
+				},
+				'4': {
+					title: 'Quanti mesi.',
+					body: '3, 6, 12 o un altro numero, da 1 a 120. Sei è il riferimento per un reddito stabile; dodici, per un reddito variabile. Qui puoi anche indicare il costo mensile; se vuoto, vale quello calcolato.',
+				},
+				'5': {
+					title: 'Il predefinito è 12 mesi.',
+					body: 'Se non l\'hai mai regolata, l\'obiettivo usa 12 mesi di costo essenziale.',
+				},
+				'6': {
+					title: 'Da dove arrivano i soldi.',
+					body: 'I conti con ruolo Riserva riempiono prima la riserva; solo quello che la supera conta per la pensione. Un conto segnato "Solo investimento" resta fuori dalla riserva e conta direttamente come investimento.',
+				},
+				'7': {
+					title: 'Quando si riempie.',
+					body: 'Il ritmo è la media di quanto è stato messo da parte negli ultimi 6 mesi chiusi. Se non è stato messo da parte niente, o è uscito più di quanto è entrato, l\'app dice che, a questo ritmo, non si riempie.',
+					missing: 'Senza un mese chiuso né un budget, indica il costo mensile per iniziare subito.',
+				},
+				'8': {
+					title: 'L\'ordine.',
+					body: 'Cosa fare con il prossimo soldo che avanza: Riserva minima (3 mesi), Debito che costa più dell\'investimento (solo se hai debiti), Riserva piena, Pensione.',
+				},
+				'9': {
+					title: 'A che gradino sei.',
+					body: '"ora" è il primo che manca; quelli sotto sono "dopo". "manca un dato" chiede il costo mensile nella riserva o l\'obiettivo di pensione nei Report; se il primo che manca è questo, nessuno è "ora".',
+				},
+			},
+		},
+		netWorth: {
+			title: 'Patrimonio: cosa somma e cosa sottrae',
+			steps: {
+				'1': {
+					title: 'Quello che hai meno quello che devi.',
+					body: 'Può essere negativo, e dirlo è proprio il punto.',
+				},
+				'2': {
+					title: 'Sui conti.',
+					body: 'I conti con ruolo Principale o Busta, più i movimenti senza conto. Conti archiviati, di riserva ed esterni restano fuori da qui; un saldo negativo sottrae.',
+				},
+				'3': {
+					title: 'Riserve.',
+					body: 'I conti con ruolo Riserva, separati: la parte che forma la riserva di emergenza e il resto (quello che la supera e i conti "Solo investimento").',
+				},
+				'4': {
+					title: 'Fuori dall\'app.',
+					body: 'Broker, previdenza: il valore che indichi nell\'obiettivo di pensione, nei Report.',
+				},
+				'5': {
+					title: 'Carte.',
+					body: 'Quello che le carte devono oggi più le rate che devono ancora arrivare. Il credito sulla carta non diventa patrimonio.',
+				},
+				'6': {
+					title: 'Debiti.',
+					body: 'Il saldo di oggi di ogni debito registrato.',
+				},
+				'7': {
+					title: 'I beni restano fuori.',
+					body: 'L\'app non sa quanto valgono auto e casa. Chi finanzia un bene ha un patrimonio maggiore di quello che il numero mostra.',
+				},
+				'8': {
+					title: 'Sempre oggi.',
+					body: 'Questa schermata parla del presente: il mese scelto in Movimenti o nei Report non cambia i numeri qui.',
+				},
+			},
+		},
+		month: {
+			title: '"Questo mese" e il budget',
+			steps: {
+				'1': {
+					title: 'Il mese scelto.',
+					body: 'Scegliendo un altro mese, la scheda diventa "Riepilogo del mese". Il mese scelto qui vale anche per Movimenti e Report.',
+				},
+				'2': {
+					title: 'Quello che è entrato.',
+					body: 'Le entrate del mese, meno le partite di giro (soldi che sono solo passati da te). Quello che un conto Esterno manda ai tuoi entra anche, meno quello che gli è andato nello stesso mese. Il rendimento delle riserve resta fuori: compare in "Messo da parte".',
+				},
+				'3': {
+					title: 'Quello che è uscito davvero.',
+					body: 'La somma di tre cose: l\'estratto di ogni carta che chiude nel mese, i "Bonifici e addebiti" dei conti e l\'importo del mese di ogni busta (quello concordato, o quello che è entrato, se di più). Pagare l\'estratto non conta: gli acquisti hanno già contato.',
+				},
+				'4': {
+					title: 'Estratto × acquisti.',
+					body: 'La spesa della carta è l\'estratto che chiude nel mese; accanto, quanto è stato comprato nel mese. Una carta senza giorno di chiusura conta gli acquisti del mese.',
+				},
+				'5': {
+					title: 'Buste.',
+					body: 'Quanto è già uscito da ogni busta, su quanto c\'era nel mese; a destra, quanto ne resta. L\'avanzo del mese scorso si somma a quello che entra nel mese.',
+				},
+				'6': {
+					title: 'Messo da parte e rimasto.',
+					body: '"Messo da parte" è quello che è entrato nelle riserve meno quello che ne è uscito, con il rendimento accanto. "Rimasto" è entrate meno spese, e dice quanto delle entrate è rimasto a te.',
+				},
+				'7': {
+					title: 'Conta già quello che aspetta la revisione.',
+					body: 'Gli avvisi ancora in "Rivedi" entrano già in questi numeri, tranne quelli che aspettano una domanda o sono senza conto.',
+				},
+				'8': {
+					title: 'Budget.',
+					body: 'Quanto vuoi spendere nel mese. Vale per questo mese e per i successivi, finché non ne imposti un altro; "Cancella", nel mese in cui è stato impostato, elimina quel budget e torna a valere il precedente, se c\'è. La barra confronta con "Spese" e mostra quanto è già stato usato.',
+				},
+			},
+		},
+		transactions: {
+			title: 'Movimenti: elenco, filtri e ricerca',
+			steps: {
+				'1': {
+					title: 'Il mese.',
+					body: 'L\'elenco mostra un mese alla volta. Il mese scelto qui vale anche per la scheda "Questo mese" e per i Report.',
+				},
+				'2': {
+					title: 'Totali del mese.',
+					body: '"Entrate" esclude le partite di giro; rettifiche e oneri della carta restano fuori.',
+				},
+				'3': {
+					title: 'Non sono le "Spese" della Home.',
+					body: 'Qui gli acquisti con la carta contano per la data di ciascuno; nella Home, la carta conta per l\'estratto che chiude nel mese. Per questo i due numeri possono essere diversi.',
+				},
+				'4': {
+					title: 'Ricerca.',
+					body: 'Cerca nella nota e nel nome della categoria. Nei trasferimenti, anche nel nome dei conti.',
+				},
+				'5': {
+					title: 'Mostra.',
+					body: 'Un trasferimento non è né entrata né uscita: compare solo in "Tutto".',
+				},
+				'6': {
+					title: 'Per conto.',
+					body: 'Compare quando più di un conto ha avuto movimenti nel mese. Mostra solo i movimenti e i trasferimenti di un conto.',
+				},
+				'7': {
+					title: 'Vedi e modifica.',
+					body: 'I movimenti sono raggruppati per giorno (Oggi, Ieri…). Toccarne uno lo apre per vederlo, modificarlo o cancellarlo; il trasferimento mostra "Da … a …".',
+					missing: 'Quando ci saranno movimenti, toccarne uno lo apre per vederlo o modificarlo.',
+				},
+				'8': {
+					title: 'Quello che aspetta la revisione.',
+					body: 'Un avviso della banca ancora in "Rivedi" non compare in questo elenco finché non viene confermato, anche se conta già nel saldo e in "Questo mese" della Home.',
+				},
+			},
+		},
+		health: {
+			title: 'Report: salute finanziaria',
+			steps: {
+				'1': {
+					title: 'Il mese degli indicatori.',
+					body: 'Tasso di risparmio, costo fisso e ritmo parlano del mese scelto; riserva e peso delle carte parlano di oggi.',
+				},
+				'2': {
+					title: 'Cinque domande.',
+					body: 'Ogni indicatore dice Bene, Attenzione, Male o Senza dati, con l\'obiettivo accanto.',
+				},
+				'3': {
+					title: 'Quanto è rimasto a te.',
+					body: 'Quello che è rimasto diviso per le entrate del mese. Bene dal 20%; Attenzione dal 10% al 20%; sotto il 10%, Male. Con l\'obiettivo di pensione, dice anche quanto servirebbe per arrivarci in 20 anni.',
+				},
+				'4': {
+					title: 'Mesi di margine.',
+					body: 'Quanti mesi di costo essenziale copre la riserva. L\'obiettivo sono i mesi che hai scelto per la riserva; sotto 3 mesi (o sotto l\'obiettivo, se è minore), Male. Senza costo essenziale, l\'app usa liquidità e riserve contro la spesa media, con obiettivo di 6 mesi.',
+				},
+				'5': {
+					title: 'Quello che è già impegnato.',
+					body: 'Conti da pagare, rate dei debiti e rate della carta, sulle entrate del mese. Bene fino al 40%; Attenzione fino al 50%; sopra, Male.',
+				},
+				'6': {
+					title: 'Il peso delle carte.',
+					body: 'Gli estratti da pagare e quelli aperti, sul reddito medio degli ultimi mesi chiusi (fino a 3). Bene fino al 30%; Attenzione fino al 50%. Se una carta ha superato l\'80% del limite, scende ad Attenzione.',
+				},
+				'7': {
+					title: 'Ritmo.',
+					body: 'La spesa del mese fino a oggi contro lo stesso punto dei mesi precedenti (fino a 3 con movimenti). Bene fino a +5%; Attenzione fino a +15%. Prima che passi il 15% del mese, è presto e resta "Senza dati".',
+				},
+				'8': {
+					title: 'Debiti.',
+					body: 'Quanto devi, quanto esce al mese, quando si estingue ciascuno e se conviene anticipare.',
+				},
+				'9': {
+					title: 'I prossimi 3 mesi.',
+					body: 'Estratti in scadenza e costo fisso già impegnati, prima di qualsiasi scelta.',
+				},
+				'10': {
+					title: 'Avvisi del mese.',
+					body: 'Urgente, Attenzione, Buon segno o Contesto. Alcuni hanno un\'azione, come aprire le entrate del mese o "Cancella l\'[Auto]" di una spesa uscita due volte.',
+				},
+			},
+		},
+		freedom: {
+			title: 'Report: libertà finanziaria e storico',
+			steps: {
+				'1': {
+					title: 'L\'obiettivo.',
+					body: 'Indica quanto vuoi ricevere al mese senza lavorare, in soldi di oggi. L\'app calcola il capitale necessario, quanto rende già e in quanto tempo ci arrivi.',
+				},
+				'2': {
+					title: 'Il calcolo.',
+					body: 'Il capitale deve rendere il reddito più un margine che resta investito (25% di default). Esempio: 10.000 al mese diventano 12.500 lordi; al 10% annuo, servono 1,5 milioni.',
+				},
+				'3': {
+					title: 'Quello che l\'app non vede.',
+					body: 'Broker, previdenza. Si somma al capitale e compare nel Patrimonio.',
+				},
+				'4': {
+					title: 'Capitale di oggi.',
+					body: 'Quello che c\'è nei conti di Riserva oltre la riserva di emergenza (e in quelli "Solo investimento"), più quello fuori dall\'app. Quello che è nella riserva di emergenza non conta qui.',
+				},
+				'5': {
+					title: 'Prima viene la riserva.',
+					body: 'Il ritmo è la media di quanto è stato messo da parte in 6 mesi. Finché la riserva di emergenza non è piena, quello che metti da parte va lì, e l\'obiettivo non riceve niente.',
+				},
+				'6': {
+					title: 'Tempi.',
+					body: 'Quanto mettere da parte al mese per arrivarci in 5, 10, 15 o 20 anni.',
+				},
+				'7': {
+					title: 'Storico.',
+					body: 'Sceglie quanti mesi mostra il grafico; nella carta conta l\'estratto che chiude nel mese, come nella Home. Toccare una colonna seleziona quel mese in tutta la schermata.',
+				},
+				'8': {
+					title: 'Proiezione.',
+					body: 'Quanto esce dalla tua tasca e quanto fanno da soli gli interessi, al ritmo di oggi.',
+				},
+				'9': {
+					title: 'Dove e da dove.',
+					body: 'Per categoria, con la variazione rispetto al mese precedente (le partite di giro restano fuori). E per origine: ogni carta, l\'addebito per finale, i Pix di ogni conto e le buste.',
+				},
+				'10': {
+					title: 'Esporta.',
+					body: 'Genera un CSV (con intestazioni in inglese) con il riepilogo di ogni mese dell\'anno, i totali per categoria e i movimenti del mese scelto, e apre la condivisione. I trasferimenti non sono inclusi.',
 				},
 			},
 		},

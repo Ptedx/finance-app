@@ -8,6 +8,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { accountSelectOptions } from '../components/AccountPicker';
 import { Button, ChipGroup, Field } from '../components/cards/formParts';
 import { SelectField } from '../components/SelectField';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { draftOf, useDebts } from '../contexts/DebtsContext';
 import type { AmortizationSystem, DebtDraft, DebtKind } from '../database/schema';
@@ -68,6 +70,9 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const [accountId, setAccountId] = useState<string | null>(null);
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A trilha de dívidas (SPD-131) passa por aqui: a nova abre na hora; a cadastrada, quando a dívida chegou.
+	useScreenTour('debtEdit', { ready: debtId ? Boolean(existing) : true });
+	const tourScroll = useTourScroll('debtEdit');
 
 	// Uma dívida já cadastrada abre com o estado de hoje: saldo e prazo projetados.
 	useEffect(() => {
@@ -269,19 +274,22 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 						{existing ? t('debts.edit.title') : t('debts.edit.newTitle')}
 					</Text>
+					{debtId ? null : <HelpButton trail="debts" here={{ screen: 'debtNew' }} from="2" />}
 				</View>
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-					<ChipGroup<DebtKind>
-						label={t('debts.edit.kind')}
-						options={[
-							{ value: 'financing', label: t('debts.kind.financing') },
-							{ value: 'consortium', label: t('debts.kind.consortium') },
-							{ value: 'loan', label: t('debts.kind.loan') },
-						]}
-						selected={kind}
-						onSelect={setKind}
-					/>
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+					<TourTarget id="debtEdit.kind">
+						<ChipGroup<DebtKind>
+							label={t('debts.edit.kind')}
+							options={[
+								{ value: 'financing', label: t('debts.kind.financing') },
+								{ value: 'consortium', label: t('debts.kind.consortium') },
+								{ value: 'loan', label: t('debts.kind.loan') },
+							]}
+							selected={kind}
+							onSelect={setKind}
+						/>
+					</TourTarget>
 
 					<Field
 						label={t('debts.edit.name')}
@@ -293,29 +301,33 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					/>
 
 					{!isConsortium ? (
-						<ChipGroup<'price' | 'sac'>
-							label={t('debts.edit.system')}
-							hint={t('debts.edit.systemHint')}
-							options={[
-								{ value: 'price', label: t('debts.system.price') },
-								{ value: 'sac', label: t('debts.system.sac') },
-							]}
-							selected={system}
-							onSelect={setSystem}
-						/>
+						<TourTarget id="debtEdit.system">
+							<ChipGroup<'price' | 'sac'>
+								label={t('debts.edit.system')}
+								hint={t('debts.edit.systemHint')}
+								options={[
+									{ value: 'price', label: t('debts.system.price') },
+									{ value: 'sac', label: t('debts.system.sac') },
+								]}
+								selected={system}
+								onSelect={setSystem}
+							/>
+						</TourTarget>
 					) : null}
 
-					<Field
-						label={system === 'sac' && !isConsortium ? t('debts.edit.nextInstallment') : t('debts.edit.installment')}
-						value={installment}
-						onChangeText={(text) => setInstallment(formatAmountInput(text))}
-						onBlur={() => setInstallment(finaliseAmountInput(installment))}
-						keyboardType="decimal-pad"
-						selectTextOnFocus
-						error={errors.installment}
-					/>
+					<TourTarget id="debtEdit.installment">
+						<Field
+							label={system === 'sac' && !isConsortium ? t('debts.edit.nextInstallment') : t('debts.edit.installment')}
+							value={installment}
+							onChangeText={(text) => setInstallment(formatAmountInput(text))}
+							onBlur={() => setInstallment(finaliseAmountInput(installment))}
+							keyboardType="decimal-pad"
+							selectTextOnFocus
+							error={errors.installment}
+						/>
+					</TourTarget>
 
-					<View style={styles.twoColumns}>
+					<TourTarget id="debtEdit.remaining" style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
 								label={t('debts.edit.remaining')}
@@ -338,16 +350,18 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 								error={errors.total}
 							/>
 						</View>
-					</View>
+					</TourTarget>
 
-					<Field
-						label={t('debts.edit.dueDay')}
-						value={dueDay}
-						onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
-						keyboardType="number-pad"
-						maxLength={2}
-						error={errors.dueDay}
-					/>
+					<TourTarget id="debtEdit.dueDay">
+						<Field
+							label={t('debts.edit.dueDay')}
+							value={dueDay}
+							onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
+							keyboardType="number-pad"
+							maxLength={2}
+							error={errors.dueDay}
+						/>
+					</TourTarget>
 
 					{isConsortium ? (
 						<>
@@ -361,14 +375,16 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 								keyboardType="decimal-pad"
 								selectTextOnFocus
 							/>
-							<Field
-								label={t('debts.edit.adjustment')}
-								hint={t('debts.edit.adjustmentHint')}
-								value={adjustment}
-								onChangeText={setAdjustment}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
+							<TourTarget id="debtEdit.adjustment">
+								<Field
+									label={t('debts.edit.adjustment')}
+									hint={t('debts.edit.adjustmentHint')}
+									value={adjustment}
+									onChangeText={setAdjustment}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
 							<Field
 								label={t('debts.edit.adminFee')}
 								optionalLabel={t('debts.edit.optional')}
@@ -381,41 +397,49 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 						</>
 					) : (
 						<>
-							<Field
-								label={t('debts.edit.balance')}
-								hint={t('debts.edit.balanceHint')}
-								optionalLabel={t('debts.edit.optional')}
-								value={balance}
-								onChangeText={(text) => setBalance(formatAmountInput(text))}
-								onBlur={() => setBalance(balance.trim() === '' ? '' : finaliseAmountInput(balance))}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
-							<Field
-								label={t('debts.edit.rate')}
-								hint={t('debts.edit.rateHint')}
-								optionalLabel={t('debts.edit.optional')}
-								value={rate}
-								onChangeText={setRate}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
-							<ChipGroup<RatePeriod>
-								label={t('debts.edit.ratePeriod')}
-								options={[
-									{ value: 'month', label: t('debts.edit.perMonth') },
-									{ value: 'year', label: t('debts.edit.perYear') },
-								]}
-								selected={ratePeriod}
-								onSelect={setRatePeriod}
-							/>
+							<TourTarget id="debtEdit.balance">
+								<Field
+									label={t('debts.edit.balance')}
+									hint={t('debts.edit.balanceHint')}
+									optionalLabel={t('debts.edit.optional')}
+									value={balance}
+									onChangeText={(text) => setBalance(formatAmountInput(text))}
+									onBlur={() => setBalance(balance.trim() === '' ? '' : finaliseAmountInput(balance))}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.rate">
+								<Field
+									label={t('debts.edit.rate')}
+									hint={t('debts.edit.rateHint')}
+									optionalLabel={t('debts.edit.optional')}
+									value={rate}
+									onChangeText={setRate}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.ratePeriod">
+								<ChipGroup<RatePeriod>
+									label={t('debts.edit.ratePeriod')}
+									options={[
+										{ value: 'month', label: t('debts.edit.perMonth') },
+										{ value: 'year', label: t('debts.edit.perYear') },
+									]}
+									selected={ratePeriod}
+									onSelect={setRatePeriod}
+								/>
+							</TourTarget>
 						</>
 					)}
 
 					{previewText ? (
-						<Text style={[styles.preview, derived?.rateBp === null && styles.previewWarning]} accessibilityLiveRegion="polite">
-							{previewText}
-						</Text>
+						<TourTarget id="debtEdit.preview">
+							<Text style={[styles.preview, derived?.rateBp === null && styles.previewWarning]} accessibilityLiveRegion="polite">
+								{previewText}
+							</Text>
+						</TourTarget>
 					) : null}
 					{errors.values ? (
 						<Text style={styles.error} accessibilityLiveRegion="polite">
@@ -424,29 +448,35 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					) : null}
 
 					{bankAccounts.length > 0 ? (
-						<SelectField
-							label={t('debts.edit.account')}
-							hint={t('debts.edit.accountHint')}
-							options={accountSelectOptions(bankAccounts)}
-							selected={accountId}
-							onSelect={setAccountId}
-							clearLabel={t('select.none')}
-							onClear={() => setAccountId(null)}
-						/>
+						<TourTarget id="debtEdit.account">
+							<SelectField
+								label={t('debts.edit.account')}
+								hint={t('debts.edit.accountHint')}
+								options={accountSelectOptions(bankAccounts)}
+								selected={accountId}
+								onSelect={setAccountId}
+								clearLabel={t('select.none')}
+								onClear={() => setAccountId(null)}
+							/>
+						</TourTarget>
 					) : null}
 
 					<Button label={t('debts.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
 
 					{existing ? (
 						<View style={styles.secondary}>
-							<Button
-								label={existing.archived ? t('debts.edit.unarchive') : t('debts.edit.archive')}
-								hint={t('debts.edit.archiveHint')}
-								onPress={handleArchive}
-								variant="secondary"
-								icon={existing.archived ? 'arrow-undo-outline' : 'checkmark-done-outline'}
-							/>
-							<Button label={t('debts.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							<TourTarget id="debtEdit.archive">
+								<Button
+									label={existing.archived ? t('debts.edit.unarchive') : t('debts.edit.archive')}
+									hint={t('debts.edit.archiveHint')}
+									onPress={handleArchive}
+									variant="secondary"
+									icon={existing.archived ? 'arrow-undo-outline' : 'checkmark-done-outline'}
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.delete">
+								<Button label={t('debts.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							</TourTarget>
 						</View>
 					) : null}
 				</ScrollView>

@@ -20,7 +20,8 @@
  *
  * Para as trilhas 8 a 21 (fases 2 e 3): uma entrada em `TRAILS` (e, se a tela for nova, em
  * `TRAIL_SCREENS`), os alvos marcados nas telas (`TourTarget`/`useTourTarget`), o
- * `useScreenTour` na tela nova e o "?" (`HelpButton trail=…`).
+ * `useScreenTour` na tela nova e o "?" (`HelpButton trail=…`). As trilhas 9 a 15 (SPD-131b):
+ * Dívidas, Reserva, Patrimônio, "Este mês", Lançamentos e as duas dos Relatórios.
  */
 
 import { hasSize, type Rect, type TourScreen } from './tour';
@@ -32,9 +33,18 @@ import { hasSize, type Rect, type TourScreen } from './tour';
 /**
  * Como cada tela se anuncia ao guia (`useScreenTour`). As do SPD-129 (`TourScreen`) e as que
  * só as trilhas visitam. O formulário de conta nova e a tela de uma conta são a mesma tela
- * (`account`), como o cadastro e a edição do cartão (`cardEdit`).
+ * (`account`), como o cadastro e a edição do cartão (`cardEdit`) e os da dívida (`debtEdit`).
  */
-export type TourPlace = TourScreen | 'accounts' | 'account' | 'cards' | 'debitCard' | 'transaction';
+export type TourPlace =
+	| TourScreen
+	| 'accounts'
+	| 'account'
+	| 'cards'
+	| 'debitCard'
+	| 'transaction'
+	| 'transactions'
+	| 'debt'
+	| 'debtEdit';
 
 /** As telas por onde as trilhas passam. */
 export type TrailScreen =
@@ -50,7 +60,13 @@ export type TrailScreen =
 	| 'cardEdit'
 	| 'debitCard'
 	| 'transaction'
-	| 'inbox';
+	| 'inbox'
+	| 'wealth'
+	| 'transactions'
+	| 'reports'
+	| 'debtNew'
+	| 'debt'
+	| 'debtEdit';
 
 /**
  * O que a trilha precisa do usuário: o registro que uma tela abre (a conta, o cartão) ou uma
@@ -68,7 +84,8 @@ export type RecordKind =
 	| 'debitCard'
 	| 'transaction'
 	| 'pending'
-	| 'capture';
+	| 'capture'
+	| 'debt';
 
 /** Os parâmetros da rota de um registro (`{ id }`, ou `{ accountId, last4 }` no débito). */
 export type TrailParams = Readonly<Record<string, string>>;
@@ -133,6 +150,18 @@ export const TRAIL_SCREENS: Readonly<Record<TrailScreen, ScreenDef>> = {
 		record: 'transaction',
 	},
 	inbox: { path: '/inbox', report: 'inbox', parent: 'home', keep: true },
+	wealth: { path: '/wealth', report: 'wealth', tab: true },
+	transactions: { path: '/transactions', report: 'transactions', tab: true },
+	reports: { path: '/reports', report: 'reports', tab: true },
+	debtNew: { path: '/debts/new', report: 'debtEdit', parent: 'wealth', keep: true },
+	debt: { path: '/debts/[id]', report: 'debt', parent: 'wealth', record: 'debt' },
+	debtEdit: {
+		path: '/debts/edit/[id]',
+		report: 'debtEdit',
+		parent: 'debt',
+		record: 'debt',
+		keep: true,
+	},
 };
 
 // ---------------------------------------------------------------------------
@@ -171,6 +200,12 @@ export interface TrailStepDef {
 	textOnly?: boolean;
 	/** A chave do texto, quando não é o `id` (os textos próprios das trilhas sem dado). */
 	textId?: string;
+	/**
+	 * A partir deste grupo de `targets`, o alvo é o do `[sem dado]` que aponta para outro
+	 * elemento com o texto próprio (`…steps.<id>.missing`): "mês vazio → aponta para 'Nenhum
+	 * lançamento em …'", com outro texto. Os grupos de antes usam o texto do passo.
+	 */
+	altGroup?: number;
 }
 
 export type TrailId =
@@ -180,7 +215,14 @@ export type TrailId =
 	| 'cardExtras'
 	| 'add'
 	| 'capture'
-	| 'review';
+	| 'review'
+	| 'debts'
+	| 'reserve'
+	| 'netWorth'
+	| 'month'
+	| 'transactions'
+	| 'health'
+	| 'freedom';
 
 export interface TrailDef {
 	id: TrailId;
@@ -189,20 +231,34 @@ export interface TrailDef {
 	fallback?: { when: RecordKind; steps: readonly TrailStepDef[] };
 }
 
-type StepOptions = Omit<TrailStepDef, 'id' | 'screen' | 'targets'>;
+type StepOptions = Omit<TrailStepDef, 'id' | 'screen' | 'targets' | 'altGroup'> & {
+	/** Os alvos do `[sem dado]` que aponta para outro elemento, com o texto próprio. */
+	altTargets?: string;
+};
 
-/** Um passo: `targets` são grupos separados por `|` e, dentro do grupo, alvos por `+`. */
+const groupsOf = (targets: string) => targets.split('|').map((group) => group.split('+'));
+
+/**
+ * Um passo: `targets` são grupos separados por `|` e, dentro do grupo, alvos por `+`;
+ * `altTargets`, os grupos do `[sem dado]` com o texto próprio, depois dos outros.
+ */
 const s = (
 	id: string,
 	screen: TrailScreen,
 	targets: string,
-	options: StepOptions = {}
-): TrailStepDef => ({
-	id,
-	screen,
-	targets: targets.split('|').map((group) => group.split('+')),
-	...options,
-});
+	{ altTargets, ...options }: StepOptions = {}
+): TrailStepDef => {
+	const groups = groupsOf(targets);
+	return altTargets
+		? {
+				id,
+				screen,
+				targets: [...groups, ...groupsOf(altTargets)],
+				altGroup: groups.length,
+				...options,
+			}
+		: { id, screen, targets: groups, ...options };
+};
 
 /** Um passo só de texto. */
 const text = (id: string, screen: TrailScreen, options: StepOptions = {}): TrailStepDef => ({
@@ -354,6 +410,128 @@ export const TRAILS: Readonly<Record<TrailId, TrailDef>> = {
 			steps: [text('1', 'inbox'), text('9', 'inbox'), text('11', 'inbox')],
 		},
 	},
+	// Trilha 9 — Dívidas. Começa em Patrimônio › "Dívidas".
+	debts: {
+		id: 'debts',
+		steps: [
+			s('1', 'wealth', 'wealth.debts'),
+			s('2', 'debtNew', 'debtEdit.kind+debtEdit.system'),
+			s('3', 'debtNew', 'debtEdit.installment+debtEdit.remaining+debtEdit.dueDay'),
+			s('4', 'debtNew', 'debtEdit.balance+debtEdit.rate'),
+			s('5', 'debtNew', 'debtEdit.ratePeriod', attention),
+			// A prévia só aparece com a parcela, o prazo e o saldo ou a taxa digitados.
+			s('6', 'debtNew', 'debtEdit.preview'),
+			// O reajuste só aparece com Consórcio escolhido; o guia não escolhe nada no formulário:
+			// aponta o "Tipo", onde fica o Consórcio.
+			s('7', 'debtNew', 'debtEdit.adjustment|debtEdit.kind', attention),
+			s('8', 'debtNew', 'debtEdit.account'),
+			// "Saldo devedor hoje" e "Juros que ainda faltam" ficam no mesmo quadro.
+			s('9', 'debt', 'debt.summary', { missing: 'alt' }),
+			s('10', 'debt', 'debt.verdict'),
+			// "Simular amortização" abre a folha, que o guia não abre: aponta o botão.
+			s('11', 'debt', 'debt.simulate'),
+			s('12', 'debtEdit', 'debtEdit.archive+debtEdit.delete'),
+		],
+	},
+	// Trilha 10 — Reserva de emergência e "Por onde começar". Começa em Patrimônio › Reserva.
+	reserve: {
+		id: 'reserve',
+		steps: [
+			s('1', 'wealth', 'wealth.reserve'),
+			s('2', 'wealth', 'reserve.source'),
+			s('3', 'wealth', 'reserve.source', attention),
+			// O ícone "Ajustar a reserva" abre a folha, que o guia não abre: aponta o ícone.
+			s('4', 'wealth', 'reserve.edit'),
+			s('5', 'wealth', 'reserve.target', attention),
+			s('6', 'wealth', 'reserve.cascade'),
+			s('7', 'wealth', 'reserve.fill', { missing: 'alt', altTargets: 'reserve.setCost' }),
+			s('8', 'wealth', 'wealth.priorities'),
+			s('9', 'wealth', 'priorities.steps'),
+		],
+	},
+	// Trilha 11 — Patrimônio: o que soma e o que desconta. Começa no Patrimônio.
+	netWorth: {
+		id: 'netWorth',
+		steps: [
+			s('1', 'wealth', 'netWorth.total'),
+			s('2', 'wealth', 'netWorth.cash'),
+			s('3', 'wealth', 'netWorth.reserve+netWorth.invested'),
+			s('4', 'wealth', 'netWorth.outside|netWorth.have'),
+			s('5', 'wealth', 'netWorth.cards'),
+			s('6', 'wealth', 'netWorth.debts'),
+			s('7', 'wealth', 'netWorth.note', attention),
+			// O título da tela fica fora da rolagem.
+			s('8', 'wealth', 'wealth.title', { ...attention, fixed: true }),
+		],
+	},
+	// Trilha 12 — "Este mês" e o orçamento. Começa em Início › "Este mês".
+	month: {
+		id: 'month',
+		steps: [
+			s('1', 'home', 'month.header'),
+			s('2', 'home', 'month.income'),
+			s('3', 'home', 'month.spending'),
+			s('4', 'home', 'month.card', { needs: 'card', missing: 'skip' }),
+			s('5', 'home', 'month.envelope', { missing: 'skip' }),
+			s('6', 'home', 'month.saved+month.leftover'),
+			s('7', 'home', 'month.pendingIncome+month.pendingSpend', attention),
+			// "Definir orçamento" e "Editar" abrem a folha, que o guia não abre: aponta o botão.
+			s('8', 'home', 'month.budget'),
+		],
+	},
+	// Trilha 13 — Lançamentos: lista, filtros e busca. Começa na aba Lançamentos.
+	transactions: {
+		id: 'transactions',
+		steps: [
+			// O seletor do mês fica no título, fora da lista.
+			s('1', 'transactions', 'transactions.period', { fixed: true }),
+			s('2', 'transactions', 'transactions.totals'),
+			s('3', 'transactions', 'transactions.expense', attention),
+			s('4', 'transactions', 'transactions.search'),
+			s('5', 'transactions', 'transactions.kinds'),
+			s('6', 'transactions', 'transactions.account'),
+			s('7', 'transactions', 'transactions.first', {
+				missing: 'alt',
+				altTargets: 'transactions.empty',
+			}),
+			s('8', 'transactions', 'transactions.list', attention),
+		],
+	},
+	// Trilha 14 — Relatórios: saúde financeira. Começa na aba Relatórios.
+	health: {
+		id: 'health',
+		steps: [
+			// O seletor do mês fica no cabeçalho, fora da rolagem.
+			s('1', 'reports', 'reports.period', { fixed: true }),
+			s('2', 'reports', 'reports.health'),
+			s('3', 'reports', 'health.savings-rate'),
+			s('4', 'reports', 'health.emergency-reserve'),
+			s('5', 'reports', 'health.fixed-cost'),
+			s('6', 'reports', 'health.card-load'),
+			s('7', 'reports', 'health.spending-trend'),
+			s('8', 'reports', 'reports.debts', { needs: 'debt', missing: 'skip' }),
+			s('9', 'reports', 'reports.committed'),
+			s('10', 'reports', 'reports.insights'),
+		],
+	},
+	// Trilha 15 — Relatórios: liberdade financeira e histórico. Começa na aba Relatórios.
+	freedom: {
+		id: 'freedom',
+		steps: [
+			s('1', 'reports', 'freedom.title+freedom.goal'),
+			// Os campos da meta ficam na folha, que o guia não abre: aponta o botão que a abre
+			// ("Definir meta", ou o lápis com a meta definida).
+			s('2', 'reports', 'freedom.goal'),
+			s('3', 'reports', 'freedom.goal'),
+			s('4', 'reports', 'freedom.capital|freedom.goal'),
+			s('5', 'reports', 'freedom.pace|freedom.goal', attention),
+			s('6', 'reports', 'freedom.horizons'),
+			s('7', 'reports', 'reports.range+reports.trend'),
+			s('8', 'reports', 'reports.projection'),
+			s('9', 'reports', 'reports.categories+reports.sources'),
+			s('10', 'reports', 'reports.export'),
+		],
+	},
 };
 
 export const TRAIL_IDS = Object.keys(TRAILS) as TrailId[];
@@ -380,6 +558,8 @@ export interface PlannedTrailStep {
 	bodyKey: string;
 	/** O texto do `[sem dado]` (`missing: 'alt'`). */
 	altBodyKey?: string;
+	/** A partir deste grupo de alvos, o texto é o do `[sem dado]`. */
+	altGroup?: number;
 }
 
 const sameParams = (a?: TrailParams, b?: TrailParams): boolean => {
@@ -451,6 +631,7 @@ export const planTrail = (
 			titleKey: `${key}.title`,
 			bodyKey: absent && altBodyKey ? altBodyKey : `${key}.body`,
 			...(altBodyKey ? { altBodyKey } : {}),
+			...(def.altGroup !== undefined ? { altGroup: def.altGroup } : {}),
 		});
 	}
 	return plan;
@@ -479,17 +660,24 @@ export type ResolvedTrailStep =
 	| { kind: 'skip' };
 
 /**
- * O passo com a tela aberta e os alvos medidos: aponta o primeiro grupo que está na tela; sem
- * nenhum, segue o `[sem dado]` — o texto sem apontar (o próprio, se houver) ou pular.
+ * O passo com a tela aberta e os alvos medidos: aponta o primeiro grupo que está na tela (com
+ * o texto do `[sem dado]` a partir do `altGroup`); sem nenhum, segue o `[sem dado]` — o texto
+ * sem apontar (o próprio, se houver) ou pular.
  */
 export const resolveTrailStep = (
 	step: PlannedTrailStep,
 	rects: Readonly<Record<string, Rect | null | undefined>>
 ): ResolvedTrailStep => {
 	if (step.textOnly) return { kind: 'text', bodyKey: step.bodyKey };
-	for (const group of step.targets) {
+	for (const [index, group] of step.targets.entries()) {
 		const present = group.filter((id) => hasSize(rects[id]));
-		if (present.length > 0) return { kind: 'point', ids: present, bodyKey: step.bodyKey };
+		if (present.length === 0) continue;
+		const alt = step.altGroup !== undefined && index >= step.altGroup;
+		return {
+			kind: 'point',
+			ids: present,
+			bodyKey: alt ? (step.altBodyKey ?? step.bodyKey) : step.bodyKey,
+		};
 	}
 	if (step.missing === 'skip') return { kind: 'skip' };
 	return { kind: 'text', bodyKey: step.altBodyKey ?? step.bodyKey };

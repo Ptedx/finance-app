@@ -2311,11 +2311,11 @@ account: {
 					missing: "On each account's screen, 'Match the bank' makes the app's balance equal the bank's.",
 				},
 				'10': {
-					title: 'Watch out: account created by capture.',
+					title: 'Account created by capture.',
 					body: 'An account the app created by itself starts from zero, because it does not know how much was in it. Until you match the balance (or dismiss the warning), it shows "Balance not set". For a reserve, matching asks only for today\'s balance and never records spending.',
 				},
 				'11': {
-					title: 'Watch out: two accounts at the same bank.',
+					title: 'Two accounts at the same bank.',
 					body: 'When there are exactly two accounts at the same bank and only one gets the notifications, the app suggests merging. "Merge them" moves everything into the one you choose; "They are different accounts" (personal and business, for example) removes the warning for good. If the one capture created is empty and nobody touched it, the app merges by itself and says "We merged … into …".',
 				},
 				'12': {
@@ -2360,7 +2360,7 @@ account: {
 					body: 'With both days filled in, the app shows today\'s bill: check it against the bank app. The bill is named after the month it closes in.',
 				},
 				'9': {
-					title: 'Watch out: 1 to 20 days.',
+					title: '1 to 20 days.',
 					body: 'The due date has to fall 1 to 20 days after closing; otherwise, the card is not saved. Filled in one of the days? Fill in the other too.',
 				},
 				'10': {
@@ -2368,7 +2368,7 @@ account: {
 					body: 'Only when adding the card: type what the bank app shows right now. The open bill becomes the card\'s starting point, without becoming a purchase. If you also fill in the closed one, the open one goes in as an entry "Ajuste com a fatura do banco" (bank bill adjustment). The closed one only shows between its closing and due dates; leave it blank if it is already paid.',
 				},
 				'11': {
-					title: 'Watch out: card without a closing day.',
+					title: 'Card without a closing day.',
 					body: 'A card created by capture comes without the closing and due days. Without them, the app does not split purchases by bill or remind you of the due date: edit the card and enter both days.',
 				},
 			},
@@ -2389,7 +2389,7 @@ account: {
 					body: 'Records the payment as a transfer from the account to the card: it does not count as spending, because the purchases already did. It pays off the closed bill first; anything beyond that goes toward the open one. The date can be today, yesterday or the day before.',
 				},
 				'3': {
-					title: 'Watch out: which account it came from.',
+					title: 'Which account it came from.',
 					body: 'The app already selects the card bank\'s checking account, when it knows which one it is; if it does not, none is selected. If the bank notification for this payment arrives later (same amount, up to 1 day apart), the app recognizes it and does not record it again.',
 				},
 				'4': {
@@ -2397,7 +2397,7 @@ account: {
 					body: 'The fields come with what the app thinks today: correct them with the number from the bank app. A blank field means "I did not say", and that bill stays as it is. On the open bill, whatever is missing or extra goes in as "Ajuste com a fatura do banco" (bank bill adjustment); on the closed one, it only changes the card\'s starting point. Nothing is deleted.',
 				},
 				'5': {
-					title: 'Watch out: the app asks.',
+					title: 'The app asks.',
 					body: 'When the bank shows more than the app, it asks. "Yes, it is a charge" records the difference as a charge; "No, it is an adjustment" (a purchase the app did not see, for example) matches as in the previous step.',
 				},
 				'6': {
@@ -2417,11 +2417,11 @@ account: {
 					body: 'Shows when something has already changed the bill: a payment, the amount you entered, a previous balance or a credit. What was left unpaid on an overdue bill goes into the next one when it closes, as "Unpaid previous balance".',
 				},
 				'10': {
-					title: 'Watch out: purchases to review.',
+					title: 'Purchases to review.',
 					body: 'A purchase that came from a notification and is still in "Review" already counts on the bill and the limit; only the category waits for you. Discarding removes the amount.',
 				},
 				'11': {
-					title: 'Watch out: likely repeat.',
+					title: 'Likely repeat.',
 					body: 'Two entries on the same card, same amount, up to 1 day apart, get marked. The app does not delete anything by itself: open the extra one and delete it, or use "Not a repeat".',
 				},
 				'12': {
@@ -2462,7 +2462,7 @@ account: {
 					body: 'Purchases, installments, charges and payments move to the other card, and this one is deleted. The one that stays keeps its closing day, limit and entered bill; the bank matching done on the deleted one goes with it.',
 				},
 				'8': {
-					title: 'Watch out: after merging.',
+					title: 'After merging.',
 					body: 'The same purchase may have ended up on both sides. If so, the app says how many entries may be repeats, and they show marked on the card screen.',
 				},
 				'9': {
@@ -2512,7 +2512,7 @@ account: {
 					body: 'Changes the balance of both accounts, but does not count as income or expense. It needs at least two accounts.',
 				},
 				'10': {
-					title: 'Watch out: to a card.',
+					title: 'To a card.',
 					body: 'Transferring to a credit card is paying the bill, just like "Pay bill": it reduces what the card owes and does not count as spending. If the same payment was already recorded from a notification, nothing is recorded again.',
 				},
 				'11': {
@@ -2520,7 +2520,7 @@ account: {
 					body: 'On an installment, what you change applies only to it; when deleting, the app asks "Only this one" or "All installments". When editing, an expense or income does not turn into a transfer.',
 				},
 				'12': {
-					title: 'Watch out: bills to pay.',
+					title: 'Bills to pay.',
 					body: 'A single-payment expense added by hand, from 10 days before to 5 days after a bill\'s due date, from the paying account (if any), with the bill\'s amount and its name in the note (or the exact amount), marks the bill as paid. When in doubt, it does not.',
 				},
 			},
@@ -2541,7 +2541,7 @@ account: {
 					body: 'This item opens the Android screen: find Spendr on the list and allow access to notifications.',
 				},
 				'3': {
-					title: 'Watch out: what is kept.',
+					title: 'What is kept.',
 					body: 'Only notifications that carry an amount of money (R$ 120,00, US$ 15.99) are kept; the app ignores the others.',
 				},
 				'4': {
@@ -2557,11 +2557,11 @@ account: {
 					body: 'Write your name as it appears on Pix notifications. A Pix with that name on the other side becomes a transfer between your accounts, without asking. Upper case and accents do not matter, and an initial counts for a middle name.',
 				},
 				'7': {
-					title: 'Watch out: exact name.',
+					title: 'Exact name.',
 					body: 'With one name too many or too few, the app keeps asking. The name on your Spendr account also counts. With an account, the name goes to your other devices; it also goes into the backup.',
 				},
 				'8': {
-					title: 'Watch out: archived account.',
+					title: 'Archived account.',
 					body: 'If the account linked to the bank app is archived, the app does not create another one in its place: the notification comes in as "No account", and you choose in the review.',
 				},
 				'9': {
@@ -2577,7 +2577,7 @@ account: {
 					body: 'Shows when Spendr has no access to notifications: never turned on, removed by you or by a reinstall. "Turn on" opens the Android screen; "Do not warn again" hides the warning.',
 				},
 				'12': {
-					title: 'Watch out: capture stalled.',
+					title: 'Capture stalled.',
 					body: 'Android sometimes turns off reading without telling you. If you have an account linked to a bank and 3 days go by without any bank notification, the app shows this. "Reconnect" asks Android to turn it back on and opens the access screen; if it stays stalled, turn Spendr\'s access off and on. "Dismiss for 7 days" hides it.',
 				},
 			},
@@ -2610,11 +2610,11 @@ account: {
 					body: 'Shows the notification text, so you can check it.',
 				},
 				'7': {
-					title: 'Watch out: one-tap questions.',
+					title: 'One-tap questions.',
 					body: 'Two notifications of the same amount close together: "Same entry, keep one" or "Different entries, keep both". Money out and in of the same amount at different banks: "Yes, it is a transfer" or "No, two separate entries". While it asks, the item does not count in the balance.',
 				},
 				'8': {
-					title: 'Watch out: incomplete notification.',
+					title: 'Incomplete notification.',
 					body: 'A credit purchase that does not say which of your cards it went to, a purchase that does not say whether it was debit or credit, a Pix that does not say whether it came in or went out, a bill payment that does not say which account it came from: the app asks instead of guessing.',
 				},
 				'9': {
@@ -2628,6 +2628,304 @@ account: {
 				'11': {
 					title: 'History.',
 					body: 'Everything already decided, by you or by the app. "Revert" sends the item back to review and removes what it created.',
+				},
+			},
+		},
+		debts: {
+			title: 'Debts',
+			steps: {
+				'1': {
+					title: 'Your debts.',
+					body: 'Financing, consortiums and loans, with how much goes out each month in installments and until when.',
+				},
+				'2': {
+					title: 'Type and calculation.',
+					body: 'Price is an installment that always stays the same (common for cars); SAC is an installment that falls every month (common for homes). For a consortium this choice does not appear: it charges no interest.',
+				},
+				'3': {
+					title: 'Installment and term.',
+					body: 'Count this month\'s installment if you have not paid it yet. "Total installments" is optional.',
+				},
+				'4': {
+					title: 'One of the two is enough.',
+					body: 'With the balance (the amount to pay it off, in the bank app), the app estimates the rate from the installment. With the rate, it estimates the balance. With both, the difference becomes "insurance and fees".',
+				},
+				'5': {
+					title: 'Month or year.',
+					body: 'Say whether the contract rate is per month or per year. The rate estimated from the installment comes out higher when the installment includes insurance and fees: if you know the contract rate, enter it.',
+				},
+				'6': {
+					title: 'Check the preview.',
+					body: 'The rate per month and per year, when it ends and how much interest you will still pay. If the numbers do not add up, the preview warns you and the debt is not saved.',
+				},
+				'7': {
+					title: 'Consortium.',
+					body: 'Instead of interest, the group\'s adjustment comes in (INCC for property, IPCA for the rest). The balance is optional: left blank, it is installment × installments left. The administration fee is only a record.',
+				},
+				'8': {
+					title: 'Where the installment comes from.',
+					body: 'Optional. Every active debt already shows up in Bills, with a due-date reminder; this account becomes its "Paid from" account.',
+				},
+				'9': {
+					title: 'Today and until the end.',
+					body: 'The balance goes down by itself month by month following the schedule: installments due up to today come off it, regardless of the entries. Below, "Next installments" shows the interest and balance for each month.',
+					missing: 'On each debt\'s screen: today\'s balance, when it is paid off, the interest left and the next installments.',
+				},
+				'10': {
+					title: 'Pay off early or invest.',
+					body: 'Compares the debt\'s yearly cost with what the same money would earn invested, already net of 15% income tax: your retirement goal\'s yield, or the Central Bank\'s CDI (10% a year, until the app gets the CDI). A difference smaller than half a point a year gives "Either way".',
+				},
+				'11': {
+					title: 'Simulate.',
+					body: 'Say how much you want to prepay and whether to "Shorten the term" or "Lower the installment"; the app shows what changes and how much interest you stop paying. "Record this early payment" is for after you prepay at the bank.',
+				},
+				'12': {
+					title: 'Paid off or deleted.',
+					body: 'A paid-off debt leaves the list and the reports, but stays in the history. Delete erases the debt; the installment entries stay.',
+				},
+			},
+		},
+		reserve: {
+			title: 'Emergency reserve and "Where to start"',
+			steps: {
+				'1': {
+					title: 'For the unexpected.',
+					body: 'How much you have set aside, how much you should have, and how many months of your essential cost it covers.',
+				},
+				'2': {
+					title: 'Essential cost.',
+					body: 'The average of the last closed months with spending (up to 3), only with what is essential: without discretionary spending or pass-throughs. Until the first month closes, the app estimates from the budget, if there is one.',
+				},
+				'3': {
+					title: 'The category\'s nature.',
+					body: 'What is essential comes from each category\'s nature: Essential, Discretionary or Pass-through. A new category starts as Discretionary; check yours on the categories screen.',
+				},
+				'4': {
+					title: 'How many months.',
+					body: '3, 6, 12 or another number, from 1 to 120. Six is the reference for a stable income; twelve, for a variable income. Here you can also enter the monthly cost; left empty, the calculated one applies.',
+				},
+				'5': {
+					title: 'The default is 12 months.',
+					body: 'If you never adjusted it, the target uses 12 months of essential cost.',
+				},
+				'6': {
+					title: 'Where the money comes from.',
+					body: 'Accounts with the Reserve role fill the reserve first; only what goes beyond it counts toward retirement. An account marked "Investment only" stays out of the reserve and counts straight as investment.',
+				},
+				'7': {
+					title: 'When it fills up.',
+					body: 'The pace is the average of what was set aside over the last 6 closed months. If nothing was set aside, or more went out than came in, the app says that, at this pace, it does not fill up.',
+					missing: 'With no closed month and no budget, enter the monthly cost to start now.',
+				},
+				'8': {
+					title: 'The order.',
+					body: 'What to do with the next spare money: Minimum reserve (3 months), Debt that costs more than investing (only if you have debts), Full reserve, Retirement.',
+				},
+				'9': {
+					title: 'Which step you are on.',
+					body: '"now" is the first one missing; the ones below are "later". "missing information" asks for the monthly cost in the reserve or the retirement goal in Reports; if that is the first one missing, none is "now".',
+				},
+			},
+		},
+		netWorth: {
+			title: 'Net worth: what adds and what subtracts',
+			steps: {
+				'1': {
+					title: 'What you have minus what you owe.',
+					body: 'It can be negative, and saying so is the point.',
+				},
+				'2': {
+					title: 'In accounts.',
+					body: 'Accounts with the Main or Envelope role, plus entries with no account. Archived, reserve and external accounts are left out here; a negative balance subtracts.',
+				},
+				'3': {
+					title: 'Reserves.',
+					body: 'Accounts with the Reserve role, split: the part that makes up the emergency reserve and the rest (what goes beyond it and the "Investment only" accounts).',
+				},
+				'4': {
+					title: 'Outside the app.',
+					body: 'Brokerage, pension plan: the amount you enter in the retirement goal, in Reports.',
+				},
+				'5': {
+					title: 'Cards.',
+					body: 'What the cards owe today plus the installments still to come. Credit on a card does not become net worth.',
+				},
+				'6': {
+					title: 'Debts.',
+					body: 'Today\'s balance of each registered debt.',
+				},
+				'7': {
+					title: 'Assets are left out.',
+					body: 'The app does not know what a car or a home is worth. Anyone financing an asset has a larger net worth than the number shows.',
+				},
+				'8': {
+					title: 'Always today.',
+					body: 'This screen is about the present: the month chosen in Transactions or Reports does not change the numbers here.',
+				},
+			},
+		},
+		month: {
+			title: '"This month" and the budget',
+			steps: {
+				'1': {
+					title: 'The chosen month.',
+					body: 'When you choose another month, the card becomes "Month summary". The month chosen here also applies to Transactions and Reports.',
+				},
+				'2': {
+					title: 'What came in.',
+					body: 'The month\'s income, minus pass-throughs (money that only passed through you). What an External account sends to yours also counts, minus what went to it in the same month. Reserve yield stays out: it shows in "Set aside".',
+				},
+				'3': {
+					title: 'What really went out.',
+					body: 'The sum of three things: the bill of each card that closes in the month, the accounts\' "Pix and debit" and each envelope\'s amount for the month (the agreed one, or what came in, if more). Paying the bill does not count: the purchases already did.',
+				},
+				'4': {
+					title: 'Bill × purchases.',
+					body: 'The card\'s spending is the bill that closes in the month; next to it, how much was bought in the month. A card with no closing day counts the month\'s purchases.',
+				},
+				'5': {
+					title: 'Envelopes.',
+					body: 'How much has already gone out of each envelope, out of what it had for the month; on the right, how much is left in it. Last month\'s leftover adds to what comes in this month.',
+				},
+				'6': {
+					title: 'Set aside and left over.',
+					body: '"Set aside" is what went into the reserves minus what came out of them, with the yield next to it. "Left over" is income minus spending, and says how much of your income stayed with you.',
+				},
+				'7': {
+					title: 'Already counts what awaits review.',
+					body: 'Notifications still in "Review" already count in these numbers, except those waiting on a question or with no account.',
+				},
+				'8': {
+					title: 'Budget.',
+					body: 'How much you want to spend in the month. It applies to this month and the following ones, until you set another; "Clear", in the month it was set, deletes that budget and the previous one applies again, if any. The bar compares with "Spending" and shows how much has been used.',
+				},
+			},
+		},
+		transactions: {
+			title: 'Transactions: list, filters and search',
+			steps: {
+				'1': {
+					title: 'The month.',
+					body: 'The list shows one month at a time. The month chosen here also applies to the "This month" card and to Reports.',
+				},
+				'2': {
+					title: 'Month totals.',
+					body: '"In" leaves out pass-throughs; card adjustments and charges stay out.',
+				},
+				'3': {
+					title: 'Not the "Spending" on Home.',
+					body: 'Here card purchases count by the date of each one; on Home, the card counts by the bill that closes in the month. That is why the two numbers can differ.',
+				},
+				'4': {
+					title: 'Search.',
+					body: 'Searches the note and the category name. For transfers, also the account names.',
+				},
+				'5': {
+					title: 'Show.',
+					body: 'A transfer is neither income nor expense: it only shows under "All".',
+				},
+				'6': {
+					title: 'By account.',
+					body: 'Shows up when more than one account had activity in the month. Shows only one account\'s entries and transfers.',
+				},
+				'7': {
+					title: 'View and edit.',
+					body: 'Entries come grouped by day (Today, Yesterday…). Tapping one opens it to view, edit or delete; a transfer shows "From … to …".',
+					missing: 'When there are entries, tapping one opens it to view or edit.',
+				},
+				'8': {
+					title: 'What awaits review.',
+					body: 'A bank notification still in "Review" does not show in this list until it is confirmed, even though it already counts in the balance and in "This month" on Home.',
+				},
+			},
+		},
+		health: {
+			title: 'Reports: financial health',
+			steps: {
+				'1': {
+					title: 'The indicators\' month.',
+					body: 'Savings rate, fixed cost and pace are about the chosen month; reserve and card load are about today.',
+				},
+				'2': {
+					title: 'Five questions.',
+					body: 'Each indicator says Good, Watch, Poor or No data, with the target next to it.',
+				},
+				'3': {
+					title: 'How much stayed with you.',
+					body: 'What was left over divided by the month\'s income. Good from 20%; Watch from 10% to 20%; below 10%, Poor. With the retirement goal, it also says how much would be needed to get there in 20 years.',
+				},
+				'4': {
+					title: 'Months of cushion.',
+					body: 'How many months of essential cost the reserve covers. The target is the number of months you chose for the reserve; below 3 months (or the target, if lower), Poor. With no essential cost, the app uses cash and reserves against average spending, with a 6-month target.',
+				},
+				'5': {
+					title: 'What is already committed.',
+					body: 'Bills, debt installments and card installments, over the month\'s income. Good up to 40%; Watch up to 50%; above that, Poor.',
+				},
+				'6': {
+					title: 'The card load.',
+					body: 'Bills to pay and open bills, over the average income of the last closed months (up to 3). Good up to 30%; Watch up to 50%. If any card went over 80% of its limit, it drops to Watch.',
+				},
+				'7': {
+					title: 'Pace.',
+					body: 'The month\'s spending so far against the same point in previous months (up to 3 with entries). Good up to +5%; Watch up to +15%. Before 15% of the month has passed, it is too early and shows "No data".',
+				},
+				'8': {
+					title: 'Debts.',
+					body: 'How much you owe, how much goes out each month, when each one is paid off and whether paying early is worth it.',
+				},
+				'9': {
+					title: 'The next 3 months.',
+					body: 'Bills due and fixed cost that are already committed, before any choice.',
+				},
+				'10': {
+					title: 'The month\'s notes.',
+					body: 'Urgent, Watch, Good sign or Context. Some have an action, like opening the month\'s income or "Delete the [Auto]" for an expense that went out twice.',
+				},
+			},
+		},
+		freedom: {
+			title: 'Reports: financial freedom and history',
+			steps: {
+				'1': {
+					title: 'The goal.',
+					body: 'Say how much you want to receive per month without working, in today\'s money. The app works out the capital needed, how much it already yields and how long it takes you to get there.',
+				},
+				'2': {
+					title: 'The math.',
+					body: 'The capital has to yield the income plus a margin that stays invested (25% by default). Example: 10,000 a month becomes 12,500 gross; at 10% a year, that takes 1.5 million.',
+				},
+				'3': {
+					title: 'What the app does not see.',
+					body: 'Brokerage, pension plan. It adds to the capital and shows up in Net worth.',
+				},
+				'4': {
+					title: 'Today\'s capital.',
+					body: 'What is in Reserve accounts beyond the emergency reserve (and in the "Investment only" ones), plus what is outside the app. What is in the emergency reserve does not count here.',
+				},
+				'5': {
+					title: 'The reserve comes first.',
+					body: 'The pace is the average of what was set aside over 6 months. Until the emergency reserve is full, what you set aside goes to it, and the goal gets nothing.',
+				},
+				'6': {
+					title: 'Timeframes.',
+					body: 'How much to set aside per month to get there in 5, 10, 15 or 20 years.',
+				},
+				'7': {
+					title: 'History.',
+					body: 'Chooses how many months the chart shows; for cards, it counts the bill that closes in the month, as on Home. Tapping a column selects that month on the whole screen.',
+				},
+				'8': {
+					title: 'Projection.',
+					body: 'How much comes out of your pocket and how much interest does by itself, at today\'s pace.',
+				},
+				'9': {
+					title: 'Where to and where from.',
+					body: 'By category, with the change against the previous month (pass-throughs are left out). And by source: each card, debit by card ending, each account\'s Pix and the envelopes.',
+				},
+				'10': {
+					title: 'Export.',
+					body: 'Creates a CSV (with English headings) with each month\'s summary for the year, the totals by category and the chosen month\'s entries, and opens sharing. Transfers are not included.',
 				},
 			},
 		},

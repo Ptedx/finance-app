@@ -126,7 +126,7 @@ describe('plano de uma trilha', () => {
 		expect(plan[0].location).toEqual({ screen: 'card', params: { id: 'b' } });
 	});
 
-	it('cada passo das trilhas 1 a 7 tem tela, alvo ou texto sem apontar, e o "Atenção" dos textos aprovados', () => {
+	it('cada passo das trilhas 1 a 7 e 9 a 15 tem tela, alvo ou texto sem apontar, e o "Atenção" dos textos aprovados', () => {
 		const attention: Record<string, string[]> = {
 			accounts: ['10', '11'],
 			cardSetup: ['9', '11'],
@@ -135,8 +135,31 @@ describe('plano de uma trilha', () => {
 			add: ['10', '12'],
 			capture: ['3', '7', '8', '12'],
 			review: ['7', '8'],
+			// Trilhas 9 a 15 (SPD-131b).
+			debts: ['5', '7'],
+			reserve: ['3', '5'],
+			netWorth: ['7', '8'],
+			month: ['7'],
+			transactions: ['3', '8'],
+			health: [],
+			freedom: ['5'],
 		};
-		const sizes: Record<string, number> = { accounts: 12, cardSetup: 11, cardInvoice: 12, cardExtras: 9, add: 12, capture: 12, review: 11 };
+		const sizes: Record<string, number> = {
+			accounts: 12,
+			cardSetup: 11,
+			cardInvoice: 12,
+			cardExtras: 9,
+			add: 12,
+			capture: 12,
+			review: 11,
+			debts: 12,
+			reserve: 9,
+			netWorth: 8,
+			month: 8,
+			transactions: 8,
+			health: 10,
+			freedom: 10,
+		};
 		for (const [id, trail] of Object.entries(TRAILS)) {
 			expect(trail.steps.map((step) => step.id)).toEqual(Array.from({ length: sizes[id] }, (_, index) => String(index + 1)));
 			expect(trail.steps.filter((step) => step.attention).map((step) => step.id)).toEqual(attention[id]);
@@ -347,7 +370,7 @@ describe('a tela de origem com algo digitado não sai da pilha', () => {
 			.filter(([, def]) => def.keep)
 			.map(([screen]) => screen)
 			.sort();
-		expect(kept).toEqual(['account', 'accountNew', 'cardEdit', 'cardNew', 'inbox']);
+		expect(kept).toEqual(['account', 'accountNew', 'cardEdit', 'cardNew', 'debtEdit', 'debtNew', 'inbox']);
 	});
 });
 

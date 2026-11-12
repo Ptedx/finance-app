@@ -7,6 +7,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCENT, Button } from '../components/cards/formParts';
 import AmortizeSheet from '../components/debts/AmortizeSheet';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
@@ -43,6 +45,11 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	const investmentYieldBp = comparison.yieldBp;
 	// O CDI tem duas casas (13,65%): com uma, a frase dizia um número que a tela de contas não mostra.
 	const grossText = formatPercentBp(investmentYieldBp, investmentYieldBp % 10 === 0 ? 1 : 2);
+	// A trilha de dívidas (SPD-131): a tela abre com a dívida e sem a simulação aberta.
+	useScreenTour('debt', { ready: Boolean(debt), blocked: sheetOpen });
+	const tourScroll = useTourScroll('debt');
+	const summaryTarget = useTourTarget('debt.summary');
+	const verdictTarget = useTourTarget('debt.verdict');
 
 	if (!debt || !state) {
 		return (
@@ -82,12 +89,14 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				>
 					<Ionicons name="create-outline" size={22} color="#FFFFFF" />
 				</Pressable>
+				<HelpButton trail="debts" here={{ screen: 'debt', params: { id: debt.id } }} from="9" />
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{isPaidOff ? <Text style={styles.banner}>{t('debts.detail.paidOffBanner')}</Text> : null}
 
 				<View
+					{...summaryTarget}
 					style={styles.card}
 					accessible
 					accessibilityLabel={[
@@ -123,7 +132,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				</View>
 
 				{!isPaidOff && state.amortizes ? (
-					<View style={styles.card}>
+					<View {...verdictTarget} style={styles.card}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('debts.verdict.title')}
 						</Text>
@@ -152,7 +161,9 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 									? t('debts.verdict.yieldCdi', { rate: formatPercentBp(cdi.annualBp, 2), date: formatDate(cdi.date) })
 									: t('debts.verdict.yieldDefault', { rate: formatPercentBp(DEFAULT_EXPECTED_YIELD_BP, 0) })}
 						</Text>
-						<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(true)} />
+						<TourTarget id="debt.simulate">
+							<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(true)} />
+						</TourTarget>
 					</View>
 				) : null}
 
