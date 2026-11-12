@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 import type { z } from 'zod';
+import { billPaymentColumns, billPaymentToWire } from '../domain/billPaymentWire.js';
 import { billColumns, billToWire } from '../domain/billWire.js';
 import { resolveBudgetPeriod } from '../domain/budgetConflict.js';
 import {
@@ -19,6 +20,7 @@ import type { AuthenticatedRequest } from '../middleware/auth.js';
 import { unauthorized } from '../middleware/error.js';
 import {
 	accountSchema,
+	billPaymentSchema,
 	billSchema,
 	budgetSchema,
 	captureSchema,
@@ -52,7 +54,8 @@ import {
  * push sem elas é aceito.
  *
  * `bills` (contas a pagar) entrou depois, pela mesma regra, e `preferences` (moeda, idioma,
- * CDI, lembretes; v21 do app) depois dela.
+ * CDI, lembretes; v21 do app) depois dela. `billPayments` (os meses das contas a pagar
+ * pagos fora de ordem ou pulados; v23 do app, SPD-146) veio por último, pela mesma regra.
  */
 
 type Collection =
@@ -68,6 +71,7 @@ type Collection =
 	| 'captures'
 	| 'merchantRules'
 	| 'bills'
+	| 'billPayments'
 	| 'preferences';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
@@ -126,6 +130,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		merchantRules,
 		bills,
 		preferences,
+		billPayments,
 	] = await Promise.all([
 		prisma.category.findMany(page(cursor.categories)),
 		prisma.account.findMany(page(cursor.accounts)),
@@ -140,6 +145,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.merchantRule.findMany(page(cursor.merchantRules)),
 		prisma.bill.findMany(page(cursor.bills)),
 		prisma.preference.findMany(page(cursor.preferences)),
+		prisma.billPayment.findMany(page(cursor.billPayments)),
 	]);
 
 	// A marca do "apagar meus dados" (DEC-35), lida depois das linhas de propósito: se o
@@ -287,6 +293,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		bills: bills.map(billToWire),
 		/** Preferências: chave e texto, sem tradução — ver `domain/preferenceWire.ts`. */
 		preferences: preferences.map(preferenceToWire),
+		/** Os meses das contas a pagar (SPD-146): pago ou pulado — ver `domain/billPaymentWire.ts`. */
+		billPayments: billPayments.map(billPaymentToWire),
 	};
 
 	/**
@@ -320,6 +328,9 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		bills: advance(bills, cursor.bills),
 		// Idem: um app que não vê `preferences` aqui segura as preferências em vez de subi-las.
 		preferences: advance(preferences, cursor.preferences),
+		// Idem (SPD-146): sem esta chave, o app guarda os meses pulados e pagos fora de ordem
+		// em vez de subi-los — é o que acontece com um servidor anterior à coleção.
+		billPayments: advance(billPayments, cursor.billPayments),
 	};
 
 	res.json({
@@ -341,6 +352,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			merchantRules,
 			bills,
 			preferences,
+			billPayments,
 		].some((rows) => rows.length === env.syncPageSize),
 		/** Quando os dados foram apagados pela última vez; nulo se nunca. Ver `domain/dataWipe.ts`. */
 		dataWipedAt: wipeMarkToWire(wipe?.dataWipedAt ?? null),
@@ -473,6 +485,7 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const merchantRules = partitionRows('merchantRules', changes.merchantRules, merchantRuleSchema, rejected);
 	const bills = partitionRows('bills', changes.bills, billSchema, rejected);
 	const preferences = partitionRows('preferences', changes.preferences, preferenceSchema, rejected);
+	const billPayments = partitionRows('billPayments', changes.billPayments, billPaymentSchema, rejected);
 
 	let applied = 0;
 
@@ -1000,6 +1013,42 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 				if (refusal !== null) {
 					rejected.push({ collection: 'bills', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += 1;
+			}
+
+			// --- Meses das contas a pagar (SPD-146) ----------------------------------
+			// Depois das contas, mas sem depender delas: `billId` e `transactionId` não são
+			// verificados, como os ids das contas a pagar — um mês que chega antes da conta
+			// continua valendo. O `id` sai da conta e do mês no aparelho, então dois aparelhos
+			// que marcam o mesmo mês convergem pelo `updatedAt`, e o desfazer é a lápide.
+			for (const row of billPayments) {
+				const current = await tx.billPayment.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'billPayments', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = billPaymentColumns(row);
+
+				// SAVEPOINT pelo mesmo motivo das contas: um valor que o banco recuse não pode
+				// derrubar a remessa.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.billPayment.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'billPayments', id: row.id, reason: 'invalid', message: refusal });
 					continue;
 				}
 

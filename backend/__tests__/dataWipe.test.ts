@@ -86,6 +86,8 @@ describe('destino de cada tabela do usuário', () => {
 				'debts',
 				'reserveGoals',
 				'bills',
+				// Os meses das contas a pagar (SPD-146): saem com as contas.
+				'billPayments',
 				'captures',
 				'diagnosticEvents',
 				'assets',

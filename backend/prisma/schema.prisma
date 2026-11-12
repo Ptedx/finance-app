@@ -64,6 +64,7 @@ model User {
   captures              Capture[]
   merchantRules         MerchantRule[]
   bills                 Bill[]
+  billPayments          BillPayment[]
   preferences           Preference[]
   diagnosticEvents      DiagnosticEvent[]
   assets                Asset[]
@@ -539,6 +540,36 @@ model Bill {
   @@id([userId, id])
   @@index([userId, serverSeq])
   @@map("bills")
+}
+
+/// Um mês de uma conta a pagar (SPD-146, v23 do app): pago ou pulado ("não vou pagar este
+/// mês"), um registro por conta e mês.
+///
+/// `paidThrough` da conta continua sendo o trecho contínuo já pago — é ele que um app
+/// anterior lê. Aqui fica o que ele não diz: o mês pago fora de ordem (novembro com outubro
+/// em aberto), o mês pulado e o lançamento que quitou cada mês. O `id` sai da conta e do mês
+/// no aparelho, então dois aparelhos que marcam o mesmo mês caem na mesma linha. `billId` e
+/// `transactionId` não são FK nem são verificados, como em `bills`.
+model BillPayment {
+  id            String
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  billId        String
+  /// O mês, `YYYY-MM`. Texto, como `paidThrough`: é mês de calendário, não instante.
+  month         String    @db.VarChar(7)
+  /// `paid` ou `skipped`. Texto, validado no push (`billPaymentSchema`).
+  status        String
+  /// O lançamento que quitou o mês, quando houve um.
+  transactionId String?
+  /// O valor pago. Nulo quando não se sabe (mês pulado, conta que varia sem lançamento).
+  amountCents   BigInt?
+  updatedAt     DateTime
+  deletedAt     DateTime?
+  serverSeq     Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("bill_payments")
 }
 
 /// Uma preferência do usuário (v21 do app): moeda, idioma, taxa do CDI, lembretes ligados.

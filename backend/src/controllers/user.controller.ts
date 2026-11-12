@@ -84,6 +84,7 @@ const WIPE_RELATION: Record<
 	debts: (tx, userId) => tx.debt.deleteMany({ where: { userId } }),
 	reserveGoals: (tx, userId) => tx.reserveGoal.deleteMany({ where: { userId } }),
 	bills: (tx, userId) => tx.bill.deleteMany({ where: { userId } }),
+	billPayments: (tx, userId) => tx.billPayment.deleteMany({ where: { userId } }),
 	captures: (tx, userId) => tx.capture.deleteMany({ where: { userId } }),
 	diagnosticEvents: (tx, userId) => tx.diagnosticEvent.deleteMany({ where: { userId } }),
 	assets: (tx, userId) => tx.asset.deleteMany({ where: { userId } }),

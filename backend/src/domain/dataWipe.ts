@@ -51,6 +51,8 @@ export const USER_RELATION_FATE = {
 	debts: 'wipe',
 	reserveGoals: 'wipe',
 	bills: 'wipe',
+	/** Os meses das contas a pagar (pagos, pulados, com o lançamento): saem com as contas. */
+	billPayments: 'wipe',
 	/** A caixa de entrada: texto cru de aviso de banco. */
 	captures: 'wipe',
 	/** O diário de diagnóstico também guarda texto de aviso de banco (`rawText`). */
