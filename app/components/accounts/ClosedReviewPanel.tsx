@@ -7,10 +7,16 @@ import { useAccounts } from '../../contexts/AccountsContext';
 import { useDebts } from '../../contexts/DebtsContext';
 import type { Account } from '../../database/schema';
 import { useRetirementGoal } from '../../hooks/useRetirementGoal';
-import { closeTargets } from '../../utils/accountClosing';
 import { netWorth } from '../../utils/accountMath';
 import { type RevivalNotice, revivalWorthDelta } from '../../utils/accountRevival';
-import { type ClosedDecision, type ClosedReviewItem, type ClosedSettlement, type ClosedTotals, closedDecisionEffect } from '../../utils/closedReview';
+import {
+	type ClosedDecision,
+	type ClosedReviewItem,
+	type ClosedSettlement,
+	type ClosedTotals,
+	closedDecisionEffect,
+	closedReviewTargets,
+} from '../../utils/closedReview';
 import { formatMonthYear } from '../../utils/dateUtils';
 import { closeBlockedMessage } from '../../utils/deletionNotice';
 import { formatCents } from '../../utils/money';
@@ -273,7 +279,8 @@ const ClosedReviewList: React.FC<{ items: ClosedReviewItem[] }> = ({ items }) =>
 
 	const startTransfer = async (item: ClosedReviewItem) => {
 		if (await blocked(item)) return;
-		if (closeTargets(accounts, item.account).length === 0) {
+		// Só conta principal ativa recebe ou paga (SPD-155): nem a Reserva, nem a externa.
+		if (closedReviewTargets(accounts, item.account).length === 0) {
 			Alert.alert(t(`accounts.closedReview.${primaryActionOf(item)}`), t('accounts.closedReview.noTarget', { name: item.account.name }));
 			return;
 		}
@@ -350,7 +357,7 @@ const ClosedReviewList: React.FC<{ items: ClosedReviewItem[] }> = ({ items }) =>
 					visible
 					title={t('accounts.closedReview.pickTitle')}
 					subtitle={pickSubtitle(picking)}
-					targets={closeTargets(accounts, picking.account)}
+					targets={closedReviewTargets(accounts, picking.account)}
 					onPick={(target) => {
 						const item = picking;
 						setPicking(null);

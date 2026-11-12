@@ -1358,7 +1358,7 @@ account: {
 			pickOut: '{{amount}} from {{name}} goes to the account you choose.',
 			pickIn: 'The account you choose covers {{amount}} of {{name}}.',
 			pickPay: 'The account you choose pays {{amount}} of the {{name}} bill.',
-			noTarget: 'There is no active account to receive the balance of {{name}}. Reopen it or set it to zero.',
+			noTarget: 'There is no active main account to settle {{name}} (reserves and external accounts are left out). Reopen it or set it to zero.',
 			confirmTransfer: '{{amount}} leaves {{name}} and goes into {{target}} today. {{name}} ends at zero and closed.',
 			confirmCover: '{{amount}} leaves {{target}} today and covers the balance of {{name}}. {{name}} ends at zero and closed.',
 			confirmPay: '{{target}} pays {{amount}} of the {{name}} bill today. The card ends at zero and closed.',
@@ -2171,7 +2171,8 @@ account: {
 		undoPaidHint: 'Sets {{name}} back to unpaid for {{month}}',
 		markedPaid: '{{name}} marked as paid',
 		markedPaidMonth: '{{name}}: {{month}} marked as paid',
-		settledMonth: '{{name}}: {{month}} paid',
+		settledTitle: 'Bill paid',
+		settledMonth: '{{name}}: {{month}} paid.',
 		unmarkedPaid: '{{name}} is unpaid again',
 		payOlderFirst: 'Pay off {{month}} first: "I paid it" starts from the oldest unpaid month.',
 		pay: {

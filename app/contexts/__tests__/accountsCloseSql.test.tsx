@@ -760,6 +760,43 @@ describeSql('encerrar, juntar e apagar conta sem mexer nos números (SPD-144)', 
 			expect(activeIds()).not.toContain(reserva);
 		});
 
+		it('Reserva já encerrada que rende 100% do CDI, acertada pela lista (SPD-155): os meses passados não mudam; hoje a Reserva fica 0 e a Corrente ganha os R$ 303,99', async () => {
+			// A encerrada antes do SPD-144, com saldo e rendimento estimado: a lista "Encerradas com
+			// saldo" transfere pelo mesmo `closeAccount`. A âncora não pode ser regravada com o
+			// rendimento estimado: isso empurrava os centavos para o patrimônio de cada mês passado.
+			mockCdiRate = { annualBp: 1_490, date: '2026-11-10', fetchedAt: new Date().toISOString() };
+			await db.runAsync('UPDATE accounts SET yieldCdiBp = 10000, archived = 1 WHERE id = ?', [reserva]);
+			act(() => renderer?.unmount());
+			await mount();
+			const shown = ctx().balances.get(reserva) ?? 0;
+			expect(shown).toBe(30_399);
+			const correnteBefore = ctx().balances.get(corrente) ?? 0;
+			const before = await fingerprint({ skipBalances: [reserva, corrente] });
+
+			await act(async () => {
+				await ctx().settleClosedAccount(reserva, { kind: 'transfer', targetId: corrente });
+			});
+			await reload();
+			const after = await fingerprint({ skipBalances: [reserva, corrente] });
+
+			expect(after.pastWorth).toEqual(before.pastWorth);
+			expect(after.history.slice(0, -1)).toEqual(before.history.slice(0, -1));
+			expect(after.cards).toEqual(before.cards);
+			expect(after.averages).toEqual(before.averages);
+			// Hoje: os R$ 303,99 saem da Reserva encerrada (fora dos totais) e entram na Corrente.
+			expect(ctx().balances.get(reserva)).toBe(0);
+			expect(ctx().balances.get(corrente)).toBe(correnteBefore + 30_399);
+			expect(after.overview.cashCents).toBe(before.overview.cashCents + 30_399);
+			expect(after.overview.netCents).toBe(before.overview.netCents + 30_399);
+			expect(after.overview.savedCents).toBe(before.overview.savedCents);
+			expect(after.netWorth).toBe(before.netWorth + 30_399);
+			expect(monthOf(after, '2026-11')?.saved).toBe((monthOf(before, '2026-11')?.saved ?? 0) - 30_399);
+			// A âncora da Reserva é a de antes.
+			expect(
+				await db.getFirstAsync('SELECT openingBalanceCents, openingBalanceDate FROM accounts WHERE id = ?', [reserva])
+			).toEqual({ openingBalanceCents: 0, openingBalanceDate: '2026-09-30' });
+		});
+
 		it('com saldo diferente de zero e sem destino: recusado, nada muda', async () => {
 			const before = await fingerprint();
 			await expect(ctx().closeAccount(carteira, null)).rejects.toThrow();

@@ -293,7 +293,12 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 
 			onSubmit();
 			if (settledBill) {
-				Alert.alert(t('bills.settledMonth', { name: settledBill.name, month: monthKeyName(settledBill.month) }));
+				// Título curto e a conta e o mês no corpo: no Android, o alerta só com título deixa
+				// um espaço vazio grande embaixo (SPD-155).
+				Alert.alert(
+					t('bills.settledTitle'),
+					t('bills.settledMonth', { name: settledBill.name, month: monthKeyName(settledBill.month) })
+				);
 			}
 
 			// Reset form state

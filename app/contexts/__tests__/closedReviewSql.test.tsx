@@ -129,6 +129,7 @@ import {
 } from '../../database/database';
 import type { AccountDraft } from '../../database/schema';
 import type { SyncChanges } from '../../sync/types';
+import { CLOSING_TRANSFER_NOTE } from '../../utils/accountClosing';
 import { netWorth, owedCents, provisionalEntriesByAccount } from '../../utils/accountMath';
 import { addRevivalNotice, getRevivalNotices } from '../../utils/accountRevival';
 import type { CardEntry } from '../../utils/cardMath';
@@ -856,7 +857,6 @@ describeSql('conta apagada que volta encerrada e encerradas com saldo (SPD-149/1
 		type Decision = { kind: 'transfer'; target: () => string } | { kind: 'reopen' } | { kind: 'zero' };
 		it.each<[string, () => string, Decision, number]>([
 			['Carteira (R$ 450) → Corrente: Patrimônio R$ 23.500 → R$ 23.950', () => carteira, { kind: 'transfer', target: () => corrente }, 2_395_000],
-			['Carteira (R$ 450) → Reserva: Patrimônio R$ 23.500 → R$ 23.950, guardado de novembro +R$ 450', () => carteira, { kind: 'transfer', target: () => reserva }, 2_395_000],
 			['Carteira (R$ 450) reaberta: Patrimônio R$ 23.500 → R$ 23.950', () => carteira, { kind: 'reopen' }, 2_395_000],
 			['Carteira (R$ 450) zerada: Patrimônio fica R$ 23.500', () => carteira, { kind: 'zero' }, 2_350_000],
 			['Cartão (deve R$ 500) pago pela Corrente: Patrimônio fica R$ 23.500, "Depois das faturas" R$ 23.700 → R$ 23.200', () => cartao, { kind: 'transfer', target: () => corrente }, 2_350_000],
@@ -923,6 +923,41 @@ describeSql('conta apagada que volta encerrada e encerradas com saldo (SPD-149/1
 			const after = await fingerprint();
 			for (const [month, cents] of Object.entries(before.pastWorth)) expect(after.pastWorth[month]).toBe(cents - 45_000);
 			expect(after.history).toEqual(before.history);
+		});
+
+		// SPD-155: só conta principal ativa paga a fatura do cartão encerrado, a mesma regra da
+		// lista (`isDebitTarget`). Com a Reserva, o acerto de um cartão antigo viraria resgate deste mês.
+		it.each<[string, () => string]>([
+			['a Reserva', () => reserva],
+			['a PJ (externa)', () => pj],
+			['o próprio cartão', () => cartao],
+		])('pagar o Cartão (deve R$ 500) com %s: recusado, e nenhum número muda', async (_label, payerOf) => {
+			await archiveOld();
+			const before = await fingerprint();
+
+			await expect(ctx().settleClosedAccount(cartao, { kind: 'transfer', targetId: payerOf() })).rejects.toThrow();
+			await reload();
+
+			expect(await fingerprint()).toEqual(before);
+			expect(ctx().closedReview.map((item) => item.account.id)).toContain(cartao);
+		});
+
+		// A mesma regra no transferir da conta encerrada: o saldo vai só para conta principal ativa.
+		it.each<[string, () => string]>([
+			['a Reserva', () => reserva],
+			['a PJ (externa)', () => pj],
+		])('transferir a Carteira (R$ 450) para %s: recusado, e nenhum número muda', async (_label, targetOf) => {
+			await archiveOld();
+			const before = await fingerprint();
+
+			await expect(ctx().settleClosedAccount(carteira, { kind: 'transfer', targetId: targetOf() })).rejects.toThrow();
+			await reload();
+
+			expect(await fingerprint()).toEqual(before);
+			expect(ctx().closedReview.map((item) => item.account.id)).toContain(carteira);
+			expect(
+				await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM transfers WHERE note = ?', [CLOSING_TRANSFER_NOTE])
+			).toEqual({ n: 0 });
 		});
 	});
 });

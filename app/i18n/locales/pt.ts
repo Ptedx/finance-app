@@ -1353,7 +1353,7 @@ const pt = {
 			pickOut: '{{amount}} de {{name}} vai para a conta que você escolher.',
 			pickIn: 'A conta que você escolher cobre {{amount}} de {{name}}.',
 			pickPay: 'A conta que você escolher paga {{amount}} da fatura de {{name}}.',
-			noTarget: 'Não há conta ativa para receber o saldo de {{name}}. Reabra ou zere.',
+			noTarget: 'Não há conta principal ativa para acertar {{name}} (a Reserva e as contas externas ficam de fora). Reabra ou zere.',
 			confirmTransfer: '{{amount}} sai de {{name}} e entra em {{target}} hoje. {{name}} fica zerada e encerrada.',
 			confirmCover: '{{amount}} sai de {{target}} hoje e cobre o saldo de {{name}}. {{name}} fica zerada e encerrada.',
 			confirmPay: '{{target}} paga hoje {{amount}} da fatura de {{name}}. O cartão fica zerado e encerrado.',
@@ -2172,7 +2172,8 @@ const pt = {
 		undoPaidHint: 'Volta {{name}} para em aberto em {{month}}',
 		markedPaid: '{{name}} marcada como paga',
 		markedPaidMonth: '{{name}}: {{month}} marcado como pago',
-		settledMonth: '{{name}}: {{month}} quitado',
+		settledTitle: 'Conta a pagar quitada',
+		settledMonth: '{{name}}: {{month}} quitado.',
 		unmarkedPaid: '{{name}} voltou para em aberto',
 		payOlderFirst: 'Quite {{month}} antes: "Já paguei" vai do mês mais antigo em aberto.',
 		pay: {

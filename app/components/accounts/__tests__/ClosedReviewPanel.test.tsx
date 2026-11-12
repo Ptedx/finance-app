@@ -15,10 +15,12 @@ const mockSettle = jest.fn(async () => undefined);
 const mockPlanClose = jest.fn(async (): Promise<unknown> => ({ kind: 'direct' }));
 const mockDismiss = jest.fn();
 const mockMarkShown = jest.fn();
-const mockState: { closedReview: unknown[]; revivalNotices: unknown[]; unseen: boolean } = {
+const mockState: { closedReview: unknown[]; revivalNotices: unknown[]; unseen: boolean; onlyNonMain: boolean } = {
 	closedReview: [],
 	revivalNotices: [],
 	unseen: false,
+	// Sem a Corrente: as ativas são só a Reserva e a PJ.
+	onlyNonMain: false,
 };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -61,10 +63,15 @@ const mockAccount = (id: string, name: string, overrides: Record<string, unknown
 const mockCorrente = mockAccount('corrente', 'Corrente');
 const mockCarteira = mockAccount('carteira', 'Carteira', { kind: 'cash', archived: 1 });
 const mockCartao = mockAccount('cartao', 'Cartão', { kind: 'credit_card', role: 'main', archived: 1 });
+// Ativas que não recebem o saldo de uma encerrada (SPD-155): só a conta principal ativa recebe.
+const mockReserva = mockAccount('reserva', 'Reserva', { kind: 'savings', role: 'reserve' });
+const mockPj = mockAccount('pj', 'PJ', { role: 'external' });
 
 jest.mock('../../../contexts/AccountsContext', () => ({
 	useAccounts: () => ({
-		accounts: [mockCorrente, mockCarteira, mockCartao],
+		accounts: mockState.onlyNonMain
+			? [mockReserva, mockPj, mockCarteira, mockCartao]
+			: [mockCorrente, mockReserva, mockPj, mockCarteira, mockCartao],
 		overview: { cashCents: 2_415_000, savedCents: 30_000, netCents: 2_365_000 },
 		cardSummaries: new Map([
 			['cartao', { owedCents: 50_000, futureCommittedCents: 0 }],
@@ -135,6 +142,7 @@ beforeEach(() => {
 	mockState.closedReview = [];
 	mockState.revivalNotices = [];
 	mockState.unseen = false;
+	mockState.onlyNonMain = false;
 	mockSettle.mockClear();
 	mockPlanClose.mockClear();
 	mockPlanClose.mockImplementation(async () => ({ kind: 'direct' }));
@@ -298,6 +306,26 @@ describe('ClosedReviewPanel', () => {
 			await confirm?.onPress?.();
 		});
 		expect(mockSettle).toHaveBeenCalledWith('cartao', { kind: 'transfer', targetId: 'corrente' });
+	});
+
+	it('transferir o saldo da Carteira: a folha mostra só a conta principal ativa, sem a Reserva nem a PJ', async () => {
+		mockState.closedReview = [carteiraItem];
+		await mount();
+		await press(button('accounts.closedReview.transfer'));
+		expect(alertSpy).not.toHaveBeenCalled();
+
+		const sheet = renderer?.root.findAll((node) => typeof node.props.onPick === 'function')[0];
+		expect(sheet?.props.targets.map((target: { id: string }) => target.id)).toEqual(['corrente']);
+	});
+
+	it('só com a Reserva e a PJ ativas, não há para onde levar: o aviso diz isso e a folha não abre', async () => {
+		mockState.closedReview = [carteiraItem];
+		mockState.onlyNonMain = true;
+		await mount();
+		await press(button('accounts.closedReview.transfer'));
+
+		expect(lastAlert().message).toBe(`accounts.closedReview.noTarget ${JSON.stringify({ name: 'Carteira' })}`);
+		expect(renderer?.root.findAll((node) => typeof node.props.onPick === 'function')).toHaveLength(0);
 	});
 
 	it('zerar o cartão devendo tira os R$ 500,00 do Patrimônio', async () => {

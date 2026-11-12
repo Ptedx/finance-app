@@ -1359,7 +1359,7 @@ account: {
 			pickOut: '{{amount}} di {{name}} va sul conto che scegli.',
 			pickIn: 'Il conto che scegli copre {{amount}} di {{name}}.',
 			pickPay: "Il conto che scegli paga {{amount}} dell'estratto di {{name}}.",
-			noTarget: 'Non c’è un conto attivo che possa ricevere il saldo di {{name}}. Riaprilo o azzeralo.',
+			noTarget: 'Non c’è un conto principale attivo per sistemare {{name}} (la riserva e i conti esterni restano fuori). Riaprilo o azzeralo.',
 			confirmTransfer: '{{amount}} esce da {{name}} ed entra in {{target}} oggi. {{name}} resta a zero e chiuso.',
 			confirmCover: '{{amount}} esce da {{target}} oggi e copre il saldo di {{name}}. {{name}} resta a zero e chiuso.',
 			confirmPay: "{{target}} paga oggi {{amount}} dell'estratto di {{name}}. La carta resta a zero e chiusa.",
@@ -2174,7 +2174,8 @@ account: {
 		undoPaidHint: 'Riporta {{name}} a non pagato per {{month}}',
 		markedPaid: '{{name}} segnato come pagato',
 		markedPaidMonth: '{{name}}: {{month}} segnato come pagato',
-		settledMonth: '{{name}}: {{month}} pagato',
+		settledTitle: 'Conto pagato',
+		settledMonth: '{{name}}: {{month}} pagato.',
 		unmarkedPaid: '{{name}} è di nuovo da pagare',
 		payOlderFirst: 'Salda prima {{month}}: "Già pagato" parte dal mese più vecchio da pagare.',
 		pay: {

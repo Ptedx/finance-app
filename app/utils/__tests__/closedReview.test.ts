@@ -13,7 +13,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 );
 
 import type { Account } from '../../database/schema';
-import { type ClosedTotals, closedDecisionEffect, closedReviewItems, unseenClosedReview } from '../closedReview';
+import { type ClosedTotals, closedDecisionEffect, closedReviewItems, closedReviewTargets, unseenClosedReview } from '../closedReview';
 
 const account = (overrides: Partial<Account>): Account => ({
 	id: 'x',
@@ -139,5 +139,31 @@ describe('closedDecisionEffect: o Patrimônio e o "Depois das faturas" antes e d
 			net: { beforeCents: netBefore, afterCents: netAfter },
 			savedThisMonthCents: savedThisMonth,
 		});
+	});
+});
+
+/**
+ * Para onde vai o saldo (ou de onde sai o pagamento) de uma encerrada (SPD-155): só conta
+ * principal ativa, a mesma regra do levar cartão para o débito (`isDebitTarget`, SPD-152). A
+ * Reserva e a conta externa ficam de fora; o encerrar normal e o juntar têm as listas deles.
+ */
+describe('closedReviewTargets', () => {
+	const CARTEIRA = account({ id: 'carteira-viva', name: 'Carteira', kind: 'cash' });
+	const PJ = account({ id: 'pj-viva', name: 'PJ', role: 'external' });
+	const OUTRO_CARTAO = account({ id: 'outro-cartao', name: 'Outro cartão', kind: 'credit_card', role: 'card' });
+	const ENCERRADA = account({ id: 'encerrada', name: 'Encerrada', archived: true });
+	const todas = [CORRENTE, RESERVA, CARTEIRA, PJ, OUTRO_CARTAO, ENCERRADA, APAGADA, CARTEIRA_VELHA, CARTAO_VELHO];
+
+	it('a conta encerrada vai só para conta principal ativa: nem Reserva, nem externa, nem cartão, nem encerrada', () => {
+		expect(closedReviewTargets(todas, CARTEIRA_VELHA).map((target) => target.id)).toEqual(['corrente', 'carteira-viva']);
+	});
+
+	it('o cartão encerrado devendo paga a fatura só com conta principal ativa', () => {
+		expect(closedReviewTargets(todas, CARTAO_VELHO).map((target) => target.id)).toEqual(['corrente', 'carteira-viva']);
+	});
+
+	it('a própria conta não aparece, e só com Reserva e externa a lista fica vazia', () => {
+		expect(closedReviewTargets([CORRENTE], CORRENTE)).toEqual([]);
+		expect(closedReviewTargets([RESERVA, PJ, POUPANCA_VELHA], POUPANCA_VELHA)).toEqual([]);
 	});
 });

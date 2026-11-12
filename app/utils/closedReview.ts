@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Account } from '../database/schema';
 import { type NetWorthInput, netWorth, owedCents } from './accountMath';
+import { isDebitTarget } from './accountMerging';
 import type { Cents } from './money';
 
 /**
@@ -53,6 +54,16 @@ export const closedReviewItems = (
 			};
 		})
 		.filter((item) => item.balanceCents !== 0);
+
+/**
+ * Para onde vai o saldo da encerrada ("Transferir o saldo"), de onde vem o que a cobre ("Cobrir
+ * com outra conta") ou quem paga a fatura do cartão ("Pagar a fatura"): só conta principal
+ * ativa, a mesma regra do levar cartão para o débito (`isDebitTarget`, SPD-152). A Reserva
+ * transformaria o acerto de uma conta antiga em poupança (ou resgate) deste mês, e a externa
+ * nunca contou nos totais. O encerrar normal e o juntar têm as listas deles (SPD-155).
+ */
+export const closedReviewTargets = <T extends Account>(accounts: T[], closed: Pick<Account, 'id'>): T[] =>
+	accounts.filter((account) => account.id !== closed.id && isDebitTarget(account));
 
 /** O que o usuário escolhe para uma encerrada com saldo. `transfer` no cartão devendo é pagar. */
 export type ClosedDecision =
@@ -176,6 +187,7 @@ export const unseenClosedReview = (items: ClosedReviewItem[], seen: Set<string>)
 export default {
 	CLOSED_REVIEW_SEEN_KEY,
 	closedReviewItems,
+	closedReviewTargets,
 	closedDecisionEffect,
 	getClosedReviewSeen,
 	markClosedReviewSeen,

@@ -80,6 +80,9 @@ jest.mock('../../utils/categoryEditUtils', () => ({
 import { AccessibilityInfo, Alert, ScrollView, Text, TextInput } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { Transaction } from '../../database/schema';
+import en from '../../i18n/locales/en';
+import itLocale from '../../i18n/locales/it';
+import pt from '../../i18n/locales/pt';
 import { configureDateLocale } from '../../utils/dateUtils';
 import { configureMoney } from '../../utils/money';
 import TransactionForm, { installmentPlan, manualInstallmentDrafts } from '../TransactionForm';
@@ -599,7 +602,7 @@ describe('TransactionForm — o aviso da conta a pagar quitada (SPD-153)', () =>
 
 		expect(onSubmit).toHaveBeenCalledTimes(1);
 		expect(alert).toHaveBeenCalledTimes(1);
-		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"outubro"}');
+		expect(alert.mock.calls[0]).toEqual(['bills.settledTitle', 'bills.settledMonth|{"name":"Aluguel","month":"outubro"}']);
 	});
 
 	it('só o mês atual em aberto: o aviso diz novembro', async () => {
@@ -607,7 +610,7 @@ describe('TransactionForm — o aviso da conta a pagar quitada (SPD-153)', () =>
 
 		await saveExpense();
 
-		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"novembro"}');
+		expect(alert.mock.calls[0]).toEqual(['bills.settledTitle', 'bills.settledMonth|{"name":"Aluguel","month":"novembro"}']);
 	});
 
 	it('sem conta quitada, nenhum aviso', async () => {
@@ -626,6 +629,17 @@ describe('TransactionForm — o aviso da conta a pagar quitada (SPD-153)', () =>
 		await press(byTestId(tree, 'transaction-form-save'));
 
 		expect(mockUpdateExistingTransaction).toHaveBeenCalledTimes(1);
-		expect(alert.mock.calls[0][0]).toBe('bills.settledMonth|{"name":"Aluguel","month":"outubro"}');
+		expect(alert.mock.calls[0]).toEqual(['bills.settledTitle', 'bills.settledMonth|{"name":"Aluguel","month":"outubro"}']);
+	});
+
+	// SPD-155: no Android, o alerta só com título desenha um espaço vazio grande embaixo. O
+	// título é curto e a conta e o mês vão no corpo, nos três idiomas.
+	it.each([
+		['pt', pt, 'Conta a pagar quitada', '{{name}}: {{month}} quitado.'],
+		['en', en, 'Bill paid', '{{name}}: {{month}} paid.'],
+		['it', itLocale, 'Conto pagato', '{{name}}: {{month}} pagato.'],
+	])('%s: título curto, e o corpo diz a conta e o mês', (_name, locale, title, body) => {
+		expect(locale.bills.settledTitle).toBe(title);
+		expect(locale.bills.settledMonth).toBe(body);
 	});
 });

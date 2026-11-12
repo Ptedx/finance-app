@@ -864,13 +864,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				const counterpart = counterpartId && counterpartId !== id ? await getAccount(counterpartId) : null;
 				if (!counterpart || counterpart.deletedAt) throw new Error('Encerrar com saldo precisa de uma conta de destino');
 				const today = todayISO();
-				// O rendimento estimado só existe em memória: entra no saldo registrado antes,
-				// para a transferência levar o saldo inteiro e a conta ficar zerada.
-				const accrued = accruedYield.get(id) ?? 0;
-				if (accrued !== 0) {
-					const ledger = (await getAccountBalances(today)).get(id) ?? 0;
-					await setAccountBalanceToday(id, ledger + accrued);
-				}
+				// A transferência leva o saldo da tela, rendimento estimado inclusive (`planClose`).
+				// A âncora não muda: regravá-la com o estimado empurraria esses centavos para o
+				// patrimônio de cada mês passado (SPD-155). No livro a conta fica com −estimado, e o
+				// estimado, calculado da mesma âncora, a deixa em zero na tela.
 				transferId = await addTransfer({
 					fromAccountId: plan.direction === 'out' ? id : counterpart.id,
 					toAccountId: plan.direction === 'out' ? counterpart.id : id,
@@ -895,7 +892,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			await Promise.all([refresh(), refreshData()]);
 			return undo;
 		},
-		[planClose, accruedYield, refresh, refreshData]
+		[planClose, refresh, refreshData]
 	);
 
 	/**
@@ -968,13 +965,20 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 			if (decision.kind === 'transfer') {
 				if (plan.kind !== 'blocked') {
+					// Só conta principal ativa recebe (ou cobre) o saldo, a regra da lista
+					// (`closedReviewTargets`, SPD-155). O encerrar normal tem a lista dele.
+					const target = await getAccount(decision.targetId);
+					if (!target || target.id === id || !isDebitTarget(target)) {
+						throw new Error('Transferir o saldo precisa de uma conta principal ativa');
+					}
 					await closeAccount(id, decision.targetId);
 					return;
 				}
-				// O cartão devendo: a conta escolhida paga a fatura.
+				// O cartão devendo: a conta escolhida paga a fatura. Só conta principal ativa, a regra
+				// da lista (`closedReviewTargets`, SPD-155): nem Reserva, nem externa.
 				const payer = await getAccount(decision.targetId);
-				if (!payer || payer.deletedAt || payer.archived || payer.kind === 'credit_card' || payer.role === 'external') {
-					throw new Error('Pagar a fatura precisa de uma conta ativa');
+				if (!payer || !isDebitTarget(payer)) {
+					throw new Error('Pagar a fatura precisa de uma conta principal ativa');
 				}
 				await addTransfer({ fromAccountId: payer.id, toAccountId: id, amountCents: plan.amountCents, date: today, note: CLOSING_TRANSFER_NOTE });
 			} else if (account.kind === 'credit_card') {
