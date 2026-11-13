@@ -677,6 +677,17 @@ const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }>
 		),
 		when: 'out',
 	},
+	// "Fulano de Tal te enviou um Pix" (SPD-164): o nome vem antes do verbo. Começa no início
+	// da frase (depois de ponto, vírgula, dois-pontos ou traço) ou depois da última palavra de
+	// parada, e vai até o "te enviou" / "te mandou" / "te transferiu". Saía sem nome, e o Pix
+	// para si mesmo não virava transferência pelo nome de Ajustes (SPD-115).
+	{
+		pattern: new RegExp(
+			`(?:^|[.!?:;,]\\s+|\\s[-–]\\s+|\\s(?:${NAME_STOP_WORDS})\\s+)((?:(?!\\s(?:${NAME_STOP_WORDS})\\s)[^.!?:;,\\n])+?)\\s+te\\s+(?:enviou|mandou|transferiu)\\b`,
+			'i'
+		),
+		when: 'in',
+	},
 	// "de Fulano de Tal" (recebidos) — pulando o "de R$ 100,00" que vem antes
 	{ pattern: new RegExp(`\\bde\\s+(?!(?:${CURRENCY_TOKEN})\\s?\\d|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
 	// "Compra aprovada: R$ 35,90 - MERCADO XYZ" (alguns bancos separam com traço)
@@ -740,10 +751,26 @@ const textForNames = (raw: RawCapture): string => {
 	return `${title}${/[.!?]$/.test(title) ? '' : '.'} ${text}`.trim();
 };
 
-const extractCardLast4 = (text: string): string | null => {
-	const match = /final\s*(\d{4})\b/i.exec(text) ?? /\*{2,}\s?(\d{4})\b/.exec(text);
-	return match ? match[1] : null;
+/**
+ * O que vem logo antes do final quando ele é da conta, não do cartão (SPD-164): "creditado na
+ * sua conta final ***0000-0", "conta corrente final 1234", "agência/conta 0001/***0000-0".
+ * Virava `cardLast4` e a revisão mostrava "cartão final 0000". A captura não tem onde guardar
+ * o final da conta (seria coluna nova e sync), e o resolvedor acha a conta pelo banco: esse
+ * final só fica de fora.
+ */
+const ACCOUNT_FINAL_PREFIX =
+	/\b(?:ag[eê]ncia\s*\/\s*conta|conta(?:\s+corrente)?)\s*:?\s*(?:final\s*)?(?:\d+\s*\/\s*)?$/i;
+
+/** O primeiro final do padrão que não é o da conta. */
+const firstCardFinal = (text: string, pattern: RegExp): string | null => {
+	for (const match of text.matchAll(pattern)) {
+		if (!ACCOUNT_FINAL_PREFIX.test(text.slice(0, match.index))) return match[1];
+	}
+	return null;
 };
+
+const extractCardLast4 = (text: string): string | null =>
+	firstCardFinal(text, /final\s*(\d{4})\b/gi) ?? firstCardFinal(text, /\*{2,}\s?(\d{4})\b/g);
 
 // ---------------------------------------------------------------------------
 // Entrada principal

@@ -689,5 +689,23 @@ describe('nenhum data carrega valor, nome nem texto', () => {
 		});
 		expect(marked).toMatchObject({ outcome: 'pending', reason: 'statement', why: 'suggested', accountMoved: false });
 		expect(marked.parse).toBeUndefined();
+		expect(marked.direction).toBeUndefined();
+	});
+
+	it('o aviso "entrou ou saiu?" que o extrato casou (SPD-164): diz de onde veio a direção, nunca qual', () => {
+		const answered = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: {
+				step: 'statement_match',
+				captureId: 'cap',
+				confirmed: false,
+				why: 'suggested',
+				accountMoved: false,
+				direction: 'statement',
+			},
+		});
+		expect(answered).toMatchObject({ outcome: 'pending', why: 'suggested', direction: 'statement' });
+		expect(JSON.stringify(answered)).not.toMatch(/"(?:in|out)"/);
 	});
 });

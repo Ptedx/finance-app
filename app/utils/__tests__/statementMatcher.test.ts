@@ -10,6 +10,7 @@ import {
 	type StatementLine,
 	type StatementPlanContext,
 	settleMatchedCapture,
+	statementAnswersDirection,
 	statementFingerprint,
 	statementPackageName,
 	statementPostedAt,
@@ -674,6 +675,41 @@ describe('a pendente que o extrato casou (SPD-117, AUTO-13)', () => {
 			why: 'reason',
 		});
 		expect(settleMatchedCapture({ ...pending, kind: 'refund' }, rule('food'))).toEqual({ action: 'mark', why: 'refund' });
+	});
+
+	it('"entrou ou saiu?" respondido não segura; sem resposta, segura; outro motivo segura sempre (SPD-164)', () => {
+		const doubt = { ...pending, reason: 'ambiguous_pix_direction' };
+		expect(settleMatchedCapture(doubt, rule('food'), true)).toEqual({ action: 'confirm' });
+		expect(settleMatchedCapture(doubt, rule('food'))).toEqual({ action: 'mark', why: 'reason' });
+		expect(settleMatchedCapture({ ...pending, reason: 'foreign_currency' }, rule('food'), true)).toEqual({
+			action: 'mark',
+			why: 'reason',
+		});
+	});
+});
+
+describe('o extrato responde "entrou ou saiu?" (SPD-164)', () => {
+	const notice = { postedAt: noticeAt('2026-09-03'), direction: 'out', amountCents: 3590 };
+	const matched = line({ fitid: 'saida' });
+
+	it('a linha casada e nada contra: responde', () => {
+		expect(statementAnswersDirection(notice, matched, [matched, line({ fitid: 'outra', amountCents: 1000, direction: 'in' })])).toBe(
+			true
+		);
+	});
+
+	it.each([
+		['entrada do mesmo valor na mesma conta, dentro da janela', line({ fitid: 'volta', direction: 'in', postedDate: '2026-09-04' }), false],
+		['a entrada é de outra conta', line({ fitid: 'volta', direction: 'in', accountKey: INTER_ACCOUNT }), true],
+		['a entrada é de bem depois da janela', line({ fitid: 'volta', direction: 'in', postedDate: '2026-10-20' }), true],
+		['a entrada é neutra (fatura, aplicação)', line({ fitid: 'volta', direction: 'in', neutral: true }), true],
+	])('%s', (_case, other, answers) => {
+		expect(statementAnswersDirection(notice, matched, [matched, other])).toBe(answers);
+	});
+
+	it('a linha de outra direção ou valor não é a do aviso: não responde', () => {
+		expect(statementAnswersDirection(notice, line({ direction: 'in' }), [])).toBe(false);
+		expect(statementAnswersDirection(notice, line({ amountCents: 1 }), [])).toBe(false);
 	});
 });
 

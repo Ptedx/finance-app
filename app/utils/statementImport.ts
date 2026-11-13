@@ -50,6 +50,7 @@ import {
 	type StatementAccountChooser,
 	type StatementAccountQuestion,
 } from './accountResolver';
+import { ambiguityOfReason } from './ambiguityReasons';
 import {
 	applyDecision,
 	confirmCapture,
@@ -58,6 +59,7 @@ import {
 	toKnownCapture,
 	toMerchantRule,
 } from './captureActions';
+import { type CaptureChoiceStore, choiceKeyOf, isDirectionGuess, rememberChoice } from './captureChoices';
 import { DEFAULT_AUTO_CONFIRM_THRESHOLD, type MerchantRule, STATEMENT_LEDGER_SUSPECT_REASON } from './captureMatcher';
 import { cycleRuleOf } from './cardMath';
 import { addDays } from './dateUtils';
@@ -75,9 +77,20 @@ import {
 	type StatementLine,
 	type StatementSummary,
 	settleMatchedCapture,
+	statementAnswersDirection,
 	statementPackageName,
 	statementPostedAt,
 } from './statementMatcher';
+
+/**
+ * O que o import recebe: o mesmo da ingestão, quem pergunta de qual conta é o extrato, e o
+ * lugar das respostas da revisão (`choiceStore`, SPD-164) — o aviso "entrou ou saiu?" que o
+ * extrato casou precisa saber se já foi respondido, e o extrato pode responder.
+ */
+export type StatementImportOptions = IngestOptions & {
+	chooseAccount?: StatementAccountChooser;
+	choiceStore?: CaptureChoiceStore;
+};
 
 export interface StatementImportAccountResult {
 	accountKey: string;
@@ -267,7 +280,7 @@ export const findLedgerSuspect = (
  */
 export const importOfxContent = async (
 	content: string,
-	options: IngestOptions & { chooseAccount?: StatementAccountChooser }
+	options: StatementImportOptions
 ): Promise<StatementImportResult> => {
 	const statement = parseOfx(content);
 	const lines = statement.accounts.flatMap(linesOf);
@@ -376,7 +389,7 @@ export const importOfxContent = async (
 	const installmentOffers = await installmentOffersOf(planned, accountIdByKey, allAccounts, rules, options);
 
 	// As notificações pendentes que o extrato casou: decididas depois da gravação (SPD-117).
-	const matchedPending: Array<{ capture: Capture; accountMoved: boolean }> = [];
+	const matchedPending: Array<{ capture: Capture; accountMoved: boolean; line: StatementLine }> = [];
 
 	// Tudo ou nada: um import pela metade deixaria linhas "já vistas" sem as que as
 	// justificam, e a próxima tentativa pularia as gravadas pelo FITID.
@@ -402,7 +415,7 @@ export const importOfxContent = async (
 					{ ...base, status: 'duplicate', relatedId: action.captureId, reason: 'statement_capture' },
 					id
 				);
-				if (matched?.status === 'pending') matchedPending.push({ capture: matched, accountMoved });
+				if (matched?.status === 'pending') matchedPending.push({ capture: matched, accountMoved, line });
 			} else if (action.type === 'match_transaction') {
 				// O lançamento digitado não sabia de onde saiu; o extrato sabe.
 				if (accountId) await assignTransactionAccount(action.transactionId, accountId);
@@ -425,8 +438,8 @@ export const importOfxContent = async (
 	});
 
 	const settledCaptures: StatementSettledCapture[] = [];
-	for (const { capture, accountMoved } of matchedPending) {
-		settledCaptures.push(await settleCapture(capture, accountMoved, options));
+	for (const { capture, accountMoved, line } of matchedPending) {
+		settledCaptures.push(await settleCapture(capture, accountMoved, line, lines, options));
 	}
 
 	return {
@@ -450,18 +463,26 @@ export const importOfxContent = async (
  * transação do import: a confirmação lança no livro e dá baixa em conta a pagar por conta
  * própria, e uma falha aqui não desfaz o extrato — a captura só continua pendente, marcada.
  * A conta já é a do extrato (corrigida na gravação), e a confirmação a lê de novo.
+ *
+ * O aviso "entrou ou saiu?" (SPD-164) passa por `directionOf` antes: respondido, segue como
+ * os outros; sem resposta, o extrato responde quando pode; senão continua pendente, marcado.
  */
 const settleCapture = async (
 	capture: Capture,
 	accountMoved: boolean,
-	options: IngestOptions
+	line: StatementLine,
+	lines: StatementLine[],
+	options: StatementImportOptions
 ): Promise<StatementSettledCapture> => {
 	const rule = capture.merchantKey ? toMerchantRule(await getMerchantRule(capture.merchantKey)) : undefined;
-	const settlement = settleMatchedCapture(capture, rule);
+	const direction = await directionOf(capture, line, lines, options.choiceStore);
+	const settlement = settleMatchedCapture(capture, rule, direction === 'answered' || direction === 'statement');
 	let confirmed = false;
 	if (settlement.action === 'confirm' && capture.suggestedCategory) {
 		try {
-			confirmed = (await confirmCapture(capture.id, capture.suggestedCategory, options.categories)) !== null;
+			confirmed =
+				(await confirmCapture(capture.id, capture.suggestedCategory, options.categories, undefined, options.choiceStore)) !==
+				null;
 		} catch (error) {
 			console.error('Failed to confirm capture from statement:', error);
 		}
@@ -475,9 +496,43 @@ const settleCapture = async (
 			confirmed,
 			why: settlement.action === 'mark' ? settlement.why : confirmed ? 'rule' : 'confirm_failed',
 			accountMoved,
+			...(direction ? { direction } : {}),
 		},
 	});
 	return { captureId: capture.id, outcome: confirmed ? 'confirmed' : 'marked' };
+};
+
+/**
+ * A direção do aviso "entrou ou saiu?" que o extrato casou (SPD-164). `null` para os outros
+ * avisos.
+ *
+ *  - `answered`: já respondida na revisão, ou decidida pela regra aprendida (`isDirectionGuess`);
+ *  - `statement`: era o palpite, e o extrato respondeu (`statementAnswersDirection`). A
+ *    resposta vai para a mesma preferência que a revisão grava (a regra do caso), com a
+ *    direção da linha — que é a do item, porque só casa a mesma direção. O item não muda;
+ *  - `guess`: continua o palpite — sem o lugar das respostas, ou com o extrato se
+ *    contradizendo. Fica pendente, marcado, e a revisão pergunta.
+ *
+ * Uma falha ao ler ou gravar a preferência vale como `guess`: o aviso só continua na revisão.
+ */
+const directionOf = async (
+	capture: Capture,
+	line: StatementLine,
+	lines: StatementLine[],
+	store: CaptureChoiceStore | undefined
+): Promise<'answered' | 'statement' | 'guess' | null> => {
+	if (ambiguityOfReason(capture.reason)?.case !== 'pix_direction') return null;
+	if (!store) return isDirectionGuess(capture, {}) ? 'guess' : 'answered';
+	try {
+		const choices = await store.read();
+		if (!isDirectionGuess(capture, choices)) return 'answered';
+		if (!statementAnswersDirection(capture, line, lines)) return 'guess';
+		await store.write(rememberChoice(choices, choiceKeyOf(capture, 'pix_direction'), line.direction));
+		return 'statement';
+	} catch (error) {
+		console.error('Failed to answer capture direction from statement:', error);
+		return 'guess';
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -581,7 +636,7 @@ export const createStatementInstallments = async (offer: StatementInstallmentOff
  * (application/x-ofx, text/plain, application/octet-stream…).
  */
 export const pickAndImportOfx = async (
-	options: IngestOptions
+	options: StatementImportOptions
 ): Promise<StatementImportResult | null> => {
 	const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
 	if (result.canceled) return null;

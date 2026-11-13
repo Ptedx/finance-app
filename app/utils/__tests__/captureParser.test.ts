@@ -500,6 +500,63 @@ describe('extractCounterparty — data e hora antes do nome', () => {
 	});
 });
 
+// SPD-164: no "Fulano te enviou" o nome vem antes do verbo, e saía nulo.
+describe('extractCounterparty — o nome antes de "te enviou"', () => {
+	it('o aviso do Inter (inventado): quem mandou é o nome antes de "te enviou"', () => {
+		const parsed = parseCapture(
+			raw({
+				packageName: 'br.com.intermedium',
+				appLabel: 'Inter',
+				title: 'Pix recebido',
+				text: 'Fulano Exemplo te enviou um Pix de R$ 291,65 creditado na sua conta final ***0000-0.',
+			})
+		);
+		expect(parsed).toMatchObject({ direction: 'in', kind: 'pix_in', counterparty: 'Fulano Exemplo' });
+	});
+
+	it.each([
+		['te mandou', 'PicPay', 'Ana Exemplo te mandou um Pix de R$ 20,00.', 'Ana Exemplo'],
+		['te transferiu', 'Transferência recebida', 'Carlos Souza Exemplo te transferiu R$ 75,00.', 'Carlos Souza Exemplo'],
+		['depois de dois-pontos', 'PicPay', 'Pix recebido: Beatriz Exemplo te enviou R$ 10,00.', 'Beatriz Exemplo'],
+		['depois de exclamação', 'PicPay', 'Oba! Beatriz Exemplo te enviou R$ 10,00.', 'Beatriz Exemplo'],
+		['depois de uma palavra de parada', 'Inter', 'Pix creditado Fulano Exemplo te enviou R$ 40,00.', 'Fulano Exemplo'],
+	])('%s', (_case, title, text, expected) => {
+		expect(parseCapture(raw({ title, text }))?.counterparty).toBe(expected);
+	});
+
+	it('o mesmo corte dos outros nomes: até 80 caracteres', () => {
+		const long = `${'Fulano '.repeat(15)}Exemplo`;
+		expect(extractCounterparty(`${long} te enviou R$ 10,00.`, 'in')).toBe(long.slice(0, 80));
+	});
+
+	it('só na entrada: o "te enviou" não dá nome a uma saída', () => {
+		expect(extractCounterparty('Fulano Exemplo te enviou R$ 10,00.', 'out')).toBeNull();
+	});
+});
+
+// SPD-164: "conta final ***0000-0" virava cartão final 0000 na revisão.
+describe('final da conta não é final de cartão', () => {
+	it.each([
+		['conta final ***0000-0', 'Fulano Exemplo te enviou um Pix de R$ 291,65 creditado na sua conta final ***0000-0.'],
+		['conta corrente final 1234', 'Pix de R$ 50,00 recebido na conta corrente final 1234.'],
+		['conta ***0000-0', 'Você recebeu R$ 50,00 de Fulano Exemplo na conta ***0000-0.'],
+		['agência/conta', 'Transferência de R$ 50,00 recebida na agência/conta 0001/***0000-0.'],
+	])('%s: sem final de cartão', (_case, text) => {
+		expect(parseCapture(raw({ title: 'Pix recebido', text }))?.cardLast4).toBeNull();
+	});
+
+	it('o final do cartão continua valendo, mesmo com o da conta no mesmo aviso', () => {
+		expect(
+			parseCapture(raw({ title: 'Compra', text: 'Compra de R$ 50,00 em LOJA X no cartão final 1234, conta ***5678-9.' }))
+				?.cardLast4
+		).toBe('1234');
+		expect(
+			parseCapture(raw({ title: 'Compra', text: 'Débito na conta final 5678: compra de R$ 50,00 no cartão ****4321.' }))
+				?.cardLast4
+		).toBe('4321');
+	});
+});
+
 describe('merchantKeyOf', () => {
 	it('junta variações do mesmo estabelecimento na mesma chave', () => {
 		expect(merchantKeyOf('IFOOD *IFOOD BR')).toBe('ifood');

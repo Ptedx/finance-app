@@ -25,6 +25,7 @@
  * a conciliação inteira sem banco, inclusive por propriedades sobre cenários aleatórios.
  */
 
+import { ambiguityOfReason } from './ambiguityReasons';
 import {
 	type Decision,
 	decide,
@@ -484,6 +485,10 @@ export const planStatementImport = (
  * Também ficam marcadas, mesmo com a regra: a pergunta em aberto ("parece repetido?",
  * "transferência?"), que o valor não responde; o motivo gravado (a moeda estrangeira); e
  * o estorno, cuja categoria nunca é a da regra da loja (SPD-043).
+ *
+ * A dúvida "entrou ou saiu?" (`ambiguous_pix_direction`) já respondida não segura mais
+ * (`directionAnswered`, SPD-164): o motivo fica gravado para a revisão e o reverter, mas a
+ * direção do item é a resposta, e o aviso segue como os outros. Sem resposta, segura.
  */
 export type StatementSettlement =
 	| { action: 'confirm' }
@@ -491,15 +496,44 @@ export type StatementSettlement =
 
 export const settleMatchedCapture = (
 	capture: { question: string | null; reason: string | null; kind: string; suggestedCategory: string | null },
-	rule: MerchantRule | undefined
+	rule: MerchantRule | undefined,
+	directionAnswered = false
 ): StatementSettlement => {
 	if (capture.question) return { action: 'mark', why: 'question' };
-	if (capture.reason) return { action: 'mark', why: 'reason' };
+	const answeredDoubt = directionAnswered && ambiguityOfReason(capture.reason)?.case === 'pix_direction';
+	if (capture.reason && !answeredDoubt) return { action: 'mark', why: 'reason' };
 	if (capture.kind === 'refund') return { action: 'mark', why: 'refund' };
 	if (rule?.treatAs === 'transaction' && rule.categoryId !== null && rule.categoryId === capture.suggestedCategory) {
 		return { action: 'confirm' };
 	}
 	return { action: 'mark', why: 'suggested' };
+};
+
+/**
+ * O extrato responde "entrou ou saiu?" do aviso em dúvida que ele casou (SPD-164)?
+ *
+ * A linha tem sinal (TRNAMT), e só casa com o aviso de mesma direção (`findCaptureForLine`):
+ * casada, a direção do aviso é a da linha. Mas no aviso em dúvida a direção é um palpite, e o
+ * casamento sai só do valor, da data e da conta. Por isso o extrato só responde quando não
+ * se contradiz: nenhuma outra linha da mesma conta no arquivo, com o mesmo valor, na direção
+ * contrária, dentro da janela do aviso. Com uma linha assim o aviso pode ser ela, e a
+ * pergunta continua com o usuário.
+ */
+export const statementAnswersDirection = (
+	capture: { postedAt: string; direction: string; amountCents: number },
+	line: StatementLine,
+	lines: StatementLine[]
+): boolean => {
+	if (line.direction !== capture.direction || line.amountCents !== capture.amountCents) return false;
+	const noticeDate = localDateOf(capture.postedAt);
+	return !lines.some(
+		(other) =>
+			other.accountKey === line.accountKey &&
+			!other.neutral &&
+			other.amountCents === line.amountCents &&
+			other.direction !== line.direction &&
+			withinStatementLag(noticeDate, other.postedDate)
+	);
 };
 
 // ---------------------------------------------------------------------------
@@ -613,6 +647,7 @@ export default {
 	linesOf,
 	planStatementImport,
 	settleMatchedCapture,
+	statementAnswersDirection,
 	planInstallmentGaps,
 	findCaptureForLine,
 	findTransactionForLine,

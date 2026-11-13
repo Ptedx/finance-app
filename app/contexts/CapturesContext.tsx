@@ -378,6 +378,9 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		const result = await pickAndImportOfx({
 			ownNames: ownNamesOf([accountNameRef.current, await getOwnBankName()]),
 			categories: categoriesRef.current,
+			// O aviso "entrou ou saiu?" que o extrato casou: respondido, confirma como os
+			// outros; o extrato pode responder; sem resposta, fica (SPD-164).
+			choiceStore: captureChoiceStore,
 		});
 		if (result) {
 			// O import cria ou ancora contas mesmo sem lançar nada: recarrega sempre.

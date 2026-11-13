@@ -444,6 +444,39 @@ describe('SPD-162: a revisão não grava a direção chutada', () => {
 	});
 });
 
+describe('SPD-164: o Pix para si mesmo pelo nome antes de "te enviou"', () => {
+	const fromInter = (who: string) =>
+		notice(INTER, 'Inter', 'Pix recebido', `${who} te enviou um Pix de R$ 291,65 creditado na sua conta final ***0000-0.`);
+	const ingestAs = async (raw: RawCapture, bankName: string | null): Promise<Capture> => {
+		const before = new Set(mockCaptures.keys());
+		await ingestRawCaptures([raw], { ownNames: [], bankName, categories: CATEGORIES, captureChoices: {} });
+		const created = [...mockCaptures.values()].filter((capture) => !before.has(capture.id));
+		expect(created).toHaveLength(1);
+		return created[0];
+	};
+
+	it('o nome de Ajustes é o de quem mandou: transferência entre contas próprias, sem perguntar', async () => {
+		seed(interPF, nuPF);
+		const item = await ingestAs(fromInter('Fulano Exemplo'), 'FULANO EXEMPLO');
+		// Antes: sem contraparte, pendente para revisar como receita, e "cartão final 0000".
+		expect(item).toMatchObject({
+			status: 'transfer',
+			reason: 'own_bank_name',
+			direction: 'in',
+			accountId: 'inter-pf',
+			counterparty: 'Fulano Exemplo',
+			cardLast4: null,
+		});
+		expect(liveTransactions()).toHaveLength(0);
+	});
+
+	it('outro nome continua pendente, com o nome de quem mandou', async () => {
+		seed(interPF, nuPF);
+		const item = await ingestAs(fromInter('Beltrano Exemplo'), 'Fulano Exemplo');
+		expect(item).toMatchObject({ status: 'pending', direction: 'in', counterparty: 'Beltrano Exemplo', cardLast4: null });
+	});
+});
+
 describe('X-2: o pagamento da fatura recebido pelo cartão', () => {
 	const received = () =>
 		notice(NUBANK, 'Nubank', 'Pagamento recebido', 'Recebemos o pagamento da sua fatura no valor de R$ 1.500,00.');

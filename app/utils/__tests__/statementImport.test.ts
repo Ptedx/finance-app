@@ -64,6 +64,7 @@ import {
 import type { Account, Capture, Transaction } from '../../database/schema';
 import { logCaptureDecision } from '../../diagnostics/capture';
 import { applyDecision, confirmCapture, toMerchantRule } from '../captureActions';
+import { type CaptureChoices, choiceKeyOf } from '../captureChoices';
 import { STATEMENT_LEDGER_SUSPECT_REASON } from '../captureMatcher';
 import {
 	createStatementInstallments,
@@ -380,7 +381,7 @@ describe('pendente que o extrato confirmou (SPD-117, AUTO-13)', () => {
 
 		expect(result.summary.matchedCaptures).toBe(1);
 		expect(more.confirmCapture).toHaveBeenCalledTimes(1);
-		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories);
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories, undefined, undefined);
 		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'confirmed' }]);
 		// A linha do extrato continua "já vista", apontando para a captura.
 		expect(statementLineDraft()).toMatchObject({ status: 'duplicate', relatedId: 'cap-padaria' });
@@ -435,7 +436,7 @@ describe('pendente que o extrato confirmou (SPD-117, AUTO-13)', () => {
 		const result = await importOfxContent(PADARIA_OFX, options);
 
 		expect(more.updateCapture).toHaveBeenCalledWith('cap-padaria', { accountId: 'nubank-teste' });
-		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories);
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-padaria', 'alimentacao', options.categories, undefined, undefined);
 		expect(result.settledCaptures).toEqual([{ captureId: 'cap-padaria', outcome: 'confirmed' }]);
 		expect(more.logCaptureDecision.mock.calls[0][0].outcome.accountMoved).toBe(true);
 	});
@@ -449,6 +450,146 @@ describe('pendente que o extrato confirmou (SPD-117, AUTO-13)', () => {
 		expect(result.summary.matchedCaptures).toBe(1);
 		expect(more.confirmCapture).not.toHaveBeenCalled();
 		expect(result.settledCaptures).toEqual([]);
+	});
+});
+
+/** O extrato da conta corrente, com as linhas dadas. Banco e conta inventados. */
+const checkingOfx = (rows: string): string =>
+	[
+		'OFXHEADER:100',
+		'DATA:OFXSGML',
+		'VERSION:102',
+		'',
+		'<OFX>',
+		'<BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS><STMTRS><CURDEF>BRL',
+		'<BANKACCTFROM><BANKID>077<ACCTID>0000-0<ACCTTYPE>CHECKING</BANKACCTFROM>',
+		'<BANKTRANLIST><DTSTART>20261101000000[-3:BRT]<DTEND>20261107000000[-3:BRT]',
+		rows,
+		'</BANKTRANLIST><LEDGERBAL><BALAMT>0.00<DTASOF>20261107000000[-3:BRT]</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>',
+	].join('\n');
+
+/** O Pix com "recebido" e "enviou" e sem dizer para quem, ainda na revisão: a saída é o palpite. */
+const pendingPix = (overrides: Partial<Capture> = {}): Capture =>
+	pendingPadaria({
+		id: 'cap-pix',
+		fingerprint: 'fp-pix',
+		packageName: 'br.com.intermedium',
+		appLabel: 'Inter',
+		title: 'Pix recebido',
+		text: 'Fulano Exemplo enviou R$ 291,65.',
+		amountCents: 29_165,
+		direction: 'out',
+		kind: 'pix_out',
+		counterparty: 'Fulano Exemplo',
+		merchantKey: 'fulano exemplo',
+		cardLast4: null,
+		suggestedCategory: 'outros',
+		reason: 'ambiguous_pix_direction',
+		accountId: 'nova',
+		...overrides,
+	});
+
+/** A preferência das respostas, em memória. */
+const memoryStore = (data: CaptureChoices = {}) => {
+	const store = {
+		data,
+		read: jest.fn(async () => store.data),
+		write: jest.fn(async (next: CaptureChoices) => {
+			store.data = next;
+		}),
+	};
+	return store;
+};
+
+const PIX_KEY = choiceKeyOf(pendingPix(), 'pix_direction');
+const PIX_OUT_OFX = checkingOfx(row('pix-1', '2026-11-01', '-291.65', 'PIX ENVIADO FULANO EXEMPLO'));
+
+describe('aviso "entrou ou saiu?" que o extrato casou (SPD-164)', () => {
+	beforeEach(() => {
+		withAccounts([]);
+		mocked.getTransactionsByDateRange.mockResolvedValue([]);
+		more.getMerchantRule.mockImplementation(async (key: string) => ({ merchantKey: key }));
+	});
+	afterEach(() => {
+		more.getRecentCaptures.mockResolvedValue([]);
+		more.getCapture.mockImplementation(async () => null);
+		more.getMerchantRule.mockImplementation(async () => null);
+		more.toMerchantRule.mockImplementation(() => undefined);
+	});
+
+	const outcome = () => more.logCaptureDecision.mock.calls[0][0].outcome;
+
+	it('sem resposta e o extrato só com a saída: o extrato responde "saiu", grava a regra como a revisão e confirma', async () => {
+		withPending(pendingPix());
+		learned('outros');
+		const store = memoryStore();
+
+		const result = await importOfxContent(PIX_OUT_OFX, { ...options, choiceStore: store });
+
+		// Antes: ficava pendente, marcada pelo motivo, e a pergunta continuava.
+		expect(store.data).toEqual({ [PIX_KEY]: 'out' });
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-pix', 'outros', options.categories, undefined, store);
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-pix', outcome: 'confirmed' }]);
+		expect(outcome()).toMatchObject({ confirmed: true, why: 'rule', direction: 'statement' });
+	});
+
+	it('o extrato responde, mas a categoria é só palpite: pendente, marcado, já sem a pergunta', async () => {
+		withPending(pendingPix());
+		const store = memoryStore();
+
+		const result = await importOfxContent(PIX_OUT_OFX, { ...options, choiceStore: store });
+
+		expect(store.data).toEqual({ [PIX_KEY]: 'out' });
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-pix', outcome: 'marked' }]);
+		expect(outcome()).toMatchObject({ why: 'suggested', direction: 'statement' });
+	});
+
+	it('o extrato se contradiz (uma entrada do mesmo valor na janela): não responde, fica pendente e marcado', async () => {
+		withPending(pendingPix());
+		learned('outros');
+		const store = memoryStore();
+		const both = checkingOfx(
+			[
+				row('pix-1', '2026-11-01', '-291.65', 'PIX ENVIADO FULANO EXEMPLO'),
+				row('pix-2', '2026-11-02', '291.65', 'PIX RECEBIDO FULANO EXEMPLO'),
+			].join('\n')
+		);
+
+		const result = await importOfxContent(both, { ...options, choiceStore: store });
+
+		expect(store.write).not.toHaveBeenCalled();
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-pix', outcome: 'marked' }]);
+		expect(outcome()).toMatchObject({ why: 'reason', direction: 'guess' });
+	});
+
+	it('já respondida na revisão: confirma como os outros, sem gravar de novo', async () => {
+		withPending(pendingPix({ direction: 'in', kind: 'pix_in', suggestedCategory: 'renda' }));
+		learned('renda');
+		const store = memoryStore({ [PIX_KEY]: 'in' });
+
+		const result = await importOfxContent(
+			checkingOfx(row('pix-1', '2026-11-01', '291.65', 'PIX RECEBIDO FULANO EXEMPLO')),
+			{ ...options, choiceStore: store }
+		);
+
+		// Antes: o motivo "entrou ou saiu?" segurava mesmo respondido.
+		expect(store.write).not.toHaveBeenCalled();
+		expect(more.confirmCapture).toHaveBeenCalledWith('cap-pix', 'renda', options.categories, undefined, store);
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-pix', outcome: 'confirmed' }]);
+		expect(outcome()).toMatchObject({ confirmed: true, direction: 'answered' });
+	});
+
+	it('sem o lugar das respostas: continua o palpite, pendente e marcado', async () => {
+		withPending(pendingPix());
+		learned('outros');
+
+		const result = await importOfxContent(PIX_OUT_OFX, options);
+
+		expect(more.confirmCapture).not.toHaveBeenCalled();
+		expect(result.settledCaptures).toEqual([{ captureId: 'cap-pix', outcome: 'marked' }]);
+		expect(outcome()).toMatchObject({ why: 'reason', direction: 'guess' });
 	});
 });
 

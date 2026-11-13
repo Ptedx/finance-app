@@ -73,6 +73,11 @@ export type CaptureStep =
 			why: 'rule' | 'question' | 'reason' | 'refund' | 'suggested' | 'confirm_failed';
 			/** O extrato tirou o aviso de outra conta e o pôs na do extrato. Nunca qual. */
 			accountMoved: boolean;
+			/**
+			 * Só no aviso "entrou ou saiu?" (SPD-164): já respondido, respondido agora pelo
+			 * extrato, ou ainda o palpite. Nunca a direção nem a chave da regra.
+			 */
+			direction?: 'answered' | 'statement' | 'guess';
 	  };
 
 export interface CaptureDecisionInput {
@@ -199,6 +204,7 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			data.reason = 'statement';
 			data.why = outcome.why;
 			data.accountMoved = outcome.accountMoved;
+			if (outcome.direction) data.direction = outcome.direction;
 			break;
 	}
 	return data;
