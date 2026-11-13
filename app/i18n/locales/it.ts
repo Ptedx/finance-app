@@ -2119,6 +2119,7 @@ account: {
 		directionInHint: 'Segna questa notifica come denaro in entrata',
 		directionOut: 'Uscito',
 		directionOutHint: 'Segna questa notifica come denaro in uscita',
+		directionFirst: 'Rispondi prima: solo dopo puoi confermarla o segnarla come trasferimento',
 		invoiceQuestionTitle: 'Da quale conto è uscito il pagamento?',
 		invoicePay: 'Registra il pagamento da questo conto',
 		invoicePayHint: 'Registra un trasferimento dal conto scelto alla carta; non conta come spesa',

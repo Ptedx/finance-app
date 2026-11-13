@@ -22,7 +22,7 @@ export const AMBIGUITY_CASES = [
 	'purchase_no_kind',
 	/** Nem "crédito" nem "débito", um cartão do banco, a conta do banco e um final novo (NOTIF-16). */
 	'debit_unknown_last4',
-	/** O aviso tem pista de entrada e de saída ao mesmo tempo: "Fulano te enviou" (NOTIF-11). */
+	/** Pista de entrada e de saída, sem certeza: "Pix recebido — Fulano enviou" (NOTIF-11, SPD-162). */
 	'pix_direction',
 	/** O cartão recebeu o pagamento da fatura, sem dizer de qual conta ele saiu (X-2). */
 	'invoice_payment',

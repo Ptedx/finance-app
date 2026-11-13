@@ -2,7 +2,7 @@
  * Avisos ambíguos e as escolhas que o app aprende com eles (SPD-123).
  *
  * Há avisos que não dizem o bastante: para onde foi a compra (a conta, o cartão, qual
- * cartão), para que lado foi o Pix ("Fulano te enviou"), de qual conta saiu o pagamento
+ * cartão), para que lado foi o Pix ("Fulano enviou"), de qual conta saiu o pagamento
  * da fatura que o cartão recebeu. Antes o app adivinhava, e às vezes errava sem ninguém ver.
  * Agora o aviso vai para a revisão com o motivo do caso (`ambiguityReasons.ts`), e a
  * resposta do usuário vira uma regra: na próxima vez que o **mesmo caso** aparecer, o app
@@ -20,9 +20,9 @@
  * ingestão e o lugar de gravá-las para as respostas da revisão.
  */
 
-import type { Account } from '../database/schema';
+import type { Account, Capture } from '../database/schema';
 import { bankOfPackage } from '../diagnostics/knownBanks';
-import { type AmbiguityCase, TARGET_CASES } from './ambiguityReasons';
+import { type AmbiguityCase, ambiguityOfReason, TARGET_CASES } from './ambiguityReasons';
 import { brandFor } from './bankBrands';
 import { type CaptureDirection, normalizeText, type ParsedCapture, parseCapture, type RawCapture } from './captureParser';
 import { bankLabelOf, invoiceCardOf, pickNotificationTarget } from './notificationTarget';
@@ -158,6 +158,25 @@ export const lookupChoice = (choices: CaptureChoices, ambiguity: Ambiguity, acco
 };
 
 /**
+ * A direção do item ainda é o palpite do parser (SPD-162)? É, no aviso que perguntou "entrou
+ * ou saiu" (`ambiguous_pix_direction`) enquanto a escolha guardada para o caso dele não for a
+ * direção que está no item: responder grava as duas juntas (`answerCaptureDirection`). Sem
+ * escolha, ou com outra (o usuário respondeu diferente num aviso igual depois), a pergunta
+ * vale de novo. O item que a regra aprendida decidiu (`learned_`) não é palpite.
+ *
+ * Com o palpite, nenhuma ação da revisão grava: a saída chutada virava gasto, ou uma
+ * transferência que saía da conta que tinha recebido o dinheiro.
+ */
+export const isDirectionGuess = (
+	capture: ChoiceNotice & Pick<Capture, 'reason' | 'direction'>,
+	choices: CaptureChoices
+): boolean => {
+	const ambiguity = ambiguityOfReason(capture.reason);
+	if (ambiguity?.case !== 'pix_direction' || ambiguity.learned) return false;
+	return choices[choiceKeyOf(capture, 'pix_direction')] !== capture.direction;
+};
+
+/**
  * Grava (ou troca) a escolha de um caso. A escolha nova vai para o fim, e as mais antigas
  * saem enquanto o valor não couber em `MAX_CHOICES_LENGTH`.
  */
@@ -192,6 +211,7 @@ export default {
 	choiceKeyOf,
 	detectAmbiguity,
 	lookupChoice,
+	isDirectionGuess,
 	rememberChoice,
 	serializeCaptureChoices,
 	parseCaptureChoices,

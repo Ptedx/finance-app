@@ -2117,6 +2117,7 @@ const pt = {
 		directionInHint: 'Marca este aviso como dinheiro que entrou',
 		directionOut: 'Saiu',
 		directionOutHint: 'Marca este aviso como dinheiro que saiu',
+		directionFirst: 'Responda primeiro: só depois dá para confirmar ou marcar como transferência',
 		invoiceQuestionTitle: 'De qual conta saiu o pagamento?',
 		invoicePay: 'Lançar o pagamento desta conta',
 		invoicePayHint:

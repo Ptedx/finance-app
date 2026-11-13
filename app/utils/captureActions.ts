@@ -86,6 +86,7 @@ import {
 	choiceKeyOf,
 	detectAmbiguity,
 	invoiceCardFor,
+	isDirectionGuess,
 	lookupChoice,
 	rememberChoice,
 	SKIP_CHOICE,
@@ -1159,6 +1160,25 @@ const logReviewSkipped = (action: string, id: string, capture: Capture | null): 
 	});
 
 /**
+ * A direção do item ainda é o palpite do parser, sem resposta (SPD-162, `isDirectionGuess`)?
+ * Então a ação não grava: confirmar viraria gasto, e "minhas contas" faria a transferência
+ * sair da conta que recebeu. Sem o lugar das respostas não dá para saber, e vale como sem
+ * resposta. O diário diz qual ação parou, nunca o aviso.
+ */
+const blockedByDirectionGuess = async (
+	action: string,
+	capture: Capture,
+	choices: CaptureChoiceStore | undefined
+): Promise<boolean> => {
+	if (ambiguityOfReason(capture.reason)?.case !== 'pix_direction') return false;
+	if (!isDirectionGuess(capture, choices ? await choices.read() : {})) return false;
+	log('capture', 'capture_review_skipped', {
+		data: { action, captureId: capture.id, from: capture.status, why: 'direction_unanswered' },
+	});
+	return true;
+};
+
+/**
  * Apaga o que uma captura pôs no livro: a transação, ou todas as parcelas. A baixa que a
  * transação tinha dado numa conta a pagar é desfeita junto.
  */
@@ -1211,7 +1231,8 @@ const answeredReason = (reason: string | null): string | null => {
  * parcelas seguem o ciclo dele (`postTransaction`), como qualquer compra do cartão.
  *
  * No aviso ambíguo (SPD-123) confirmar também é a resposta: a conta ou o cartão escolhido,
- * ou a direção que está na tela, vira a regra do caso (`choices`, onde ela mora).
+ * ou a direção respondida, vira a regra do caso (`choices`, onde ela mora). A direção que
+ * ainda é o palpite do parser não confirma: devolve `null` sem gravar nada (SPD-162).
  *
  * Devolve também a conta a pagar que o lançamento quitou (`settledBill`, SPD-153), para o
  * aviso da revisão dizer a conta e o mês.
@@ -1228,6 +1249,7 @@ export const confirmCapture = async (
 		logReviewSkipped('confirm', id, found);
 		return null;
 	}
+	if (await blockedByDirectionGuess('confirm', found, choices)) return null;
 	const accountChanged = accountId !== undefined && accountId !== found.accountId;
 	const capture = accountChanged ? { ...found, accountId } : found;
 	const ambiguity = ambiguityOfReason(found.reason);
@@ -1396,13 +1418,19 @@ export const stopIgnoringApp = async (packageName: string): Promise<void> => {
  * "É transferência entre minhas contas": sai do livro, entra como transferência entre
  * as contas das duas pernas (quando há a outra pendente ou já confirmada), e o app
  * aprende a contraparte para decidir sozinho da próxima vez.
+ *
+ * O lado da conta do aviso vem da direção do item: origem quando saiu, destino quando
+ * entrou (`transferSidesOf`). Por isso a direção que ainda é o palpite do parser não grava
+ * nada (SPD-162): "Fulano te enviou" com o palpite "saiu" fazia a transferência sair da conta
+ * que tinha recebido.
  */
-export const markCaptureTransfer = async (id: string): Promise<void> => {
+export const markCaptureTransfer = async (id: string, choices?: CaptureChoiceStore): Promise<void> => {
 	const capture = await getCapture(id);
 	if (!capture) {
 		logReviewSkipped('transfer', id, null);
 		return;
 	}
+	if (await blockedByDirectionGuess('transfer', capture, choices)) return;
 
 	const related = capture.relatedId ? await getCapture(capture.relatedId) : null;
 	const pairable = related && (related.status === 'pending' || related.status === 'confirmed');
@@ -1448,11 +1476,15 @@ export const answerCaptureDuplicate = async (id: string, same: boolean): Promise
 	}
 };
 
-/** Resposta à pergunta "é transferência entre suas contas?". */
-export const answerCaptureTransfer = async (id: string, isTransfer: boolean): Promise<void> => {
+/** Resposta à pergunta "é transferência entre suas contas?". Com a direção no palpite, nada (SPD-162). */
+export const answerCaptureTransfer = async (
+	id: string,
+	isTransfer: boolean,
+	choices?: CaptureChoiceStore
+): Promise<void> => {
 	log('capture', 'capture_answered', { data: { captureId: id, question: 'transfer', answer: isTransfer } });
 	if (isTransfer) {
-		await markCaptureTransfer(id);
+		await markCaptureTransfer(id, choices);
 	} else {
 		await updateCapture(id, { question: null });
 	}

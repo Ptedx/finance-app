@@ -294,6 +294,12 @@ interface CaptureCardProps {
 	onAnswerTransfer: (capture: Capture, isTransfer: boolean) => void;
 	/** Entrou ou saiu, no aviso que fala das duas coisas (SPD-123). */
 	onAnswerDirection: (capture: Capture, direction: CaptureDirection) => void;
+	/**
+	 * Se o "entrou ou saiu" deste aviso já tem resposta (SPD-162). Sem ela, a direção do item é
+	 * o palpite do parser: a revisão pergunta antes, e confirmar, "minhas contas" e a pergunta
+	 * "é transferência?" só aparecem depois. Descartar e a categoria ficam: não gravam direção.
+	 */
+	directionAnswered: boolean;
 	/** De qual conta saiu o pagamento da fatura, ou `null` para não lançar (SPD-123). */
 	onResolveInvoice: (capture: Capture, fromAccountId: string | null) => void;
 	/**
@@ -322,6 +328,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	onAnswerDuplicate,
 	onAnswerTransfer,
 	onAnswerDirection,
+	directionAnswered,
 	onResolveInvoice,
 	tour,
 	sample,
@@ -348,6 +355,9 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 	}
 	const ambiguity = ambiguityOfReason(capture.reason);
 	const askedCase = ambiguity && !ambiguity.learned ? ambiguity.case : null;
+	// A direção ainda é o palpite: nada que grave aparece, e nenhum dos dois lados aparece
+	// escolhido (SPD-162). Antes, "Saiu" vinha marcado e "minhas contas" gravava a saída.
+	const directionOpen = askedCase === 'pix_direction' && !directionAnswered;
 	const explained = ambiguityLine(capture, t);
 	// As listas de categoria e de conta, que abrem de baixo (SPD-130).
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -499,7 +509,8 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 				</View>
 			)}
 
-			{capture.question === 'transfer' && (
+			{/* "É transferência?" grava a transferência pela direção do item: espera a resposta (SPD-162). */}
+			{capture.question === 'transfer' && !directionOpen && (
 				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.questionTransferTitle')}</Text>
 					<Text style={styles.questionBody}>
@@ -529,6 +540,7 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 			{askedCase === 'pix_direction' && (
 				<View {...questionTarget} style={styles.question} accessibilityLiveRegion="polite">
 					<Text style={styles.questionTitle}>{t('captures.directionQuestionTitle')}</Text>
+					{directionOpen && <Text style={styles.questionBody}>{t('captures.directionFirst')}</Text>}
 					<Text style={styles.questionBody}>{explained.remember}</Text>
 					<View style={styles.questionActions}>
 						<ActionButton
@@ -536,16 +548,16 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 							hint={t('captures.directionInHint')}
 							icon="arrow-down"
 							onPress={() => onAnswerDirection(capture, 'in')}
-							primary={isIncome}
-							selected={isIncome}
+							primary={!directionOpen && isIncome}
+							selected={!directionOpen && isIncome}
 						/>
 						<ActionButton
 							label={t('captures.directionOut')}
 							hint={t('captures.directionOutHint')}
 							icon="arrow-up"
 							onPress={() => onAnswerDirection(capture, 'out')}
-							primary={!isIncome}
-							selected={!isIncome}
+							primary={!directionOpen && !isIncome}
+							selected={!directionOpen && !isIncome}
 						/>
 					</View>
 				</View>
@@ -610,20 +622,25 @@ const CaptureCard: React.FC<CaptureCardProps> = ({
 						onClose={() => setPickerOpen(false)}
 					/>
 
+					{/* Com a direção no palpite (SPD-162), só o que não grava direção: descartar. */}
 					<View {...buttonsTarget} style={styles.actions}>
-						<ActionButton
-							label={t('captures.confirm')}
-							hint={t('captures.confirmHint', { category: category.name })}
-							icon="checkmark"
-							onPress={() => onConfirm(capture, categoryId, chosenAccountId)}
-							primary
-						/>
-						<ActionButton
-							label={t('captures.transfer')}
-							hint={t('captures.transferHint')}
-							icon="swap-horizontal"
-							onPress={() => onTransfer(capture)}
-						/>
+						{!directionOpen && (
+							<ActionButton
+								label={t('captures.confirm')}
+								hint={t('captures.confirmHint', { category: category.name })}
+								icon="checkmark"
+								onPress={() => onConfirm(capture, categoryId, chosenAccountId)}
+								primary
+							/>
+						)}
+						{!directionOpen && (
+							<ActionButton
+								label={t('captures.transfer')}
+								hint={t('captures.transferHint')}
+								icon="swap-horizontal"
+								onPress={() => onTransfer(capture)}
+							/>
+						)}
 						<ActionButton
 							label={t('captures.dismiss')}
 							hint={t('captures.dismissHint')}
@@ -785,6 +802,7 @@ const CaptureInboxScreen = () => {
 		answerDuplicate,
 		answerTransfer,
 		answerDirection,
+		answeredDirections,
 		resolveInvoicePayment,
 		revert,
 		unignoreApp,
@@ -1069,6 +1087,8 @@ const CaptureInboxScreen = () => {
 									onAnswerDirection: handleAnswerDirection,
 									onResolveInvoice: handleResolveInvoice,
 								})}
+						// Sem o conjunto, sem resposta: na dúvida, a revisão pergunta.
+						directionAnswered={answeredDirections?.has(capture.id) ?? false}
 						tour={{
 							main: index === 0,
 							question: capture.id === questionTourId,

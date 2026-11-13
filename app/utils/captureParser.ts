@@ -72,9 +72,10 @@ export interface ParsedCapture {
 	 */
 	foreign?: ForeignAmount;
 	/**
-	 * Presente só quando o Pix ou a transferência tem pista de entrada **e** de saída ("Pix
-	 * recebido — Ana te enviou R$ 20,00"): `direction` é então um palpite (saída, como
-	 * sempre foi), e o aviso vai para a revisão perguntar (SPD-123, NOTIF-11). O valor são as
+	 * Presente só quando o Pix ou a transferência tem pista de entrada **e** de saída, sem
+	 * certeza de nenhum lado ("Pix recebido — Ana enviou R$ 20,00"; "Ana te enviou" é entrada,
+	 * SPD-162): `direction` é então um palpite (saída, como sempre foi), que a revisão não grava
+	 * sem resposta, e o aviso vai para a revisão perguntar (SPD-123, NOTIF-11). O valor são as
 	 * duas pistas que o parser achou ("recebido/enviou"), do vocabulário dele — nunca o nome
 	 * nem o valor do aviso: entra na chave da regra aprendida.
 	 */
@@ -433,6 +434,45 @@ const OUTGOING_CUES = [
 ];
 
 /**
+ * O valor dentro da frase: "R$ 1.500,00" tem ponto, e o ponto do milhar não encerra a frase.
+ * Sem isto, "enviou R$ 1.500,00 para você" parava no "1." e o "para você" ficava de fora.
+ */
+const SAME_SENTENCE = '(?:[^.!?]|\\.(?=\\d))*?';
+
+/**
+ * Entrada sem dúvida, mesmo com "enviou" no texto (SPD-162): quem mandou foi outra pessoa, e
+ * mandou **para você**. "Fulano te enviou um Pix de R$ 291,65 creditado na sua conta" tinha
+ * "recebido" e "enviou", e a dúvida (NOTIF-11) virava saída na revisão. O título "Pix recebido"
+ * ou "Transferência recebida" com "te enviou" no texto cai na primeira.
+ */
+const SURE_INCOMING_PATTERNS = [
+	/\bte (?:enviou|mandou|transferiu)\b/,
+	new RegExp(`\\b(?:enviou|mandou|transferiu)\\b${SAME_SENTENCE}\\bpara voce\\b`),
+	/\bcreditad[oa] (?:na|em) sua conta\b/,
+];
+
+/** Saída sem dúvida: quem enviou foi você ("Você enviou", "Pix enviado"). */
+const SURE_OUTGOING_PATTERNS = [/\bvoce (?:enviou|mandou|transferiu|pagou)\b/, /\b(?:pix|transferencia) enviad[ao]\b/];
+
+/**
+ * Para que lado o texto aponta. Uma certeza de um lado só decide e cala as pistas soltas do
+ * outro ("recebido", "enviou"); certeza dos dois lados, ou de nenhum com pista dos dois, é a
+ * dúvida de verdade, que vai para a revisão (NOTIF-11) com as duas pistas achadas.
+ */
+const directionCues = (text: string): { incoming: boolean; outgoing: boolean; ambiguousDirection?: string } => {
+	const sureIn = SURE_INCOMING_PATTERNS.some((pattern) => pattern.test(text));
+	const sureOut = SURE_OUTGOING_PATTERNS.some((pattern) => pattern.test(text));
+	if (sureIn !== sureOut) return { incoming: sureIn, outgoing: sureOut };
+	const incomingCue = INCOMING_CUES.find((cue) => text.includes(cue));
+	const outgoingCue = OUTGOING_CUES.find((cue) => text.includes(cue));
+	return {
+		incoming: incomingCue !== undefined,
+		outgoing: outgoingCue !== undefined,
+		...(incomingCue && outgoingCue ? { ambiguousDirection: `${incomingCue}/${outgoingCue}` } : {}),
+	};
+};
+
+/**
  * Fatura fechada, ou que vence, dita sem a palavra "fatura" (AUTO-07, SPD-123): "Seu cartão
  * fechou: total de R$ 1.100,00 com vencimento em 12/12. Débito automático ativo." O "débito"
  * do débito automático fazia disso uma compra. Fechou **e** vence no mesmo aviso é aviso de
@@ -517,18 +557,16 @@ const classify = (text: string): Classified | null => {
 		return { direction: 'in', kind: 'refund', neutral: false };
 	}
 
-	const incomingCue = INCOMING_CUES.find((cue) => text.includes(cue));
-	const outgoingCue = OUTGOING_CUES.find((cue) => text.includes(cue));
-	const incoming = incomingCue !== undefined;
-	const outgoing = outgoingCue !== undefined;
+	const { incoming, outgoing, ambiguousDirection } = directionCues(text);
 
 	if (SCHEDULED_PATTERN.test(text) && !(incoming && !outgoing) && !has(text, ...SCHEDULED_DONE_PHRASES)) {
 		return null;
 	}
 
-	// Pix e transferência com as duas pistas ("Pix recebido — Ana te enviou R$ 20,00"): a
-	// saída continua sendo o palpite, mas marcado, para a revisão perguntar (NOTIF-11).
-	const both = incoming && outgoing ? { ambiguousDirection: `${incomingCue}/${outgoingCue}` } : {};
+	// Pix e transferência com as duas pistas e sem certeza ("Pix recebido — Ana enviou
+	// R$ 20,00"): a saída continua sendo o palpite, mas marcado, para a revisão perguntar
+	// (NOTIF-11). "Ana te enviou" não é mais dúvida: é entrada (SPD-162).
+	const both = ambiguousDirection ? { ambiguousDirection } : {};
 	if (has(text, 'pix')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'pix_in', neutral: false };
 		if (outgoing) return { direction: 'out', kind: 'pix_out', neutral: false, ...both };

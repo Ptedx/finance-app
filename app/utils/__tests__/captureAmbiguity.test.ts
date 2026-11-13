@@ -87,10 +87,11 @@ const interDebitUnknownFinal = notice(INTER, 'Inter', 'Compra aprovada', 'Compra
 const nuPurchaseNoKind = notice(NUBANK, 'Nubank', 'Compra aprovada', 'Compra de R$ 480,00 APROVADA em LOJA EXEMPLO para o cartão com final 6422.');
 // Bradesco por SMS: o remetente é o banco, e o final não é o do cartão cadastrado.
 const bradescoSms = notice(SMS, 'Mensagens', 'Bradesco', 'BRADESCO: COMPRA APROVADA NO CARTAO FINAL 3456 DE R$ 45,00 EM DROGARIA EXEMPLO.');
-// PicPay: "Fulano te enviou" é dinheiro entrando, mas o parser lia "enviou" como saída (C68).
-const picpaySent = notice(PICPAY, 'PicPay', 'Pix recebido', 'Ana Exemplo te enviou R$ 20,00.');
-// Mercado Pago (formato a confirmar): "recebida" e "enviou" no mesmo aviso.
-const transferBoth = notice('com.mercadopago.wallet', 'Mercado Pago', 'Transferência recebida', 'Carlos Exemplo enviou R$ 75,00 para você.');
+// PicPay: "recebido" e "enviou", sem dizer para quem (sem "te", sem "para você"). O "Fulano te
+// enviou" do C68 deixou de ser dúvida (SPD-162): é entrada, e está mais abaixo.
+const picpaySent = notice(PICPAY, 'PicPay', 'Pix recebido', 'Ana Exemplo enviou R$ 20,00.');
+// Mercado Pago (formato a confirmar): "recebida" e "enviou" no mesmo aviso, sem "para você".
+const transferBoth = notice('com.mercadopago.wallet', 'Mercado Pago', 'Transferência recebida', 'Carlos Exemplo enviou R$ 75,00.');
 // Nubank: o cartão avisa que recebeu o pagamento, sem dizer de qual conta ele saiu (X-2).
 const nuInvoiceReceived = notice(NUBANK, 'Nubank', 'Pagamento recebido', 'Recebemos o pagamento da sua fatura no valor de R$ 1.500,00.');
 
@@ -202,7 +203,7 @@ describe('NOTIF-16: débito com um final desconhecido', () => {
 	});
 });
 
-describe('NOTIF-11: "Fulano te enviou" — entrou ou saiu?', () => {
+describe('NOTIF-11: "Fulano enviou" — entrou ou saiu?', () => {
 	it('PicPay: o aviso tem as duas pistas, e a direção vai para a revisão (antes: saída, sem dúvida nenhuma)', () => {
 		const parsed = parseCapture(picpaySent);
 		expect(parsed?.direction).toBe('out');
@@ -223,6 +224,58 @@ describe('NOTIF-11: "Fulano te enviou" — entrou ou saiu?', () => {
 			expect(parseCapture(raw)?.ambiguousDirection).toBeUndefined();
 			expect(ambiguityOf([], raw)).toBeNull();
 		}
+	});
+});
+
+describe('SPD-162: "Fulano te enviou" é entrada, sem dúvida', () => {
+	// O aviso do Inter de 12/11, com nome e conta inventados: Pix da conta PF de outro banco
+	// para a conta do Inter. Antes: saída (palpite), com a dúvida "recebido/enviou".
+	const interReceived = notice(
+		INTER,
+		'Inter',
+		'Pix recebido',
+		'Fulano Exemplo te enviou um Pix de R$ 291,65 creditado na sua conta final ***0000-0.'
+	);
+
+	it('o aviso do Inter: entrada, Pix recebido, R$ 291,65, sem pergunta', () => {
+		expect(parseCapture(interReceived)).toMatchObject({ direction: 'in', kind: 'pix_in', amountCents: 29_165 });
+		expect(parseCapture(interReceived)?.ambiguousDirection).toBeUndefined();
+		expect(ambiguityOf([interPF], interReceived)).toBeNull();
+	});
+
+	it.each([
+		['te enviou', notice(PICPAY, 'PicPay', 'Pix recebido', 'Ana Exemplo te enviou R$ 20,00.')],
+		['te mandou', notice(PICPAY, 'PicPay', 'PicPay', 'Ana Exemplo te mandou um Pix de R$ 20,00.')],
+		['enviou para você', notice('com.mercadopago.wallet', 'Mercado Pago', 'Transferência recebida', 'Carlos Exemplo enviou R$ 75,00 para você.')],
+		['enviou R$ 1.500,00 para você', notice(NUBANK, 'Nubank', 'Pix', 'Carlos Exemplo enviou R$ 1.500,00 para você.')],
+		['creditado na sua conta', notice(INTER, 'Inter', 'Pix', 'Pix de R$ 80,00 enviado por Fulano Exemplo e creditado na sua conta.')],
+		['"Transferência recebida" com "te enviou"', notice(INTER, 'Inter', 'Transferência recebida', 'Fulano Exemplo te enviou R$ 40,00 por TED.')],
+	])('%s: entrada, sem dúvida (antes: saída, palpite)', (_case, raw) => {
+		const parsed = parseCapture(raw);
+		expect(parsed?.direction).toBe('in');
+		expect(['pix_in', 'transfer_in']).toContain(parsed?.kind);
+		expect(parsed?.ambiguousDirection).toBeUndefined();
+		expect(ambiguityOf([], raw)).toBeNull();
+	});
+
+	it.each([
+		['"Você enviou" com "recebido"', notice(INTER, 'Inter', 'Pix enviado', 'Você enviou R$ 30,00 para Fulano Exemplo. O valor foi recebido na conta dele.')],
+		['"Pix enviado" com "recebida"', notice(INTER, 'Inter', 'Pix enviado', 'Pix enviado: R$ 30,00 para Fulano Exemplo. Confirmação recebida.')],
+	])('%s: continua saída, agora sem dúvida', (_case, raw) => {
+		const parsed = parseCapture(raw);
+		expect(parsed?.direction).toBe('out');
+		expect(parsed?.kind).toBe('pix_out');
+		expect(parsed?.ambiguousDirection).toBeUndefined();
+	});
+
+	it.each([
+		['"recebido" e "enviou" sem dizer para quem', picpaySent],
+		['"recebida" e "enviou" na transferência', transferBoth],
+		['as duas certezas no mesmo aviso', notice(INTER, 'Inter', 'Pix', 'Você enviou R$ 30,00 e o valor foi creditado na sua conta.')],
+		['"recebido" e "pagamento"', notice(INTER, 'Inter', 'Pix recebido', 'Pagamento de R$ 30,00 via Pix.')],
+	])('continua ambíguo: %s', (_case, raw) => {
+		expect(parseCapture(raw)?.ambiguousDirection).toBeDefined();
+		expect(ambiguityOf([], raw)?.case).toBe('pix_direction');
 	});
 });
 

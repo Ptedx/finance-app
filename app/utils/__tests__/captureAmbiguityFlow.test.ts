@@ -119,8 +119,10 @@ jest.mock('../../database/captures', () => ({
 import { log } from '../../diagnostics/log';
 import {
 	answerCaptureDirection,
+	answerCaptureTransfer,
 	confirmCapture,
 	ingestRawCaptures,
+	markCaptureTransfer,
 	resolveInvoicePaymentCapture,
 	revertCapture,
 } from '../captureActions';
@@ -324,10 +326,12 @@ describe('NOTIF-06 e NOTIF-15: qual cartão', () => {
 });
 
 describe('NOTIF-11: entrou ou saiu', () => {
-	it('pergunta a direção, aprende, e o próximo "te enviou" entra como entrada', async () => {
+	it('pergunta a direção, aprende, e o próximo "enviou" igual entra como entrada', async () => {
 		seed(picpay);
 		const store = memoryStore();
-		const sent = (who: string, amount: string) => notice(PICPAY, 'PicPay', 'Pix recebido', `${who} te enviou R$ ${amount}.`);
+		// "recebido" e "enviou" sem dizer para quem: a dúvida de verdade. O "te enviou" é entrada
+		// sem dúvida desde o SPD-162.
+		const sent = (who: string, amount: string) => notice(PICPAY, 'PicPay', 'Pix recebido', `${who} enviou R$ ${amount}.`);
 
 		// Antes: saída, pendente e sem pergunta nenhuma.
 		const first = await ingest(sent('Ana Exemplo', '20,00'), store);
@@ -341,12 +345,102 @@ describe('NOTIF-11: entrou ou saiu', () => {
 		const second = await ingest(sent('Bruno Exemplo', '35,00'), store);
 		expect(second).toMatchObject({ direction: 'in', kind: 'pix_in', reason: 'learned_pix_direction' });
 
-		// Confirmar sem tocar em "Entrou"/"Saiu" é aceitar a direção da tela: também ensina.
+		// Confirmar sem responder não grava nada (SPD-162): a saída da tela era só o palpite.
+		// Antes: virava despesa e ensinava "saiu" como regra.
 		const other = memoryStore();
 		const third = await ingest(sent('Carla Exemplo', '10,00'), other);
-		await confirmCapture(third.id, 'other_expense', CATEGORIES, undefined, other);
+		expect(await confirmCapture(third.id, 'other_expense', CATEGORIES, undefined, other)).toBeNull();
+		expect(other.data).toEqual({});
+		expect(liveTransactions()).toHaveLength(0);
+		expect(mockCaptures.get(third.id)).toMatchObject({ status: 'pending', direction: 'out' });
+
+		// Respondida, a confirmação passa, e a resposta (não o palpite) é a regra.
+		await answerCaptureDirection(third.id, 'out', other);
+		expect(await confirmCapture(third.id, 'other_expense', CATEGORIES, undefined, other)).not.toBeNull();
 		expect(Object.values(other.data)).toEqual(['out']);
 		expect(liveTransactions().at(-1)).toMatchObject({ isIncome: false });
+	});
+});
+
+describe('SPD-162: a revisão não grava a direção chutada', () => {
+	const fromInter = () =>
+		notice(
+			INTER,
+			'Inter',
+			'Pix recebido',
+			'Fulano Exemplo te enviou um Pix de R$ 291,65 creditado na sua conta final ***0000-0.'
+		);
+	// "recebido" e "enviou" sem dizer para quem: continua em dúvida.
+	const doubtful = () => notice(INTER, 'Inter', 'Pix recebido', 'Fulano Exemplo enviou R$ 291,65.');
+
+	it('o aviso do Inter de 12/11 (inventado): entrada, e "minhas contas" põe a conta do aviso como destino', async () => {
+		seed(interPF, nuPF);
+		const store = memoryStore();
+
+		const item = await ingest(fromInter(), store);
+		// Antes: saída com a dúvida "recebido/enviou", e a transferência saía do Inter.
+		expect(item).toMatchObject({ status: 'pending', direction: 'in', kind: 'pix_in', accountId: 'inter-pf', amountCents: 29_165 });
+		expect(item.reason).not.toBe('ambiguous_pix_direction');
+
+		await markCaptureTransfer(item.id, store);
+		expect(mockCaptures.get(item.id)).toMatchObject({ status: 'transfer', reason: 'manual' });
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: null, toAccountId: 'inter-pf', amountCents: 29_165 }),
+		]);
+	});
+
+	it('sem resposta, "minhas contas" não grava; respondido "entrou", a conta do aviso é o destino', async () => {
+		seed(interPF, nuPF);
+		const store = memoryStore();
+		const item = await ingest(doubtful(), store);
+		expect(item).toMatchObject({ status: 'pending', direction: 'out', reason: 'ambiguous_pix_direction' });
+
+		// Antes: transferência DO Inter para nada, com o palpite "saiu".
+		await markCaptureTransfer(item.id, store);
+		await answerCaptureTransfer(item.id, true, store);
+		expect(mockCaptures.get(item.id)).toMatchObject({ status: 'pending', transferId: null });
+		expect(liveTransfers()).toHaveLength(0);
+
+		await answerCaptureDirection(item.id, 'in', store);
+		await markCaptureTransfer(item.id, store);
+		expect(mockCaptures.get(item.id)).toMatchObject({ status: 'transfer' });
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: null, toAccountId: 'inter-pf', amountCents: 29_165 }),
+		]);
+	});
+
+	it('respondido "saiu", a conta do aviso é a origem', async () => {
+		seed(interPF, nuPF);
+		const store = memoryStore();
+		const item = await ingest(doubtful(), store);
+
+		await answerCaptureDirection(item.id, 'out', store);
+		await markCaptureTransfer(item.id, store);
+		expect(liveTransfers()).toEqual([
+			expect.objectContaining({ fromAccountId: 'inter-pf', toAccountId: null, amountCents: 29_165 }),
+		]);
+	});
+
+	it('sem a preferência das respostas, a dúvida conta como não respondida', async () => {
+		seed(interPF);
+		const item = await ingest(doubtful(), memoryStore());
+		expect(await confirmCapture(item.id, 'other_income', CATEGORIES)).toBeNull();
+		await markCaptureTransfer(item.id);
+		expect(liveTransactions()).toHaveLength(0);
+		expect(liveTransfers()).toHaveLength(0);
+	});
+
+	it('o item que a regra aprendida decidiu não é palpite: confirma direto', async () => {
+		seed(interPF);
+		const store = memoryStore();
+		const first = await ingest(doubtful(), store);
+		await answerCaptureDirection(first.id, 'in', store);
+
+		const second = await ingest(doubtful(), store);
+		expect(second).toMatchObject({ direction: 'in', reason: 'learned_pix_direction' });
+		if (second.status === 'pending') {
+			expect(await confirmCapture(second.id, 'other_income', CATEGORIES, undefined, store)).not.toBeNull();
+		}
 	});
 });
 

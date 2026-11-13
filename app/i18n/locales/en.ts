@@ -2116,6 +2116,7 @@ account: {
 		directionInHint: 'Marks this notification as money that came in',
 		directionOut: 'Went out',
 		directionOutHint: 'Marks this notification as money that went out',
+		directionFirst: 'Answer first: only then can you confirm it or mark it as a transfer',
 		invoiceQuestionTitle: 'Which account paid the bill?',
 		invoicePay: 'Record the payment from this account',
 		invoicePayHint:

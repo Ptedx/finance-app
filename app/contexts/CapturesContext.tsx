@@ -19,6 +19,7 @@ import {
 } from '../database/captures';
 import type { Capture } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
+import { ambiguityOfReason } from '../utils/ambiguityReasons';
 import type { SettledBill } from '../utils/billMatcher';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
@@ -34,6 +35,7 @@ import {
 	stopIgnoringApp,
 } from '../utils/captureActions';
 import { captureChoiceStore, getCaptureChoices } from '../utils/captureChoicePreference';
+import { isDirectionGuess } from '../utils/captureChoices';
 import { APP_IGNORE_THRESHOLD } from '../utils/captureMatcher';
 import type { CaptureDirection } from '../utils/captureParser';
 import { ownNamesOf } from '../utils/ownName';
@@ -96,6 +98,12 @@ interface CapturesContextType {
 	/** O aviso com pista de entrada e de saída (SPD-123): o usuário diz qual foi. */
 	answerDirection: (id: string, direction: CaptureDirection) => Promise<void>;
 	/**
+	 * Os pendentes que perguntam "entrou ou saiu" e já têm a resposta (SPD-162,
+	 * `isDirectionGuess`). Os outros desses estão com o palpite do parser: a revisão pergunta
+	 * antes de oferecer confirmar ou "minhas contas".
+	 */
+	answeredDirections: ReadonlySet<string>;
+	/**
 	 * "Recebemos o pagamento da fatura" (SPD-123): de qual conta saiu, ou `null` para não
 	 * lançar. `false` quando o item não é mais essa pergunta.
 	 */
@@ -126,6 +134,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [lastNotificationAt, setLastNotificationAt] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [lastAction, setLastAction] = useState<UndoableAction | null>(null);
+	const [answeredDirections, setAnsweredDirections] = useState<ReadonlySet<string>>(() => new Set());
 
 	const supported = useMemo(() => isCaptureSupported(), []);
 	const draining = useRef(false);
@@ -157,13 +166,23 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	const load = useCallback(async () => {
-		const [nextPending, nextResolved, count, nextIgnored, nextLastNotification] = await Promise.all([
+		const [nextPending, nextResolved, count, nextIgnored, nextLastNotification, choices] = await Promise.all([
 			getPendingCaptures(),
 			getResolvedCaptures(HISTORY_LIMIT),
 			countPendingCaptures(),
 			getIgnoredApps(APP_IGNORE_THRESHOLD),
 			getLastNotificationPostedAt(),
+			// Relidas a cada carga: a resposta acabou de ser gravada, ou chegou pelo sync.
+			getCaptureChoices(),
 		]);
+		setAnsweredDirections(
+			new Set(
+				nextPending
+					.filter((capture) => ambiguityOfReason(capture.reason)?.case === 'pix_direction')
+					.filter((capture) => !isDirectionGuess(capture, choices))
+					.map((capture) => capture.id)
+			)
+		);
 		setPending(nextPending);
 		setResolved(nextResolved);
 		setPendingCount(count);
@@ -283,7 +302,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const markTransfer = useCallback(
 		async (id: string) => {
 			const related = pending.find((c) => c.id === id)?.relatedId;
-			await markCaptureTransfer(id);
+			await markCaptureTransfer(id, captureChoiceStore);
 			remember('transfer', related ? [id, related] : [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
@@ -302,7 +321,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const answerTransfer = useCallback(
 		async (id: string, isTransfer: boolean) => {
 			const related = pending.find((c) => c.id === id)?.relatedId;
-			await answerCaptureTransfer(id, isTransfer);
+			await answerCaptureTransfer(id, isTransfer, captureChoiceStore);
 			if (isTransfer) remember('transfer', related ? [id, related] : [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
@@ -386,6 +405,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			answerDuplicate,
 			answerTransfer,
 			answerDirection,
+			answeredDirections,
 			resolveInvoicePayment,
 			revert,
 			unignoreApp,
@@ -410,6 +430,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			answerDuplicate,
 			answerTransfer,
 			answerDirection,
+			answeredDirections,
 			resolveInvoicePayment,
 			revert,
 			unignoreApp,

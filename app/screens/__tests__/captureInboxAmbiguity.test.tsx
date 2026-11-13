@@ -10,7 +10,12 @@
 const mockConfirm = jest.fn(async (..._args: unknown[]) => undefined);
 const mockAnswerDirection = jest.fn(async (..._args: unknown[]) => undefined);
 const mockResolveInvoice = jest.fn(async (..._args: unknown[]) => true);
-const mockData: { pending: unknown[]; accounts: unknown[] } = { pending: [], accounts: [] };
+const mockMarkTransfer = jest.fn(async (..._args: unknown[]) => undefined);
+const mockData: { pending: unknown[]; accounts: unknown[]; answeredDirections: Set<string> } = {
+	pending: [],
+	accounts: [],
+	answeredDirections: new Set(),
+};
 
 jest.mock('@react-native-async-storage/async-storage', () =>
 	require('@react-native-async-storage/async-storage/jest/async-storage-mock')
@@ -72,10 +77,11 @@ jest.mock('../../contexts/CapturesContext', () => ({
 		openSettings: jest.fn(),
 		confirm: mockConfirm,
 		dismiss: jest.fn(),
-		markTransfer: jest.fn(),
+		markTransfer: mockMarkTransfer,
 		answerDuplicate: jest.fn(),
 		answerTransfer: jest.fn(),
 		answerDirection: mockAnswerDirection,
+		answeredDirections: mockData.answeredDirections,
 		resolveInvoicePayment: mockResolveInvoice,
 		revert: jest.fn(),
 		unignoreApp: jest.fn(),
@@ -237,6 +243,8 @@ beforeEach(() => {
 	mockConfirm.mockClear();
 	mockAnswerDirection.mockClear();
 	mockResolveInvoice.mockClear();
+	mockMarkTransfer.mockClear();
+	mockData.answeredDirections.clear();
 });
 
 afterEach(() => {
@@ -250,15 +258,55 @@ describe('a pergunta "entrou ou saiu" (NOTIF-11)', () => {
 		await mount(capture({ reason: ambiguousReason('pix_direction'), accountId: CHECKING.id }));
 
 		expect(texts()).toContain('captures.directionQuestionTitle');
-		expect(pressable('captures.directionOut')?.props.accessibilityState).toEqual({ selected: true });
+		// Sem resposta, nenhum dos dois aparece escolhido (SPD-162). Antes: "Saiu" escolhido, o palpite.
+		expect(pressable('captures.directionOut')?.props.accessibilityState).toEqual({ selected: false });
 		expect(pressable('captures.directionIn')?.props.accessibilityState).toEqual({ selected: false });
 
 		await press('captures.directionIn');
 		expect(mockAnswerDirection).toHaveBeenCalledWith('cap-1', 'in');
 	});
 
+	it('sem resposta, a revisão pergunta antes: nem confirmar, nem "minhas contas" (SPD-162)', async () => {
+		await mount(capture({ reason: ambiguousReason('pix_direction'), accountId: CHECKING.id }));
+
+		expect(texts()).toContain('captures.directionFirst');
+		expect(tPt('captures.directionFirst')).not.toBe('');
+		expect(pressable('captures.confirm')).toBeUndefined();
+		expect(pressable('captures.transfer')).toBeUndefined();
+		// Descartar não grava direção nenhuma: continua.
+		expect(pressable('captures.dismiss')).toBeDefined();
+	});
+
+	it('sem resposta, a pergunta "é transferência?" espera a direção (SPD-162)', async () => {
+		await mount(
+			capture({ reason: ambiguousReason('pix_direction'), accountId: CHECKING.id, question: 'transfer' })
+		);
+		expect(texts()).not.toContain('captures.questionTransferTitle');
+		expect(pressable('captures.yesTransfer')).toBeUndefined();
+	});
+
+	it('respondida, as ações voltam, com a resposta escolhida', async () => {
+		mockData.answeredDirections.add('cap-1');
+		await mount(
+			capture({ reason: ambiguousReason('pix_direction'), accountId: CHECKING.id, direction: 'in', kind: 'pix_in' })
+		);
+
+		expect(texts()).not.toContain('captures.directionFirst');
+		expect(pressable('captures.directionIn')?.props.accessibilityState).toEqual({ selected: true });
+		expect(pressable('captures.directionOut')?.props.accessibilityState).toEqual({ selected: false });
+		await press('captures.transfer');
+		expect(mockMarkTransfer).toHaveBeenCalledWith('cap-1');
+	});
+
+	it('a regra aprendida não pergunta e não segura as ações', async () => {
+		await mount(capture({ reason: learnedReason('pix_direction'), accountId: CHECKING.id }));
+		expect(texts()).not.toContain('captures.directionQuestionTitle');
+		expect(pressable('captures.confirm')).toBeDefined();
+	});
+
 	it('a direção respondida troca a categoria sugerida para o lado certo', async () => {
 		await mount(capture({ reason: ambiguousReason('pix_direction'), accountId: CHECKING.id }));
+		mockData.answeredDirections.add('cap-1');
 		mockData.pending = [
 			capture({
 				reason: ambiguousReason('pix_direction'),
