@@ -5,25 +5,21 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import { Button, ChipGroup, Field } from '../components/cards/formParts';
+import { SelectField } from '../components/SelectField';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleDebt, useSampleForm } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { draftOf, useDebts } from '../contexts/DebtsContext';
 import type { AmortizationSystem, DebtDraft, DebtKind } from '../database/schema';
 import { formatMonthYear, todayISO } from '../utils/dateUtils';
-import {
-	annualRateBpOf,
-	buildSchedule,
-	DEFAULT_CONSORTIUM_ADJUSTMENT_BP,
-	debtStateOn,
-	impliedRateBp,
-	installmentFeeCents,
-	MAX_SCHEDULE_MONTHS,
-	monthlyRateOf,
-	principalFromRateCents,
-	termsOf,
-} from '../utils/debt';
-import { centsToDisplayInput, finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
+import { DEFAULT_CONSORTIUM_ADJUSTMENT_BP, debtStateOn, MAX_SCHEDULE_MONTHS, monthlyRateBpOf } from '../utils/debt';
+import { debtFieldsOfTerms, debtFormFieldsOf, deriveDebtForm, formRateBp, formTerms, type PrefilledRate, type RatePeriod } from '../utils/debtForm';
+import { finaliseAmountInput, formatAmountInput, formatCents, parseAmountToCents } from '../utils/money';
 import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/percent';
+import { SAMPLE_IDS } from '../utils/trailSample';
 
 /**
  * Cadastrar ou corrigir uma dívida.
@@ -37,18 +33,25 @@ import { bpToPercentInput, formatPercentBp, percentInputToBp } from '../utils/pe
  * Salvar ancora a dívida em hoje: os valores digitados são os de hoje. Numa dívida já
  * cadastrada, os campos já vêm com o saldo e o prazo projetados para hoje, então salvar
  * sem mexer não muda nada.
+ *
+ * Nas trilhas (SPD-147), a tela também mostra o exemplo só em memória: a dívida de exemplo
+ * (`debtId` de exemplo) ou o cadastro já preenchido com ela (`sampleForm`, o `exemplo=1` da
+ * rota), para a prévia aparecer. Com o exemplo, nada grava: salvar, quitar e excluir não fazem nada.
  */
-
-type RatePeriod = 'month' | 'year';
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
 
-const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
+const DebtEditScreen: React.FC<{ debtId?: string; sampleForm?: string }> = ({ debtId, sampleForm }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { debts, createDebt, saveDebt, removeDebt } = useDebts();
 	const { bankAccounts } = useAccounts();
-	const existing = useMemo(() => debts.find((debt) => debt.id === debtId), [debts, debtId]);
+	// O exemplo das trilhas (SPD-147): a dívida de exemplo, ou o cadastro preenchido com ela.
+	const formSample = useSampleForm(sampleForm);
+	const sample = useSampleDebt(formSample ? SAMPLE_IDS.debt : debtId);
+	const found = useMemo(() => debts.find((debt) => debt.id === debtId), [debts, debtId]);
+	const existing = formSample ? undefined : (sample ?? found);
+	const filled = existing ?? sample;
 	const today = todayISO();
 
 	const [kind, setKind] = useState<DebtKind>('financing');
@@ -61,31 +64,36 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const [balance, setBalance] = useState('');
 	const [rate, setRate] = useState('');
 	const [ratePeriod, setRatePeriod] = useState<RatePeriod>('month');
+	const [prefilledRate, setPrefilledRate] = useState<PrefilledRate | null>(null);
 	const [adjustment, setAdjustment] = useState(bpToPercentInput(DEFAULT_CONSORTIUM_ADJUSTMENT_BP));
 	const [adminFee, setAdminFee] = useState('');
 	const [accountId, setAccountId] = useState<string | null>(null);
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A trilha de dívidas (SPD-131) passa por aqui: a nova abre na hora; a cadastrada, quando a dívida chegou.
+	useScreenTour('debtEdit', { ready: debtId ? Boolean(existing) : true });
+	const tourScroll = useTourScroll('debtEdit');
 
-	// Uma dívida já cadastrada abre com o estado de hoje: saldo e prazo projetados.
+	// Uma dívida já cadastrada abre com o estado de hoje: saldo e prazo projetados. O cadastro
+	// de exemplo abre do mesmo jeito, com a dívida de exemplo.
 	useEffect(() => {
-		if (!existing) return;
-		const state = debtStateOn(termsOf(existing), today);
-		setKind(existing.kind);
-		setName(existing.name);
-		setSystem(existing.system === 'sac' ? 'sac' : 'price');
-		setInstallment(centsToDisplayInput(state.next?.installmentCents ?? existing.installmentCents));
-		setRemaining(String(state.remaining));
-		setTotal(String(existing.installmentsTotal));
-		setDueDay(String(existing.dueDay));
-		setBalance(centsToDisplayInput(state.balanceCents));
-		// Financiamento se fala ao mês: a taxa abre como no contrato.
-		setRate(bpToPercentInput(Math.round(monthlyRateOf(existing.rateBp) * 10_000)));
-		setRatePeriod('month');
-		if (existing.kind === 'consortium') setAdjustment(bpToPercentInput(existing.rateBp));
-		setAdminFee(existing.adminFeeBp !== null ? bpToPercentInput(existing.adminFeeBp) : '');
-		setAccountId(existing.accountId);
-	}, [existing, today]);
+		if (!filled) return;
+		const fields = debtFormFieldsOf(filled, today);
+		setKind(filled.kind);
+		setName(filled.name);
+		setSystem(filled.system === 'sac' ? 'sac' : 'price');
+		setInstallment(fields.installment);
+		setRemaining(fields.remaining);
+		setTotal(fields.total);
+		setDueDay(fields.dueDay);
+		setBalance(fields.balance);
+		setRate(fields.rate.text);
+		setRatePeriod(fields.rate.period);
+		setPrefilledRate(fields.rate);
+		if (fields.adjustment !== null) setAdjustment(fields.adjustment);
+		setAdminFee(fields.adminFee);
+		setAccountId(filled.accountId);
+	}, [filled, today]);
 
 	const isConsortium = kind === 'consortium';
 	const effectiveSystem: AmortizationSystem = isConsortium ? 'none' : system;
@@ -96,59 +104,20 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const validDueDay = Number.isInteger(dueDayNumber) && dueDayNumber >= 1 && dueDayNumber <= 31;
 
 	// A taxa digitada, sempre convertida para "ao ano" em pontos-base.
-	const typedRateBp = (() => {
-		const bp = percentInputToBp(rate, ratePeriod === 'month' ? 20 : 1_000);
-		if (bp === null) return null;
-		return ratePeriod === 'month' ? annualRateBpOf(bp / 10_000) : bp;
-	})();
+	const typedRateBp = formRateBp(rate, ratePeriod, prefilledRate);
 
-	/**
-	 * O que a tela deriva: o saldo, a taxa e os encargos que valem, e de onde cada um veio.
-	 * `rateBp` nulo = os números não fecham (a parcela não paga o saldo nessa taxa).
-	 */
-	const derived = useMemo((): { balanceCents: number; rateBp: number | null; feeCents: number; estimated: 'rate' | 'balance' | null } | null => {
-		if (installmentCents === null || installmentCents <= 0 || !validRemaining) return null;
-		if (isConsortium) {
-			const rateBp = percentInputToBp(adjustment, 100) ?? 0;
-			const typed = balance.trim() === '' ? null : parseAmountToCents(balance);
-			return { balanceCents: typed ?? installmentCents * remainingCount, rateBp, feeCents: 0, estimated: null };
-		}
-		const balanceCents = balance.trim() === '' ? null : parseAmountToCents(balance);
-		const hasBalance = balanceCents !== null && balanceCents > 0;
+	/** O que a tela deriva: o saldo, a taxa e os encargos que valem, e de onde cada um veio. */
+	const derived = useMemo(
+		() => deriveDebtForm({ system: effectiveSystem, installmentCents, remaining: remainingCount, validRemaining, balance, typedRateBp, adjustment }),
+		[installmentCents, validRemaining, adjustment, balance, remainingCount, effectiveSystem, typedRateBp]
+	);
 
-		if (hasBalance && typedRateBp !== null) {
-			// Os dois: o que a parcela cobra além da taxa é seguro e tarifa.
-			const fee = installmentFeeCents({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount, rateBp: typedRateBp });
-			const tolerance = Math.max(100, Math.round(installmentCents * 0.005));
-			if (fee < -tolerance) return { balanceCents, rateBp: null, feeCents: 0, estimated: null };
-			return { balanceCents, rateBp: typedRateBp, feeCents: fee > tolerance ? fee : 0, estimated: null };
-		}
-		if (hasBalance) {
-			const rateBp = impliedRateBp({ system: effectiveSystem, balanceCents, installmentCents, remaining: remainingCount });
-			return { balanceCents, rateBp, feeCents: 0, estimated: 'rate' };
-		}
-		if (typedRateBp === null) return null;
-		return {
-			balanceCents: principalFromRateCents({ system: effectiveSystem, installmentCents, remaining: remainingCount, rateBp: typedRateBp }),
-			rateBp: typedRateBp,
-			feeCents: 0,
-			estimated: 'balance',
-		};
-	}, [installmentCents, validRemaining, isConsortium, adjustment, balance, remainingCount, effectiveSystem, typedRateBp]);
-
+	// A prévia é o estado de hoje dos termos que salvar grava, pela mesma conta da tela da dívida.
 	const preview = useMemo(() => {
-		if (!derived || derived.rateBp === null || !validDueDay || installmentCents === null) return null;
-		const schedule = buildSchedule({
-			system: effectiveSystem,
-			balanceCents: derived.balanceCents,
-			balanceDate: today,
-			installmentCents,
-			remaining: remainingCount,
-			dueDay: dueDayNumber,
-			rateBp: derived.rateBp,
-			feeCents: derived.feeCents,
-		});
-		return { schedule, rateBp: derived.rateBp, balanceCents: derived.balanceCents };
+		if (!validDueDay) return null;
+		const terms = formTerms(derived, { system: effectiveSystem, installmentCents, remaining: remainingCount, dueDay: dueDayNumber, today });
+		if (!terms || !derived) return null;
+		return { terms, state: debtStateOn(terms, today), balanceCents: derived.balanceCents };
 	}, [derived, validDueDay, installmentCents, effectiveSystem, today, remainingCount, dueDayNumber]);
 
 	const previewText = (() => {
@@ -159,18 +128,18 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 		if (!isConsortium) {
 			lines.push(
 				t(derived.estimated === 'rate' ? 'debts.edit.previewRateEstimated' : 'debts.edit.previewRate', {
-					monthly: formatPercentBp(Math.round(monthlyRateOf(preview.rateBp) * 10_000), 2),
-					yearly: formatPercentBp(preview.rateBp),
+					monthly: formatPercentBp(monthlyRateBpOf(preview.terms.rateBp), 2),
+					yearly: formatPercentBp(preview.terms.rateBp),
 				})
 			);
 			if (derived.estimated === 'balance') lines.push(t('debts.edit.previewBalance', { amount: formatCents(preview.balanceCents) }));
 			if (derived.feeCents > 0) lines.push(t('debts.edit.previewFee', { amount: formatCents(derived.feeCents) }));
 		}
-		if (preview.schedule.payoffDate) {
+		if (preview.state.payoffDate) {
 			lines.push(
 				t(isConsortium ? 'debts.edit.previewPayoffConsortium' : 'debts.edit.previewPayoff', {
-					date: formatMonthYear(preview.schedule.payoffDate),
-					interest: formatCents(preview.schedule.totalInterestCents),
+					date: formatMonthYear(preview.state.payoffDate),
+					interest: formatCents(preview.state.interestAheadCents),
 				})
 			);
 		} else {
@@ -182,6 +151,7 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
 	const handleSave = async () => {
+		if (sample) return;
 		const next: Record<string, string | undefined> = {};
 		if (!name.trim()) next.name = t('debts.edit.errors.name');
 		if (installmentCents === null || installmentCents <= 0) next.installment = t('debts.edit.errors.installment');
@@ -189,30 +159,24 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 		const totalCount = total.trim() === '' ? remainingCount : Number(total);
 		if (!Number.isInteger(totalCount) || totalCount < remainingCount) next.total = t('debts.edit.errors.total');
 		if (!validDueDay) next.dueDay = t('debts.edit.errors.dueDay');
-		if (!derived || derived.rateBp === null || !preview?.schedule.amortizes) next.values = t('debts.edit.errors.values');
+		if (!derived || derived.rateBp === null || !preview?.state.amortizes) next.values = t('debts.edit.errors.values');
 		const adminFeeBp = adminFee.trim() === '' ? null : percentInputToBp(adminFee, 100);
 		if (adminFee.trim() !== '' && adminFeeBp === null) next.adminFee = t('debts.edit.errors.percent');
 
 		setErrors(next);
 		const messages = Object.values(next).filter(Boolean);
-		if (messages.length > 0 || !derived || derived.rateBp === null || installmentCents === null) {
+		if (messages.length > 0 || !preview) {
 			announce(messages.join('. '));
 			return;
 		}
 
+		// Grava exatamente os termos da prévia: o que ela mostrou é o que a tela da dívida vai mostrar.
 		const draft: DebtDraft = {
 			...(existing ? draftOf(existing) : { archived: false, sortOrder: debts.length, category: null }),
+			...debtFieldsOfTerms(preview.terms),
 			name: name.trim(),
 			kind,
-			system: effectiveSystem,
-			openingBalanceCents: derived.balanceCents,
-			openingBalanceDate: today,
-			installmentCents,
-			remainingAtOpening: remainingCount,
 			installmentsTotal: totalCount,
-			dueDay: dueDayNumber,
-			rateBp: derived.rateBp,
-			feeCents: derived.feeCents,
 			adminFeeBp: isConsortium ? adminFeeBp : null,
 			accountId,
 		};
@@ -234,14 +198,14 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	};
 
 	const handleArchive = async () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		await saveDebt(existing.id, { ...draftOf(existing), archived: !existing.archived });
 		announce(existing.archived ? t('debts.edit.unarchived') : t('debts.edit.archived'));
 		router.back();
 	};
 
 	const handleDelete = () => {
-		if (!existing) return;
+		if (!existing || sample) return;
 		Alert.alert(t('debts.edit.deleteTitle'), t('debts.edit.deleteBody', { name: existing.name }), [
 			{ text: t('debts.edit.cancel'), style: 'cancel' },
 			{
@@ -258,7 +222,8 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
-			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
+			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 				<View style={styles.header}>
 					<Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel={t('debts.back')} style={styles.iconButton}>
 						<Ionicons name="arrow-back" size={24} color="#FFFFFF" />
@@ -266,19 +231,23 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 						{existing ? t('debts.edit.title') : t('debts.edit.newTitle')}
 					</Text>
+					{debtId ? null : <HelpButton trail="debts" here={{ screen: 'debtNew' }} from="2" />}
 				</View>
+				{sample ? <SampleBanner /> : null}
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-					<ChipGroup<DebtKind>
-						label={t('debts.edit.kind')}
-						options={[
-							{ value: 'financing', label: t('debts.kind.financing') },
-							{ value: 'consortium', label: t('debts.kind.consortium') },
-							{ value: 'loan', label: t('debts.kind.loan') },
-						]}
-						selected={kind}
-						onSelect={setKind}
-					/>
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+					<TourTarget id="debtEdit.kind">
+						<ChipGroup<DebtKind>
+							label={t('debts.edit.kind')}
+							options={[
+								{ value: 'financing', label: t('debts.kind.financing') },
+								{ value: 'consortium', label: t('debts.kind.consortium') },
+								{ value: 'loan', label: t('debts.kind.loan') },
+							]}
+							selected={kind}
+							onSelect={setKind}
+						/>
+					</TourTarget>
 
 					<Field
 						label={t('debts.edit.name')}
@@ -290,29 +259,33 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					/>
 
 					{!isConsortium ? (
-						<ChipGroup<'price' | 'sac'>
-							label={t('debts.edit.system')}
-							hint={t('debts.edit.systemHint')}
-							options={[
-								{ value: 'price', label: t('debts.system.price') },
-								{ value: 'sac', label: t('debts.system.sac') },
-							]}
-							selected={system}
-							onSelect={setSystem}
-						/>
+						<TourTarget id="debtEdit.system">
+							<ChipGroup<'price' | 'sac'>
+								label={t('debts.edit.system')}
+								hint={t('debts.edit.systemHint')}
+								options={[
+									{ value: 'price', label: t('debts.system.price') },
+									{ value: 'sac', label: t('debts.system.sac') },
+								]}
+								selected={system}
+								onSelect={setSystem}
+							/>
+						</TourTarget>
 					) : null}
 
-					<Field
-						label={system === 'sac' && !isConsortium ? t('debts.edit.nextInstallment') : t('debts.edit.installment')}
-						value={installment}
-						onChangeText={(text) => setInstallment(formatAmountInput(text))}
-						onBlur={() => setInstallment(finaliseAmountInput(installment))}
-						keyboardType="decimal-pad"
-						selectTextOnFocus
-						error={errors.installment}
-					/>
+					<TourTarget id="debtEdit.installment">
+						<Field
+							label={system === 'sac' && !isConsortium ? t('debts.edit.nextInstallment') : t('debts.edit.installment')}
+							value={installment}
+							onChangeText={(text) => setInstallment(formatAmountInput(text))}
+							onBlur={() => setInstallment(finaliseAmountInput(installment))}
+							keyboardType="decimal-pad"
+							selectTextOnFocus
+							error={errors.installment}
+						/>
+					</TourTarget>
 
-					<View style={styles.twoColumns}>
+					<TourTarget id="debtEdit.remaining" style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
 								label={t('debts.edit.remaining')}
@@ -335,16 +308,18 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 								error={errors.total}
 							/>
 						</View>
-					</View>
+					</TourTarget>
 
-					<Field
-						label={t('debts.edit.dueDay')}
-						value={dueDay}
-						onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
-						keyboardType="number-pad"
-						maxLength={2}
-						error={errors.dueDay}
-					/>
+					<TourTarget id="debtEdit.dueDay">
+						<Field
+							label={t('debts.edit.dueDay')}
+							value={dueDay}
+							onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
+							keyboardType="number-pad"
+							maxLength={2}
+							error={errors.dueDay}
+						/>
+					</TourTarget>
 
 					{isConsortium ? (
 						<>
@@ -358,14 +333,16 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 								keyboardType="decimal-pad"
 								selectTextOnFocus
 							/>
-							<Field
-								label={t('debts.edit.adjustment')}
-								hint={t('debts.edit.adjustmentHint')}
-								value={adjustment}
-								onChangeText={setAdjustment}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
+							<TourTarget id="debtEdit.adjustment">
+								<Field
+									label={t('debts.edit.adjustment')}
+									hint={t('debts.edit.adjustmentHint')}
+									value={adjustment}
+									onChangeText={setAdjustment}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
 							<Field
 								label={t('debts.edit.adminFee')}
 								optionalLabel={t('debts.edit.optional')}
@@ -378,41 +355,49 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 						</>
 					) : (
 						<>
-							<Field
-								label={t('debts.edit.balance')}
-								hint={t('debts.edit.balanceHint')}
-								optionalLabel={t('debts.edit.optional')}
-								value={balance}
-								onChangeText={(text) => setBalance(formatAmountInput(text))}
-								onBlur={() => setBalance(balance.trim() === '' ? '' : finaliseAmountInput(balance))}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
-							<Field
-								label={t('debts.edit.rate')}
-								hint={t('debts.edit.rateHint')}
-								optionalLabel={t('debts.edit.optional')}
-								value={rate}
-								onChangeText={setRate}
-								keyboardType="decimal-pad"
-								selectTextOnFocus
-							/>
-							<ChipGroup<RatePeriod>
-								label={t('debts.edit.ratePeriod')}
-								options={[
-									{ value: 'month', label: t('debts.edit.perMonth') },
-									{ value: 'year', label: t('debts.edit.perYear') },
-								]}
-								selected={ratePeriod}
-								onSelect={setRatePeriod}
-							/>
+							<TourTarget id="debtEdit.balance">
+								<Field
+									label={t('debts.edit.balance')}
+									hint={t('debts.edit.balanceHint')}
+									optionalLabel={t('debts.edit.optional')}
+									value={balance}
+									onChangeText={(text) => setBalance(formatAmountInput(text))}
+									onBlur={() => setBalance(balance.trim() === '' ? '' : finaliseAmountInput(balance))}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.rate">
+								<Field
+									label={t('debts.edit.rate')}
+									hint={t('debts.edit.rateHint')}
+									optionalLabel={t('debts.edit.optional')}
+									value={rate}
+									onChangeText={setRate}
+									keyboardType="decimal-pad"
+									selectTextOnFocus
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.ratePeriod">
+								<ChipGroup<RatePeriod>
+									label={t('debts.edit.ratePeriod')}
+									options={[
+										{ value: 'month', label: t('debts.edit.perMonth') },
+										{ value: 'year', label: t('debts.edit.perYear') },
+									]}
+									selected={ratePeriod}
+									onSelect={setRatePeriod}
+								/>
+							</TourTarget>
 						</>
 					)}
 
 					{previewText ? (
-						<Text style={[styles.preview, derived?.rateBp === null && styles.previewWarning]} accessibilityLiveRegion="polite">
-							{previewText}
-						</Text>
+						<TourTarget id="debtEdit.preview">
+							<Text style={[styles.preview, derived?.rateBp === null && styles.previewWarning]} accessibilityLiveRegion="polite">
+								{previewText}
+							</Text>
+						</TourTarget>
 					) : null}
 					{errors.values ? (
 						<Text style={styles.error} accessibilityLiveRegion="polite">
@@ -421,27 +406,35 @@ const DebtEditScreen: React.FC<{ debtId?: string }> = ({ debtId }) => {
 					) : null}
 
 					{bankAccounts.length > 0 ? (
-						<ChipGroup<string>
-							label={t('debts.edit.account')}
-							hint={t('debts.edit.accountHint')}
-							options={bankAccounts.map((account) => ({ value: account.id, label: account.name, color: account.color }))}
-							selected={accountId}
-							onSelect={(value) => setAccountId(value === accountId ? null : value)}
-						/>
+						<TourTarget id="debtEdit.account">
+							<SelectField
+								label={t('debts.edit.account')}
+								hint={t('debts.edit.accountHint')}
+								options={accountSelectOptions(bankAccounts)}
+								selected={accountId}
+								onSelect={setAccountId}
+								clearLabel={t('select.none')}
+								onClear={() => setAccountId(null)}
+							/>
+						</TourTarget>
 					) : null}
 
-					<Button label={t('debts.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
+					<Button label={t('debts.edit.save')} onPress={handleSave} disabled={saving || Boolean(sample)} icon="checkmark" />
 
 					{existing ? (
 						<View style={styles.secondary}>
-							<Button
-								label={existing.archived ? t('debts.edit.unarchive') : t('debts.edit.archive')}
-								hint={t('debts.edit.archiveHint')}
-								onPress={handleArchive}
-								variant="secondary"
-								icon={existing.archived ? 'arrow-undo-outline' : 'checkmark-done-outline'}
-							/>
-							<Button label={t('debts.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							<TourTarget id="debtEdit.archive">
+								<Button
+									label={existing.archived ? t('debts.edit.unarchive') : t('debts.edit.archive')}
+									hint={t('debts.edit.archiveHint')}
+									onPress={handleArchive}
+									variant="secondary"
+									icon={existing.archived ? 'arrow-undo-outline' : 'checkmark-done-outline'}
+								/>
+							</TourTarget>
+							<TourTarget id="debtEdit.delete">
+								<Button label={t('debts.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							</TourTarget>
 						</View>
 					) : null}
 				</ScrollView>

@@ -6,11 +6,16 @@
  * vencimento segue a regra da conta: dia 31 em mês de 30, e 29/30/31 em fevereiro, caem no
  * último dia do mês.
  *
- * O agendamento no aparelho fica em `notificationUtils.scheduleBillReminders`; aqui é só a
- * conta, para dar para testar em qualquer fuso.
+ * A fatura do cartão avisa igual, só 3 dias antes e no dia, com o valor que falta pagar
+ * dela (`cardReminders`, mais abaixo).
+ *
+ * O agendamento no aparelho fica em `notificationUtils.scheduleBillReminders` (e
+ * `scheduleCardReminders`); aqui é só a conta, para dar para testar em qualquer fuso.
  */
 
-import type { Bill } from '../database/schema';
+import type { Bill, BillPayment } from '../database/schema';
+import { paymentFor } from './billPayments';
+import { type CardSummary, invoiceDueCents } from './cardMath';
 import {
 	addDays,
 	buildClampedDate,
@@ -22,7 +27,8 @@ import {
 
 export type BillReminderKind = 'soon' | 'today' | 'late';
 
-export type BillStatus = 'paid' | 'upcoming' | 'due_today' | 'late';
+/** `skipped`: o usuário disse "Não vou pagar este mês" (SPD-146) — nem pago, nem atrasado. */
+export type BillStatus = 'paid' | 'skipped' | 'upcoming' | 'due_today' | 'late';
 
 export interface BillReminder {
 	billId: string;
@@ -65,6 +71,45 @@ export const billDueDate = (bill: Pick<Bill, 'dueDay'>, month: string): string =
 const isMonthPaid = (bill: Pick<Bill, 'paidThrough'>, month: string): boolean =>
 	bill.paidThrough !== null && bill.paidThrough !== undefined && bill.paidThrough >= month;
 
+/**
+ * Até quantos meses antes do corrente uma conta em aberto ainda conta como atrasada (SPD-145).
+ * Quem nunca tocou em "Já paguei" pode ter um `paidThrough` muito antigo: sem o limite, veria
+ * dezenas de meses vermelhos de uma vez.
+ */
+export const BILL_OVERDUE_MONTHS = 3;
+
+/**
+ * O mês em aberto mais antigo de uma conta, visto do mês `current` (`YYYY-MM`): o seguinte ao
+ * pago (`paidThrough + 1`), nunca antes de 3 meses atrás. É por ele que "Já paguei", a baixa
+ * automática e o "Em atraso" andam, um mês por vez. Sem mês pago nenhum (a conta de dívida
+ * que ainda não ganhou o mês de partida), o corrente: o passado não vira atraso.
+ *
+ * Como o modelo é "pago até", os meses antes dele contam como pagos — inclusive os de antes
+ * do começo da conta e os além do limite.
+ */
+export const firstOpenMonth = (bill: Pick<Bill, 'paidThrough'>, current: string): string => {
+	if (bill.paidThrough === null || bill.paidThrough === undefined) return current;
+	const next = shiftMonthKey(bill.paidThrough, 1);
+	const floor = shiftMonthKey(current, -BILL_OVERDUE_MONTHS);
+	return next > floor ? next : floor;
+};
+
+/**
+ * O mês em aberto mais antigo contando os registros (SPD-146): a partir de `firstOpenMonth`,
+ * pula os meses que já têm registro — o pulado e o pago fora de ordem. É por ele que "Já
+ * paguei", a baixa automática e o "Em atraso" andam quando há registros. Sem registro, é o
+ * próprio `firstOpenMonth`.
+ */
+export const firstUnsettledMonth = (
+	bill: Pick<Bill, 'id' | 'paidThrough'>,
+	current: string,
+	payments: readonly BillPayment[] = []
+): string => {
+	let month = firstOpenMonth(bill, current);
+	while (paymentFor(payments, bill.id, month)) month = shiftMonthKey(month, 1);
+	return month;
+};
+
 /** Conta que pode avisar: ativa e não apagada. */
 const isLive = (bill: Bill): boolean => bill.active && !bill.deletedAt;
 
@@ -79,9 +124,17 @@ const atReminderHour = (isoDate: string): Date => {
  *
  * Só entram horários depois de `now`. Um vencimento que já passou sem ser pago ainda gera
  * os avisos de atraso que faltam (até D+3); conta inativa, apagada ou com o mês pago não
- * gera nada daquele mês.
+ * gera nada daquele mês. Passado o D+3, o atraso não avisa mais: quem lembra dele até ser
+ * quitado é a linha "Em atraso" da tela inicial (SPD-145). Um mês anterior em aberto não
+ * cala os avisos do mês corrente, que segue sem pagar.
+ *
+ * O mês com registro (`payments`, SPD-146) — pulado ou pago fora de ordem — também não avisa.
  */
-export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
+export const billReminders = (
+	bills: Bill[],
+	now: Date,
+	payments: readonly BillPayment[] = []
+): BillReminder[] => {
 	const horizon = new Date(now);
 	horizon.setDate(horizon.getDate() + BILL_REMINDER_HORIZON_DAYS);
 
@@ -96,7 +149,7 @@ export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
 		if (!isLive(bill)) continue;
 
 		for (const month of months) {
-			if (isMonthPaid(bill, month)) continue;
+			if (isMonthPaid(bill, month) || paymentFor(payments, bill.id, month)) continue;
 
 			const dueDate = billDueDate(bill, month);
 
@@ -114,14 +167,128 @@ export const billReminders = (bills: Bill[], now: Date): BillReminder[] => {
 
 /**
  * Situação de uma conta num mês `YYYY-MM`, vista do dia `today` (`YYYY-MM-DD`, data local
- * do calendário, como `todayISO()`).
+ * do calendário, como `todayISO()`). Pago é o mês antes do mais antigo em aberto
+ * (`firstOpenMonth`): o atraso vai no máximo 3 meses para trás, e a conta sem mês pago não
+ * tem passado atrasado.
+ *
+ * Com registro do mês (SPD-146): o pulado é `skipped`, mesmo dentro do trecho pago — um app
+ * antigo pode ter passado `paidThrough` por cima dele —; o pago fora de ordem é `paid`, mesmo
+ * depois de `paidThrough` — um app antigo pode tê-lo baixado. `paidThrough` é piso: o que
+ * está antes dele, sem registro, está pago.
  */
-export const billStatus = (bill: Bill, month: string, today: string): BillStatus => {
-	if (isMonthPaid(bill, month)) return 'paid';
+export const billStatus = (
+	bill: Bill,
+	month: string,
+	today: string,
+	payments: readonly BillPayment[] = []
+): BillStatus => {
+	const record = paymentFor(payments, bill.id, month);
+	if (record?.status === 'skipped') return 'skipped';
+	if (record || month < firstOpenMonth(bill, monthKeyOf(today.slice(0, 10)))) return 'paid';
 
 	const dueDate = billDueDate(bill, month);
 	const day = today.slice(0, 10);
 	if (day < dueDate) return 'upcoming';
 	if (day === dueDate) return 'due_today';
 	return 'late';
+};
+
+// ---------------------------------------------------------------------------
+// Fatura do cartão
+// ---------------------------------------------------------------------------
+
+/**
+ * Lembrete da fatura do cartão: 3 dias antes do vencimento ('soon') e no dia ('today'),
+ * às 09:00, como as contas a pagar. Sem os de atraso: a fatura vencida já aparece na tela
+ * do cartão, e o banco cobra encargo, não o app.
+ */
+export type CardReminderKind = 'soon' | 'today';
+
+/** O cartão com o resumo que o app já calcula para ele (`buildCardSummary`). */
+export interface CardReminderSource {
+	cardId: string;
+	name: string;
+	summary: Pick<CardSummary, 'configured' | 'openCycle' | 'closedCycle' | 'toPayCents' | 'invoices'>;
+}
+
+export interface CardReminder {
+	cardId: string;
+	kind: CardReminderKind;
+	/** Instante do aviso: 09:00 locais do dia do aviso. */
+	at: Date;
+	/** A fatura, `YYYY-MM` do mês em que fecha (o nome dela). */
+	invoice: string;
+	/** Vencimento, `YYYY-MM-DD`, já empurrado para dia útil. */
+	dueDate: string;
+	/** Dias até o vencimento: 3 no 'soon', 0 no 'today'. */
+	n: number;
+	/** O que falta pagar da fatura no momento da conta. */
+	amountCents: number;
+}
+
+const CARD_OFFSETS: { kind: CardReminderKind; offset: number }[] = [
+	{ kind: 'soon', offset: -3 },
+	{ kind: 'today', offset: 0 },
+];
+
+/**
+ * As faturas de um cartão que ainda vão vencer com algo a pagar, com o valor que a tela do
+ * cartão mostra — o "falta pagar" de `invoiceDueCents`, a mesma regra da tela:
+ *
+ * - a **fechada**: o "a pagar" (`toPayCents`) — o devido menos o que já caiu na aberta, já
+ *   descontados os pagamentos; pagamento parcial deixa o resto;
+ * - a **aberta** (a fechar): o valor dela menos o crédito que chegou de faturas anteriores
+ *   e o que sobrou de pagamento antecipado (`paidCents`). Até fechar, o valor pode crescer:
+ *   a agenda é refeita a cada recarga das faturas.
+ *
+ * Pagamento datado até a fatura informada (a âncora) já está no valor dela e não abate
+ * (E2E-41: o aviso dizia R$ 400 onde a tela dizia R$ 1.634,56).
+ */
+export const cardInvoicesDue = (
+	summary: CardReminderSource['summary']
+): { invoice: string; dueDate: string; amountCents: number }[] => {
+	if (!summary.configured) return [];
+	const due: { invoice: string; dueDate: string; amountCents: number }[] = [];
+
+	const closed = summary.invoices.find((invoice) => invoice.offset === -1);
+	const closedDue = closed ? invoiceDueCents(closed, summary) : summary.toPayCents;
+	if (summary.closedCycle && closedDue > 0) {
+		due.push({
+			invoice: summary.closedCycle.key,
+			dueDate: summary.closedCycle.dueDate,
+			amountCents: closedDue,
+		});
+	}
+
+	const open = summary.invoices.find((invoice) => invoice.offset === 0);
+	if (summary.openCycle && open) {
+		const charged = invoiceDueCents(open, summary);
+		if (charged > 0) {
+			due.push({ invoice: summary.openCycle.key, dueDate: summary.openCycle.dueDate, amountCents: charged });
+		}
+	}
+
+	return due;
+};
+
+/**
+ * Lembretes das faturas dos próximos 45 dias, em ordem de horário. Só entram horários
+ * depois de `now`; fatura paga (ou coberta por pagamento) não gera nada.
+ */
+export const cardReminders = (cards: CardReminderSource[], now: Date): CardReminder[] => {
+	const horizon = new Date(now);
+	horizon.setDate(horizon.getDate() + BILL_REMINDER_HORIZON_DAYS);
+
+	const reminders: CardReminder[] = [];
+	for (const card of cards) {
+		for (const { invoice, dueDate, amountCents } of cardInvoicesDue(card.summary)) {
+			for (const { kind, offset } of CARD_OFFSETS) {
+				const at = atReminderHour(addDays(dueDate, offset));
+				if (at <= now || at > horizon) continue;
+				reminders.push({ cardId: card.cardId, kind, at, invoice, dueDate, n: Math.abs(offset), amountCents });
+			}
+		}
+	}
+
+	return reminders.sort((a, b) => a.at.getTime() - b.at.getTime());
 };

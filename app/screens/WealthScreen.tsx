@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import DebtsPanel from '../components/wealth/DebtsPanel';
 import NetWorthCard from '../components/wealth/NetWorthCard';
 import PrioritiesCard from '../components/wealth/PrioritiesCard';
@@ -9,14 +10,15 @@ import ReserveCard from '../components/wealth/ReserveCard';
 import ReserveSheet from '../components/wealth/ReserveSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
+import { useMirai } from '../contexts/MiraiContext';
 import type { Debt } from '../database/schema';
 import { useReportsData } from '../hooks/useReportsData';
 import { useReserveGoal } from '../hooks/useReserveGoal';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { netWorth } from '../utils/accountMath';
-import { effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
+import { comparisonYield, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
 import { todayISO } from '../utils/dateUtils';
-import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 
 /**
  * Patrimônio: o que você tem e o que você deve.
@@ -33,7 +35,7 @@ import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
 const WealthScreen = () => {
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
-	const { overview, cardSummaries, refresh: refreshAccounts } = useAccounts();
+	const { overview, cardSummaries, cdi, refresh: refreshAccounts } = useAccounts();
 	const { debts, summary, refresh: refreshDebts } = useDebts();
 	const { goal } = useRetirementGoal();
 	const { goal: reserveGoal, save: saveReserveGoal } = useReserveGoal();
@@ -41,9 +43,19 @@ const WealthScreen = () => {
 	// cascata da reserva, o capital e o saldo das dívidas são os de hoje —, e as médias
 	// precisam terminar no mesmo lugar. Com o mês selecionado, escolher dezembro mudava a
 	// meta da reserva, o "em quantos meses enche" e a data da aposentadoria.
-	const { reserve, reserveComputedCostCents, priorities, refresh: refreshReports } = useReportsData(3, goal, 'today');
+	const { reserve, reserveComputedCostCents, priorities, isLoading, refresh: refreshReports } = useReportsData(3, goal, 'today');
 	const [editingReserve, setEditingReserve] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
+	// O guia do Patrimônio (SPD-129): abre carregado e sem a folha da reserva aberta.
+	useScreenTour('wealth', { ready: !isLoading, blocked: editingReserve });
+	// O dia da meta do Mirai (SPD-163, §7.1): a reserva que passa a estar completa deixa o botão
+	// comemorando até o fim do dia.
+	const noteReserveReady = useMirai()?.noteReserveReady;
+	const reserveReady = reserve.status === 'ready';
+	useEffect(() => {
+		if (!isLoading) noteReserveReady?.(reserveReady);
+	}, [isLoading, reserveReady, noteReserveReady]);
+	const tourScroll = useTourScroll('wealth');
 
 	const cardsCents = useMemo(() => {
 		let total = 0;
@@ -61,8 +73,9 @@ const WealthScreen = () => {
 	};
 	const worth = netWorth({ ...parts, savedCents: overview.savedCents });
 
-	// O rendimento contra o qual cada dívida é comparada: o da meta, ou 10% sem meta.
-	const yieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
+	// O rendimento contra o qual cada dívida é comparada: o da meta, o CDI em uso ou 10% —
+	// o mesmo da tela da dívida, para o chip e o veredito de lá não discordarem.
+	const yieldBp = comparisonYield({ goalYieldBp: goal?.expectedYieldBp, cdiAnnualBp: cdi?.annualBp }).yieldBp;
 	const verdictOf = useCallback(
 		(debt: Debt) => worthPayingOff({ debtRateBp: effectiveRateBp(termsOf(debt), todayISO()), investmentYieldBp: yieldBp }).verdict,
 		[yieldBp]
@@ -81,21 +94,32 @@ const WealthScreen = () => {
 		<View style={styles.container}>
 			<StatusBar barStyle="light-content" />
 			<View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-				<Text style={styles.headerTitle} accessibilityRole="header">
-					{t('netWorth.screenTitle')}
-				</Text>
+				<TourTarget id="wealth.title">
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('netWorth.screenTitle')}
+					</Text>
+				</TourTarget>
 				<Text style={styles.headerSubtitle}>{t('netWorth.screenSubtitle')}</Text>
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#15E8FE" colors={['#15E8FE']} />}
 			>
-				<NetWorthCard worth={worth} parts={parts} />
-				<PrioritiesCard items={priorities} reserveMonths={reserve.targetMonths} />
-				<ReserveCard reserve={reserve} onEdit={() => setEditingReserve(true)} />
-				<DebtsPanel debts={debts} summary={summary} verdictOf={verdictOf} />
+				<TourTarget id="wealth.networth">
+					<NetWorthCard worth={worth} parts={parts} />
+				</TourTarget>
+				<TourTarget id="wealth.priorities">
+					<PrioritiesCard items={priorities} reserveMonths={reserve.targetMonths} />
+				</TourTarget>
+				<TourTarget id="wealth.reserve">
+					<ReserveCard reserve={reserve} onEdit={() => setEditingReserve(true)} />
+				</TourTarget>
+				<TourTarget id="wealth.debts">
+					<DebtsPanel debts={debts} summary={summary} verdictOf={verdictOf} />
+				</TourTarget>
 			</ScrollView>
 
 			<ReserveSheet
@@ -130,7 +154,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 120,
+		// O respiro do botão do Mirai (SPD-163), que já passa da barra de abas.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 	},
 });
 

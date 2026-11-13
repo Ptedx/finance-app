@@ -151,6 +151,24 @@ describe('o que o AsyncStorage tem e a tabela não', () => {
 		expect(writes).toEqual([{ key: CURRENCY, value: 'x', updatedAt: NOW, deletedAt: null }]);
 	});
 
+	// SPD-127: o carimbo das preferências é o mesmo `nextStamp` das outras tabelas, que
+	// compara pelo instante. O `stampAfter` de antes comparava o texto.
+	it('linha no futuro: a mudança sai 1 ms depois dela, não com agora', () => {
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: '2026-10-26T10:00:00.000Z' })], { [CURRENCY]: 'y' }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'y', updatedAt: '2026-10-26T10:00:00.001Z', deletedAt: null }]);
+	});
+
+	it('carimbo com fuso mais novo que agora: passa dele pelo instante, não pela ordem do texto', () => {
+		// 08:00 em −03:00 é 11:00Z, uma hora depois de agora; no texto, "…T08" vem antes de "…T10".
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: '2026-10-24T08:00:00-03:00' })], { [CURRENCY]: 'y' }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'y', updatedAt: '2026-10-24T11:00:00.001Z', deletedAt: null }]);
+	});
+
+	it('carimbo ilegível na linha não derruba a reconciliação: vale como ausente e a mudança sai com agora', () => {
+		const writes = planPreferenceReconcile([row(CURRENCY, 'x', { updatedAt: 'lixo' })], { [CURRENCY]: null }, NOW);
+		expect(writes).toEqual([{ key: CURRENCY, value: 'x', updatedAt: NOW, deletedAt: NOW }]);
+	});
+
 	it('nada mudou, nada a gravar; e o que não é sincronizado é ignorado', () => {
 		expect(
 			planPreferenceReconcile([row(CURRENCY, 'x')], { [CURRENCY]: 'x', [STORAGE_KEYS.captureAccessDismissed]: '1' }, NOW)
@@ -177,14 +195,14 @@ describe('o push de preferências', () => {
 		expect(sent.preferences).toEqual([preference(CURRENCY)]);
 	});
 
-	it('o aceito fica limpo; o recusado continua', async () => {
+	it('o aceito fica limpo; o recusado por inválido continua (o `stale` sai limpo: ver staleSql.test.ts)', async () => {
 		(getDirtyChanges as jest.Mock)
 			.mockResolvedValueOnce(emptyChanges({ preferences: [preference(CURRENCY), preference(STORAGE_KEYS.language)] }))
 			.mockResolvedValue(emptyChanges());
 		(api.push as jest.Mock).mockResolvedValue({
 			serverTime: '2026-10-24T00:00:00.000Z',
 			applied: 1,
-			rejected: [{ collection: 'preferences', id: STORAGE_KEYS.language, reason: 'stale' }],
+			rejected: [{ collection: 'preferences', id: STORAGE_KEYS.language, reason: 'invalid', message: 'valor longo demais' }],
 		});
 
 		await pushAll();

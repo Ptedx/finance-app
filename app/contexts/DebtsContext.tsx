@@ -3,8 +3,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { AppState } from 'react-native';
 import { addDebt, deleteDebt, ensureDebtBills, getBills, getDebts, initDatabase, updateBill, updateDebt } from '../database/database';
 import type { Debt, DebtDraft } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import { emitBillsChanged } from '../utils/billEvents';
+import { emitBillsChanged, onBillsChanged } from '../utils/billEvents';
 import { billDraftOf, dueDatePassed, initialPaidThrough, needsInitialPaidThrough } from '../utils/billRules';
 import { todayISO } from '../utils/dateUtils';
 import { type DebtsSummary, type ExtraPaymentResult, summarizeDebts, termsAfterExtraPayment, termsOf } from '../utils/debt';
@@ -60,6 +61,12 @@ export const draftOf = (debt: Debt): DebtDraft => ({
 });
 
 /**
+ * Ligado enquanto este contexto dá o próprio aviso: as contas a pagar que ele gravou não
+ * mudam as dívidas, e reler com esse aviso recomeçaria a volta (ler, garantir, avisar).
+ */
+let selfNotifying = false;
+
+/**
  * As contas a pagar das dívidas, alinhadas à lista inteira de dívidas. A conta que
  * `ensureDebtBills` acabou de criar nasce sem mês pago; ela ganha o mês de partida pelo
  * padrão da tela de contas ("este mês já está pago?" → sim quando o vencimento deste mês já
@@ -75,7 +82,12 @@ const syncDebtBills = async (debts: Debt[]): Promise<void> => {
 	}
 	if (written === 0) return;
 	syncQueue.schedule();
-	emitBillsChanged();
+	selfNotifying = true;
+	try {
+		emitBillsChanged();
+	} finally {
+		selfNotifying = false;
+	}
 };
 
 export const DebtsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -108,6 +120,19 @@ export const DebtsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 		});
 		return () => subscription.remove();
 	}, [refresh]);
+
+	// Juntar contas leva a dívida da conta que sai e avisa que as contas a pagar mudaram
+	// (SPD-099): a cópia velha devolveria a dívida à conta apagada na próxima gravação.
+	useEffect(
+		() =>
+			onBillsChanged(() => {
+				if (!selfNotifying) void refresh();
+			}),
+		[refresh]
+	);
+
+	// O banco mudou por fora: "Apagar todos os dados", importar um backup, "puxar da conta".
+	useAfterPull(refresh);
 
 	const createDebt = useCallback(
 		async (draft: DebtDraft) => {

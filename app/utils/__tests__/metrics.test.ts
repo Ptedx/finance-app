@@ -2,24 +2,14 @@ import {
 	categoryDeltas,
 	consecutiveSavingsRateDrops,
 	fixedCostShare,
-	monthlyFixedCostCents,
-	monthlyRecurringIncomeCents,
+	monthlyBillsCents,
+	monthlyFixedCommitmentsCents,
 	needsWantsSavingsSplit,
-	type RecurringCommitment,
 	runwayMonths,
 	savingsRate,
 	savingsRateDelta,
 	savingsRateTrend,
 } from '../metrics';
-
-const commitment = (overrides: Partial<RecurringCommitment>): RecurringCommitment => ({
-	recurrenceType: 'monthly',
-	day: 5,
-	amountCents: 100_00,
-	isIncome: false,
-	active: true,
-	...overrides,
-});
 
 describe('savingsRate', () => {
 	it('divides what was kept by what came in', () => {
@@ -81,46 +71,6 @@ describe('savingsRateDelta', () => {
 	});
 });
 
-describe('monthlyFixedCostCents', () => {
-	// A normalização é o ponto: somar os valores crus trataria um seguro anual de
-	// R$ 3.000 como R$ 3.000 de custo mensal.
-	it('normalises weekly and yearly commitments to a monthly figure', () => {
-		const total = monthlyFixedCostCents([
-			commitment({ amountCents: 1_200_00 }),
-			commitment({ recurrenceType: 'yearly', month: 3, amountCents: 3_000_00 }),
-			commitment({ recurrenceType: 'weekly', weekday: 1, amountCents: 150_00 }),
-		]);
-
-		expect(total).toBe(1_200_00 + 250_00 + 650_00);
-	});
-
-	it('leaves income and suspended rules out', () => {
-		const total = monthlyFixedCostCents([
-			commitment({ amountCents: 500_00 }),
-			commitment({ amountCents: 8_000_00, isIncome: true }),
-			commitment({ amountCents: 900_00, active: false }),
-		]);
-
-		expect(total).toBe(500_00);
-	});
-
-	it('is zero with no recurring rules at all', () => {
-		expect(monthlyFixedCostCents([])).toBe(0);
-	});
-});
-
-describe('monthlyRecurringIncomeCents', () => {
-	it('sums the other side of the ledger with the same normalisation', () => {
-		const total = monthlyRecurringIncomeCents([
-			commitment({ amountCents: 6_000_00, isIncome: true }),
-			commitment({ recurrenceType: 'yearly', month: 12, amountCents: 6_000_00, isIncome: true }),
-			commitment({ amountCents: 1_000_00 }),
-		]);
-
-		expect(total).toBe(6_000_00 + 500_00);
-	});
-});
-
 describe('runwayMonths', () => {
 	it('divides the reserve by the monthly fixed cost', () => {
 		expect(runwayMonths({ liquidCents: 12_000_00, monthlyFixedCents: 3_000_00 })).toBe(4);
@@ -148,6 +98,34 @@ describe('fixedCostShare', () => {
 
 	it('has no share to report without income', () => {
 		expect(fixedCostShare({ monthlyFixedCents: 2_000_00, incomeCents: 0 })).toBeNull();
+	});
+});
+
+describe('E2E-24 — o custo fixo conta as contas a pagar', () => {
+	const bill = (overrides: Partial<{ amountCents: number | null; active: boolean; debtId: string | null }> = {}) => ({
+		amountCents: 120_00,
+		active: true,
+		debtId: null,
+		...overrides,
+	});
+
+	it('conta a pagar de R$ 120 por mês contra R$ 8.000 de receita: 1,5%', () => {
+		const monthlyFixedCents = monthlyFixedCommitmentsCents({ bills: [bill()], debtInstallmentsCents: 0 });
+		expect(monthlyFixedCents).toBe(120_00);
+		expect(fixedCostShare({ monthlyFixedCents, incomeCents: 8_000_00 })).toBe(150);
+	});
+
+	it('só as ativas, com valor; a de dívida entra pela parcela da dívida, não pela conta', () => {
+		expect(monthlyBillsCents([bill(), bill({ active: false }), bill({ amountCents: null }), bill({ amountCents: 0 }), bill({ debtId: 'car', amountCents: 1_500_00 })])).toBe(120_00);
+		expect(monthlyFixedCommitmentsCents({ bills: [bill(), bill({ debtId: 'car', amountCents: 1_500_00 })], debtInstallmentsCents: 1_497_72 })).toBe(120_00 + 1_497_72);
+	});
+
+	// SPD-122: as recorrências antigas saíram do custo fixo — nem somam, nem escondem mais a
+	// conta a pagar de mesmo valor. O custo fixo é só contas + parcelas (ver também
+	// `hooks/__tests__/wealthMetricsNoRecurring.test.tsx`, com as regras no contexto).
+	it('duas contas de R$ 120 e R$ 300 e uma parcela de R$ 1.500: R$ 1.920', () => {
+		expect(monthlyBillsCents([bill(), bill({ amountCents: 300_00 })])).toBe(420_00);
+		expect(monthlyFixedCommitmentsCents({ bills: [bill(), bill({ amountCents: 300_00 })], debtInstallmentsCents: 1_500_00 })).toBe(1_920_00);
 	});
 });
 

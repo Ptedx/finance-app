@@ -12,7 +12,7 @@ import {
 } from '../../modules/spendr-captures';
 
 /**
- * A captura automática, entre "Como funciona" e as preferências (SPD-021, AUTO-02).
+ * A captura automática, entre as boas-vindas e as preferências (SPD-021, AUTO-02).
  *
  * Só no Android com o serviço nativo: no iOS e no Expo Go a etapa não existe, e quem chega
  * aqui mesmo assim segue para as preferências. O app não consegue ligar o acesso sozinho;

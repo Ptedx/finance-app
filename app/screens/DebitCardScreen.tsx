@@ -8,10 +8,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import DebitCardFace from '../components/cards/DebitCardFace';
 import RenameCardSheet from '../components/cards/RenameCardSheet';
 import TransactionItem from '../components/TransactionItem';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { capitalizeFirst } from '../utils/capitalize';
 import { formatMonthLong, getMonthName } from '../utils/dateUtils';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 
 /**
@@ -35,6 +38,9 @@ const DebitCardScreen: React.FC<DebitCardScreenProps> = ({ accountId, last4 }) =
 	const { transactions } = useTransactions();
 	const { selectedMonth } = usePeriod();
 	const [renaming, setRenaming] = useState(false);
+	// A trilha dos cartões (SPD-131) passa por aqui: o histórico do débito.
+	useScreenTour('debitCard', { blocked: renaming });
+	const tourScroll = useTourScroll('debitCard');
 
 	const card = debitCards.find((candidate) => candidate.account.id === accountId && candidate.last4 === last4);
 
@@ -76,13 +82,15 @@ const DebitCardScreen: React.FC<DebitCardScreenProps> = ({ accountId, last4 }) =
 			</View>
 
 			{card ? (
-				<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 					<DebitCardFace card={card} monthLabel={getMonthName(selectedMonth)} onPress={() => setRenaming(true)} />
 					<Text style={styles.explain}>{t('cards.debit.explain', { account: card.account.name })}</Text>
 
-					<Text style={styles.sectionTitle} accessibilityRole="header">
-						{t('cards.debit.history')}
-					</Text>
+					<TourTarget id="debitCard.history">
+						<Text style={styles.sectionTitle} accessibilityRole="header">
+							{t('cards.debit.history')}
+						</Text>
+					</TourTarget>
 					{months.length === 0 ? <Text style={styles.empty}>{t('cards.debit.empty')}</Text> : null}
 					{months.map((month) => (
 						<View key={month.key} style={styles.panel}>
@@ -93,7 +101,7 @@ const DebitCardScreen: React.FC<DebitCardScreenProps> = ({ accountId, last4 }) =
 								accessibilityLabel={`${formatMonthLong(`${month.key}-01`)} ${month.key.slice(0, 4)}, ${formatCents(month.totalCents)}`}
 							>
 								<Text style={styles.monthTitle}>
-									{formatMonthLong(`${month.key}-01`)} {month.key.slice(0, 4)}
+									{capitalizeFirst(`${formatMonthLong(`${month.key}-01`)} ${month.key.slice(0, 4)}`)}
 								</Text>
 								<Text style={styles.monthTotal}>{formatCents(month.totalCents)}</Text>
 							</View>
@@ -151,7 +159,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 60,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 		gap: 16,
 	},
 	explain: {
@@ -181,7 +190,6 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 		fontWeight: '700',
 		color: '#FFFFFF',
-		textTransform: 'capitalize',
 	},
 	monthTotal: {
 		fontSize: 16,

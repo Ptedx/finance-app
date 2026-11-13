@@ -40,6 +40,30 @@ export const STORAGE_KEYS = {
 	 * escolha do usuário (`utils/businessFeed.ts`).
 	 */
 	businessFeeds: '@spendr_business_feeds',
+	/**
+	 * Os pares de lançamentos do cartão que o dono disse **não** serem repetidos, para o aviso
+	 * de "provável repetido" não voltar (`utils/cardDuplicateDismissals.ts`). O nome é o de
+	 * antes de viajar (SPD-098): o que já foi dispensado neste aparelho continua valendo.
+	 */
+	cardDuplicateDismissed: '@spendr_card_duplicate_dismissed',
+	/**
+	 * O "seu nome como aparece no banco" de Ajustes (`utils/ownNamePreference.ts`, SPD-115), que
+	 * a captura confere nos avisos de Pix para reconhecer a transferência entre contas suas.
+	 * Viaja com a conta e no backup; o "Apagar todos os dados" o mantém, como o nome da conta.
+	 */
+	ownBankName: '@spendr_own_bank_name',
+	/**
+	 * O que a captura aprendeu com as respostas da revisão nos avisos ambíguos (SPD-123): qual
+	 * conta ou cartão, para que lado, de qual conta saiu o pagamento da fatura
+	 * (`utils/captureChoicePreference.ts`). Viaja com a conta e no backup, como as regras dos
+	 * estabelecimentos.
+	 */
+	captureChoices: '@spendr_capture_choices',
+	/**
+	 * O guia na tela (`utils/tour.ts`, SPD-129): instalação nova ou atualização, os guias já
+	 * vistos e o aviso único. É deste aparelho: não viaja no backup nem no sync.
+	 */
+	tutorial: '@spendr_tutorial',
 } as const;
 
 /**
@@ -66,6 +90,9 @@ export const BACKED_UP_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
+	STORAGE_KEYS.cardDuplicateDismissed,
+	STORAGE_KEYS.ownBankName,
+	STORAGE_KEYS.captureChoices,
 ];
 
 /**
@@ -87,6 +114,9 @@ export const SYNCED_PREFERENCE_KEYS: readonly string[] = [
 	STORAGE_KEYS.notificationsEnabled,
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
+	STORAGE_KEYS.cardDuplicateDismissed,
+	STORAGE_KEYS.ownBankName,
+	STORAGE_KEYS.captureChoices,
 ];
 
 /**
@@ -127,35 +157,10 @@ export const importPreferences = async (preferences: unknown): Promise<number> =
 	return entries.length;
 };
 
-/**
- * Reset AsyncStorage data while preserving specified keys
- * @param keysToPreserve Array of keys to preserve in AsyncStorage
- */
-export const resetAsyncStorage = async (keysToPreserve: string[] = []): Promise<void> => {
-	try {
-		// Get all keys from AsyncStorage
-		const allKeys = await AsyncStorage.getAllKeys();
-
-		// Filter out keys to preserve
-		const keysToRemove = allKeys.filter((key) => !keysToPreserve.includes(key));
-
-		// Remove keys
-		if (keysToRemove.length > 0) {
-			await AsyncStorage.multiRemove(keysToRemove);
-		}
-
-		console.log('AsyncStorage reset successfully');
-	} catch (error) {
-		console.error('Error resetting AsyncStorage:', error);
-		throw error;
-	}
-};
-
 export default {
 	STORAGE_KEYS,
 	BACKED_UP_PREFERENCE_KEYS,
 	SYNCED_PREFERENCE_KEYS,
 	exportPreferences,
 	importPreferences,
-	resetAsyncStorage,
 };

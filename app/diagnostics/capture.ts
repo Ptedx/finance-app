@@ -1,6 +1,7 @@
 /**
  * O evento `capture_decision` (SPD-014): um por aviso que a ingestão processou, dizendo o
- * que o parser entendeu, de onde saiu o dinheiro e o que o app decidiu — e por quê.
+ * que o parser entendeu, de onde saiu o dinheiro e o que o app decidiu — e por quê. E mais
+ * um quando o extrato importado casa com o aviso ainda pendente e decide por ele (SPD-117).
  *
  * Só metadados (DEC-11 b): o pacote, o tipo, a direção, a decisão e o motivo. Nunca o
  * valor, o estabelecimento, a contraparte, o final do cartão nem o nome da conta — no
@@ -9,10 +10,12 @@
  */
 
 import type { AccountResolution, DestinationResolution } from '../utils/accountResolver';
+import type { AmbiguityCase } from '../utils/ambiguityReasons';
+import { brandFor } from '../utils/bankBrands';
 import type { Decision } from '../utils/captureMatcher';
 import type { ParsedCapture, RawCapture } from '../utils/captureParser';
 import type { DiagnosticValue } from './contract';
-import { isKnownBankPackage } from './knownBanks';
+import { bankOfPackage, isKnownBankPackage } from './knownBanks';
 import { log } from './log';
 
 /** O que a ingestão fez com o aviso, antes ou depois do motor de decisão. */
@@ -31,10 +34,11 @@ export type CaptureStep =
 			decision: Decision;
 			/**
 			 * Por que a ingestão trocou a decisão do motor: a outra perna já confirmada
-			 * (`transfer` virou `ask_transfer`), ou a moeda estrangeira (`auto_confirm`
-			 * virou `pending`).
+			 * (`transfer` virou `ask_transfer`), a moeda estrangeira (`auto_confirm` virou
+			 * `pending`), ou o aviso ambíguo sem regra aprendida (SPD-123: `auto_confirm`,
+			 * `transfer` ou o pagamento da fatura viraram `pending`).
 			 */
-			overridden?: 'confirmed_leg' | 'foreign_currency';
+			overridden?: 'confirmed_leg' | 'foreign_currency' | 'ambiguity';
 			/** Moeda estrangeira sem o valor em reais: o item pendente leva esse motivo. */
 			currencyReview?: boolean;
 			account: AccountResolution | 'none';
@@ -46,10 +50,39 @@ export type CaptureStep =
 			 * lado da transferência foi achado (SPD-023). Nunca qual conta.
 			 */
 			destination?: DestinationResolution;
+			/**
+			 * O aviso ambíguo (SPD-123): qual caso, se a revisão vai perguntar (`asked`) ou se a
+			 * regra aprendida decidiu (`learned`), e se havia regra mas a conta dela sumiu. Nunca
+			 * a chave da regra, o final do cartão nem a conta.
+			 */
+			ambiguity?: AmbiguityCase;
+			choice?: 'asked' | 'learned';
+			staleChoice?: boolean;
+			/** O motivo que o item gravou, quando não é o que a decisão sozinha diria. */
+			reason?: string | null;
+	  }
+	/**
+	 * Uma linha do extrato casou com o aviso ainda pendente (SPD-117): confirmado sozinho
+	 * porque a categoria é a da regra aprendida, ou mantido na revisão com a marca "valor
+	 * confirmado pelo extrato" (`why`: palpite, pergunta em aberto, motivo gravado, estorno).
+	 */
+	| {
+			step: 'statement_match';
+			captureId: string;
+			confirmed: boolean;
+			why: 'rule' | 'question' | 'reason' | 'refund' | 'suggested' | 'confirm_failed';
+			/** O extrato tirou o aviso de outra conta e o pôs na do extrato. Nunca qual. */
+			accountMoved: boolean;
+			/**
+			 * Só no aviso "entrou ou saiu?" (SPD-164): já respondido, respondido agora pelo
+			 * extrato, ou ainda o palpite. Nunca a direção nem a chave da regra.
+			 */
+			direction?: 'answered' | 'statement' | 'guess';
 	  };
 
 export interface CaptureDecisionInput {
-	raw: Pick<RawCapture, 'packageName'>;
+	/** O nome do app só serve para dizer se o banco veio do pacote; ele mesmo não entra. */
+	raw: Pick<RawCapture, 'packageName'> & Partial<Pick<RawCapture, 'appLabel'>>;
 	fingerprint: string;
 	/** `undefined`: o parser nem rodou; `null`: rodou e descartou. */
 	parsed?: ParsedCapture | null;
@@ -100,6 +133,11 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 		knownBank: isKnownBankPackage(raw.packageName),
 		fingerprint,
 	};
+	// O app de banco conhecido com um nome na tela que o app não reconhece: o banco (e a
+	// conta) saiu do pacote (SPD-112). Só a marca, nunca o nome.
+	if (bankOfPackage(raw.packageName) !== null && raw.appLabel !== undefined && brandFor(raw.appLabel) === null) {
+		data.bankFromPackage = true;
+	}
 
 	if (parsed === null) data.parse = 'failed';
 	else if (parsed) {
@@ -114,6 +152,8 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			data.currency = parsed.foreign.currency;
 			data.currencyInBrl = parsed.foreign.inBrl;
 		}
+		// Pista de entrada e de saída no mesmo aviso (SPD-123). Que viu, não quais palavras.
+		if (parsed.ambiguousDirection) data.directionAmbiguous = true;
 	}
 
 	switch (outcome.step) {
@@ -145,8 +185,27 @@ export const captureDecisionData = (input: CaptureDecisionInput): Record<string,
 			if (outcome.overridden) data.overridden = outcome.overridden;
 			if (outcome.externalLeg) data.externalLeg = true;
 			if (outcome.destination) data.destination = outcome.destination;
+			// A duplicata (certa ou perguntada) do app que não é banco com o banco (NOTIF-20).
+			if ((outcome.decision.action === 'duplicate' || outcome.decision.action === 'ask_duplicate') && outcome.decision.pair) {
+				data.pair = outcome.decision.pair;
+			}
+			// O aviso ambíguo (SPD-123): o caso e a escolha, e o motivo que o item gravou de fato.
+			if (outcome.ambiguity) {
+				data.ambiguity = outcome.ambiguity;
+				if (outcome.choice) data.choice = outcome.choice;
+				if (outcome.staleChoice) data.staleChoice = true;
+			}
+			if (outcome.reason !== undefined) data.reason = outcome.reason;
 			break;
 		}
+		case 'statement_match':
+			data.captureId = outcome.captureId;
+			data.outcome = outcome.confirmed ? 'confirmed' : 'pending';
+			data.reason = 'statement';
+			data.why = outcome.why;
+			data.accountMoved = outcome.accountMoved;
+			if (outcome.direction) data.direction = outcome.direction;
+			break;
 	}
 	return data;
 };

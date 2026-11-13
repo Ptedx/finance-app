@@ -28,10 +28,21 @@ jest.mock('expo-sqlite', () => ({
 	}),
 }));
 
-import type { Account, Capture } from '../../database/schema';
+import type { Account, Capture, Category, Transaction } from '../../database/schema';
 import pt from '../../i18n/locales/pt';
+import { formatDate } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
-import { currencyWarning, destinationLabel, ignoredAppLabel, installmentsLabel, resolvedReasonLabel } from '../CaptureInboxScreen';
+import {
+	currencyWarning,
+	destinationLabel,
+	fallbackCategory,
+	ignoredAppLabel,
+	installmentsLabel,
+	ledgerSuspectLabel,
+	rawSourceLabel,
+	resolvedReasonLabel,
+	statementConfirmedLabel,
+} from '../CaptureInboxScreen';
 
 /** `t` mínimo: busca a chave no português e interpola `{{assim}}`, como o i18next. */
 const t = (key: string, options: Record<string, unknown> = {}): string => {
@@ -151,5 +162,69 @@ describe('o app que o usuário ensinou a ignorar aparece com "desfazer" (SPD-022
 	it('os outros motivos continuam como antes', () => {
 		expect(resolvedReasonLabel({ reason: 'manual', appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('Sua escolha');
 		expect(resolvedReasonLabel({ reason: null, appLabel: 'Nubank' } as Capture, tWithDefault)).toBe('');
+	});
+});
+
+describe('itens do extrato OFX (E2E-34)', () => {
+	const ofxLine = {
+		packageName: 'ofx:card:e2e-1111',
+		appLabel: 'Nubank · OFX',
+		amountCents: 5_000,
+		postedAt: '2026-11-01T12:00:00.000',
+		counterparty: 'Padaria Pao Quente',
+	} as Capture;
+
+	it('o botão do texto cru diz "Linha do extrato", não "Notificação original"', () => {
+		expect(rawSourceLabel(ofxLine, t)).toBe('Linha do extrato');
+		expect(rawSourceLabel({ packageName: 'com.nu.production' } as Capture, t)).toBe('Notificação original');
+	});
+
+	it('"Parece repetido" diz o lançamento à mão: descrição, valor e data', () => {
+		const padaria = {
+			id: 'padaria',
+			amountCents: 5_000,
+			date: '2026-11-01',
+			note: 'Padaria',
+			category: 'alimentacao',
+		} as Transaction;
+
+		expect(ledgerSuspectLabel({ ...ofxLine, relatedId: 'padaria' }, [padaria], [], t)).toBe(
+			`Parece repetido: Padaria de ${formatCents(5_000)} em ${formatDate('2026-11-01')}, já lançado.`
+		);
+	});
+
+	it('sem nota, a descrição é a categoria do lançamento', () => {
+		const mercado = { id: 'mercado', amountCents: 10_000, date: '2026-11-07', note: '', category: 'food' } as Transaction;
+		const food = { id: 'food', name: 'Mercado' } as Category;
+
+		expect(ledgerSuspectLabel({ ...ofxLine, relatedId: 'mercado' }, [mercado], [food], t)).toBe(
+			`Parece repetido: Mercado de ${formatCents(10_000)} em ${formatDate('2026-11-07')}, já lançado.`
+		);
+	});
+
+	it('o lançamento sumiu (apagado, ou fora do que a tela carregou): diz sem os detalhes', () => {
+		expect(ledgerSuspectLabel({ ...ofxLine, relatedId: 'apagado' }, [], [], t)).toBe(
+			'Parece repetido: já há um lançamento seu com o mesmo valor e a mesma data.'
+		);
+	});
+});
+
+describe('categoria de reserva', () => {
+	// A sugestão que não bate com nenhuma categoria caía em "Uncategorized", fixo em inglês.
+	it('chama-se "Sem categoria" em português', () => {
+		expect(fallbackCategory(t)).toMatchObject({ id: 'uncategorized', name: 'Sem categoria' });
+	});
+});
+
+describe('a pendente que o extrato confirmou leva a marca (SPD-117, AUTO-13)', () => {
+	const claimed = new Set(['cap-padaria']);
+
+	it('pendente casada com uma linha do extrato: "Valor confirmado pelo extrato"', () => {
+		expect(statementConfirmedLabel({ id: 'cap-padaria', status: 'pending' }, claimed, t)).toBe('Valor confirmado pelo extrato');
+	});
+
+	it('sem linha do extrato, ou já fora da revisão: sem marca', () => {
+		expect(statementConfirmedLabel({ id: 'outra', status: 'pending' }, claimed, t)).toBeNull();
+		expect(statementConfirmedLabel({ id: 'cap-padaria', status: 'confirmed' }, claimed, t)).toBeNull();
 	});
 });

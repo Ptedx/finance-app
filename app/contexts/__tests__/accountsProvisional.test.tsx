@@ -14,7 +14,7 @@ const mockStore: {
 } = { accounts: [], captures: [], transfers: [], balances: new Map() };
 
 jest.mock('../../database/database', () => ({
-	db: { withTransactionAsync: jest.fn(async (fn: () => Promise<void>) => fn()) },
+	runInTransaction: jest.fn(async (fn: () => Promise<void>) => fn()),
 	getAccounts: jest.fn(async () => mockStore.accounts.map((account) => ({ ...account }))),
 	getAccountBalances: jest.fn(async () => new Map(mockStore.balances)),
 	getUnassignedNet: jest.fn(async () => 0),

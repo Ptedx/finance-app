@@ -2,8 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import { useSync } from '../contexts/SyncContext';
 import { getReserveGoal, initDatabase, type ReserveGoalDraft, setReserveGoal } from '../database/database';
-import { DEFAULT_RESERVE_MONTHS } from '../database/schema';
 import * as syncQueue from '../sync/queue';
+import { DEFAULT_RESERVE_GOAL, type ReserveGoal, reserveGoalOf } from '../utils/reportsModel';
+import { useAfterPull } from './useAfterPull';
+
+// A meta e o padrão moram em `utils/reportsModel.ts` (SPD-163b): o Mirai lê a mesma meta.
+export { DEFAULT_RESERVE_GOAL, type ReserveGoal };
 
 /**
  * A meta da reserva de emergência, lida do banco e sincronizada.
@@ -13,13 +17,6 @@ import * as syncQueue from '../sync/queue';
  * então salvar numa tela avisa as outras instâncias do hook; um sync terminado e a volta
  * ao primeiro plano também recarregam (outro aparelho pode ter mudado a meta).
  */
-export interface ReserveGoal {
-	targetMonths: number;
-	customMonthlyCostCents: number | null;
-}
-
-export const DEFAULT_RESERVE_GOAL: ReserveGoal = { targetMonths: DEFAULT_RESERVE_MONTHS, customMonthlyCostCents: null };
-
 export interface ReserveGoalResult {
 	goal: ReserveGoal;
 	save: (draft: ReserveGoalDraft) => Promise<void>;
@@ -35,7 +32,7 @@ export const useReserveGoal = (): ReserveGoalResult => {
 		try {
 			await initDatabase();
 			const row = await getReserveGoal();
-			setGoal(row ? { targetMonths: row.targetMonths, customMonthlyCostCents: row.customMonthlyCostCents } : DEFAULT_RESERVE_GOAL);
+			setGoal(reserveGoalOf(row));
 		} catch (error) {
 			console.error('Error loading the reserve goal:', error);
 		}
@@ -56,6 +53,9 @@ export const useReserveGoal = (): ReserveGoalResult => {
 			subscription.remove();
 		};
 	}, [load]);
+
+	// O banco mudou por fora: "Apagar todos os dados" leva a meta, o backup a traz.
+	useAfterPull(load);
 
 	const save = useCallback(async (draft: ReserveGoalDraft) => {
 		await setReserveGoal(draft);

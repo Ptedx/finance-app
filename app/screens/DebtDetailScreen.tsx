@@ -7,10 +7,15 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ACCENT, Button } from '../components/cards/formParts';
 import AmortizeSheet from '../components/debts/AmortizeSheet';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import { SampleBanner, useSampleDebt } from '../components/tour/TrailSample';
+import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
-import { formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
-import { debtStateOn, effectiveRateBp, monthlyRateOf, termsOf, worthPayingOff } from '../utils/debt';
+import { formatDate, formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
+import { comparisonYield, debtStateOn, effectiveRateBp, monthlyRateBpOf, termsOf, worthPayingOff } from '../utils/debt';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 import { formatPercentBp } from '../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
@@ -23,21 +28,32 @@ const VERDICT_ICON = { pay: 'trending-down', invest: 'trending-up', tie: 'swap-h
 /**
  * Uma dívida por inteiro: quanto se deve hoje, a próxima parcela, quando quita e quanto
  * ainda vai de juros; o veredito "amortizar ou investir" com os números por trás; e o
- * cronograma daqui até o fim. O rendimento comparado é o da meta de aposentadoria (ou 10%
- * ao ano sem meta), já descontado o IR.
+ * cronograma daqui até o fim. O rendimento comparado é o da meta de aposentadoria; sem meta,
+ * o CDI em uso (o da tela de contas); sem CDI, 10% ao ano — já descontado o IR.
  */
 const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { debts, recordExtraPayment } = useDebts();
 	const { goal } = useRetirementGoal();
+	const { cdi } = useAccounts();
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [expanded, setExpanded] = useState(false);
-	const debt = debts.find((item) => item.id === debtId);
+	// O exemplo das trilhas (SPD-147): sem dívida, a trilha abre esta tela com uma só em memória.
+	const sample = useSampleDebt(debtId);
+	const debt = sample ?? debts.find((item) => item.id === debtId);
 	const today = todayISO();
 
 	const state = useMemo(() => (debt ? debtStateOn(termsOf(debt), today) : null), [debt, today]);
-	const investmentYieldBp = goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP;
+	const comparison = comparisonYield({ goalYieldBp: goal?.expectedYieldBp, cdiAnnualBp: cdi?.annualBp });
+	const investmentYieldBp = comparison.yieldBp;
+	// O CDI tem duas casas (13,65%): com uma, a frase dizia um número que a tela de contas não mostra.
+	const grossText = formatPercentBp(investmentYieldBp, investmentYieldBp % 10 === 0 ? 1 : 2);
+	// A trilha de dívidas (SPD-131): a tela abre com a dívida e sem a simulação aberta.
+	useScreenTour('debt', { ready: Boolean(debt), blocked: sheetOpen });
+	const tourScroll = useTourScroll('debt');
+	const summaryTarget = useTourTarget('debt.summary');
+	const verdictTarget = useTourTarget('debt.verdict');
 
 	if (!debt || !state) {
 		return (
@@ -70,19 +86,24 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 					{debt.name}
 				</Text>
 				<Pressable
-					onPress={() => router.push({ pathname: '/debts/edit/[id]', params: { id: debt.id } })}
+					onPress={() => {
+						if (!sample) router.push({ pathname: '/debts/edit/[id]', params: { id: debt.id } });
+					}}
 					accessibilityRole="button"
 					accessibilityLabel={t('debts.detail.edit')}
 					style={styles.iconButton}
 				>
 					<Ionicons name="create-outline" size={22} color="#FFFFFF" />
 				</Pressable>
+				<HelpButton trail="debts" here={{ screen: 'debt', params: { id: debt.id } }} from="9" />
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			{sample ? <SampleBanner /> : null}
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				{isPaidOff ? <Text style={styles.banner}>{t('debts.detail.paidOffBanner')}</Text> : null}
 
 				<View
+					{...summaryTarget}
 					style={styles.card}
 					accessible
 					accessibilityLabel={[
@@ -107,7 +128,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 						{isConsortium
 							? t('debts.detail.adjustmentRate', { rate: formatPercentBp(debt.rateBp) })
 							: t('debts.detail.rate', {
-									monthly: formatPercentBp(Math.round(monthlyRateOf(debt.rateBp) * 10_000), 2),
+									monthly: formatPercentBp(monthlyRateBpOf(debt.rateBp), 2),
 									rate: formatPercentBp(debt.rateBp),
 									system: t(`debts.system.${debt.system}`),
 								})}
@@ -118,18 +139,18 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				</View>
 
 				{!isPaidOff && state.amortizes ? (
-					<View style={styles.card}>
+					<View {...verdictTarget} style={styles.card}>
 						<Text style={styles.sectionTitle} accessibilityRole="header">
 							{t('debts.verdict.title')}
 						</Text>
-						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(costBp), gross: formatPercentBp(investmentYieldBp), net: formatPercentBp(verdict.netYieldBp) })}`}>
+						<View style={styles.verdictRow} accessible accessibilityLabel={`${t(`debts.verdict.${verdict.verdict}`)}. ${t('debts.verdict.why', { debt: formatPercentBp(costBp), gross: grossText, net: formatPercentBp(verdict.netYieldBp) })}`}>
 							<Ionicons name={VERDICT_ICON[verdict.verdict]} size={22} color={VERDICT_COLOR[verdict.verdict]} />
 							<Text style={[styles.verdict, { color: VERDICT_COLOR[verdict.verdict] }]}>{t(`debts.verdict.${verdict.verdict}`)}</Text>
 						</View>
 						<Text style={styles.body}>
 							{t(isConsortium ? 'debts.verdict.whyConsortium' : 'debts.verdict.why', {
 								debt: formatPercentBp(costBp),
-								gross: formatPercentBp(investmentYieldBp),
+								gross: grossText,
 								net: formatPercentBp(verdict.netYieldBp),
 							})}
 						</Text>
@@ -140,8 +161,16 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 								})}
 							</Text>
 						) : null}
-						<Text style={styles.muted}>{goal ? t('debts.verdict.yieldFromGoal') : t('debts.verdict.yieldDefault')}</Text>
-						<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(true)} />
+						<Text style={styles.muted}>
+							{comparison.source === 'goal'
+								? t('debts.verdict.yieldFromGoal')
+								: comparison.source === 'cdi' && cdi
+									? t('debts.verdict.yieldCdi', { rate: formatPercentBp(cdi.annualBp, 2), date: formatDate(cdi.date) })
+									: t('debts.verdict.yieldDefault', { rate: formatPercentBp(DEFAULT_EXPECTED_YIELD_BP, 0) })}
+						</Text>
+						<TourTarget id="debt.simulate">
+							<Button label={t('debts.detail.simulate')} icon="calculator-outline" variant="secondary" onPress={() => setSheetOpen(!sample)} />
+						</TourTarget>
 					</View>
 				) : null}
 
@@ -190,7 +219,7 @@ const DebtDetailScreen: React.FC<{ debtId: string }> = ({ debtId }) => {
 				debt={debt}
 				investmentYieldBp={investmentYieldBp}
 				onClose={() => setSheetOpen(false)}
-				onConfirm={(result) => recordExtraPayment(debt.id, result)}
+				onConfirm={(result) => (sample ? Promise.resolve() : recordExtraPayment(debt.id, result))}
 			/>
 		</SafeAreaView>
 	);
@@ -222,7 +251,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 60,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 		gap: 16,
 	},
 	missing: {

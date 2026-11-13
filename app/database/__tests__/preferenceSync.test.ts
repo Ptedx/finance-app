@@ -124,7 +124,9 @@ const preferenceRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
 
 describe('migração v21', () => {
 	it('a escada chega ao v21 e o passo 21 cria `preferences` com as colunas de sync', async () => {
-		expect(SCHEMA_VERSION).toBe(21);
+		// O v22 (impressões digitais do "Apagar todos os dados") veio depois; o passo 21
+		// continua no lugar dele.
+		expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(21);
 		const ladder = migrationLadder();
 		expect(ladder.map(([version]) => version)).toEqual(
 			Array.from({ length: SCHEMA_VERSION }, (_, index) => index + 1)
@@ -148,16 +150,18 @@ describe('migração v21', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v20 roda só o passo 21 e grava a versão nele', async () => {
+	it('um banco v20 roda o passo 21 (e o 22 e o 23, que vieram depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(20, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
-		expect(reached).toBe(21);
-		expect(versions).toEqual([21]);
-		expect(mockStatements.map((statement) => flat(statement.sql).slice(0, 40))).toEqual([
-			'CREATE TABLE IF NOT EXISTS preferences (',
+		expect(reached).toBe(SCHEMA_VERSION);
+		expect(versions).toEqual([21, 22, 23]);
+		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
+			'CREATE TABLE IF NOT EXISTS preferences',
+			'CREATE TABLE IF NOT EXISTS seen_capture_fingerprints',
+			'CREATE TABLE IF NOT EXISTS bill_payments',
 		]);
 	});
 
@@ -366,6 +370,24 @@ describe('gravar uma preferência', () => {
 		expect(written.params[1]).toBe(USD);
 		expect(written.params[3]).toBeNull();
 		expect(flat(written.sql)).toContain(', 1)');
+	});
+
+	it('carimbo ilegível na linha não impede de marcar para subir: vale como ausente (SPD-127)', async () => {
+		mockOnFirst = (sql) => (sql.includes('FROM preferences') ? { value: BRL, updatedAt: 'lixo' } : null);
+
+		await setPreference(CURRENCY, USD);
+
+		const [written] = matching('INSERT INTO preferences');
+		expect(written?.params[1]).toBe(USD);
+		expect(Number.isFinite(Date.parse(written?.params[2] as string))).toBe(true);
+	});
+
+	it('linha no futuro: o carimbo passa 1 ms dela (SPD-127, o mesmo `nextStamp` das outras tabelas)', async () => {
+		mockOnFirst = (sql) => (sql.includes('FROM preferences') ? { value: BRL, updatedAt: '2999-01-01T00:00:00.000Z' } : null);
+
+		await setPreference(CURRENCY, USD);
+
+		expect(matching('INSERT INTO preferences')[0].params[2]).toBe('2999-01-01T00:00:00.001Z');
 	});
 
 	it('nulo apaga: sai do AsyncStorage e vira lápide', async () => {

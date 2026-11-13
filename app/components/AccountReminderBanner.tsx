@@ -7,6 +7,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { dismissReminder, shouldShowReminder } from '../utils/accountReminder';
+import { useTourTarget } from './tour/TourContext';
 
 /**
  * Convite discreto para criar conta, na tela inicial.
@@ -20,6 +21,8 @@ const AccountReminderBanner: React.FC = () => {
 	const { account, isAvailable } = useAuth();
 	const { transactions } = useTransactions();
 	const [visible, setVisible] = useState(false);
+	// O aviso é um passo da trilha da tela inicial (SPD-131c), quando aparece.
+	const tourTarget = useTourTarget('home.protect');
 
 	useEffect(() => {
 		if (!isAvailable) return;
@@ -37,7 +40,7 @@ const AccountReminderBanner: React.FC = () => {
 	};
 
 	return (
-		<View style={styles.banner}>
+		<View {...tourTarget} style={styles.banner}>
 			<Ionicons name="cloud-upload-outline" size={22} color="#15E8FE" style={styles.icon} />
 
 			<TouchableOpacity

@@ -8,7 +8,15 @@
  */
 
 import type { Bill } from '../../database/schema';
-import { type BillMovement, billPaymentPatch, billPaymentUndo, dueMonthFor, matchBillPayment } from '../billMatcher';
+import {
+	type BillMovement,
+	billNameSettledBy,
+	billPaymentPatch,
+	billPaymentUndo,
+	dueMonthFor,
+	matchBillPayment,
+	settledBillOf,
+} from '../billMatcher';
 
 const bill = (overrides: Partial<Bill> = {}): Bill => ({
 	id: 'tim',
@@ -279,5 +287,20 @@ describe('billPaymentUndo', () => {
 	it('sem a data do lançamento, volta um mês do que está gravado', () => {
 		const paid = bill({ paidThrough: '2027-01', paidByRef: 'tx-1' });
 		expect(billPaymentUndo(paid, 'tx-1', null)?.paidThrough).toBe('2026-12');
+	});
+});
+
+describe('o que o aviso diz da baixa (SPD-153)', () => {
+	it('a baixa vira o nome da conta e o mês quitado', () => {
+		expect(settledBillOf({ bill: bill({ name: 'Aluguel' }), month: '2026-10' })).toEqual({ name: 'Aluguel', month: '2026-10' });
+		expect(settledBillOf(null)).toBeNull();
+	});
+
+	it('a conta cuja última baixa foi o lançamento: só o nome', () => {
+		const bills = [bill({ id: 'a', name: 'Aluguel', paidByRef: 'tx-1' }), bill({ id: 'b', name: 'Internet', paidByRef: 'tx-2' })];
+		expect(billNameSettledBy(bills, 'tx-2')).toBe('Internet');
+		expect(billNameSettledBy(bills, 'tx-3')).toBeNull();
+		expect(billNameSettledBy(bills, null)).toBeNull();
+		expect(billNameSettledBy([bill({ name: 'Aluguel', paidByRef: 'tx-1', deletedAt: '2026-11-01T00:00:00.000Z' })], 'tx-1')).toBeNull();
 	});
 });

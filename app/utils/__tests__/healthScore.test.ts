@@ -1,4 +1,8 @@
+import en from '../../i18n/locales/en';
+import itLocale from '../../i18n/locales/it';
+import pt from '../../i18n/locales/pt';
 import { buildHealthIndicators, HEALTH_THRESHOLDS, type HealthInput, healthSummary, spendingPaceWindows } from '../healthScore';
+import { configureMoney } from '../money';
 
 const R = (reais: number) => reais * 100;
 
@@ -65,6 +69,19 @@ describe('reserva de emergência', () => {
 		expect(byId({ liquidCents: R(1_000), averageMonthlySpendCents: R(5_000) })['emergency-reserve']).toMatchObject({ status: 'bad', value: 0.2 });
 	});
 
+	it('E2E-29 — os meses saem no separador do idioma: "cobre 0,3 meses" em português', () => {
+		try {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+			// R$ 1.000 contra R$ 4.000 de custo essencial, meta de 6 meses.
+			expect(byId({ reserve: { reserveCents: R(1_000), monthlyCostCents: R(4_000), targetMonths: 6 } })['emergency-reserve'].params.months).toBe('0,3');
+			expect(byId({ liquidCents: R(1_000), averageMonthlySpendCents: R(5_000) })['emergency-reserve'].params.months).toBe('0,2');
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+			expect(byId({ reserve: { reserveCents: R(1_000), monthlyCostCents: R(4_000), targetMonths: 6 } })['emergency-reserve'].params.months).toBe('0.3');
+		} finally {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		}
+	});
+
 	it('caixa negativo é zero meses; sem gasto médio é sem dados', () => {
 		expect(byId({ liquidCents: -R(100) })['emergency-reserve'].value).toBe(0);
 		expect(byId({ averageMonthlySpendCents: null })['emergency-reserve'].status).toBe('unknown');
@@ -78,6 +95,20 @@ describe('custo fixo', () => {
 		expect(byId({ fixedCostBp: 5_000 })['fixed-cost'].status).toBe('warn');
 		expect(byId({ fixedCostBp: 5_001 })['fixed-cost'].status).toBe('bad');
 		expect(byId({ fixedCostBp: null })['fixed-cost'].status).toBe('unknown');
+	});
+
+	it('E2E-24 — 1,5% aparece 1,5% (não "2%"), no separador do idioma', () => {
+		try {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+			expect(byId({ fixedCostBp: 150 })['fixed-cost'].params.percent).toBe('1,5%');
+			expect(byId({ fixedCostBp: 0 })['fixed-cost'].params.percent).toBe('0%');
+			// Daqui para cima, o inteiro de sempre.
+			expect(byId({ fixedCostBp: 2_340 })['fixed-cost'].params.percent).toBe('23%');
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+			expect(byId({ fixedCostBp: 150 })['fixed-cost'].params.percent).toBe('1.5%');
+		} finally {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		}
 	});
 });
 
@@ -230,5 +261,16 @@ describe('reserva pelo custo essencial', () => {
 	it('sem custo essencial, volta ao caixa + guardado ÷ gasto', () => {
 		expect(byId({ reserve: null })['emergency-reserve']).toMatchObject({ status: 'good', value: 6 });
 		expect(byId({ reserve: null })['emergency-reserve'].variant).toBeUndefined();
+	});
+});
+
+describe('E2E-24 — o texto do custo fixo fala das contas fixas, não da tela de recorrências que saiu', () => {
+	it.each([
+		['pt', pt],
+		['en', en],
+		['it', itLocale],
+	])('%s', (_language, locale) => {
+		const texts = Object.values(locale.reports.health['fixed-cost']).join(' ');
+		expect(texts).not.toMatch(/recorr|recurr|ricorr/i);
 	});
 });

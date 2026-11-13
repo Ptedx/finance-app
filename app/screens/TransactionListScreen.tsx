@@ -1,18 +1,26 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AccessibilityInfo, Pressable, RefreshControl, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import PeriodSelector from '../components/PeriodSelector';
+import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
+import { SelectField, SelectSheet } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import TransferItem from '../components/TransferItem';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, Transaction, Transfer } from '../database/schema';
+import { capitalizeFirst } from '../utils/capitalize';
 import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
+import { MIRAI_BUTTON_BOTTOM, MIRAI_BUTTON_RIGHT, MIRAI_BUTTON_SIZE, MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
+import { transactionTotals } from '../utils/monthOverview';
 
 /**
  * Lançamentos: a lista de tudo o que entrou e saiu, com o extrato como referência.
@@ -57,7 +65,7 @@ interface DaySection {
 const TransactionListScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { transactions, categories, isLoading, refreshData } = useTransactions();
+	const { transactions, categories, isLoading, refreshData, updateExistingTransaction } = useTransactions();
 	const { accounts, activeAccounts, periodTransfers } = useAccounts();
 	const { startDate, endDate, selectedMonth } = usePeriod();
 
@@ -67,6 +75,8 @@ const TransactionListScreen = () => {
 	const [kind, setKind] = useState<Kind>(params.kind === 'income' || params.kind === 'expense' ? params.kind : 'all');
 	const [accountId, setAccountId] = useState<string | null>(null);
 	const [search, setSearch] = useState('');
+	// A trilha de Lançamentos (SPD-131) aponta a lista depois de carregada.
+	useScreenTour('transactions', { ready: !isLoading });
 
 	const categoryNames = useMemo(
 		() => new Map(categories.map((category) => [category.id, category.name.toLocaleLowerCase()])),
@@ -82,18 +92,13 @@ const TransactionListScreen = () => {
 		[transactions, startDate, endDate]
 	);
 
-	const totals = useMemo(() => {
-		let incomeCents = 0;
-		let expenseCents = 0;
-		for (const transaction of inPeriod) {
-			if (transaction.isIncome) incomeCents += transaction.amountCents;
-			// Repasse: entrou e foi adiante. Sai da receita e não é gasto — a mesma regra
-			// do "Este mês" da Home, para os totais baterem entre as telas.
-			else if (passThroughCategories.has(transaction.category)) incomeCents -= transaction.amountCents;
-			else expenseCents += transaction.amountCents;
-		}
-		return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
-	}, [inPeriod]);
+	// Repasse sai da receita, e o ajuste com a fatura do banco não é entrada nem saída
+	// (`transactionTotals`): a mesma regra do "Este mês" da Home, para as telas conversarem.
+	const cardIds = useMemo(
+		() => new Set(accounts.filter((account) => account.kind === 'credit_card').map((account) => account.id)),
+		[accounts]
+	);
+	const totals = useMemo(() => transactionTotals(inPeriod, passThroughCategories, cardIds), [inPeriod, passThroughCategories, cardIds]);
 
 	const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
 
@@ -138,14 +143,17 @@ const TransactionListScreen = () => {
 		for (const row of [...filtered].sort((a, b) => b.date.localeCompare(a.date) || a.type.localeCompare(b.type))) {
 			let day = byDay.get(row.date);
 			if (!day) {
+				// Maiúscula só na primeira letra: o `capitalize` do estilo fazia "17 De Novembro De
+				// 2026" (E2E-46).
 				day = {
 					date: row.date,
-					title:
+					title: capitalizeFirst(
 						row.date === today
 							? t('transactionsList.today')
 							: row.date === yesterday
 								? t('transactionsList.yesterday')
-								: formatFullDate(row.date),
+								: formatFullDate(row.date)
+					),
 					totalCents: 0,
 					data: [],
 				};
@@ -175,6 +183,62 @@ const TransactionListScreen = () => {
 		(transaction: Transaction) => router.push({ pathname: '/transaction/[id]', params: { id: transaction.id } }),
 		[router]
 	);
+	// Tocar no ícone da categoria troca só a categoria (SPD-178): a lista das categorias, e
+	// depois um aviso curto com "Desfazer" no lugar de uma confirmação.
+	const [recategorizing, setRecategorizing] = useState<Transaction | null>(null);
+	const [changed, setChanged] = useState<{ before: Transaction; name: string } | null>(null);
+	const changedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(
+		() => () => {
+			if (changedTimer.current) clearTimeout(changedTimer.current);
+		},
+		[]
+	);
+	const choices = useMemo(
+		() => (recategorizing ? categoryChoices(categories, recategorizing.isIncome, transactions) : null),
+		[recategorizing, categories, transactions]
+	);
+	const showChanged = useCallback((next: { before: Transaction; name: string } | null) => {
+		if (changedTimer.current) clearTimeout(changedTimer.current);
+		setChanged(next);
+		changedTimer.current = next ? setTimeout(() => setChanged(null), CATEGORY_UNDO_MS) : null;
+	}, []);
+	const changeCategory = useCallback(
+		async (categoryId: string) => {
+			const before = recategorizing;
+			setRecategorizing(null);
+			if (!before || categoryId === before.category) return;
+			try {
+				await updateExistingTransaction({ ...before, category: categoryId });
+			} catch {
+				// O contexto já avisou do erro; a categoria ficou como estava.
+				return;
+			}
+			const name = categories.find((category) => category.id === categoryId)?.name ?? '';
+			showChanged({ before, name });
+			AccessibilityInfo.announceForAccessibility(t('transactionsList.categoryChanged', { name }));
+		},
+		[recategorizing, updateExistingTransaction, categories, showChanged, t]
+	);
+	const undoCategory = useCallback(async () => {
+		if (!changed) return;
+		const { before } = changed;
+		showChanged(null);
+		// O lançamento como está agora, só com a categoria de antes.
+		const current = transactions.find((transaction) => transaction.id === before.id) ?? before;
+		try {
+			await updateExistingTransaction({ ...current, category: before.category });
+		} catch {
+			return;
+		}
+		AccessibilityInfo.announceForAccessibility(t('transactionsList.categoryRestored'));
+	}, [changed, showChanged, transactions, updateExistingTransaction, t]);
+
+	// A transferência não tem tela de detalhe: abre direto a edição, que também exclui (E2E-28).
+	const openTransfer = useCallback(
+		(transfer: Transfer) => router.push({ pathname: '/transaction/edit/[id]', params: { id: transfer.id, kind: 'transfer' } }),
+		[router]
+	);
 
 	const isFiltered = kind !== 'all' || accountId !== null || search.trim() !== '';
 	const clearFilters = () => {
@@ -202,30 +266,32 @@ const TransactionListScreen = () => {
 
 	const header = (
 		<View style={styles.header}>
-			<View
-				style={styles.totals}
-				accessible
-				accessibilityLabel={[
-					`${t('transactionsList.income')} ${formatCents(totals.incomeCents)}`,
-					`${t('transactionsList.expense')} ${formatCents(totals.expenseCents)}`,
-					`${t('transactionsList.net')} ${formatCents(totals.netCents)}`,
-				].join('. ')}
-			>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.income')}</Text>
-					<Text style={[styles.totalValue, styles.income]}>{formatCents(totals.incomeCents)}</Text>
+			<TourTarget id="transactions.totals">
+				<View
+					style={styles.totals}
+					accessible
+					accessibilityLabel={[
+						`${t('transactionsList.income')} ${formatCents(totals.incomeCents)}`,
+						`${t('transactionsList.expense')} ${formatCents(totals.expenseCents)}`,
+						`${t('transactionsList.net')} ${formatCents(totals.netCents)}`,
+					].join('. ')}
+				>
+					<View style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.income')}</Text>
+						<Text style={[styles.totalValue, styles.income]}>{formatCents(totals.incomeCents)}</Text>
+					</View>
+					<TourTarget id="transactions.expense" style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.expense')}</Text>
+						<Text style={[styles.totalValue, styles.expense]}>{formatCents(totals.expenseCents)}</Text>
+					</TourTarget>
+					<View style={styles.total}>
+						<Text style={styles.totalLabel}>{t('transactionsList.net')}</Text>
+						<Text style={[styles.totalValue, totals.netCents < 0 && styles.expense]}>{formatCents(totals.netCents)}</Text>
+					</View>
 				</View>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.expense')}</Text>
-					<Text style={[styles.totalValue, styles.expense]}>{formatCents(totals.expenseCents)}</Text>
-				</View>
-				<View style={styles.total}>
-					<Text style={styles.totalLabel}>{t('transactionsList.net')}</Text>
-					<Text style={[styles.totalValue, totals.netCents < 0 && styles.expense]}>{formatCents(totals.netCents)}</Text>
-				</View>
-			</View>
+			</TourTarget>
 
-			<View style={styles.searchRow}>
+			<TourTarget id="transactions.search" style={styles.searchRow}>
 				<Ionicons name="search" size={18} color="rgba(255,255,255,0.6)" />
 				<TextInput
 					style={styles.search}
@@ -247,55 +313,41 @@ const TransactionListScreen = () => {
 						<Ionicons name="close-circle" size={20} color="rgba(255,255,255,0.7)" />
 					</Pressable>
 				) : null}
-			</View>
+			</TourTarget>
 
-			<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={t('transactionsList.filterLabel')}>
-				{kinds.map((option) => {
-					const selected = kind === option.value;
-					return (
-						<Pressable
-							key={option.value}
-							onPress={() => setKind(option.value)}
-							accessibilityRole="radio"
-							accessibilityState={{ checked: selected }}
-							accessibilityLabel={option.label}
-							style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
-						>
-							<Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
-						</Pressable>
-					);
-				})}
-			</View>
+			<TourTarget id="transactions.kinds">
+				<View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel={t('transactionsList.filterLabel')}>
+					{kinds.map((option) => {
+						const selected = kind === option.value;
+						return (
+							<Pressable
+								key={option.value}
+								onPress={() => setKind(option.value)}
+								accessibilityRole="radio"
+								accessibilityState={{ checked: selected }}
+								accessibilityLabel={option.label}
+								style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+							>
+								<Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
+							</Pressable>
+						);
+					})}
+				</View>
+			</TourTarget>
 
+			{/* A conta numa lista que abre de baixo (SPD-130): a rolagem de lado escondia as contas do fim. */}
 			{accountOptions.length > 1 ? (
-				<ScrollView
-					horizontal
-					showsHorizontalScrollIndicator={false}
-					contentContainerStyle={styles.accountChips}
-					accessibilityRole="radiogroup"
-					accessibilityLabel={t('transactionsList.accountLabel')}
-				>
-					{[{ id: null as string | null, name: t('transactionsList.allAccounts'), color: ACCENT }, ...accountOptions].map(
-						(account) => {
-							const selected = accountId === account.id;
-							return (
-								<Pressable
-									key={account.id ?? 'all'}
-									onPress={() => setAccountId(account.id)}
-									accessibilityRole="radio"
-									accessibilityState={{ checked: selected }}
-									accessibilityLabel={account.name}
-									style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
-								>
-									<View style={[styles.dot, { backgroundColor: account.color }]} />
-									<Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
-										{account.name}
-									</Text>
-								</Pressable>
-							);
-						}
-					)}
-				</ScrollView>
+				<TourTarget id="transactions.account">
+					<SelectField
+						compact
+						label={t('transactionsList.accountLabel')}
+						options={accountSelectOptions(accountOptions)}
+						selected={accountId}
+						onSelect={setAccountId}
+						clearLabel={t('transactionsList.allAccounts')}
+						onClear={() => setAccountId(null)}
+					/>
+				</TourTarget>
 			) : null}
 
 			<Text style={styles.count} accessibilityLiveRegion="polite">
@@ -305,7 +357,7 @@ const TransactionListScreen = () => {
 	);
 
 	const empty = (
-		<View style={styles.empty}>
+		<TourTarget id="transactions.empty" style={styles.empty}>
 			<Ionicons name={isLoading ? 'hourglass-outline' : 'receipt-outline'} size={32} color="rgba(255,255,255,0.5)" />
 			<Text style={styles.emptyText}>
 				{isLoading
@@ -326,56 +378,128 @@ const TransactionListScreen = () => {
 					<Text style={styles.clearFiltersText}>{t('transactionsList.clearFilters')}</Text>
 				</Pressable>
 			) : null}
-		</View>
+		</TourTarget>
 	);
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<View style={styles.titleRow}>
-				<Text style={styles.title} accessibilityRole="header">
-					{t('transactionsList.title')}
-				</Text>
-				<PeriodSelector />
+				<View style={styles.titleGroup}>
+					<Text style={styles.title} accessibilityRole="header">
+						{t('transactionsList.title')}
+					</Text>
+					<HelpButton trail="transactions" here={{ screen: 'transactions' }} />
+				</View>
+				<TourTarget id="transactions.period">
+					<PeriodSelector />
+				</TourTarget>
 			</View>
 
-			<SectionList
-				sections={sections}
-				keyExtractor={(item) => item.id}
-				renderItem={({ item }) =>
-					item.type === 'transaction' ? (
-						<TransactionItem transaction={item.transaction} onPress={openTransaction} />
-					) : (
-						<TransferItem transfer={item.transfer} accountsById={accountsById} />
-					)
-				}
-				renderSectionHeader={({ section }) => (
-					<View
-						style={styles.dayHeader}
-						accessible
-						accessibilityRole="header"
-						accessibilityLabel={`${section.title}, ${formatCents(section.totalCents)}`}
-					>
-						<Text style={styles.dayTitle}>{section.title}</Text>
-						<Text style={[styles.dayTotal, section.totalCents < 0 && styles.expense]}>{formatCents(section.totalCents)}</Text>
-					</View>
-				)}
-				ListHeaderComponent={header}
-				ListEmptyComponent={empty}
-				stickySectionHeadersEnabled
-				contentContainerStyle={styles.content}
-				refreshControl={
-					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />
-				}
-				keyboardShouldPersistTaps="handled"
-				initialNumToRender={12}
-				maxToRenderPerBatch={12}
-				windowSize={7}
+			<TourTarget id="transactions.list" style={styles.list}>
+				<SectionList
+					sections={sections}
+					keyExtractor={(item) => item.id}
+					renderItem={({ item, index, section }) => (
+						// O primeiro do mês é o que a trilha (SPD-131) mostra para "tocar para ver e editar".
+						<TourTarget id={index === 0 && section === sections[0] ? 'transactions.first' : undefined}>
+							{item.type === 'transaction' ? (
+								<TransactionItem transaction={item.transaction} onPress={openTransaction} onCategoryPress={setRecategorizing} />
+							) : (
+								<TransferItem transfer={item.transfer} accountsById={accountsById} onPress={openTransfer} />
+							)}
+						</TourTarget>
+					)}
+					renderSectionHeader={({ section }) => (
+						<View
+							style={styles.dayHeader}
+							accessible
+							accessibilityRole="header"
+							accessibilityLabel={`${section.title}, ${formatCents(section.totalCents)}`}
+						>
+							<Text style={styles.dayTitle}>{section.title}</Text>
+							<Text style={[styles.dayTotal, section.totalCents < 0 && styles.expense]}>{formatCents(section.totalCents)}</Text>
+						</View>
+					)}
+					ListHeaderComponent={header}
+					ListEmptyComponent={empty}
+					stickySectionHeadersEnabled
+					contentContainerStyle={styles.content}
+					refreshControl={
+						<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />
+					}
+					keyboardShouldPersistTaps="handled"
+					initialNumToRender={12}
+					maxToRenderPerBatch={12}
+					windowSize={7}
+				/>
+			</TourTarget>
+			<SelectSheet
+				visible={recategorizing !== null}
+				title={t('transactionsList.changeCategoryTitle')}
+				subtitle={recategorizing?.note || undefined}
+				options={choices?.options ?? []}
+				selected={recategorizing?.category ?? null}
+				featured={choices ? mostUsedSection(choices.mostUsed, t) : undefined}
+				onSelect={changeCategory}
+				onClose={() => setRecategorizing(null)}
+				optionTestID="transactions-category-"
 			/>
+			{changed ? (
+				<View style={styles.undoBar} accessibilityLiveRegion="polite">
+					<Text style={styles.undoText} numberOfLines={2}>
+						{t('transactionsList.categoryChanged', { name: changed.name })}
+					</Text>
+					<Pressable
+						onPress={undoCategory}
+						accessibilityRole="button"
+						accessibilityLabel={t('transactionsList.undo')}
+						accessibilityHint={t('transactionsList.undoCategoryHint')}
+						style={({ pressed }) => [styles.undoButton, pressed && styles.pressed]}
+					>
+						<Text style={styles.undoButtonText}>{t('transactionsList.undo')}</Text>
+					</Pressable>
+				</View>
+			) : null}
 		</SafeAreaView>
 	);
 };
 
+/** Quanto tempo o "Desfazer" da troca de categoria fica na tela. */
+const CATEGORY_UNDO_MS = 6000;
+
 const styles = StyleSheet.create({
+	// Acima da barra de abas, ao lado do botão do Mirai, sem cobri-lo.
+	undoBar: {
+		position: 'absolute',
+		left: 16,
+		right: MIRAI_BUTTON_RIGHT + MIRAI_BUTTON_SIZE + 12,
+		bottom: MIRAI_BUTTON_BOTTOM,
+		minHeight: MIRAI_BUTTON_SIZE,
+		flexDirection: 'row',
+		alignItems: 'center',
+		backgroundColor: '#2A2A2A',
+		borderRadius: 12,
+		paddingVertical: 4,
+		paddingLeft: 16,
+		paddingRight: 4,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.15)',
+	},
+	undoText: {
+		flex: 1,
+		fontSize: 14,
+		color: '#FFFFFF',
+	},
+	undoButton: {
+		minHeight: 44,
+		paddingHorizontal: 12,
+		justifyContent: 'center',
+	},
+	undoButtonText: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: ACCENT,
+	},
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
@@ -389,7 +513,17 @@ const styles = StyleSheet.create({
 		paddingBottom: 4,
 		gap: 12,
 	},
+	// O título e o "?" da trilha (SPD-131), juntos; o mês fica à direita.
+	titleGroup: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexShrink: 1,
+	},
+	list: {
+		flex: 1,
+	},
 	title: {
+		flexShrink: 1,
 		fontSize: 26,
 		fontWeight: '700',
 		color: '#FFFFFF',
@@ -448,10 +582,6 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		gap: 8,
 	},
-	accountChips: {
-		gap: 8,
-		paddingRight: 16,
-	},
 	chip: {
 		flexDirection: 'row',
 		alignItems: 'center',
@@ -476,11 +606,6 @@ const styles = StyleSheet.create({
 		color: ACCENT,
 		fontWeight: '600',
 	},
-	dot: {
-		width: 10,
-		height: 10,
-		borderRadius: 5,
-	},
 	pressed: {
 		opacity: 0.85,
 	},
@@ -490,7 +615,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 90,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 		flexGrow: 1,
 	},
 	dayHeader: {
@@ -505,7 +631,6 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		fontWeight: '700',
 		color: 'rgba(255,255,255,0.85)',
-		textTransform: 'capitalize',
 	},
 	dayTotal: {
 		fontSize: 14,

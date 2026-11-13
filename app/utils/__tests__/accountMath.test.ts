@@ -98,6 +98,11 @@ describe('spendingAdjustment — acertar o gasto do mês numa conta', () => {
 	it('igual não gera lançamento', () => {
 		expect(spendingAdjustment(84_520, 84_520)).toBeNull();
 	});
+
+	it('conta nova, gastei R$ 1.200 e tenho R$ 5.000: só o gasto vira lançamento, e é despesa (E2E-01)', () => {
+		// Os R$ 5.000 não entram aqui: o que falta para o saldo bater vai para a âncora.
+		expect(spendingAdjustment(0, 120_000)).toEqual({ amountCents: 120_000, isIncome: false });
+	});
 });
 
 describe('acertar a conta: "já gastei" e "ainda tenho" são o mesmo dinheiro', () => {

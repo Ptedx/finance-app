@@ -56,8 +56,8 @@ export interface DuplicateAccounts {
 }
 
 /**
- * Fichas que parecem ser a mesma conta do banco: duas, do mesmo banco e do mesmo lado,
- * uma ligada a uma origem e a outra não.
+ * Fichas que parecem ser a mesma conta do banco: duas, do mesmo banco, do mesmo lado e do
+ * mesmo papel, uma ligada a uma origem e a outra não.
  *
  * Com três ou mais fichas do banco a dúvida é real — PF, PJ e conjunta existem — e o app
  * não chuta: não sugere nada. Só o par exato vira sugestão de juntar, porque aí as duas
@@ -82,6 +82,9 @@ export const duplicateAccountPairs = (
 		const group = [account, ...siblingsOf(live, account)];
 		for (const member of group) seen.add(member.id);
 		if (group.length !== 2) continue;
+		// Papéis diferentes (a reserva e a corrente do mesmo banco) são duas contas: juntar
+		// reclassificaria o histórico, e o `mergeAccounts` recusa (SPD-152).
+		if (group[0].role !== group[1].role) continue;
 
 		const fedHere = (member: Account) => isFed(member) || businessFed.includes(member.id);
 		const fed = group.filter(fedHere);

@@ -1,11 +1,12 @@
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text } from 'react-native';
 
 import { useBudget } from '../contexts/BudgetContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { usePeriod } from '../contexts/PeriodContext';
+import { getMonthName } from '../utils/dateUtils';
 import {
 	centsToDisplayInput,
 	finaliseAmountInput,
@@ -13,22 +14,37 @@ import {
 	formatCents,
 	parseAmountToCents,
 } from '../utils/money';
+import { Button, Field } from './cards/formParts';
+import Sheet from './cards/Sheet';
 
 interface BudgetEditorProps {
 	isVisible: boolean;
 	onClose: () => void;
 }
 
+/**
+ * Definir o orçamento do mês escolhido.
+ *
+ * É uma `Sheet`, como as outras folhas do app: ela sobe com o teclado e o Salvar responde
+ * com o teclado aberto — no modal antigo os botões ficavam atrás do teclado e o primeiro
+ * toque só fechava o teclado. O mês vem de `getMonthName` na hora de desenhar, no idioma do
+ * app; o `selectedMonthName` do `PeriodContext` podia ficar preso no inglês do arranque.
+ */
 const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 	const { t } = useTranslation();
-	const { currentBudgetCents, setBudgetForCurrentPeriod, clearBudgetForCurrentPeriod } =
+	const { currentBudgetCents, budgetInheritedFrom, setBudgetForCurrentPeriod, clearBudgetForCurrentPeriod } =
 		useBudget();
-	const { selectedMonthName, selectedYear } = usePeriod();
+	const { selectedMonth, selectedYear } = usePeriod();
 	const { currentCurrency } = useCurrency();
 
-	const [budgetInput, setBudgetInput] = useState(
-		currentBudgetCents !== null ? centsToDisplayInput(currentBudgetCents) : ''
-	);
+	const [budgetInput, setBudgetInput] = useState('');
+
+	// A folha fica montada o tempo todo: o campo é preenchido de novo a cada abertura, com o
+	// orçamento do mês que estiver escolhido agora.
+	useEffect(() => {
+		if (!isVisible) return;
+		setBudgetInput(currentBudgetCents !== null ? centsToDisplayInput(currentBudgetCents) : '');
+	}, [isVisible, currentBudgetCents]);
 
 	const handleSave = async () => {
 		try {
@@ -57,157 +73,62 @@ const BudgetEditor: React.FC<BudgetEditorProps> = ({ isVisible, onClose }) => {
 		}
 	};
 
+	// Só o mês que tem orçamento próprio tem o que limpar; o que herda não grava nada.
+	const ownBudget = currentBudgetCents !== null && budgetInheritedFrom === null;
+
 	return (
-		<Modal visible={isVisible} transparent={true} animationType="slide">
-			<View style={styles.modalContainer}>
-				<View style={styles.modalContent}>
-					<Text style={styles.modalTitle}>{t('budgetEditor.modalTitle')}</Text>
-					<Text style={styles.periodText}>
-						{selectedMonthName} {selectedYear}
-					</Text>
+		<Sheet
+			visible={isVisible}
+			onClose={onClose}
+			title={t('budgetEditor.modalTitle')}
+			subtitle={t('budgetEditor.period', { month: getMonthName(selectedMonth), year: selectedYear })}
+		>
+			<Field
+				label={t('budgetEditor.amountLabel', { symbol: currentCurrency.symbol })}
+				hint={t('budgetEditor.appliesFrom')}
+				value={budgetInput}
+				onChangeText={(text) => setBudgetInput(formatAmountInput(text))}
+				onBlur={() => setBudgetInput(finaliseAmountInput(budgetInput))}
+				placeholder={t('budgetEditor.placeholder')}
+				keyboardType="decimal-pad"
+				selectTextOnFocus
+				autoFocus
+			/>
 
-					<View style={styles.inputContainer}>
-						<Text style={styles.currencySymbol}>{currentCurrency.symbol}</Text>
-						<TextInput
-							style={styles.input}
-							value={budgetInput}
-							onChangeText={(text) => setBudgetInput(formatAmountInput(text))}
-							onBlur={() => setBudgetInput(finaliseAmountInput(budgetInput))}
-							placeholder={t('budgetEditor.placeholder')}
-							placeholderTextColor="rgba(255, 255, 255, 0.3)"
-							keyboardType="decimal-pad"
-							autoFocus
-						/>
-					</View>
+			<Text style={styles.current}>
+				{t('budgetEditor.currentBudget')}{' '}
+				{currentBudgetCents !== null ? formatCents(currentBudgetCents) : t('budgetEditor.notSet')}
+			</Text>
+			{budgetInheritedFrom ? (
+				<Text style={styles.inherited}>
+					{t('budgetEditor.inheritedFrom', {
+						month: getMonthName(budgetInheritedFrom.month),
+						year: budgetInheritedFrom.year,
+					})}
+				</Text>
+			) : null}
 
-					<View style={styles.currentBudgetContainer}>
-						<Text style={styles.currentBudgetLabel}>{t('budgetEditor.currentBudget')}</Text>
-						<Text style={styles.currentBudgetValue}>
-							{currentBudgetCents !== null
-								? formatCents(currentBudgetCents)
-								: t('budgetEditor.notSet')}
-						</Text>
-					</View>
-
-					<View style={styles.buttonRow}>
-						<TouchableOpacity style={styles.clearButton} onPress={handleClear}>
-							<Text style={styles.clearButtonText}>{t('budgetEditor.clear')}</Text>
-						</TouchableOpacity>
-
-						<TouchableOpacity style={styles.cancelButton} onPress={onClose}>
-							<Text style={styles.cancelButtonText}>{t('budgetEditor.cancel')}</Text>
-						</TouchableOpacity>
-
-						<TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-							<Text style={styles.saveButtonText}>{t('budgetEditor.save')}</Text>
-						</TouchableOpacity>
-					</View>
-				</View>
-			</View>
-		</Modal>
+			<Button label={t('budgetEditor.save')} icon="checkmark" onPress={handleSave} />
+			{ownBudget ? (
+				<Button label={t('budgetEditor.clear')} icon="trash-outline" variant="danger" onPress={handleClear} />
+			) : null}
+			<Button label={t('budgetEditor.cancel')} variant="secondary" onPress={onClose} />
+		</Sheet>
 	);
 };
 
 const styles = StyleSheet.create({
-	modalContainer: {
-		flex: 1,
-		justifyContent: 'center',
-		alignItems: 'center',
-		backgroundColor: 'rgba(0, 0, 0, 0.5)',
-	},
-	modalContent: {
-		width: '90%',
-		backgroundColor: '#1E1E1E',
-		borderRadius: 12,
-		padding: 20,
-	},
-	modalTitle: {
-		fontSize: 20,
-		fontWeight: '600',
-		color: '#FFFFFF',
-		textAlign: 'center',
-		marginBottom: 8,
-	},
-	periodText: {
-		fontSize: 16,
-		color: '#15E8FE',
-		textAlign: 'center',
-		marginBottom: 20,
-	},
-	inputContainer: {
-		flexDirection: 'row',
-		alignItems: 'center',
-		borderWidth: 1,
-		borderColor: 'rgba(255, 255, 255, 0.2)',
-		borderRadius: 8,
-		padding: 12,
-		backgroundColor: 'rgba(255, 255, 255, 0.1)',
-		marginBottom: 16,
-	},
-	currencySymbol: {
-		fontSize: 24,
-		fontWeight: '600',
-		color: '#FFFFFF',
-		marginRight: 8,
-	},
-	input: {
-		flex: 1,
-		fontSize: 24,
-		fontWeight: '600',
-		color: '#FFFFFF',
-	},
-	currentBudgetContainer: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-		marginBottom: 24,
-	},
-	currentBudgetLabel: {
+	current: {
 		fontSize: 14,
-		color: 'rgba(255, 255, 255, 0.6)',
+		color: 'rgba(255, 255, 255, 0.75)',
 	},
-	currentBudgetValue: {
+	inherited: {
 		fontSize: 14,
-		fontWeight: '600',
+		lineHeight: 20,
 		color: '#FFFFFF',
-	},
-	buttonRow: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-	},
-	clearButton: {
-		flex: 1,
+		backgroundColor: 'rgba(21, 232, 254, 0.1)',
+		borderRadius: 10,
 		padding: 12,
-		borderRadius: 8,
-		backgroundColor: 'rgba(255, 107, 107, 0.2)',
-		marginRight: 8,
-		alignItems: 'center',
-	},
-	clearButtonText: {
-		color: '#FF6B6B',
-		fontWeight: '600',
-	},
-	cancelButton: {
-		flex: 1,
-		padding: 12,
-		borderRadius: 8,
-		backgroundColor: 'rgba(255, 255, 255, 0.1)',
-		marginRight: 8,
-		alignItems: 'center',
-	},
-	cancelButtonText: {
-		color: '#FFFFFF',
-		fontWeight: '600',
-	},
-	saveButton: {
-		flex: 1,
-		padding: 12,
-		borderRadius: 8,
-		backgroundColor: '#15E8FE',
-		alignItems: 'center',
-	},
-	saveButtonText: {
-		color: '#000000',
-		fontWeight: '600',
 	},
 });
 

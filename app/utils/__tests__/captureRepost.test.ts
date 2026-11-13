@@ -61,6 +61,8 @@ jest.mock('../../database/database', () => ({
 	findAccountByKey: jest.fn(async () => null),
 	reassignCaptureLedger: jest.fn(async () => undefined),
 	getBills: jest.fn(async () => []),
+	getBillPayments: jest.fn(async () => []),
+	saveBillPayments: jest.fn(async () => undefined),
 	updateBill: jest.fn(async () => undefined),
 }));
 

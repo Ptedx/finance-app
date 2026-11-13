@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
 	Alert,
 	Modal,
@@ -12,14 +13,6 @@ import {
 	View,
 } from 'react-native';
 import { CATEGORY_NATURES, type Category, type CategoryDraft, type CategoryNature, type CategoryType } from '../database/schema';
-
-/** Rótulo de cada natureza, na tela. */
-const NATURE_LABEL: Record<CategoryNature, string> = {
-	essential: 'Essential',
-	discretionary: 'Discretionary',
-	passthrough: 'Pass-through',
-};
-
 
 interface CategoryEditorModalProps {
 	isVisible: boolean;
@@ -73,6 +66,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 	onSave,
 	onCancel,
 }) => {
+	const { t } = useTranslation();
 	const [name, setName] = useState('');
 	const [color, setColor] = useState(COLOR_OPTIONS[0]);
 	const [icon, setIcon] = useState(ICON_OPTIONS[0]);
@@ -103,7 +97,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 		// Validate name
 		const trimmedName = name.trim();
 		if (!trimmedName) {
-			Alert.alert('Invalid Name', 'Please enter a category name');
+			Alert.alert(t('categoryManagement.editor.invalidName'), t('categoryManagement.editor.invalidNameMsg'));
 			return;
 		}
 
@@ -125,17 +119,18 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 			<View style={styles.modalContainer}>
 				<View style={styles.modalContent}>
 					<Text style={styles.modalTitle}>
-						{initialCategory ? 'Edit Category' : 'Add New Category'}
+						{initialCategory ? t('categoryManagement.editor.editTitle') : t('categoryManagement.editor.addTitle')}
 					</Text>
 
 					{/* Name Input */}
 					<View style={styles.inputContainer}>
-						<Text style={styles.label}>Category Name</Text>
+						<Text style={styles.label}>{t('categoryManagement.editor.name')}</Text>
 						<TextInput
 							style={styles.input}
 							value={name}
 							onChangeText={setName}
-							placeholder="Enter category name"
+							placeholder={t('categoryManagement.editor.namePlaceholder')}
+							accessibilityLabel={t('categoryManagement.editor.name')}
 							placeholderTextColor="rgba(255, 255, 255, 0.3)"
 						/>
 					</View>
@@ -143,7 +138,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 					{/* Type selection. Decides which picker the category appears in; without it
 					    every user-created category was silently treated as an expense. */}
 					<View style={styles.sectionContainer}>
-						<Text style={styles.label}>Type</Text>
+						<Text style={styles.label}>{t('categoryManagement.editor.type')}</Text>
 						<View style={styles.typeRow}>
 							{(['expense', 'income'] as CategoryType[]).map((option) => (
 								<TouchableOpacity
@@ -157,7 +152,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 											type === option && styles.selectedTypeOptionText,
 										]}
 									>
-										{option === 'expense' ? 'Expense' : 'Income'}
+										{option === 'expense' ? t('categoryManagement.expense') : t('categoryManagement.income')}
 									</Text>
 								</TouchableOpacity>
 							))}
@@ -168,7 +163,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 					    need nor a want — so the control is hidden rather than shown disabled. */}
 					{type === 'expense' && (
 						<View style={styles.sectionContainer}>
-							<Text style={styles.label}>Nature</Text>
+							<Text style={styles.label}>{t('categoryManagement.editor.nature')}</Text>
 							<View style={styles.typeRow}>
 								{CATEGORY_NATURES.map((option) => (
 									<TouchableOpacity
@@ -182,22 +177,20 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 												nature === option && styles.selectedTypeOptionText,
 											]}
 										>
-											{NATURE_LABEL[option]}
+											{t(`categoryManagement.nature.${option}`)}
 										</Text>
 									</TouchableOpacity>
 								))}
 							</View>
 							<Text style={styles.helperText}>
-								Essentials are what you have to pay to live; the rest is a choice. This is what
-								splits your spending into needs and wants. Pass-through is money that only
-								passed by you: it comes off your income instead of counting as spending.
+								{t('categoryManagement.editor.natureHelp')}
 							</Text>
 						</View>
 					)}
 
 					{/* Color Selection */}
 					<View style={styles.sectionContainer}>
-						<Text style={styles.label}>Select Color</Text>
+						<Text style={styles.label}>{t('categoryManagement.editor.color')}</Text>
 						<ScrollView
 							horizontal
 							showsHorizontalScrollIndicator={false}
@@ -219,7 +212,7 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 
 					{/* Icon Selection */}
 					<View style={styles.sectionContainer}>
-						<Text style={styles.label}>Select Icon</Text>
+						<Text style={styles.label}>{t('categoryManagement.editor.icon')}</Text>
 						<ScrollView
 							horizontal
 							showsHorizontalScrollIndicator={false}
@@ -247,11 +240,11 @@ const CategoryEditorModal: React.FC<CategoryEditorModalProps> = ({
 					{/* Action Buttons */}
 					<View style={styles.buttonContainer}>
 						<TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
-							<Text style={styles.cancelButtonText}>Cancel</Text>
+							<Text style={styles.cancelButtonText}>{t('categoryManagement.editor.cancel')}</Text>
 						</TouchableOpacity>
 
 						<TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-							<Text style={styles.saveButtonText}>{initialCategory ? 'Update' : 'Save'}</Text>
+							<Text style={styles.saveButtonText}>{initialCategory ? t('categoryManagement.editor.update') : t('categoryManagement.editor.save')}</Text>
 						</TouchableOpacity>
 					</View>
 				</View>

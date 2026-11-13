@@ -4,8 +4,16 @@
  */
 
 import type { Account, Capture } from '../database/schema';
+import { ambiguityOfReason } from './ambiguityReasons';
 import { BANK_BRANDS, brandFor } from './bankBrands';
-import { isWalletPackage, normalizeText, type ParsedCapture, type RawCapture } from './captureParser';
+import {
+	type CaptureKind,
+	isWalletPackage,
+	kindOfNotice,
+	normalizeText,
+	type ParsedCapture,
+	type RawCapture,
+} from './captureParser';
 
 /** "Nu" e "Nubank", "Inter" e "Banco Inter": o mesmo banco, escrito de dois jeitos. */
 export const sameBank = (a: string | null, b: string | null): boolean => {
@@ -158,11 +166,74 @@ export type NotificationTarget =
 	| { type: 'new_card' }
 	| { type: 'checking' }
 	/**
-	 * "Não dá para responder": a compra não é da conta corrente e não há como dizer de
-	 * qual cartão é. A captura fica sem conta e o usuário atribui — chutar poria o
-	 * dinheiro no lugar errado, e desde a 1.2.6 ficar sem conta é um caminho normal.
+	 * "Não dá para responder": não há como dizer se a compra é da conta ou de qual cartão.
+	 * A captura fica sem conta e o usuário atribui — chutar poria o dinheiro no lugar
+	 * errado, e desde a 1.2.6 ficar sem conta é um caminho normal. `ambiguity` diz qual é a
+	 * dúvida (SPD-123): a revisão a explica, e a resposta vira regra para o mesmo caso.
 	 */
-	| { type: 'unknown' };
+	| { type: 'unknown'; ambiguity?: TargetAmbiguity };
+
+/**
+ * Por que o destino de uma compra não tem resposta segura (SPD-123). Só compras: Pix,
+ * transferência e o resto seguem como sempre.
+ *
+ *  - `credit_no_last4`: "no crédito" sem o final, e o banco não tem um cartão só (NOTIF-06);
+ *  - `credit_unknown_last4`: "crédito", dois cartões ou mais do banco e um final de nenhum
+ *    deles (achado 7.6);
+ *  - `purchase_no_kind`: nem "crédito" nem "débito", dois cartões ou mais e um final de
+ *    nenhum deles — a conta corrente ou um dos cartões (NOTIF-15);
+ *  - `debit_unknown_last4`: nem "crédito" nem "débito", um cartão do banco com outro final e
+ *    a conta do banco no app — o virtual do Nubank ou o débito do Inter, que se escrevem
+ *    igual (NOTIF-16). `card` é o palpite de antes; desde o SPD-132 nem o conserto das
+ *    compras antigas (`planLedgerRepair`) o usa.
+ */
+export type TargetAmbiguity =
+	| { case: 'credit_no_last4' }
+	| { case: 'credit_unknown_last4' }
+	| { case: 'purchase_no_kind' }
+	| { case: 'debit_unknown_last4'; card: Account };
+
+type TargetNotice = { packageName: string; appLabel: string; title: string; text: string; cardLast4: string | null };
+
+/**
+ * "Esta conta é do banco do aviso?": pelo app que avisou, ou pelo banco que o aviso cita
+ * quando quem avisou não é o app do banco (SMS, carteira, e-mail).
+ */
+const bankMatcher = (accounts: Account[], notification: TargetNotice): ((account: Account) => boolean) => {
+	const foreign = isForeignApp(notification);
+	// O remetente é um banco (da lista ou de uma conta do usuário): só ele vale.
+	const sender = foreign ? senderOf(notification) : null;
+	const senderNamesBank =
+		sender !== null &&
+		(BANK_BRANDS.some((brand) => senderIsBank(sender, brand.name)) ||
+			accounts.some((account) => senderIsBank(sender, account.bankName)));
+	return (account: Account): boolean =>
+		foreign
+			? foreignCitesBank(notification, account.bankName, senderNamesBank)
+			: (account.packageName !== null && account.packageName === notification.packageName) ||
+				sameBank(account.bankName, notification.appLabel);
+};
+
+/** Cartão de crédito de verdade, vivo: um "cartão" com "débito" no nome não tem fatura. */
+const isLiveCreditCard = (account: Account): boolean =>
+	account.kind === 'credit_card' &&
+	!account.archived &&
+	!account.deletedAt &&
+	!DEBIT_NAME.test(normalizeText(`${account.name} ${account.bankName ?? ''}`));
+
+const hasFinal = (card: Account, last4: string): boolean => card.last4 === last4 || namedFinals(card).includes(last4);
+
+/**
+ * O cartão que recebeu um pagamento de fatura avisado pelo próprio cartão ("Recebemos o
+ * pagamento", X-2): o do final citado, ou o único cartão do banco do aviso. Senão `null`.
+ */
+export const invoiceCardOf = (accounts: Account[], notification: TargetNotice): Account | null => {
+	const cards = accounts.filter(isLiveCreditCard).filter(bankMatcher(accounts, notification));
+	const last4 = notification.cardLast4;
+	const exact = last4 ? cards.find((card) => hasFinal(card, last4)) : undefined;
+	if (exact) return exact;
+	return cards.length === 1 ? cards[0] : null;
+};
 
 /**
  * Para onde vai uma compra com final de cartão. Puro, para ser testado caso a caso.
@@ -177,25 +248,20 @@ export type NotificationTarget =
  *
  * Aviso de carteira (Samsung Pay, Google Wallet), SMS ou e-mail não é do banco: o banco
  * sai do remetente ou de um padrão de banco no texto, nunca do nome da loja (C71).
+ *
+ * Compra em que nada disso responde com segurança não é chutada: `unknown`, com a dúvida
+ * (`TargetAmbiguity`, SPD-123). "No crédito" sem final vai para o único cartão do banco,
+ * como o final desconhecido já ia. `kind` é o que o parser entendeu; sem ele, sai do texto.
  */
 export const pickNotificationTarget = (
 	accounts: Account[],
-	notification: { packageName: string; appLabel: string; title: string; text: string; cardLast4: string | null }
+	notification: TargetNotice & { kind?: CaptureKind | null }
 ): NotificationTarget => {
 	const hint = cardHintOf(notification);
 	const foreign = isForeignApp(notification);
-	// O remetente é um banco (da lista ou de uma conta do usuário): só ele vale.
-	const sender = foreign ? senderOf(notification) : null;
-	const senderNamesBank =
-		sender !== null &&
-		(BANK_BRANDS.some((brand) => senderIsBank(sender, brand.name)) ||
-			accounts.some((account) => senderIsBank(sender, account.bankName)));
+	const purchase = (notification.kind !== undefined ? notification.kind : kindOfNotice(notification)) === 'purchase';
 	/** Do mesmo banco do aviso: pelo app que avisou, ou pelo banco que o aviso cita. */
-	const ofNotificationBank = (account: Account): boolean =>
-		foreign
-			? foreignCitesBank(notification, account.bankName, senderNamesBank)
-			: (account.packageName !== null && account.packageName === notification.packageName) ||
-				sameBank(account.bankName, notification.appLabel);
+	const ofNotificationBank = bankMatcher(accounts, notification);
 
 	// Final nomeado numa conta que não é cartão é cartão de débito: a compra é daquela
 	// conta, mesmo quando o banco também tem cartão de crédito. Quem declarou decide, e
@@ -213,30 +279,51 @@ export const pickNotificationTarget = (
 		if (debit) return { type: 'account', account: debit };
 	}
 
-	if (!notification.cardLast4 || hint === 'debit') return { type: 'checking' };
-
-	const cards = accounts.filter(
-		(account) =>
-			account.kind === 'credit_card' &&
-			!account.archived &&
-			!account.deletedAt &&
-			!DEBIT_NAME.test(normalizeText(`${account.name} ${account.bankName ?? ''}`))
-	);
+	const cards = accounts.filter(isLiveCreditCard);
 	const ofBank = cards.filter(ofNotificationBank);
+
+	if (!notification.cardLast4) {
+		// "Você acaba de comprar no crédito", sem final (NOTIF-06): não é da conta corrente,
+		// para onde ia. Com um cartão só do banco, é dele — como o final desconhecido já era.
+		// Com dois ou nenhum, não há como dizer qual: a revisão pergunta.
+		if (purchase && hint === 'credit') {
+			return ofBank.length === 1
+				? { type: 'card', account: ofBank[0] }
+				: { type: 'unknown', ambiguity: { case: 'credit_no_last4' } };
+		}
+		return { type: 'checking' };
+	}
+	if (hint === 'debit') return { type: 'checking' };
+	const last4 = notification.cardLast4;
 
 	// O final do plástico ou de um virtual já nomeado: com dois cartões de crédito do mesmo
 	// banco (PF e PJ, por exemplo), é isso que decide a fatura.
-	const exact = (foreign ? cards : ofBank).find(
-		(card) => card.last4 === notification.cardLast4 || namedFinals(card).includes(notification.cardLast4 as string)
-	);
+	const exact = (foreign ? cards : ofBank).find((card) => hasFinal(card, last4));
 	if (exact) return { type: 'card', account: exact };
-	if (ofBank.length === 1) return { type: 'card', account: ofBank[0] };
+	if (ofBank.length === 1) {
+		// "Compra aprovada no cartão final 0443" é o débito do Inter e também o virtual do
+		// Nubank: sem "crédito" nem "débito", com a conta do banco no app, os dois cabem
+		// (NOTIF-16). A carteira fica no cartão: o aviso do banco chega junto e decide.
+		const debitHome = accounts.some(
+			(account) =>
+				account.kind !== 'credit_card' && !account.archived && !account.deletedAt && ofNotificationBank(account)
+		);
+		if (purchase && hint === 'unknown' && debitHome && !isWalletPackage(notification.packageName)) {
+			return { type: 'unknown', ambiguity: { case: 'debit_unknown_last4', card: ofBank[0] } };
+		}
+		return { type: 'card', account: ofBank[0] };
+	}
 	if (hint === 'credit' && !foreign && ofBank.length === 0) return { type: 'new_card' };
 	// Dois cartões do mesmo banco (PF e PJ) e um final que não é de nenhum deles: o texto
 	// diz "crédito", então a compra **não** é da conta corrente — mas também não há como
 	// dizer de qual fatura é. Caía em "conta corrente", e R$ 480 saíam do saldo e ficavam
 	// fora das duas faturas (achado 7.6). A resposta certa é não responder.
-	if (hint === 'credit' && ofBank.length > 1) return { type: 'unknown' };
+	if (hint === 'credit' && ofBank.length > 1) return { type: 'unknown', ambiguity: { case: 'credit_unknown_last4' } };
+	// Sem "crédito" a dúvida é maior ainda — a conta corrente ou um dos cartões —, e ia para
+	// a conta corrente (NOTIF-15). Também não responde.
+	if (purchase && hint === 'unknown' && ofBank.length > 1) {
+		return { type: 'unknown', ambiguity: { case: 'purchase_no_kind' } };
+	}
 	return { type: 'checking' };
 };
 
@@ -261,7 +348,8 @@ export interface LedgerRepairPlan {
  * - Cartão criado sozinho (nome "· final 1234", sem fechamento nem limite) é juntado ao
  *   único cartão configurado do mesmo banco, quando há exatamente um.
  * - Captura com final de cartão, confirmada ou pendente, numa conta que não é cartão, vai
- *   para o cartão que as regras de hoje escolheriam.
+ *   para o cartão que as regras de hoje escolheriam. Quando elas não respondem (a compra
+ *   iria para a revisão), a captura fica onde está, sem mover nem apagar (SPD-132).
  */
 export const planLedgerRepair = (accounts: Account[], captures: Capture[]): LedgerRepairPlan => {
 	const live = accounts.filter((account) => !account.deletedAt);
@@ -296,10 +384,17 @@ export const planLedgerRepair = (accounts: Account[], captures: Capture[]): Ledg
 	for (const capture of captures) {
 		if (capture.status !== 'confirmed' && capture.status !== 'pending') continue;
 		if (!capture.cardLast4 || !capture.accountId || mergedInto.has(capture.accountId)) continue;
+		// Conta escolhida pelo usuário na revisão, ou pela regra aprendida com ele (SPD-123):
+		// o conserto não a desfaz.
+		if (ambiguityOfReason(capture.reason)) continue;
 		const current = byId.get(capture.accountId);
 		if (!current || current.kind === 'credit_card') continue;
 
-		const decided = pickNotificationTarget(realAccounts, capture);
+		// Só o que as regras de hoje põem num cartão sem dúvida. A compra que um aviso igual
+		// mandaria para a revisão (`unknown`, SPD-123) — "aprovada" sem "crédito" com a conta
+		// do banco no app (NOTIF-16), um final que não é de nenhum dos cartões — não é chutada
+		// aqui também (SPD-132): fica onde está.
+		const decided = pickNotificationTarget(realAccounts, { ...capture, kind: capture.kind as CaptureKind });
 		if (decided.type === 'card' && decided.account.id !== capture.accountId) {
 			moveCaptures.push({ captureId: capture.id, transactionId: capture.transactionId, toId: decided.account.id });
 		}

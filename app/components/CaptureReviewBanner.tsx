@@ -14,6 +14,9 @@ import {
 	parseStalledDismissedAt,
 } from '../utils/captureHealth';
 import { STORAGE_KEYS } from '../utils/storageUtils';
+import HelpButton from './tour/HelpButton';
+import { TourTarget, useTourTarget } from './tour/TourContext';
+import { SampleTag, useSampleHome } from './tour/TrailSample';
 
 /**
  * "3 lançamentos para revisar" no topo da tela inicial.
@@ -30,6 +33,10 @@ import { STORAGE_KEYS } from '../utils/storageUtils';
  * conta a ninguém. Quem tem conta ligada a app de banco e passa 3 dias sem aviso vê "Não
  * recebemos avisos do seu banco há N dias" (`utils/captureHealth.ts`, SPD-021). Essa
  * dispensa vale 7 dias: o silêncio pode ser só uma semana sem gastar.
+ *
+ * Na Trilha 21 sem nada para revisar (SPD-160), a faixa aparece de exemplo, com 1 aviso e o selo
+ * "Exemplo", para o passo dela apontar. Tocar nela não abre nada, e a contagem de verdade (a da
+ * aba e a da revisão) continua a do `CapturesContext`.
  */
 
 interface Dismissals {
@@ -45,8 +52,11 @@ const WarningBanner: React.FC<{
 	dismissLabel: string;
 	onPress: () => void;
 	onDismiss: () => void;
-}> = ({ icon, text, action, hint, dismissLabel, onPress, onDismiss }) => (
-	<View style={[styles.banner, styles.warning]}>
+	/** O alvo da trilha da captura (SPD-131) e o "?" dela. */
+	tourId?: string;
+	help?: React.ReactNode;
+}> = ({ icon, text, action, hint, dismissLabel, onPress, onDismiss, tourId, help }) => (
+	<TourTarget id={tourId} style={[styles.banner, styles.warning]}>
 		<Ionicons name={icon} size={22} color="#000000" />
 		<Pressable
 			onPress={onPress}
@@ -58,6 +68,7 @@ const WarningBanner: React.FC<{
 			<Text style={styles.text}>{text}</Text>
 			<Text style={styles.action}>{action}</Text>
 		</Pressable>
+		{help}
 		<Pressable
 			onPress={onDismiss}
 			accessibilityRole="button"
@@ -67,16 +78,19 @@ const WarningBanner: React.FC<{
 		>
 			<Ionicons name="close" size={20} color="#000000" />
 		</Pressable>
-	</View>
+	</TourTarget>
 );
 
 const CaptureReviewBanner: React.FC = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { pendingCount, supported, enabled, openSettings, pending, resolved } = useCaptures();
+	const { pendingCount, supported, enabled, openSettings, pending, resolved, lastNotificationAt } = useCaptures();
 	const { activeAccounts } = useAccounts();
 	// Nulo até a primeira leitura: nenhum aviso pisca antes de saber se foi dispensado.
 	const [dismissals, setDismissals] = useState<Dismissals | null>(null);
+	// O "Revisar" é um passo do guia da tela inicial (SPD-129), quando aparece.
+	const reviewTarget = useTourTarget('home.review');
+	const { reviewCount: sampleCount } = useSampleHome({ review: pendingCount > 0 });
 
 	// A dispensa é relida ao ganhar foco e ao voltar ao primeiro plano, não só ao montar:
 	// o primeiro login num aparelho a apaga (`AuthContext`) com a Home montada por baixo, e
@@ -112,56 +126,87 @@ const CaptureReviewBanner: React.FC = () => {
 				stalledDismissedAt: dismissals.stalledAt,
 				accounts: activeAccounts,
 				captures,
+				// O histórico à mão pode ser só extrato; o último aviso real vem do banco (SPD-112).
+				lastNotificationAt,
 				now: Date.now(),
 			})
 		: null;
 
+	// A faixa de exemplo: só o texto e o selo, sem o "?" (a trilha já está aberta) e sem abrir nada.
+	const sampleLabel = sampleCount ? t('captures.homeBanner', { count: sampleCount }) : null;
+	const sample = sampleLabel ? (
+		<View
+			{...reviewTarget}
+			testID="home-sample-review"
+			accessible
+			accessibilityLabel={`${t('trails.sample.tag')}. ${sampleLabel}`}
+			style={styles.banner}
+		>
+			<Ionicons name="notifications-outline" size={22} color="#000000" />
+			<Text style={styles.text} numberOfLines={2}>
+				{sampleLabel}
+			</Text>
+			<SampleTag />
+		</View>
+	) : null;
+
 	if (warning?.kind === 'off') {
 		return (
-			<WarningBanner
-				icon="notifications-off-outline"
-				text={t('captures.accessOff')}
-				action={t('captures.accessOffAction')}
-				hint={t('captures.accessOffHint')}
-				dismissLabel={t('captures.accessOffDismiss')}
-				onPress={openSettings}
-				onDismiss={() => {
-					setDismissals((current) => ({ off: true, stalledAt: current?.stalledAt ?? null }));
-					AsyncStorage.setItem(STORAGE_KEYS.captureAccessDismissed, '1').catch(() => {});
-				}}
-			/>
+			<>
+				<WarningBanner
+					icon="notifications-off-outline"
+					text={t('captures.accessOff')}
+					action={t('captures.accessOffAction')}
+					hint={t('captures.accessOffHint')}
+					dismissLabel={t('captures.accessOffDismiss')}
+					tourId="home.captureOff"
+					help={<HelpButton trail="capture" here={{ screen: 'home' }} from="11" color="#000000" />}
+					onPress={openSettings}
+					onDismiss={() => {
+						setDismissals((current) => ({ off: true, stalledAt: current?.stalledAt ?? null }));
+						AsyncStorage.setItem(STORAGE_KEYS.captureAccessDismissed, '1').catch(() => {});
+					}}
+				/>
+				{sample}
+			</>
 		);
 	}
 
 	if (warning?.kind === 'stalled') {
 		return (
-			<WarningBanner
-				icon="cloud-offline-outline"
-				text={t('captures.stalled', { count: warning.days })}
-				action={t('captures.stalledAction')}
-				hint={t('captures.stalledHint')}
-				dismissLabel={t('captures.stalledDismiss')}
-				// O pedido de religar é silencioso e o Android pode ignorá-lo; a tela do sistema
-				// fica aberta para o usuário desligar e ligar o acesso, que sempre funciona.
-				onPress={() => {
-					requestCaptureRebind();
-					openSettings();
-				}}
-				onDismiss={() => {
-					const at = Date.now();
-					setDismissals((current) => ({ off: current?.off ?? false, stalledAt: at }));
-					AsyncStorage.setItem(CAPTURE_STALLED_DISMISSED_KEY, String(at)).catch(() => {});
-				}}
-			/>
+			<>
+				<WarningBanner
+					icon="cloud-offline-outline"
+					text={t('captures.stalled', { count: warning.days })}
+					action={t('captures.stalledAction')}
+					hint={t('captures.stalledHint')}
+					dismissLabel={t('captures.stalledDismiss')}
+					tourId="home.captureStalled"
+					help={<HelpButton trail="capture" here={{ screen: 'home' }} from="12" color="#000000" />}
+					// O pedido de religar é silencioso e o Android pode ignorá-lo; a tela do sistema
+					// fica aberta para o usuário desligar e ligar o acesso, que sempre funciona.
+					onPress={() => {
+						requestCaptureRebind();
+						openSettings();
+					}}
+					onDismiss={() => {
+						const at = Date.now();
+						setDismissals((current) => ({ off: current?.off ?? false, stalledAt: at }));
+						AsyncStorage.setItem(CAPTURE_STALLED_DISMISSED_KEY, String(at)).catch(() => {});
+					}}
+				/>
+				{sample}
+			</>
 		);
 	}
 
-	if (pendingCount === 0) return null;
+	if (pendingCount === 0) return sample;
 
 	const label = t('captures.homeBanner', { count: pendingCount });
 
 	return (
 		<Pressable
+			{...reviewTarget}
 			onPress={() => router.push('/inbox')}
 			accessibilityRole="button"
 			accessibilityLabel={label}
@@ -169,8 +214,13 @@ const CaptureReviewBanner: React.FC = () => {
 			style={({ pressed }) => [styles.banner, pressed && styles.pressed]}
 		>
 			<Ionicons name="notifications-outline" size={22} color="#000000" />
-			<Text style={styles.text}>{label}</Text>
-			<Text style={styles.action}>{t('captures.homeReview')}</Text>
+			{/* Sem o rótulo "Revisar" ao lado: ele tirava espaço do texto, que saía da linha do ícone
+			    (SPD-161). A faixa inteira já abre a revisão, e a seta diz isso. */}
+			<Text style={styles.text} numberOfLines={2}>
+				{label}
+			</Text>
+			{/* O "?" da trilha da revisão (SPD-131). */}
+			<HelpButton trail="review" here={{ screen: 'home' }} color="#000000" />
 			<Ionicons name="chevron-forward" size={20} color="#000000" />
 		</Pressable>
 	);

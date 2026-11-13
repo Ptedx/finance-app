@@ -1,8 +1,8 @@
 /**
- * A etapa da captura no onboarding (SPD-021): no Android, entre "Como funciona" e as
+ * A etapa da captura no onboarding (SPD-021): no Android, entre as boas-vindas e as
  * preferências, explica a leitura das notificações do banco e leva à tela do sistema. Dá
- * para pular. Sem o serviço nativo (iOS, Expo Go) a etapa não aparece: "Continuar" vai
- * direto às preferências, e a rota, se aberta mesmo assim, redireciona.
+ * para pular. Sem o serviço nativo (iOS, Expo Go) a etapa não aparece: as boas-vindas vão
+ * direto às preferências (welcomeStep.test.tsx), e a rota, se aberta mesmo assim, redireciona.
  */
 
 const mockModule = { supported: true, enabled: false, openSettings: jest.fn() };
@@ -35,7 +35,6 @@ jest.mock('react-i18next', () => ({
 import { AppState, type AppStateStatus } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import CaptureStepScreen from '../captures';
-import InfoScreen from '../info';
 
 // A primeira montagem carrega o ScrollView e o resto do react-native sob demanda; com a
 // suíte inteira em paralelo isso passou dos 5 s padrão.
@@ -44,9 +43,9 @@ jest.setTimeout(30000);
 let renderer: ReactTestRenderer | null = null;
 let appStateHandler: ((state: AppStateStatus) => void) | null = null;
 
-const mount = async (screen: 'info' | 'step'): Promise<void> => {
+const mount = async (): Promise<void> => {
 	await act(async () => {
-		renderer = create(screen === 'info' ? <InfoScreen /> : <CaptureStepScreen />);
+		renderer = create(<CaptureStepScreen />);
 	});
 };
 
@@ -87,32 +86,16 @@ afterEach(async () => {
 });
 
 describe('a etapa da captura no onboarding', () => {
-	it('no Android, "Continuar" de "Como funciona" leva à etapa', async () => {
-		await mount('info');
-		await pressText('info.continue');
-
-		expect(mockPush).toHaveBeenCalledWith('/onboarding/captures');
-	});
-
-	it('sem o serviço nativo (iOS, Expo Go), pula direto para as preferências', async () => {
-		mockModule.supported = false;
-		await mount('info');
-		await pressText('info.continue');
-
-		expect(mockPush).toHaveBeenCalledWith('/onboarding/security');
-		expect(mockPush).not.toHaveBeenCalledWith('/onboarding/captures');
-	});
-
 	it('sem o serviço nativo, a rota redireciona e não mostra a etapa', async () => {
 		mockModule.supported = false;
-		await mount('step');
+		await mount();
 
 		expect(hasText('redirect:/onboarding/security')).toBe(true);
 		expect(hasText('onboardingCaptures.title')).toBe(false);
 	});
 
 	it('explica e leva à tela do sistema', async () => {
-		await mount('step');
+		await mount();
 		expect(hasText('onboardingCaptures.title')).toBe(true);
 
 		await pressText('captures.setupButton');
@@ -122,7 +105,7 @@ describe('a etapa da captura no onboarding', () => {
 	});
 
 	it('pular segue para as preferências sem abrir o sistema', async () => {
-		await mount('step');
+		await mount();
 		await pressText('onboardingCaptures.skip');
 
 		expect(mockPush).toHaveBeenCalledWith('/onboarding/security');
@@ -130,7 +113,7 @@ describe('a etapa da captura no onboarding', () => {
 	});
 
 	it('de volta do sistema com o acesso ligado, mostra que deu certo e continua', async () => {
-		await mount('step');
+		await mount();
 		expect(hasText('onboardingCaptures.enabled')).toBe(false);
 
 		mockModule.enabled = true;

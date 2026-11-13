@@ -5,10 +5,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { accountSelectOptions } from '../components/AccountPicker';
 import CardFace from '../components/cards/CardFace';
 import { Button, ChipGroup, type ChipOption, Field } from '../components/cards/formParts';
+import MergeTargetSheet from '../components/MergeTargetSheet';
+import { SelectField } from '../components/SelectField';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount, useSampleForm } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
-import { type Account, type AccountDraft, DEFAULT_CLOSING_DAYS_BEFORE } from '../database/schema';
+import { useTransactions } from '../contexts/TransactionsContext';
+import type { Account, AccountDraft } from '../database/schema';
+import { type ClosePlan, closeTargets, isAccountEmpty, mergeTargets } from '../utils/accountClosing';
+import { futureCardEntries, isDebitTarget } from '../utils/accountMerging';
 import {
 	BANK_BRANDS,
 	brandFor,
@@ -17,9 +26,22 @@ import {
 	NETWORK_LABELS,
 	NEUTRAL_CARD_COLOR,
 } from '../utils/bankBrands';
-import { cycleFor } from '../utils/cardMath';
-import { addDays, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
-import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
+import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
+import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
+import { cycleFor, cycleRuleOf, daysBetween, type InvoiceChange, invoicesToInform } from '../utils/cardMath';
+import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
+import {
+	cardMergeConfirmMessage,
+	closeBlockedMessage,
+	closeConfirmMessage,
+	debitBlockedFutureMessage,
+	debitConvertConfirmMessage,
+	deleteConfirmMessage,
+	deleteRefusedMessage,
+	reopenMessage,
+} from '../utils/deletionNotice';
+import { centsToDisplayInput, formatCents, parseAmountToCents } from '../utils/money';
+import { SAMPLE_IDS, SAMPLE_VALUES } from '../utils/trailSample';
 
 /**
  * Criar ou editar um cartão. Nada aqui fala de saldo.
@@ -29,10 +51,19 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
  * Isso confirma a escolha sem precisar ler.
  *
  * Campos na ordem em que se acha a informação no app do banco: banco, final, bandeira,
- * limite, dia de fechamento e quantos dias depois vence (7 no Nubank). O vencimento não
- * é digitado: sai do fechamento, já empurrado para dia útil, e a tela mostra as datas da
- * fatura atual para conferir com o banco. Só o banco é obrigatório; sem fechamento o
- * cartão funciona, mas não monta faturas — e a tela diz isso.
+ * limite, dia de fechamento e dia de vencimento — os dois como a fatura mostra, em qualquer
+ * banco. Nada vem suposto: o cartão novo começa sem banco e sem vencimento (SPD-109; antes
+ * vinha o Nubank escolhido e 7 dias de prazo). Cada fatura vence no dia digitado, já
+ * empurrado para dia útil (SPD-119); o prazo entre os dois (`closingDaysBefore`), contado na
+ * fatura aberta de hoje (`dueGapFor`), continua gravado para o aparelho com versão antiga,
+ * que só lê o prazo. A tela mostra as datas da fatura atual para conferir com o banco. Só o
+ * banco é obrigatório; sem fechamento o cartão funciona, mas não monta faturas — e a tela
+ * diz isso.
+ *
+ * A fatura que o banco mostra hoje vai com o nome do mês no rótulo, para não haver dúvida
+ * de qual é. Entre o fechamento e o vencimento o banco mostra duas — a fechada a pagar e a
+ * aberta —, e a tela pede as duas (`invoicesToInform`): um campo só levava a fechada para a
+ * fatura aberta e deixava o vencimento dela sem aviso.
  *
  * Débito fica de fora: não tem fatura nem limite, a compra sai da conta na hora. Quem
  * cadastrou um débito aqui por engano leva os lançamentos para a conta com um toque.
@@ -40,25 +71,85 @@ import { centsToDisplayInput, parseAmountToCents } from '../utils/money';
 
 const POPULAR_BANKS = ['nubank', 'inter', 'mercadopago', 'itau', 'bradesco', 'santander', 'bb', 'caixa', 'c6', 'picpay'];
 const OTHER = 'other';
+/** O maior prazo entre fechamento e vencimento que o formulário aceita. */
+const MAX_DUE_GAP = 20;
+/** Prazo fora de 1 a 20 dias: a mesma regra no salvar e no aviso enquanto se digita. */
+const dueGapInvalid = (gap: number | null): boolean => gap !== null && (gap < 1 || gap > MAX_DUE_GAP);
 
 type CardType = 'credit' | 'debit';
 
+/**
+ * Dias entre o fechamento e o vencimento, contados na fatura aberta de hoje: o fechamento
+ * dela e o primeiro dia `dueDay` depois dele (no mês seguinte quando o dia já passou).
+ * Fecha 28 e vence 5 dá 8 dias em outubro (28/10 → 05/11), 7 em novembro e 5 em fevereiro —
+ * conta-se na fatura que o dono tem aberta no app do banco enquanto preenche. Dia que o mês
+ * não tem vai para o último (vence 31 em novembro é 30/11).
+ */
+export const dueGapFor = (closingDay: number, dueDay: number, today: string): number => {
+	const { closingDate } = cycleFor(today, { closingDay, dueDaysAfter: 1 });
+	const [year, month] = closingDate.split('-').map(Number);
+	const sameMonth = buildClampedDate(year, month, dueDay);
+	const due = sameMonth > closingDate ? sameMonth : buildClampedDate(month === 12 ? year + 1 : year, (month % 12) + 1, dueDay);
+	return daysBetween(closingDate, due);
+};
+
+/**
+ * O dia de vencimento que o campo mostra ao abrir um cartão: o que foi digitado e gravado
+ * (`dueDay`), ou, em cartão de versão antiga sem ele, o dia que sai do fechamento e do prazo
+ * na fatura aberta de hoje. Sem fechamento, em branco: o vencimento sozinho não monta fatura,
+ * e o salvar de um cartão em que ninguém mexeu não pode pedir o fechamento.
+ */
+export const dueDayShown = (card: Pick<Account, 'closingDay' | 'closingDaysBefore' | 'dueDay'>, today: string): string => {
+	const rule = cycleRuleOf(card);
+	if (!rule) return '';
+	if (card.dueDay) return String(card.dueDay);
+	return String(Number(addDays(cycleFor(today, rule).closingDate, rule.dueDaysAfter).slice(8, 10)));
+};
+
 interface CardEditScreenProps {
 	cardId?: string;
+	/**
+	 * `exemplo=1` da rota (SPD-147): a trilha abriu o cadastro preenchido com o cartão de exemplo,
+	 * para as datas da fatura aparecerem. Com o exemplo (aqui ou num `cardId` de exemplo), nada grava.
+	 */
+	sampleForm?: string;
 }
 
-const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
+const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId, sampleForm }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, bankAccounts, createAccount, saveAccount, removeAccount, adjustCardInvoices, convertCardToDebit } = useAccounts();
+	const {
+		accounts,
+		bankAccounts,
+		balances,
+		createAccount,
+		saveAccount,
+		removeAccount,
+		closeAccount,
+		reopenAccount,
+		planClose,
+		loadAccountContents,
+		adjustCardInvoices,
+		planCardClosingChange,
+		convertCardToDebit,
+		mergeCards,
+	} = useAccounts();
+	const { transactions } = useTransactions();
 
-	const existing: Account | undefined = useMemo(
+	// O exemplo das trilhas (SPD-147): o cartão de exemplo, ou o cadastro preenchido com ele.
+	const formSample = useSampleForm(sampleForm);
+	const sampleAccount = useSampleAccount(formSample ? SAMPLE_IDS.card : cardId);
+	const sample = sampleAccount?.kind === 'credit_card' ? sampleAccount : undefined;
+	const found: Account | undefined = useMemo(
 		() => accounts.find((account) => account.id === cardId && account.kind === 'credit_card'),
 		[accounts, cardId]
 	);
+	const existing: Account | undefined = formSample ? undefined : (sample ?? found);
 
+	// Sem banco escolhido até o dono escolher: cartão novo, ou um antigo que ficou sem banco.
+	// O salvar pede o banco (`bankRequired`).
 	const initialBrand = brandFor(existing?.bankName);
-	const [bankId, setBankId] = useState<string>(initialBrand?.id ?? (existing?.bankName ? OTHER : 'nubank'));
+	const [bankId, setBankId] = useState<string | null>(initialBrand?.id ?? (existing?.bankName ? OTHER : null));
 	const [otherBank, setOtherBank] = useState(initialBrand ? '' : (existing?.bankName ?? ''));
 	const [name, setName] = useState(existing?.name ?? '');
 	const [last4, setLast4] = useState(existing?.last4 ?? '');
@@ -66,24 +157,38 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	const [limit, setLimit] = useState(existing?.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
 	const [cardType, setCardType] = useState<CardType>('credit');
 	const [debitAccountId, setDebitAccountId] = useState<string | null>(null);
-	const [closingDaysBefore, setClosingDaysBefore] = useState(String(existing?.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
-	const [closingDay, setClosingDay] = useState(existing?.closingDay ? String(existing.closingDay) : '');
+	// Como o cartão está gravado: com os dois dias sem mexer, o salvar mantém o prazo dele.
+	const savedClosing = existing?.closingDay ? String(existing.closingDay) : '';
+	const savedDue = existing ? dueDayShown(existing, todayISO()) : '';
+	const [closingDay, setClosingDay] = useState(savedClosing);
+	const [dueDay, setDueDay] = useState(savedDue);
 	const [currentInvoice, setCurrentInvoice] = useState('');
+	const [closedInvoice, setClosedInvoice] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A folha de "Juntar com outro cartão" aberta.
+	const [merging, setMerging] = useState(false);
+	// A folha de "para qual conta volta o crédito" do encerrar, com o plano que a abriu.
+	const [closing, setClosing] = useState<Extract<ClosePlan, { kind: 'transfer' }> | null>(null);
+	// O guia do cadastro do cartão (SPD-129): o final e os dias da fatura.
+	useScreenTour('cardEdit', { blocked: merging || closing !== null });
+	const tourScroll = useTourScroll('cardEdit');
 
+	// O cadastro de exemplo abre do mesmo jeito, com o cartão de exemplo e a fatura de hoje.
+	const filled = existing ?? sample;
 	useEffect(() => {
-		if (!existing) return;
-		const brand = brandFor(existing.bankName);
-		setBankId(brand?.id ?? (existing.bankName ? OTHER : 'nubank'));
-		setOtherBank(brand ? '' : (existing.bankName ?? ''));
-		setName(existing.name);
-		setLast4(existing.last4 ?? '');
-		setNetwork((existing.network as CardNetwork | null) ?? null);
-		setLimit(existing.creditLimitCents ? centsToDisplayInput(existing.creditLimitCents) : '');
-		setClosingDaysBefore(String(existing.closingDaysBefore ?? DEFAULT_CLOSING_DAYS_BEFORE));
-		setClosingDay(existing.closingDay ? String(existing.closingDay) : '');
-	}, [existing]);
+		if (!filled) return;
+		const brand = brandFor(filled.bankName);
+		setBankId(brand?.id ?? (filled.bankName ? OTHER : null));
+		setOtherBank(brand ? '' : (filled.bankName ?? ''));
+		setName(filled.name);
+		setLast4(filled.last4 ?? '');
+		setNetwork((filled.network as CardNetwork | null) ?? null);
+		setLimit(filled.creditLimitCents ? centsToDisplayInput(filled.creditLimitCents) : '');
+		setClosingDay(filled.closingDay ? String(filled.closingDay) : '');
+		setDueDay(dueDayShown(filled, todayISO()));
+		if (filled !== existing) setCurrentInvoice(centsToDisplayInput(SAMPLE_VALUES.cardInvoiceCents));
+	}, [filled, existing]);
 
 	const brand = BANK_BRANDS.find((b) => b.id === bankId) ?? null;
 	const bankName = bankId === OTHER ? otherBank.trim() : (brand?.name ?? '');
@@ -131,21 +236,71 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
-	// As datas da fatura atual com o que está digitado, para conferir com o app do banco.
+	/**
+	 * O prazo que o ciclo vai usar com os dois dias digitados. Com os dois como estão gravados,
+	 * o do cartão: recontar na fatura de outro mês trocaria o prazo (8 dias em outubro, 7 em
+	 * novembro) sem o dono ter mexido em nada. Nulo sem os dois dias válidos.
+	 */
+	const gapOf = (closing: number | null | false, due: number | null | false): number | null => {
+		if (!closing || !due) return null;
+		if (existing?.closingDaysBefore && closingDay === savedClosing && dueDay === savedDue) return existing.closingDaysBefore;
+		return dueGapFor(closing, due, todayISO());
+	};
+
+	// As datas da fatura atual com o que está digitado, para conferir com o app do banco. A
+	// regra é a que o salvar grava: com o dia de vencimento, que dá o vencimento de cada fatura.
 	const typedClosing = parseDay(closingDay);
-	const typedDaysAfter = Number(closingDaysBefore);
-	const cyclePreview =
-		typedClosing && Number.isInteger(typedDaysAfter) && typedDaysAfter >= 1 && typedDaysAfter <= 20
-			? cycleFor(todayISO(), { closingDay: typedClosing, dueDaysAfter: typedDaysAfter })
+	const typedDue = parseDay(dueDay);
+	const typedGap = gapOf(typedClosing, typedDue);
+	const typedRule =
+		typedClosing && typedDue && typedGap !== null && !dueGapInvalid(typedGap)
+			? cycleRuleOf({ closingDay: typedClosing, closingDaysBefore: typedGap, dueDay: typedDue })
 			: null;
+	const cyclePreview = typedRule ? cycleFor(todayISO(), typedRule) : null;
+	// As faturas que o banco mostra hoje: a aberta e, até o vencimento, a fechada.
+	const asked = typedRule ? invoicesToInform(typedRule, todayISO()) : null;
+
+	const parseInvoice = (value: string): number | null | false => {
+		if (!value.trim()) return null;
+		const cents = parseAmountToCents(value);
+		return cents === null || cents < 0 ? false : cents;
+	};
+
+	/** O aviso da troca do fechamento: as faturas que mudam, de quanto para quanto. Sim é salvar. */
+	const confirmClosingChange = (day: number, changes: InvoiceChange[]): Promise<boolean> =>
+		new Promise((resolve) => {
+			const lines = changes
+				.map((change) =>
+					t('cards.edit.closingChangeLine', {
+						month: formatMonthLong(change.closingDate),
+						before: formatCents(change.beforeCents),
+						after: formatCents(change.afterCents),
+					})
+				)
+				.join('\n');
+			Alert.alert(
+				t('cards.edit.closingChangeTitle'),
+				t('cards.edit.closingChangeMessage', { day, lines }),
+				[
+					{ text: t('cards.cancel'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('cards.edit.closingChangeConfirm'), onPress: () => resolve(true) },
+				],
+				{ cancelable: true, onDismiss: () => resolve(false) }
+			);
+		});
 
 	const handleSave = async () => {
+		if (sample) return;
 		const next: Record<string, string | undefined> = {};
 		if (!bankName) next.bank = t('cards.edit.bankRequired');
 		const closing = parseDay(closingDay);
-		const daysAfter = Number(closingDaysBefore);
-		if (!Number.isInteger(daysAfter) || daysAfter < 1 || daysAfter > 20) next.daysAfter = t('cards.edit.invalidDaysAfter');
+		const due = parseDay(dueDay);
+		const gap = gapOf(closing, due);
 		if (closing === false) next.closing = t('cards.edit.invalidDay');
+		else if (closing === null && due) next.closing = t('cards.edit.closingNeeded');
+		if (due === false) next.due = t('cards.edit.invalidDay');
+		else if (closing && due === null) next.due = t('cards.edit.dueNeeded');
+		else if (dueGapInvalid(gap)) next.due = t('cards.edit.invalidDueGap');
 		if (last4 && !/^\d{4}$/.test(last4)) next.last4 = t('cards.edit.invalidLast4');
 
 		let limitCents: number | null = null;
@@ -153,11 +308,12 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			limitCents = parseAmountToCents(limit);
 			if (limitCents === null || limitCents <= 0) next.limit = t('cards.edit.invalidAmount');
 		}
-		let invoiceCents: number | null = null;
-		if (!existing && currentInvoice.trim()) {
-			invoiceCents = parseAmountToCents(currentInvoice);
-			if (invoiceCents === null || invoiceCents < 0) next.invoice = t('cards.edit.invalidAmount');
-		}
+		const openCents = existing ? null : parseInvoice(currentInvoice);
+		// A fechada só conta enquanto a tela a pede: com o fechamento trocado depois de digitar,
+		// o campo some e o valor não vai para uma fatura que não foi perguntada.
+		const closedCents = existing || !asked?.closed ? null : parseInvoice(closedInvoice);
+		if (openCents === false) next.invoice = t('cards.edit.invalidAmount');
+		if (closedCents === false) next.closedInvoice = t('cards.edit.invalidAmount');
 
 		setErrors(next);
 		const messages = Object.values(next).filter(Boolean);
@@ -175,10 +331,11 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 			bankName,
 			color,
 			last4: last4 || null,
-			closingDay: closing as number | null,
-			// Informativo: o dia em que costuma vencer. O ciclo sai do fechamento.
-			dueDay: closing ? ((closing + daysAfter - 1) % 30) + 1 : null,
-			closingDaysBefore: closing ? daysAfter : null,
+			closingDay: closing || null,
+			// O dia de vencimento que a fatura mostra, como o dono digitou: é ele que dá o
+			// vencimento de cada fatura. O prazo fica para o aparelho com versão antiga.
+			dueDay: closing && due ? due : null,
+			closingDaysBefore: closing ? gap : null,
 			creditLimitCents: limitCents,
 			cardNames: existing?.cardNames ?? null,
 			packageName: existing?.packageName ?? null,
@@ -193,15 +350,28 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		try {
 			setSaving(true);
 			if (existing) {
+				// Novo dia de fechamento (SPD-179): a fatura que o "Acertar valor" informou fica na
+				// mesma fatura, e o que ainda muda de valor aparece em reais antes de salvar.
+				if (closing && existing.closingDay && closing !== existing.closingDay) {
+					const change = await planCardClosingChange(existing.id, { closingDay: closing, closingDaysBefore: gap, dueDay: due || null });
+					if (change) {
+						draft.openingBalanceCents = change.anchor.openingBalanceCents;
+						draft.openingBalanceDate = change.anchor.openingBalanceDate;
+						if (change.changes.length > 0 && !(await confirmClosingChange(closing, change.changes))) return;
+					}
+				}
 				await saveAccount({ ...draft, id: existing.id });
 				announce(t('cards.edit.saved'));
 				router.back();
 			} else {
 				const id = await createAccount(draft);
-				// Só a fatura aberta foi informada: a fechada vai como `null` ("não informei"), e
-				// não como zero — o cartão novo pode ter uma fechada em aberto que ninguém
-				// declarou aqui, e zerá-la lançaria um estorno falso datado hoje.
-				if (invoiceCents !== null && invoiceCents > 0) await adjustCardInvoices(id, invoiceCents, null);
+				// Campo em branco vai como `null` ("não informei"), e não como zero — o cartão novo
+				// pode ter uma fechada em aberto que ninguém declarou aqui, e zerá-la lançaria um
+				// estorno falso datado hoje. A aberta vira a âncora (`planCardOpening`): a fatura
+				// informada não é compra do mês nem saída em Lançamentos.
+				const open = openCents === false ? null : openCents;
+				const closed = closedCents === false ? null : closedCents;
+				if ((open ?? 0) > 0 || (closed ?? 0) > 0) await adjustCardInvoices(id, open, closed, { opening: true });
 				router.replace({ pathname: '/cards/[id]', params: { id } });
 			}
 		} finally {
@@ -209,41 +379,245 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 		}
 	};
 
-	const sameBankAccount = bankAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
-	const chosenDebitAccount = bankAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
+	// Só conta principal (SPD-152): numa reserva, os pagamentos de fatura virariam "Guardado".
+	const debitAccounts = bankAccounts.filter(isDebitTarget);
+	const sameBankAccount = debitAccounts.find((account) => brandFor(account.bankName)?.id === bankId) ?? null;
+	const chosenDebitAccount = debitAccounts.find((account) => account.id === (debitAccountId ?? sameBankAccount?.id)) ?? null;
 
+	/**
+	 * Sai de um cartão que deixou de existir (excluído, juntado, levado para o débito) sem
+	 * deixar a tela dele na pilha (E2E-40): o voltar caía em "Cartão não encontrado". Esta
+	 * edição se abre por cima da tela do cartão; `dismissTo` volta até ela (sem ela embaixo,
+	 * com a edição aberta direto, troca esta por ela). Depois, ao juntar, ela é trocada pela
+	 * do cartão que fica — tela nova, sem o filtro nem a fatura escolhida no que saiu; ao
+	 * excluir, fecha, e o voltar seguinte é o de quem abriu o cartão (lista ou tela inicial).
+	 */
+	const leaveRemovedCard = (removedId: string, into?: string) => {
+		router.dismissTo({ pathname: '/cards/[id]', params: { id: removedId } });
+		if (into) router.replace({ pathname: '/cards/[id]', params: { id: into } });
+		else router.dismiss();
+	};
+
+	/**
+	 * A confirmação diz em R$ o que muda (SPD-152): o saldo da conta antes → depois (a dívida
+	 * do cartão passa a sair dela), o patrimônio igual e o efeito nos relatórios.
+	 */
 	const handleConvertToDebit = () => {
-		if (!existing || !chosenDebitAccount) return;
-		Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitConfirm', { account: chosenDebitAccount.name }), [
+		if (!existing || !chosenDebitAccount || sample) return;
+		// Parcela por cair: no débito ela só sairia da conta no dia dela, e o patrimônio de hoje
+		// subiria esse valor. Não oferece levar; diz quantas e quanto, e quando dá.
+		const future = futureCardEntries(transactions, existing.id, todayISO());
+		if (future.count > 0) {
+			Alert.alert(t('cards.edit.debitConvert'), debitBlockedFutureMessage(existing.name, future.count, future.amountCents, t));
+			return;
+		}
+		const purchasesCents = transactions.reduce(
+			(total, tx) => (tx.accountId === existing.id && !tx.isIncome ? total + tx.amountCents : total),
+			0
+		);
+		const message = debitConvertConfirmMessage(
+			{
+				account: chosenDebitAccount.name,
+				cardBalanceCents: balances?.get(existing.id) ?? existing.openingBalanceCents,
+				accountBalanceCents: balances?.get(chosenDebitAccount.id) ?? chosenDebitAccount.openingBalanceCents,
+				cardOpeningBalanceCents: existing.openingBalanceCents,
+				purchasesCents,
+			},
+			t
+		);
+		Alert.alert(t('cards.edit.debitConvert'), message, [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.debitConvert'),
 				onPress: async () => {
-					await convertCardToDebit(existing.id, chosenDebitAccount.id);
+					try {
+						await convertCardToDebit(existing.id, chosenDebitAccount.id);
+					} catch (error) {
+						// Um pagamento de fatura agendado (transferência com data futura), ou a parcela
+						// lançada em outro aparelho depois de abrir a confirmação: nada mudou.
+						if (error instanceof Error && error.name === 'DebitFutureError') {
+							Alert.alert(t('cards.edit.debitConvert'), t('cards.edit.debitBlockedScheduled', { name: existing.name }));
+							return;
+						}
+						throw error;
+					}
 					announce(t('cards.edit.debitDone', { account: chosenDebitAccount.name }));
-					router.replace('/cards');
+					leaveRemovedCard(existing.id);
 				},
 			},
 		]);
 	};
 
-	const handleArchive = async () => {
-		if (!existing) return;
-		await saveAccount({ ...existing, archived: !existing.archived });
-		announce(existing.archived ? t('cards.edit.unarchived') : t('cards.edit.archived'));
-		router.back();
+	/**
+	 * Encerrar (SPD-144), no lugar de "Arquivar": o cartão sai das listas, dos seletores e dos
+	 * totais de hoje, e as faturas ficam. Devendo, não encerra — a fatura se paga antes (um
+	 * "encerramento" que zerasse a dívida seria um pagamento que não houve). Com crédito, uma
+	 * transferência de hoje leva o crédito para a conta escolhida. A confirmação diz o valor.
+	 */
+	// Lido com folga: o saldo do cartão só importa para encerrar, reabrir e o aviso de encerrado.
+	const cardBalance = existing ? (balances?.get(existing.id) ?? existing.openingBalanceCents) : 0;
+	const closeCandidates = existing ? closeTargets(accounts, existing) : [];
+
+	const startClose = async () => {
+		if (!existing || sample) return;
+		let plan: ClosePlan;
+		try {
+			plan = await planClose(existing.id);
+		} catch (error) {
+			console.error('Error planning the card close:', error);
+			return;
+		}
+		const title = existing.archived ? t('cards.edit.settle') : t('cards.edit.close');
+		if (plan.kind === 'blocked') {
+			Alert.alert(title, closeBlockedMessage('cards.edit', existing.name, plan, t));
+			return;
+		}
+		if (plan.kind === 'direct') {
+			confirmClose(plan, null);
+			return;
+		}
+		if (closeCandidates.length === 0) {
+			Alert.alert(title, t('cards.edit.closeNoTarget', { name: existing.name }));
+			return;
+		}
+		setClosing(plan);
 	};
 
-	const handleDelete = () => {
+	const confirmClose = (plan: ClosePlan, target: Account | null) => {
+		setClosing(null);
 		if (!existing) return;
-		Alert.alert(t('cards.edit.delete'), t('cards.edit.deleteConfirm'), [
+		const wasClosed = existing.archived;
+		const message = closeConfirmMessage('cards.edit', { name: existing.name, target: target?.name, plan, alreadyClosed: wasClosed, roleChange: false }, t);
+		Alert.alert(wasClosed ? t('cards.edit.settle') : t('cards.edit.close'), message, [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{
+				text: t('cards.edit.closeAction'),
+				onPress: async () => {
+					await closeAccount(existing.id, target?.id ?? null);
+					announce(wasClosed ? t('cards.edit.settle') : t('cards.edit.closed'));
+					if (!wasClosed) router.back();
+				},
+			},
+		]);
+	};
+
+	/** Reabrir: com saldo, avisa que ele volta aos totais de hoje. */
+	const handleReopen = async () => {
+		if (!existing || sample) return;
+		const reopen = async () => {
+			await reopenAccount(existing.id);
+			announce(t('cards.edit.reopened'));
+		};
+		const message = reopenMessage('cards.edit', existing.name, cardBalance, t);
+		if (message === null) {
+			await reopen();
+			return;
+		}
+		Alert.alert(t('cards.edit.reopen'), message, [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{ text: t('cards.edit.reopen'), onPress: reopen },
+		]);
+	};
+
+	/**
+	 * Apagar só cartão vazio (SPD-144, `isAccountEmpty`): sem compra, pagamento, aviso nem
+	 * fatura informada — aí nada muda nos números. Com conteúdo, diz por quê e oferece
+	 * Encerrar ou Juntar.
+	 */
+	const handleDelete = async () => {
+		if (!existing || sample) return;
+		let contents: Awaited<ReturnType<typeof loadAccountContents>>;
+		try {
+			contents = await loadAccountContents(existing.id);
+		} catch (error) {
+			console.error('Error reading what is linked to the card:', error);
+			return;
+		}
+		if (!isAccountEmpty(contents)) {
+			Alert.alert(t('cards.edit.delete'), deleteRefusedMessage('cards.edit', existing.name, contents, t), [
+				{ text: t('cards.cancel'), style: 'cancel' },
+				...(existing.archived ? [] : [{ text: t('cards.edit.close'), onPress: () => void startClose() }]),
+				...(mergeCandidates.length > 0 ? [{ text: t('cards.edit.merge'), onPress: handleMerge }] : []),
+			]);
+			return;
+		}
+		Alert.alert(t('cards.edit.delete'), deleteConfirmMessage('cards.edit', existing.name, contents, t), [
 			{ text: t('cards.cancel'), style: 'cancel' },
 			{
 				text: t('cards.edit.delete'),
 				style: 'destructive',
 				onPress: async () => {
-					await removeAccount(existing.id);
-					router.replace('/cards');
+					try {
+						await removeAccount(existing.id);
+					} catch (error) {
+						// Ganhou conteúdo entre a pergunta e o toque: o banco recusou e nada mudou.
+						if (error instanceof Error && error.name === 'AccountInUseError') {
+							Alert.alert(t('cards.edit.delete'), t('cards.edit.deleteChanged', { name: existing.name }));
+							return;
+						}
+						throw error;
+					}
+					leaveRemovedCard(existing.id);
+				},
+			},
+		]);
+	};
+
+	/**
+	 * O mesmo cartão do banco com duas fichas no app: a cadastrada à mão e a que o extrato
+	 * OFX criou, por exemplo (E2E-34). Como "Juntar com outra conta": este sai e o escolhido
+	 * fica, com o fechamento e o limite dele; a dívida dos dois soma (`mergeCards`, SPD-152).
+	 * Só cartão ativo com cartão ativo (`mergeTargets`).
+	 */
+	const mergeCandidates = existing && !existing.archived ? mergeTargets(accounts, existing) : [];
+
+	/**
+	 * Quantos lançamentos do cartão que fica podem estar repetidos depois de juntar (E2E-34): a
+	 * padaria digitada no Nubank Teste e a mesma padaria que o extrato pôs no duplicado. Conta
+	 * sobre a lista de antes de juntar, do jeito que `mergeCardInto` a deixa — a lista da tela
+	 * só se atualiza depois deste toque: o lançamento sem final ganha o do cartão que sai. O
+	 * ajuste com a fatura do banco vem junto (SPD-152), mas nunca conta como repetido.
+	 */
+	const keptDuplicateCount = (from: Account, intoId: string, dismissed: ReadonlySet<string>): number => {
+		const kept = transactions.flatMap((tx) => {
+			if (tx.accountId === intoId) return [tx];
+			if (tx.accountId !== from.id) return [];
+			return [{ ...tx, cardLast4: tx.cardLast4 ?? from.last4 }];
+		});
+		return summarizeCardDuplicates(findCardDuplicates(kept, dismissed).groups).count;
+	};
+
+	// O destino se escolhe numa folha com todos os cartões (E2E-39): o Alert do Android mostra no
+	// máximo três botões. A confirmação, com dois, continua no Alert.
+	const handleMerge = () => {
+		if (!existing || sample || mergeCandidates.length === 0) return;
+		setMerging(true);
+	};
+
+	/** A confirmação diz a soma das dívidas em R$ antes de juntar (SPD-152). */
+	const confirmMerge = (card: Account) => {
+		setMerging(false);
+		if (!existing) return;
+		const side = (account: Account) => ({
+			name: account.name,
+			balanceCents: balances?.get(account.id) ?? account.openingBalanceCents,
+			openingBalanceCents: account.openingBalanceCents,
+			openingBalanceDate: account.openingBalanceDate,
+		});
+		Alert.alert(t('cards.edit.merge'), cardMergeConfirmMessage(side(existing), side(card), t), [
+			{ text: t('cards.cancel'), style: 'cancel' },
+			{
+				text: t('cards.edit.mergeAction'),
+				onPress: async () => {
+					const dismissed = await getDismissedCardDuplicates();
+					const repeated = keptDuplicateCount(existing, card.id, dismissed);
+					await mergeCards(existing.id, card.id);
+					announce(t('cards.edit.merged', { into: card.name }));
+					// Juntar não apaga a cópia da compra que estava nos dois (SPD-098): o dono precisa saber.
+					if (repeated > 0) {
+						Alert.alert(t('cards.edit.merged', { into: card.name }), t('cards.duplicates.afterMerge', { count: repeated, into: card.name }));
+					}
+					leaveRemovedCard(existing.id, card.id);
 				},
 			},
 		]);
@@ -252,7 +626,8 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
-			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
+			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 				<View style={styles.header}>
 					<Pressable
 						onPress={() => router.back()}
@@ -265,13 +640,16 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 					<Text style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
 						{existing ? t('cards.edit.title') : t('cards.edit.newTitle')}
 					</Text>
+					<HelpButton trail="cardSetup" here={existing ? { screen: 'cardEdit', params: { id: existing.id } } : { screen: 'cardNew' }} />
 				</View>
+				{sample ? <SampleBanner /> : null}
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					<View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
 						<CardFace card={preview} summary={undefined} />
 					</View>
 
+					<TourTarget id="cardEdit.type">
 					<ChipGroup
 						label={t('cards.edit.type')}
 						options={[
@@ -281,25 +659,28 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						selected={cardType}
 						onSelect={(value) => setCardType(value)}
 					/>
+					</TourTarget>
 
 					{cardType === 'debit' ? (
 						<View style={styles.debit} accessibilityLiveRegion="polite">
 							<Text style={styles.debitBody}>{t('cards.edit.debitBody')}</Text>
 							{existing ? (
-								bankAccounts.length > 0 ? (
+								debitAccounts.length > 0 ? (
 									<>
-										<ChipGroup
+										<SelectField
 											label={t('cards.edit.debitAccount')}
-											options={bankAccounts.map((account) => ({ value: account.id, label: account.name, color: account.color }))}
+											options={accountSelectOptions(debitAccounts)}
 											selected={chosenDebitAccount?.id ?? null}
 											onSelect={(value) => setDebitAccountId(value)}
 										/>
+										<TourTarget id="cardEdit.debitConvert">
 										<Button
 											label={t('cards.edit.debitConvert')}
 											icon="swap-horizontal"
 											onPress={handleConvertToDebit}
 											disabled={!chosenDebitAccount}
 										/>
+										</TourTarget>
 									</>
 								) : (
 									<Text style={styles.debitBody}>{t('cards.edit.debitNoAccount')}</Text>
@@ -312,17 +693,16 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 
 					{cardType === 'credit' ? (
 					<>
-					<ChipGroup
+					{/* Lista que abre de baixo (SPD-130): 11 bancos em botões ocupavam meia tela. */}
+					<TourTarget id="cardEdit.bank">
+					<SelectField
 						label={t('cards.edit.bank')}
 						options={bankOptions}
 						selected={bankId}
 						onSelect={(value) => setBankId(value)}
+						error={bankId !== OTHER ? errors.bank : undefined}
 					/>
-					{errors.bank && bankId !== OTHER ? (
-						<Text style={styles.error} accessibilityLiveRegion="polite">
-							{errors.bank}
-						</Text>
-					) : null}
+					</TourTarget>
 					{bankId === OTHER ? (
 						<Field
 							label={t('cards.edit.bankName')}
@@ -333,6 +713,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						/>
 					) : null}
 
+					<TourTarget id="cardEdit.nickname">
 					<Field
 						label={t('cards.edit.nickname')}
 						optionalLabel={t('cards.edit.optional')}
@@ -341,7 +722,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						placeholder={t('cards.edit.nicknamePlaceholder')}
 						hint={t('cards.edit.nicknameHint')}
 					/>
+					</TourTarget>
 
+					<TourTarget id="cardEdit.last4">
 					<Field
 						label={t('cards.edit.last4')}
 						optionalLabel={t('cards.edit.optional')}
@@ -352,14 +735,18 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						hint={t('cards.edit.last4Hint')}
 						error={errors.last4}
 					/>
+					</TourTarget>
 
+					<TourTarget id="cardEdit.network">
 					<ChipGroup
 						label={t('cards.edit.network')}
 						options={networkOptions}
 						selected={network}
 						onSelect={(value) => setNetwork(value === network ? null : value)}
 					/>
+					</TourTarget>
 
+					<TourTarget id="cardEdit.limit">
 					<Field
 						label={t('cards.edit.limit')}
 						optionalLabel={t('cards.edit.optional')}
@@ -369,8 +756,9 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 						hint={t('cards.edit.limitHint')}
 						error={errors.limit}
 					/>
+					</TourTarget>
 
-					<View style={styles.twoColumns}>
+					<TourTarget id="cardEdit.days" style={styles.twoColumns}>
 						<View style={styles.column}>
 							<Field
 								label={t('cards.edit.closingDay')}
@@ -381,19 +769,20 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								error={errors.closing}
 							/>
 						</View>
-						<View style={styles.column}>
+						<TourTarget id="cardEdit.due" style={styles.column}>
 							<Field
-								label={t('cards.edit.dueDaysAfter')}
-								value={closingDaysBefore}
-								onChangeText={(text) => setClosingDaysBefore(text.replace(/\D/g, '').slice(0, 2))}
+								label={t('cards.edit.dueDay')}
+								value={dueDay}
+								onChangeText={(text) => setDueDay(text.replace(/\D/g, '').slice(0, 2))}
 								keyboardType="number-pad"
 								maxLength={2}
-								error={errors.daysAfter}
+								error={errors.due}
 							/>
-						</View>
-					</View>
+						</TourTarget>
+					</TourTarget>
 					<Text style={styles.explain}>{t('cards.edit.cycleHint')}</Text>
 					{cyclePreview ? (
+						<TourTarget id="cardEdit.cycle">
 						<Text style={styles.cyclePreview} accessibilityLiveRegion="polite">
 							{t('cards.edit.cyclePreview', {
 								month: formatMonthLong(`${cyclePreview.key}-01`),
@@ -401,38 +790,135 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId }) => {
 								due: formatDayMonth(cyclePreview.dueDate),
 							})}
 						</Text>
+						</TourTarget>
+					) : dueGapInvalid(typedGap) && !errors.due ? (
+						// Os dois dias digitados dão um prazo fora de 1 a 20: no lugar da linha das datas,
+						// o porquê, já enquanto se digita — antes ela sumia calada e o aviso só vinha no
+						// salvar (E2E-50). Depois do salvar, o aviso fica no campo, uma vez só.
+						<Text style={styles.cycleInvalid} accessibilityLiveRegion="polite">
+							{t('cards.edit.invalidDueGap')}
+						</Text>
 					) : null}
 
-					{!existing ? (
+					{!existing && asked?.closed ? (
+						<TourTarget id="cardEdit.closedInvoice">
 						<Field
-							label={t('cards.edit.currentInvoice')}
+							label={t('cards.edit.closedInvoice', {
+								month: formatMonthLong(`${asked.closed.key}-01`),
+								due: formatDayMonth(asked.closed.dueDate),
+							})}
+							optionalLabel={t('cards.edit.optional')}
+							value={closedInvoice}
+							onChangeText={setClosedInvoice}
+							keyboardType="decimal-pad"
+							hint={t('cards.edit.closedInvoiceHint')}
+							error={errors.closedInvoice}
+						/>
+						</TourTarget>
+					) : null}
+					{!existing ? (
+						<TourTarget id="cardEdit.openInvoice">
+						<Field
+							label={
+								asked
+									? t('cards.edit.openInvoice', {
+											month: formatMonthLong(`${asked.open.key}-01`),
+											closing: formatDayMonth(asked.open.closingDate),
+										})
+									: t('cards.edit.currentInvoice')
+							}
 							optionalLabel={t('cards.edit.optional')}
 							value={currentInvoice}
 							onChangeText={setCurrentInvoice}
 							keyboardType="decimal-pad"
-							hint={t('cards.edit.currentInvoiceHint')}
+							hint={asked ? t('cards.edit.openInvoiceHint') : t('cards.edit.currentInvoiceHint')}
 							error={errors.invoice}
 						/>
+						</TourTarget>
 					) : null}
 
-					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving} icon="checkmark" />
+					<Button label={t('cards.edit.save')} onPress={handleSave} disabled={saving || Boolean(sample)} icon="checkmark" />
+
+					{existing?.archived && cardBalance !== 0 ? (
+						<View style={styles.secondary}>
+							<Text style={styles.explain}>
+								{cardBalance > 0
+									? t('cards.edit.closedWithBalance', { amount: formatCents(cardBalance) })
+									: t('cards.edit.closedOwing', { amount: formatCents(-cardBalance) })}
+							</Text>
+							{cardBalance > 0 ? (
+								<Button
+									label={t('cards.edit.settle')}
+									hint={t('cards.edit.settleHint')}
+									onPress={() => void startClose()}
+									variant="secondary"
+									icon="swap-horizontal-outline"
+								/>
+							) : null}
+						</View>
+					) : null}
 
 					{existing ? (
 						<View style={styles.secondary}>
+							<TourTarget id="cardEdit.archive">
 							<Button
-								label={existing.archived ? t('cards.edit.unarchive') : t('cards.edit.archive')}
-								hint={t('cards.edit.archiveHint')}
-								onPress={handleArchive}
+								label={existing.archived ? t('cards.edit.reopen') : t('cards.edit.close')}
+								hint={existing.archived ? t('cards.edit.reopenHint') : t('cards.edit.closeHint')}
+								onPress={existing.archived ? handleReopen : () => void startClose()}
 								variant="secondary"
 								icon={existing.archived ? 'arrow-undo-outline' : 'archive-outline'}
 							/>
-							<Button label={t('cards.edit.delete')} onPress={handleDelete} variant="danger" icon="trash-outline" />
+							</TourTarget>
+							{mergeCandidates.length > 0 ? (
+								<View style={styles.mergeRow}>
+									<TourTarget id="cardEdit.merge" style={styles.mergeButton}>
+									<Button
+										label={t('cards.edit.merge')}
+										hint={t('cards.edit.mergeHint')}
+										onPress={handleMerge}
+										variant="secondary"
+										icon="git-merge-outline"
+									/>
+									</TourTarget>
+									<HelpButton trail="cardExtras" here={{ screen: 'cardEdit', params: { id: existing.id } }} from="7" />
+								</View>
+							) : null}
+							<TourTarget id="cardEdit.delete">
+							<Button
+								label={t('cards.edit.delete')}
+								hint={t('cards.edit.deleteHint')}
+								onPress={handleDelete}
+								variant="danger"
+								icon="trash-outline"
+							/>
+							</TourTarget>
 						</View>
 					) : null}
 					</>
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>
+
+			{existing ? (
+				<MergeTargetSheet
+					visible={merging}
+					title={t('cards.edit.merge')}
+					subtitle={t('cards.edit.mergePick', { name: existing.name })}
+					targets={mergeCandidates}
+					onPick={confirmMerge}
+					onClose={() => setMerging(false)}
+				/>
+			) : null}
+			{existing && closing ? (
+				<MergeTargetSheet
+					visible
+					title={existing.archived ? t('cards.edit.settle') : t('cards.edit.close')}
+					subtitle={t('cards.edit.closePick', { amount: formatCents(closing.amountCents), name: existing.name })}
+					targets={closeCandidates}
+					onPick={(target) => confirmClose(closing, target)}
+					onClose={() => setClosing(null)}
+				/>
+			) : null}
 		</SafeAreaView>
 	);
 };
@@ -469,11 +955,6 @@ const styles = StyleSheet.create({
 		paddingBottom: 60,
 		gap: 18,
 	},
-	error: {
-		fontSize: 13,
-		color: '#FF8A80',
-		marginTop: -10,
-	},
 	twoColumns: {
 		flexDirection: 'row',
 		gap: 12,
@@ -490,11 +971,27 @@ const styles = StyleSheet.create({
 	secondary: {
 		gap: 10,
 	},
+	mergeRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
+	},
+	mergeButton: {
+		flex: 1,
+	},
 	cyclePreview: {
 		fontSize: 15,
 		lineHeight: 22,
 		color: '#FFFFFF',
 		backgroundColor: 'rgba(21,232,254,0.1)',
+		borderRadius: 12,
+		padding: 12,
+	},
+	cycleInvalid: {
+		fontSize: 15,
+		lineHeight: 22,
+		color: '#FF8A80',
+		backgroundColor: 'rgba(255,138,128,0.1)',
 		borderRadius: 12,
 		padding: 12,
 	},

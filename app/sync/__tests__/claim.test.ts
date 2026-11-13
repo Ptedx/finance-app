@@ -32,6 +32,7 @@ import {
 	readPendingClaim,
 	savePendingClaim,
 } from '../claim';
+import { KNOWN_WIPE_AT_KEY } from '../types';
 
 const COUNTS: ClaimCounts = {
 	account: { transactions: 120, recurringTransactions: 3, budgets: 2, customCategories: 1 },
@@ -139,5 +140,39 @@ describe('vínculo do estado de sync com a conta', () => {
 
 		expect(await beginSessionFor('conta-1')).toBe(true);
 		expect(await getSyncState('pullCursor@18')).toBeNull();
+	});
+});
+
+describe('o apagar conhecido é da conta, não do aparelho (SPD-083)', () => {
+	// O `knownWipeAt` diz qual "Apagar todos os dados" **desta conta** o aparelho já
+	// aplicou. Levado para outra conta, faria o push dela sair com a marca errada — e um
+	// apagar dela parecer já conhecido, sem nunca ser aplicado aqui.
+	const WIPED_AT = '2026-10-27T10:00:00.000Z';
+
+	it('sair leva a marca junto', async () => {
+		await beginSessionFor('conta-1');
+		await setSyncState(KNOWN_WIPE_AT_KEY, WIPED_AT);
+
+		await endSyncSession();
+
+		expect(await getSyncState(KNOWN_WIPE_AT_KEY)).toBeNull();
+	});
+
+	it('trocar de conta leva a marca junto', async () => {
+		await beginSessionFor('conta-1');
+		await setSyncState(KNOWN_WIPE_AT_KEY, WIPED_AT);
+
+		await beginSessionFor('conta-2');
+
+		expect(await getSyncState(KNOWN_WIPE_AT_KEY)).toBeNull();
+	});
+
+	it('a mesma conta de novo fica com ela, como fica com o cursor', async () => {
+		await beginSessionFor('conta-1');
+		await setSyncState(KNOWN_WIPE_AT_KEY, WIPED_AT);
+
+		await beginSessionFor('conta-1');
+
+		expect(await getSyncState(KNOWN_WIPE_AT_KEY)).toBe(WIPED_AT);
 	});
 });

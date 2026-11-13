@@ -1,15 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { AccountRow } from '../components/AccountsOverview';
+import { AccountRow, useDismissedBalanceUnset } from '../components/AccountsOverview';
+import ClosedReviewPanel from '../components/accounts/ClosedReviewPanel';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account } from '../database/schema';
 import { type DuplicateAccounts, duplicateAccountPairs } from '../utils/accountBinding';
+import { showsBalanceUnset } from '../utils/balanceUnset';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
+import { mergeRoleBlockedMessage } from '../utils/deletionNotice';
 import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 
 /**
@@ -22,7 +28,7 @@ const ACCENT = '#15E8FE';
 const AccountsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { accounts, balances, overview, provisionalOverview, mergeAccounts } = useAccounts();
+	const { accounts, balances, overview, provisionalOverview, mergeAccounts, autoMergeNotices, dismissAutoMergeNotices } = useAccounts();
 
 	// "Em caixa" e "Depois das faturas" já contam as compras a revisar, como na Home.
 	const pendingOf = (cents: number) =>
@@ -54,9 +60,48 @@ const AccountsScreen = () => {
 		}, [])
 	);
 	const duplicates = duplicateAccountPairs(accounts, distinct, businessFed);
+	// "Saldo não informado" (SPD-114): a conta que a captura criou com saldo 0, até ser acertada.
+	const dismissedBalanceUnset = useDismissedBalanceUnset();
+	// A trilha de Contas (SPD-131) passa por aqui; "?" ao lado do título.
+	useScreenTour('accounts');
+	const tourScroll = useTourScroll('accounts');
+	const totalsTarget = useTourTarget('accounts.totals');
+	const addTarget = useTourTarget('accounts.add');
+	// A conta ligada ao app de um banco (Trilha 6, "conta arquivada").
+	const linkedId = bankOnly.find((account) => account.packageName !== null)?.id;
+
+	/**
+	 * "Juntamos X em Y" (SPD-116): a ficha duplicada vazia que o app juntou sozinho. Aparece
+	 * aqui, no lugar do aviso de duplicadas que ela teria disparado, e uma vez só: sai ao tocar
+	 * em "Entendi" ou ao deixar a tela. Não bloqueia nada — a lista continua embaixo.
+	 */
+	const noticesShown = useRef(false);
+	noticesShown.current = autoMergeNotices.length > 0;
+	useFocusEffect(
+		useCallback(
+			() => () => {
+				if (noticesShown.current) dismissAutoMergeNotices();
+			},
+			[dismissAutoMergeNotices]
+		)
+	);
 
 	const keepBoth = (pair: DuplicateAccounts) => {
 		void markAccountsDistinct(pair.fed.id, pair.loose.id).then(setDistinct);
+	};
+
+	/**
+	 * Juntar recusado (SPD-152): o aviso só pareia fichas do mesmo papel, mas o papel pode
+	 * mudar em outro aparelho entre abrir o aviso e tocar. Nada mudou; a frase diz por quê.
+	 */
+	const merge = (from: Account, into: Account) => {
+		mergeAccounts(from.id, into.id).catch((error: unknown) => {
+			if (error instanceof Error && error.name === 'MergeRoleError') {
+				Alert.alert(t('accounts.duplicate.title'), mergeRoleBlockedMessage(from.name, into.name, t));
+				return;
+			}
+			console.error('Error merging duplicate accounts:', error);
+		});
 	};
 
 	const askMerge = (pair: DuplicateAccounts) => {
@@ -67,15 +112,11 @@ const AccountsScreen = () => {
 				{ text: t('accounts.duplicate.cancel'), style: 'cancel' },
 				{
 					text: t('accounts.duplicate.keep', { name: pair.fed.name }),
-					onPress: () => {
-						void mergeAccounts(pair.loose.id, pair.fed.id);
-					},
+					onPress: () => merge(pair.loose, pair.fed),
 				},
 				{
 					text: t('accounts.duplicate.keep', { name: pair.loose.name }),
-					onPress: () => {
-						void mergeAccounts(pair.fed.id, pair.loose.id);
-					},
+					onPress: () => merge(pair.fed, pair.loose),
 				},
 			]
 		);
@@ -98,10 +139,12 @@ const AccountsScreen = () => {
 				<Text style={styles.headerTitle} accessibilityRole="header">
 					{t('accounts.screenTitle')}
 				</Text>
+				<HelpButton trail="accounts" here={{ screen: 'accounts' }} />
 			</View>
 
-			<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 				<View
+					{...totalsTarget}
 					style={styles.totals}
 					accessible
 					accessibilityLabel={`${t('accounts.cash')} ${formatCents(overview.cashCents)}${cashPending ? `, ${cashPending}` : ''}. ${t('accounts.afterCards')} ${formatCents(overview.netCents)}${netPending ? `, ${netPending}` : ''}`}
@@ -117,8 +160,33 @@ const AccountsScreen = () => {
 
 				</View>
 
-				{duplicates.map((pair) => (
-					<View key={pair.loose.id} style={styles.duplicate}>
+				{autoMergeNotices.length > 0 && (
+					<View style={styles.merged} accessibilityLiveRegion="polite">
+						{autoMergeNotices.map((notice) => (
+							<View key={`${notice.from}|${notice.into}`} style={styles.mergedItem}>
+								<Text style={styles.mergedTitle} accessibilityRole="header">
+									{t('accounts.duplicate.autoMerged', { from: notice.from, into: notice.into })}
+								</Text>
+								<Text style={styles.mergedBody}>
+									{t('accounts.duplicate.autoMergedBody', { from: notice.from, into: notice.into })}
+								</Text>
+							</View>
+						))}
+						<Pressable
+							onPress={dismissAutoMergeNotices}
+							accessibilityRole="button"
+							accessibilityLabel={t('accounts.duplicate.autoMergedOk')}
+							style={({ pressed }) => [styles.mergedButton, pressed && styles.pressed]}
+						>
+							<Text style={styles.mergedButtonText}>{t('accounts.duplicate.autoMergedOk')}</Text>
+						</Pressable>
+					</View>
+				)}
+
+				<ClosedReviewPanel />
+
+				{duplicates.map((pair, index) => (
+					<TourTarget key={pair.loose.id} id={index === 0 ? 'accounts.duplicate' : undefined} style={styles.duplicate}>
 						<Text style={styles.duplicateTitle} accessibilityRole="header">
 							{t('accounts.duplicate.title')}
 						</Text>
@@ -144,10 +212,11 @@ const AccountsScreen = () => {
 						>
 							<Text style={styles.duplicateButtonText}>{t('accounts.duplicate.distinct')}</Text>
 						</Pressable>
-					</View>
+					</TourTarget>
 				))}
 
 				<Pressable
+					{...addTarget}
 					onPress={() => router.push('/accounts/new')}
 					accessibilityRole="button"
 					accessibilityLabel={t('accounts.add')}
@@ -157,16 +226,22 @@ const AccountsScreen = () => {
 					<Text style={styles.addButtonText}>{t('accounts.add')}</Text>
 				</Pressable>
 
-				{active.length === 0 && <Text style={styles.empty}>{t('accounts.empty')}</Text>}
+				{active.length === 0 && (
+					<TourTarget id="accounts.empty">
+						<Text style={styles.empty}>{t('accounts.empty')}</Text>
+					</TourTarget>
+				)}
 
 				<View style={styles.list}>
 					{active.map((account) => (
-						<AccountRow
-							key={account.id}
-							account={account}
-							balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-							onPress={openAccount}
-						/>
+						<TourTarget key={account.id} id={account.id === linkedId ? 'accounts.linked' : undefined}>
+							<AccountRow
+								account={account}
+								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+								balanceUnset={showsBalanceUnset(account, dismissedBalanceUnset)}
+								onPress={openAccount}
+							/>
+						</TourTarget>
 					))}
 				</View>
 
@@ -176,12 +251,13 @@ const AccountsScreen = () => {
 							{t('accounts.archived')}
 						</Text>
 						{archived.map((account) => (
-							<AccountRow
-								key={account.id}
-								account={account}
-								balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
-								onPress={openAccount}
-							/>
+							<TourTarget key={account.id} id={account.id === linkedId ? 'accounts.linked' : undefined}>
+								<AccountRow
+									account={account}
+									balanceCents={balances.get(account.id) ?? account.openingBalanceCents}
+									onPress={openAccount}
+								/>
+							</TourTarget>
 						))}
 					</View>
 				)}
@@ -214,7 +290,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 120,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 	},
 	totals: {
 		backgroundColor: '#1E1E1E',
@@ -267,6 +344,40 @@ const styles = StyleSheet.create({
 		borderColor: '#000000',
 	},
 	duplicateButtonText: {
+		fontSize: 15,
+		fontWeight: '600',
+		color: '#000000',
+	},
+	merged: {
+		backgroundColor: '#1E1E1E',
+		borderRadius: 12,
+		borderWidth: 1,
+		borderColor: ACCENT,
+		padding: 16,
+		marginBottom: 12,
+		gap: 12,
+	},
+	mergedItem: {
+		gap: 4,
+	},
+	mergedTitle: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: '#FFFFFF',
+	},
+	mergedBody: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: 'rgba(255,255,255,0.85)',
+	},
+	mergedButton: {
+		alignItems: 'center',
+		justifyContent: 'center',
+		minHeight: 48,
+		borderRadius: 10,
+		backgroundColor: ACCENT,
+	},
+	mergedButtonText: {
 		fontSize: 15,
 		fontWeight: '600',
 		color: '#000000',

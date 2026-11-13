@@ -2,7 +2,10 @@ import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
+import { formatMonthsCovered } from '../../utils/emergencyReserve';
 import type { HealthIndicator, HealthStatus } from '../../utils/healthScore';
+import HelpButton from '../tour/HelpButton';
+import { TourTarget } from '../tour/TourContext';
 import { reportStyles, STATUS_COLOR } from './reportStyles';
 
 const STATUS_ICON: Record<HealthStatus, React.ComponentProps<typeof Ionicons>['name']> = {
@@ -14,7 +17,8 @@ const STATUS_ICON: Record<HealthStatus, React.ComponentProps<typeof Ionicons>['n
 
 const valueText = (indicator: HealthIndicator): string => {
 	if (indicator.value === null) return '—';
-	if (indicator.unit === 'months') return indicator.value.toFixed(1);
+	// Com o separador do idioma, como no Patrimônio: "0,3" em português (E2E-45).
+	if (indicator.unit === 'months') return formatMonthsCovered(indicator.value);
 	const percent = Math.round(indicator.value / 100);
 	return indicator.id === 'spending-trend' && percent > 0 ? `+${percent}%` : `${percent}%`;
 };
@@ -28,9 +32,12 @@ const HealthGrid: React.FC<{ indicators: HealthIndicator[] }> = ({ indicators })
 
 	return (
 		<View style={reportStyles.card}>
-			<Text style={reportStyles.sectionTitle} accessibilityRole="header">
-				{t('reports.health.title')}
-			</Text>
+			<View style={reportStyles.sectionHeader}>
+				<Text style={reportStyles.sectionTitle} accessibilityRole="header">
+					{t('reports.health.title')}
+				</Text>
+				<HelpButton trail="health" here={{ screen: 'reports' }} />
+			</View>
 			<Text style={reportStyles.sectionSubtitle}>{t('reports.health.subtitle')}</Text>
 			<View style={styles.grid}>
 				{indicators.map((indicator) => {
@@ -40,17 +47,19 @@ const HealthGrid: React.FC<{ indicators: HealthIndicator[] }> = ({ indicators })
 					const target = indicator.unit === 'months' ? t('reports.health.targetMonths', { target: indicator.target }) : t('reports.health.target', { target: `${indicator.direction === 'atMost' ? '≤' : '≥'} ${Math.round(indicator.target / 100)}%` });
 					const needed = indicator.id === 'savings-rate' && indicator.neededBp !== null && indicator.neededBp !== undefined ? t('reports.health.savings-rate.needed', { needed: `${Math.round(indicator.neededBp / 100)}%` }) : null;
 					return (
-						<View key={indicator.id} style={styles.tile} accessible accessibilityLabel={`${label}: ${valueText(indicator)}, ${status}. ${target}. ${why}${needed ? ` ${needed}` : ''}`}>
-							<View style={styles.tileHeader}>
-								<Ionicons name={STATUS_ICON[indicator.status]} size={16} color={STATUS_COLOR[indicator.status]} />
-								<Text style={[styles.status, { color: STATUS_COLOR[indicator.status] }]}>{status}</Text>
+						<TourTarget key={indicator.id} id={`health.${indicator.id}`} style={styles.tile}>
+							<View accessible accessibilityLabel={`${label}: ${valueText(indicator)}, ${status}. ${target}. ${why}${needed ? ` ${needed}` : ''}`}>
+								<View style={styles.tileHeader}>
+									<Ionicons name={STATUS_ICON[indicator.status]} size={16} color={STATUS_COLOR[indicator.status]} />
+									<Text style={[styles.status, { color: STATUS_COLOR[indicator.status] }]}>{status}</Text>
+								</View>
+								<Text style={styles.label}>{label}</Text>
+								<Text style={styles.value}>{valueText(indicator)}</Text>
+								<Text style={styles.target}>{target}</Text>
+								<Text style={styles.why}>{why}</Text>
+								{needed ? <Text style={styles.needed}>{needed}</Text> : null}
 							</View>
-							<Text style={styles.label}>{label}</Text>
-							<Text style={styles.value}>{valueText(indicator)}</Text>
-							<Text style={styles.target}>{target}</Text>
-							<Text style={styles.why}>{why}</Text>
-							{needed ? <Text style={styles.needed}>{needed}</Text> : null}
-						</View>
+						</TourTarget>
 					);
 				})}
 			</View>

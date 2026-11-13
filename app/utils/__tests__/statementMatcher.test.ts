@@ -4,10 +4,13 @@ import {
 	findCaptureForLine,
 	findTransactionForLine,
 	type LedgerTransaction,
-	planStatementImport,
 	type PlannedLine,
+	planInstallmentGaps,
+	planStatementImport,
 	type StatementLine,
 	type StatementPlanContext,
+	settleMatchedCapture,
+	statementAnswersDirection,
 	statementFingerprint,
 	statementPackageName,
 	statementPostedAt,
@@ -643,5 +646,162 @@ describe('extrato respeita a conta', () => {
 		const pixOnChecking = capture({ id: 'pix', accountId: 'nu-pf', kind: 'pix_out' });
 		expect(findCaptureForLine(line(), [purchaseOnChecking], new Set(), 'nu-card')?.id).toBe('compra');
 		expect(findCaptureForLine(line(), [pixOnChecking], new Set(), 'nu-card')).toBeUndefined();
+	});
+});
+
+describe('a pendente que o extrato casou (SPD-117, AUTO-13)', () => {
+	const pending = { question: null, reason: null, kind: 'purchase', suggestedCategory: 'food' };
+	const rule = (categoryId: string | null, treatAs: MerchantRule['treatAs'] = 'transaction'): MerchantRule => ({
+		merchantKey: 'ifood',
+		categoryId,
+		treatAs,
+		confirmations: 1,
+	});
+
+	it('a categoria sugerida é a da regra aprendida: confirma', () => {
+		expect(settleMatchedCapture(pending, rule('food'))).toEqual({ action: 'confirm' });
+	});
+
+	it('sem regra, regra de outra categoria ou de transferência: marca', () => {
+		expect(settleMatchedCapture(pending, undefined)).toEqual({ action: 'mark', why: 'suggested' });
+		expect(settleMatchedCapture(pending, rule('fun'))).toEqual({ action: 'mark', why: 'suggested' });
+		expect(settleMatchedCapture(pending, rule(null, 'transfer'))).toEqual({ action: 'mark', why: 'suggested' });
+	});
+
+	it('pergunta em aberto, motivo gravado (moeda) ou estorno: marca, mesmo com a regra', () => {
+		expect(settleMatchedCapture({ ...pending, question: 'transfer' }, rule('food'))).toEqual({ action: 'mark', why: 'question' });
+		expect(settleMatchedCapture({ ...pending, reason: 'foreign_currency' }, rule('food'))).toEqual({
+			action: 'mark',
+			why: 'reason',
+		});
+		expect(settleMatchedCapture({ ...pending, kind: 'refund' }, rule('food'))).toEqual({ action: 'mark', why: 'refund' });
+	});
+
+	it('"entrou ou saiu?" respondido não segura; sem resposta, segura; outro motivo segura sempre (SPD-164)', () => {
+		const doubt = { ...pending, reason: 'ambiguous_pix_direction' };
+		expect(settleMatchedCapture(doubt, rule('food'), true)).toEqual({ action: 'confirm' });
+		expect(settleMatchedCapture(doubt, rule('food'))).toEqual({ action: 'mark', why: 'reason' });
+		expect(settleMatchedCapture({ ...pending, reason: 'foreign_currency' }, rule('food'), true)).toEqual({
+			action: 'mark',
+			why: 'reason',
+		});
+	});
+});
+
+describe('o extrato responde "entrou ou saiu?" (SPD-164)', () => {
+	const notice = { postedAt: noticeAt('2026-09-03'), direction: 'out', amountCents: 3590 };
+	const matched = line({ fitid: 'saida' });
+
+	it('a linha casada e nada contra: responde', () => {
+		expect(statementAnswersDirection(notice, matched, [matched, line({ fitid: 'outra', amountCents: 1000, direction: 'in' })])).toBe(
+			true
+		);
+	});
+
+	it.each([
+		['entrada do mesmo valor na mesma conta, dentro da janela', line({ fitid: 'volta', direction: 'in', postedDate: '2026-09-04' }), false],
+		['a entrada é de outra conta', line({ fitid: 'volta', direction: 'in', accountKey: INTER_ACCOUNT }), true],
+		['a entrada é de bem depois da janela', line({ fitid: 'volta', direction: 'in', postedDate: '2026-10-20' }), true],
+		['a entrada é neutra (fatura, aplicação)', line({ fitid: 'volta', direction: 'in', neutral: true }), true],
+	])('%s', (_case, other, answers) => {
+		expect(statementAnswersDirection(notice, matched, [matched, other])).toBe(answers);
+	});
+
+	it('a linha de outra direção ou valor não é a do aviso: não responde', () => {
+		expect(statementAnswersDirection(notice, line({ direction: 'in' }), [])).toBe(false);
+		expect(statementAnswersDirection(notice, line({ amountCents: 1 }), [])).toBe(false);
+	});
+});
+
+describe('parcelas que faltam de uma compra "k/N" (SPD-117, AUTO-15)', () => {
+	const CARD = 'card-1';
+	const cardLine = (fitid: string, date: string, memo: string): StatementLine =>
+		line({
+			fitid,
+			isCard: true,
+			postedDate: date,
+			amountCents: 5_000,
+			memo,
+			text: memo,
+			counterparty: memo,
+			merchantKey: 'padaria',
+		});
+	const pendingAction: PlannedLine['action'] = { type: 'decision', decision: { action: 'pending', categoryId: 'food' } };
+	const plannedOf = (item: StatementLine, action: PlannedLine['action'] = pendingAction): PlannedLine => ({
+		id: `id-${item.fitid}`,
+		line: item,
+		fingerprint: statementFingerprint(item.accountKey, item.fitid),
+		action,
+	});
+	/** O cartão que fecha dia 3, com a âncora em 20/10. */
+	const gapContext = (ledger: LedgerTransaction[] = [], openingBalanceDate = '2026-10-20') => ({
+		accountIdByKey: new Map([[NU_ACCOUNT, CARD]]),
+		cards: new Map([[CARD, { rule: { closingDay: 3, dueDaysAfter: 7 }, openingBalanceDate }]]),
+		ledger,
+	});
+
+	it('3/10 em 05/11, cartão que fecha dia 3: parcelas 4 a 10 no dia 5 de cada mês, de dez/2026 a jun/2027', () => {
+		const [gap] = planInstallmentGaps([plannedOf(cardLine('p3', '2026-11-05', 'PADARIA 3/10'))], gapContext());
+		expect(gap).toMatchObject({ accountId: CARD, index: 3, count: 10 });
+		expect(gap.planned.id).toBe('id-p3');
+		expect(gap.parcels.map((item) => item.index)).toEqual([4, 5, 6, 7, 8, 9, 10]);
+		expect(gap.parcels[0].date).toBe('2026-12-05');
+		expect(gap.parcels[6].date).toBe('2027-06-05');
+	});
+
+	it('duas parcelas da mesma compra no arquivo (3/10 e 4/10): oferece a partir da 5, da data da 4', () => {
+		const gaps = planInstallmentGaps(
+			[plannedOf(cardLine('p3', '2026-10-05', 'PADARIA 3/10')), plannedOf(cardLine('p4', '2026-11-05', 'PADARIA 4/10'))],
+			gapContext()
+		);
+		expect(gaps).toHaveLength(1);
+		expect(gaps[0].index).toBe(4);
+		expect(gaps[0].parcels.map((item) => [item.index, item.date])).toEqual([
+			[5, '2026-12-05'],
+			[6, '2027-01-05'],
+			[7, '2027-02-05'],
+			[8, '2027-03-05'],
+			[9, '2027-04-05'],
+			[10, '2027-05-05'],
+		]);
+	});
+
+	it('parcela já no livro (a 6/10 de R$ 50 perto da data): fica de fora; as outras continuam', () => {
+		const ledger = [tx({ id: 't6', amountCents: 5_000, date: '2027-02-03', installmentIndex: 6, installmentCount: 10, accountId: CARD })];
+		const [gap] = planInstallmentGaps([plannedOf(cardLine('p3', '2026-11-05', 'PADARIA 3/10'))], gapContext(ledger));
+		expect(gap.parcels.map((item) => item.index)).toEqual([4, 5, 7, 8, 9, 10]);
+	});
+
+	it('o que já está no valor informado do cartão (até a âncora, 10/01) não é oferecido', () => {
+		const [gap] = planInstallmentGaps(
+			[plannedOf(cardLine('p3', '2026-11-05', 'PADARIA 3/10'))],
+			gapContext([], '2027-01-10')
+		);
+		expect(gap.parcels.map((item) => item.index)).toEqual([6, 7, 8, 9, 10]);
+	});
+
+	it('sem oferta: casou com parcela do livro, linha já importada, pergunta em aberto, conta corrente ou entrada', () => {
+		const p3 = cardLine('p3', '2026-11-05', 'PADARIA 3/10');
+		expect(planInstallmentGaps([plannedOf(p3, { type: 'match_transaction', transactionId: 't3' })], gapContext())).toEqual([]);
+		expect(planInstallmentGaps([plannedOf(p3, { type: 'skip_existing' })], gapContext())).toEqual([]);
+		expect(
+			planInstallmentGaps(
+				[plannedOf(p3, { type: 'decision', decision: { action: 'ask_duplicate', relatedId: 'x' } })],
+				gapContext()
+			)
+		).toEqual([]);
+		expect(planInstallmentGaps([plannedOf({ ...p3, isCard: false })], gapContext())).toEqual([]);
+		expect(planInstallmentGaps([plannedOf({ ...p3, direction: 'in' })], gapContext())).toEqual([]);
+	});
+
+	it('a notificação casada (match_capture) e o automático também oferecem', () => {
+		const p3 = cardLine('p3', '2026-11-05', 'PADARIA 3/10');
+		expect(planInstallmentGaps([plannedOf(p3, { type: 'match_capture', captureId: 'c' })], gapContext())).toHaveLength(1);
+		expect(
+			planInstallmentGaps(
+				[plannedOf(p3, { type: 'decision', decision: { action: 'auto_confirm', categoryId: 'food' } })],
+				gapContext()
+			)
+		).toHaveLength(1);
 	});
 });

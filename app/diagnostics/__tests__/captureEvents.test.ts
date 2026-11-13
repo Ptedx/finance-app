@@ -51,6 +51,8 @@ jest.mock('../../database/database', () => ({
 	findAccountByKey: jest.fn(async () => null),
 	reassignCaptureLedger: jest.fn(async () => undefined),
 	getBills: jest.fn(async () => []),
+	getBillPayments: jest.fn(async () => []),
+	saveBillPayments: jest.fn(async () => undefined),
 	updateBill: jest.fn(async () => undefined),
 }));
 
@@ -111,6 +113,15 @@ const logged = (): Logged[] =>
 	}));
 
 const decisions = (): Logged[] => logged().filter((entry) => entry.event === 'capture_decision');
+
+/**
+ * O `data` sem os ids, para procurar vazamento no texto dele. O `captureId` é um uuid
+ * aleatório e a impressão digital é um hash: um "41" ou um "230" no meio deles é
+ * coincidência, não o valor do aviso — e era o que fazia este arquivo falhar de vez em
+ * quando (SPD-128). Os ids são conferidos à parte, como na varredura do fim do arquivo.
+ */
+const withoutIds = (data: Record<string, DiagnosticValue>): Record<string, DiagnosticValue> =>
+	Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'captureId' && key !== 'fingerprint'));
 
 const categories = [
 	{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
@@ -245,6 +256,31 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		expect(decisions()[0].data).toMatchObject({ kind: 'pix_in', direction: 'in', account: 'adopted' });
 	});
 
+	// SPD-112: o banco veio do pacote, porque o nome na tela não é um que o app reconheça.
+	it('app de banco conhecido com outro nome na tela: a conta sai do pacote, e o diário diz isso', async () => {
+		await ingest(raw('com.picpay', 'Carteira digital', 'Pix enviado', 'Você enviou um Pix de R$ 41,70 para JOAO PEREIRA'));
+
+		expect(decisions()[0].data).toMatchObject({ pkg: 'com.picpay', knownBank: true, bankFromPackage: true, account: 'created' });
+		expect(JSON.stringify(withoutIds(decisions()[0].data))).not.toMatch(/Carteira|PicPay|JOAO|41/);
+	});
+
+	it('com o nome de sempre na tela, o diário não marca nada', async () => {
+		await ingest(purchase());
+
+		expect(decisions()[0].data.bankFromPackage).toBeUndefined();
+	});
+
+	// SPD-112 (NOTIF-20): o SMS do banco e, 8 minutos depois, o app do banco são a mesma compra.
+	it('SMS citando o banco + o aviso do banco minutos depois: duplicata, com o par no diário', async () => {
+		manualAccount({ name: 'Conta Nubank', bankName: 'Nubank' });
+		const sms = raw(SMS, 'Mensagens', 'Nubank', 'Compra de R$ 35,90 APROVADA em PADARIA ESTRELA para o cartão com final 9876.');
+		const bank = { ...purchase(), postedAt: new Date(Date.parse(sms.postedAt) + 8 * 60_000).toISOString() };
+		await ingest(sms, bank);
+
+		expect(decisions()[1].data).toMatchObject({ pkg: NUBANK, action: 'duplicate', outcome: 'duplicate', pair: 'third_party' });
+		expect(decisions()[0].data.pair).toBeUndefined();
+	});
+
 	it('regra aprendida: confirmado sozinho', async () => {
 		learnedRule(purchase());
 		await ingest(purchase());
@@ -319,7 +355,30 @@ describe('capture_decision: um por aviso, com o que o parser entendeu e o que o 
 		// Nenhum cartão para escolher: o destino fica em branco, e o diário diz.
 		expect(invoice.data).toMatchObject({ kind: 'invoice_payment', reason: 'invoice_payment', destination: 'none' });
 		expect(bought.data.destination).toBeUndefined();
-		expect(JSON.stringify(decisions())).not.toMatch(new RegExp(`${reserve.id}|Caixinha|50000|150000`));
+		expect(JSON.stringify(decisions().map((entry) => ({ ...entry, data: withoutIds(entry.data) })))).not.toMatch(
+			new RegExp(`${reserve.id}|Caixinha|50000|150000`)
+		);
+	});
+});
+
+describe('capture_decision: o nome salvo em Ajustes (SPD-115)', () => {
+	// Nome inventado. O da conta logada é curto ("Maria") e não basta sozinho.
+	const pixFromSelf = () => raw(ITAU, 'Itaú', 'Pix recebido', 'Você recebeu um Pix de R$ 230,00 de MARIA S OLIVEIRA');
+
+	it('o Pix com o nome salvo vira transferência, e o diário diz só que foi esse nome', async () => {
+		await ingestRawCaptures([pixFromSelf()], { ownNames: ['Maria'], bankName: 'Maria Souza Oliveira', categories });
+
+		const [entry] = decisions();
+		expect(entry.data).toMatchObject({ action: 'transfer', outcome: 'transfer', reason: 'own_bank_name' });
+		expect(JSON.stringify(withoutIds(entry.data)).toLowerCase()).not.toMatch(/maria|souza|oliveira|230/);
+	});
+
+	it('sem nome salvo, o mesmo Pix fica para a revisão, sem o motivo do nome', async () => {
+		await ingestRawCaptures([pixFromSelf()], { ownNames: ['Maria'], categories });
+
+		const [entry] = decisions();
+		expect(entry.data.outcome).toBe('pending');
+		expect(entry.data.reason).not.toBe('own_bank_name');
 	});
 });
 
@@ -398,9 +457,24 @@ describe('as respostas do usuário na caixa de revisão', () => {
 					categoryChanged: true,
 					categoryFallback: false,
 					learned: true,
+					accountChoice: 'kept',
 				}),
 			}),
 		]);
+	});
+
+	it('confirmar escolhendo a conta (SPD-111): se trocou e se havia conta, nunca qual', async () => {
+		const capture = await ingestOne(purchase());
+		await confirmCapture(capture.id, 'food', categories, 'conta-escolhida');
+
+		const [entry] = logged();
+		expect(entry).toEqual(
+			expect.objectContaining({
+				event: 'capture_confirmed',
+				data: expect.objectContaining({ accountChoice: 'chosen', hadAccount: capture.accountId !== null }),
+			})
+		);
+		expect(JSON.stringify(entry.data)).not.toContain('conta-escolhida');
 	});
 
 	it('confirmar o que já saiu da fila não faz nada, e o diário diz', async () => {
@@ -590,5 +664,48 @@ describe('nenhum data carrega valor, nome nem texto', () => {
 		});
 		expect(Object.keys(data).length).toBeLessThanOrEqual(20);
 		expect(JSON.stringify(data)).not.toMatch(/PADARIA|9876|35,90|3590/);
+	});
+
+	it('a pendente que o extrato confirmou (SPD-117): confirmada pela regra, ou pendente e marcada', () => {
+		const confirmed = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: { step: 'statement_match', captureId: 'cap', confirmed: true, why: 'rule', accountMoved: true },
+		});
+		expect(confirmed).toEqual({
+			pkg: NUBANK,
+			knownBank: true,
+			fingerprint: 'fp',
+			captureId: 'cap',
+			outcome: 'confirmed',
+			reason: 'statement',
+			why: 'rule',
+			accountMoved: true,
+		});
+		const marked = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: { step: 'statement_match', captureId: 'cap', confirmed: false, why: 'suggested', accountMoved: false },
+		});
+		expect(marked).toMatchObject({ outcome: 'pending', reason: 'statement', why: 'suggested', accountMoved: false });
+		expect(marked.parse).toBeUndefined();
+		expect(marked.direction).toBeUndefined();
+	});
+
+	it('o aviso "entrou ou saiu?" que o extrato casou (SPD-164): diz de onde veio a direção, nunca qual', () => {
+		const answered = captureDecisionData({
+			raw: { packageName: NUBANK },
+			fingerprint: 'fp',
+			outcome: {
+				step: 'statement_match',
+				captureId: 'cap',
+				confirmed: false,
+				why: 'suggested',
+				accountMoved: false,
+				direction: 'statement',
+			},
+		});
+		expect(answered).toMatchObject({ outcome: 'pending', why: 'suggested', direction: 'statement' });
+		expect(JSON.stringify(answered)).not.toMatch(/"(?:in|out)"/);
 	});
 });

@@ -59,6 +59,7 @@ jest.mock('../../utils/categoryEditUtils', () => ({
 }));
 
 import type { SyncChanges, WireBill } from '../../sync/types';
+import { nextStampSql } from '../../utils/syncStamp';
 import {
 	addBill,
 	applyMigrations,
@@ -204,18 +205,20 @@ describe('migração v20', () => {
 		expect(matching('DELETE FROM')).toEqual([]);
 	});
 
-	it('um banco v19 roda o passo 20 (e o 21, que veio depois) e grava a versão em cada um', async () => {
+	it('um banco v19 roda o passo 20 (e o 21, o 22 e o 23, que vieram depois) e grava a versão em cada um', async () => {
 		const versions: number[] = [];
 		const reached = await applyMigrations(19, migrationLadder(), async (target) => {
 			versions.push(target);
 		});
 
 		expect(reached).toBe(SCHEMA_VERSION);
-		expect(versions).toEqual([20, 21]);
+		expect(versions).toEqual([20, 21, 22, 23]);
 		// Só os CREATE das tabelas novas: nenhum passo anterior repetido.
 		expect(mockStatements.map((statement) => flat(statement.sql).split(' (')[0])).toEqual([
 			'CREATE TABLE IF NOT EXISTS bills',
 			'CREATE TABLE IF NOT EXISTS preferences',
+			'CREATE TABLE IF NOT EXISTS seen_capture_fingerprints',
+			'CREATE TABLE IF NOT EXISTS bill_payments',
 		]);
 	});
 
@@ -343,7 +346,8 @@ describe('CRUD de contas a pagar', () => {
 		const updated = matching('UPDATE bills');
 		expect(updated).toHaveLength(1);
 		const sql = flat(updated[0].sql);
-		expect(sql).toContain('updatedAt = ?');
+		// Avança a partir do carimbo que a linha já tem, nunca para trás dele (SPD-107).
+		expect(sql).toContain(`updatedAt = ${nextStampSql()}`);
 		expect(sql).toContain('dirty = 1');
 		expect(sql).toContain('WHERE id = ?');
 		expect(updated[0].params).toContain('2026-10');

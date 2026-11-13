@@ -38,15 +38,12 @@ export const periodSpentCents = (item: { incomeCents: number; expenseCents: numb
  * do que o app já tinha significa dinheiro voltando, então vira entrada.
  *
  * Nulo quando já está igual.
+ *
+ * Só a diferença do **gasto** vira lançamento. O que o saldo informado ainda tem de
+ * diferente depois disso é dinheiro de antes e move a âncora: numa conta nova, "gastei
+ * R$ 1.200, tenho R$ 5.000" lança R$ 1.200 de despesa e põe R$ 6.200 no fim de ontem —
+ * nenhuma receita no mês (E2E-01).
  */
-/**
- * O outro lado do par "já gastei" e "ainda tenho": os dois somam o dinheiro do mês.
- * Nunca negativo — quem gastou mais do que o mês tinha corrige o outro campo, e o app
- * entende a diferença como sobra de antes.
- */
-export const counterpartCents = (availableCents: number, typedCents: number): number =>
-	Math.max(0, availableCents - typedCents);
-
 export const spendingAdjustment = (
 	currentSpentCents: number,
 	informedSpentCents: number
@@ -55,6 +52,17 @@ export const spendingAdjustment = (
 	if (difference === 0) return null;
 	return { amountCents: Math.abs(difference), isIncome: difference < 0 };
 };
+
+/**
+ * O outro lado do par "já gastei" e "ainda tenho": os dois somam o dinheiro do mês.
+ * Nunca negativo — quem gastou mais do que o mês tinha corrige o outro campo, e o app
+ * entende a diferença como sobra de antes.
+ *
+ * A folha só usa isto enquanto o usuário não digitou no outro campo: digitado, o número
+ * dele vale, mesmo quando os dois não fecham com o mês.
+ */
+export const counterpartCents = (availableCents: number, typedCents: number): number =>
+	Math.max(0, availableCents - typedCents);
 
 /** Quanto o cartão deve: o saldo negativo lido ao contrário; um saldo positivo é crédito. */
 export const owedCents = (balanceCents: number): number => Math.max(0, -balanceCents);

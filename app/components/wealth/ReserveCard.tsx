@@ -3,9 +3,11 @@ import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatMonthYear, monthKeyOf, shiftMonthKey, todayISO } from '../../utils/dateUtils';
-import type { ReserveReadModel } from '../../utils/emergencyReserve';
+import { formatMonthsCovered, type ReserveReadModel } from '../../utils/emergencyReserve';
 import { formatCents } from '../../utils/money';
 import { ACCENT } from '../cards/formParts';
+import HelpButton from '../tour/HelpButton';
+import { TourTarget, useTourTarget } from '../tour/TourContext';
 
 /**
  * A reserva de emergência no Patrimônio: quanto ela tem contra a meta de meses de custo
@@ -18,13 +20,19 @@ const ReserveCard: React.FC<{ reserve: ReserveReadModel; onEdit: () => void }> =
 	const { t } = useTranslation();
 	const { split } = reserve;
 	const investmentOnlyCents = split.investmentCents - (split.poolCents - split.reserveCents);
+	const editTarget = useTourTarget('reserve.edit');
+	const setCostTarget = useTourTarget('reserve.setCost');
 
 	const header = (
 		<View style={styles.headerRow}>
-			<Text style={styles.title} accessibilityRole="header">
-				{t('reserve.title')}
-			</Text>
+			<View style={styles.titleGroup}>
+				<Text style={styles.title} accessibilityRole="header">
+					{t('reserve.title')}
+				</Text>
+				<HelpButton trail="reserve" here={{ screen: 'wealth' }} />
+			</View>
 			<Pressable
+				{...editTarget}
 				onPress={onEdit}
 				accessibilityRole="button"
 				accessibilityLabel={t('reserve.edit')}
@@ -41,7 +49,7 @@ const ReserveCard: React.FC<{ reserve: ReserveReadModel; onEdit: () => void }> =
 			<View style={styles.card}>
 				{header}
 				<Text style={styles.body}>{t('reserve.unknown')}</Text>
-				<Pressable onPress={onEdit} accessibilityRole="button" style={({ pressed }) => [styles.cta, pressed && styles.pressed]}>
+				<Pressable {...setCostTarget} onPress={onEdit} accessibilityRole="button" style={({ pressed }) => [styles.cta, pressed && styles.pressed]}>
 					<Text style={styles.ctaText}>{t('reserve.setCost')}</Text>
 				</Pressable>
 			</View>
@@ -63,29 +71,39 @@ const ReserveCard: React.FC<{ reserve: ReserveReadModel; onEdit: () => void }> =
 				accessibilityLabel={t('reserve.a11ySummary', {
 					reserve: formatCents(split.reserveCents),
 					target: formatCents(reserve.targetCents),
-					months: reserve.monthsCovered ?? 0,
+					months: formatMonthsCovered(reserve.monthsCovered ?? 0),
 					targetMonths: reserve.targetMonths,
 				})}
 			>
-				<Text style={styles.hero}>
-					{formatCents(split.reserveCents)} <Text style={styles.heroOf}>{t('reserve.of', { target: formatCents(reserve.targetCents) })}</Text>
-				</Text>
+				<TourTarget id="reserve.target">
+					<Text style={styles.hero}>
+						{formatCents(split.reserveCents)} <Text style={styles.heroOf}>{t('reserve.of', { target: formatCents(reserve.targetCents) })}</Text>
+					</Text>
+				</TourTarget>
 				<View style={styles.track}>
 					<View style={[styles.fill, { width: `${reserve.progressBp / 100}%` }, reserve.status === 'thin' && styles.fillThin]} />
 				</View>
 				<Text style={styles.body}>
 					{t('reserve.covers', {
-						months: (reserve.monthsCovered ?? 0).toFixed(1),
+						months: formatMonthsCovered(reserve.monthsCovered ?? 0),
 						targetMonths: reserve.targetMonths,
 						cost: formatCents(reserve.monthlyCostCents),
 					})}
 				</Text>
 			</View>
-			<Text style={styles.muted}>{t(`reserve.source.${reserve.costSource ?? 'history'}`)}</Text>
-			<Text style={styles.body} accessibilityLiveRegion="polite">
-				{fillLine}
-			</Text>
-			{reserve.status !== 'ready' ? <Text style={styles.muted}>{t('reserve.cascade')}</Text> : null}
+			<TourTarget id="reserve.source">
+				<Text style={styles.muted}>{t(`reserve.source.${reserve.costSource ?? 'history'}`)}</Text>
+			</TourTarget>
+			<TourTarget id="reserve.fill">
+				<Text style={styles.body} accessibilityLiveRegion="polite">
+					{fillLine}
+				</Text>
+			</TourTarget>
+			{reserve.status !== 'ready' ? (
+				<TourTarget id="reserve.cascade">
+					<Text style={styles.muted}>{t('reserve.cascade')}</Text>
+				</TourTarget>
+			) : null}
 			{investmentOnlyCents > 0 ? <Text style={styles.muted}>{t('reserve.investmentOnly', { amount: formatCents(investmentOnlyCents) })}</Text> : null}
 		</View>
 	);
@@ -104,7 +122,15 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		justifyContent: 'space-between',
 	},
+	// O título e o "?" da trilha (SPD-131), juntos à esquerda; o ajuste fica à direita.
+	titleGroup: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexShrink: 1,
+		marginVertical: -2,
+	},
 	title: {
+		flexShrink: 1,
 		fontSize: 18,
 		fontWeight: '600',
 		color: '#FFFFFF',

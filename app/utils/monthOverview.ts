@@ -14,6 +14,7 @@
  */
 
 import type { AccountKind, AccountRole } from '../database/schema';
+import { isCardNonPurchase } from './cardMath';
 
 export interface AccountMonthActivity {
 	accountId: string;
@@ -77,8 +78,17 @@ export interface CardMonth {
 	 * fechamento no cartão, as compras e parcelas datadas no mês, menos estornos.
 	 */
 	spendCents: number;
-	/** O que foi comprado neste mês, valor cheio — a métrica secundária. */
+	/**
+	 * O que foi comprado neste mês, valor cheio — a métrica secundária. O ajuste com a fatura
+	 * do banco e os encargos (juros, IOF, anuidade) não entram: estão na fatura, mas não são
+	 * compra feita no mês.
+	 */
 	purchasesCents: number;
+	/**
+	 * `spendCents` é a fatura que fecha no mês (o cartão tem fechamento); senão, as compras do
+	 * mês. `buildMonthOverview` sempre preenche; ausente vale como falso.
+	 */
+	invoiceBased?: boolean;
 }
 
 export interface EnvelopeMonth {
@@ -193,7 +203,13 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 				const purchases = account.purchasesOriginatedCents ?? 0;
 				cardSpendCents += spend;
 				cardPurchasesCents += purchases;
-				cards.push({ accountId: account.accountId, name: account.name, spendCents: spend, purchasesCents: purchases });
+				cards.push({
+					accountId: account.accountId,
+					name: account.name,
+					spendCents: spend,
+					purchasesCents: purchases,
+					invoiceBased: account.invoiceCents !== undefined && account.invoiceCents !== null,
+				});
 				break;
 			}
 			case 'envelope': {
@@ -291,6 +307,45 @@ export const buildMonthOverview = (input: MonthOverviewInput): MonthOverview => 
 	};
 };
 
+/** Um lançamento, do jeito que basta para os totais da tela Lançamentos. */
+export interface TotalsEntry {
+	amountCents: number;
+	isIncome: boolean;
+	category: string;
+	note: string | null;
+	accountId?: string | null;
+	installmentGroup?: string | null;
+}
+
+/**
+ * "Entrou", "Saiu" e "Saldo do mês" da tela Lançamentos: receitas menos repasses, e despesas.
+ *
+ * O ajuste com a fatura do banco num cartão (`isCardAdjustment`) fica de fora — é o app
+ * acertando a fatura, não dinheiro que entrou nem compra feita. Antes, acertar o Inter para
+ * fechada R$ 2.000 e aberta R$ 80 aparecia como "Entrou R$ 1.920" e "Saiu R$ 2.000". Fora de
+ * cartão (`cardIds`) a mesma nota é lançamento comum, como na tela inicial.
+ *
+ * O encargo do cartão (juros, IOF, anuidade) segue o mesmo filtro (`isCardNonPurchase`): está
+ * na fatura e no "Gastos" da tela inicial, que é por fatura, mas não é compra do mês.
+ */
+export const transactionTotals = (
+	transactions: TotalsEntry[],
+	passThroughCategories: Set<string>,
+	cardIds: Set<string>
+): { incomeCents: number; expenseCents: number; netCents: number } => {
+	let incomeCents = 0;
+	let expenseCents = 0;
+	for (const transaction of transactions) {
+		if (transaction.accountId && cardIds.has(transaction.accountId) && isCardNonPurchase(transaction)) continue;
+		if (transaction.isIncome) incomeCents += transaction.amountCents;
+		// Repasse: entrou e foi adiante. Sai da receita e não é gasto — a mesma regra
+		// do "Este mês" da Home, para os totais baterem entre as telas.
+		else if (passThroughCategories.has(transaction.category)) incomeCents -= transaction.amountCents;
+		else expenseCents += transaction.amountCents;
+	}
+	return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+};
+
 /** Quanto da receita e do gasto do mês vem de compras ainda na caixa de entrada. */
 export interface ProvisionalPart {
 	incomeCents: number;
@@ -308,4 +363,4 @@ export const provisionalPart = (withPending: MonthOverview, ledgerOnly: MonthOve
 	spendCents: withPending.totalSpendCents - ledgerOnly.totalSpendCents,
 });
 
-export default { buildMonthOverview, provisionalPart };
+export default { buildMonthOverview, provisionalPart, transactionTotals };

@@ -1,121 +1,108 @@
-import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
+import type { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type React from 'react';
 import { memo, useCallback, useMemo } from 'react';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import type { Category } from '../database/schema';
+import { useTranslation } from 'react-i18next';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import type { Category, Transaction } from '../database/schema';
+import { mostUsedCategoryIds } from '../utils/categoryUsage';
+import { type SelectFeatured, SelectField, type SelectOption } from './SelectField';
+
+/**
+ * A categoria do lançamento: um campo que abre a lista (`SelectField`, SPD-130). Era uma
+ * grade de duas colunas com ícone que ocupava a tela inteira com as categorias padrão.
+ *
+ * A lista começa pelas 4 mais usadas do lado do lançamento (despesa ou receita), na seção
+ * "Mais usadas", e segue com todas na ordem de sempre. Sem histórico, só a lista. O
+ * "Editar categorias" continua ao lado do rótulo.
+ */
 
 interface CategoryPickerProps {
 	categories: Category[];
 	selectedCategoryId: string | null;
 	onSelectCategory: (categoryId: string) => void;
 	isIncome?: boolean;
+	/** Os lançamentos, para as "Mais usadas". Sem eles, a lista vem sem o topo. */
+	transactions?: Transaction[];
+	error?: string;
 }
 
-const { width } = Dimensions.get('window');
-const ITEM_WIDTH = (width - 48) / 2; // 2 columns with 16px padding on each side and 16px between
+/**
+ * As categorias do lado do lançamento como opções de lista, e as mais usadas delas. Só as do
+ * lado que se lança (uma despesa não vai para "Salário"), sem "Sem categoria".
+ */
+export const categoryChoices = (
+	categories: Category[],
+	isIncome: boolean,
+	transactions: readonly Transaction[] = []
+): { options: SelectOption<string>[]; mostUsed: string[] } => {
+	const wanted = isIncome ? 'income' : 'expense';
+	const offered = categories.filter((category) => category.id !== 'uncategorized' && category.type === wanted);
+	return {
+		options: offered.map((category) => ({
+			value: category.id,
+			label: category.name,
+			color: category.color,
+			icon: category.icon as React.ComponentProps<typeof Ionicons>['name'],
+		})),
+		mostUsed: mostUsedCategoryIds(transactions, offered, isIncome),
+	};
+};
+
+/** A seção "Mais usadas", ou nada quando não há histórico. */
+export const mostUsedSection = (mostUsed: string[], t: (key: string) => string): SelectFeatured<string> | undefined =>
+	mostUsed.length > 0
+		? { title: t('transactionForm.categoryMostUsed'), values: mostUsed, restTitle: t('transactionForm.categoryAll') }
+		: undefined;
 
 const CategoryPicker: React.FC<CategoryPickerProps> = ({
 	categories,
 	selectedCategoryId,
 	onSelectCategory,
 	isIncome = false,
+	transactions,
+	error,
 }) => {
+	const { t } = useTranslation();
 	const router = useRouter();
 
-	// Only offer categories belonging to the side of the ledger being recorded, so an
-	// expense cannot be filed under "Salary".
-	const filteredCategories = useMemo(() => {
-		const wanted = isIncome ? 'income' : 'expense';
-		return categories.filter(
-			(category) => category.id !== 'uncategorized' && category.type === wanted
-		);
-	}, [categories, isIncome]);
-
-	// Handle category selection with useCallback
-	const handleSelectCategory = useCallback(
-		(categoryId: string) => {
-			onSelectCategory(categoryId);
-		},
-		[onSelectCategory]
+	const { options, mostUsed } = useMemo(
+		() => categoryChoices(categories, isIncome, transactions),
+		[categories, isIncome, transactions]
 	);
 
-	// Memoize the navigation handler
 	const handleEditCategories = useCallback(() => {
 		router.push('/screens/CategoryManagementScreen');
 	}, [router]);
 
-	// Create rows of categories (2 per row) - memoized to prevent recalculation
-	const categoryRows = useMemo(() => {
-		const rows = [];
-		for (let i = 0; i < filteredCategories.length; i += 2) {
-			const row = (
-				<View key={`row-${i}`} style={styles.columnWrapper}>
-					{renderCategoryItem(filteredCategories[i], selectedCategoryId, handleSelectCategory)}
-					{i + 1 < filteredCategories.length ? (
-						renderCategoryItem(filteredCategories[i + 1], selectedCategoryId, handleSelectCategory)
-					) : (
-						<View style={{ width: ITEM_WIDTH }} />
-					)}
-				</View>
-			);
-			rows.push(row);
-		}
-		return rows;
-	}, [filteredCategories, selectedCategoryId, handleSelectCategory]);
-
 	return (
 		<View style={styles.container}>
-			<View style={styles.headerContainer}>
-				<Text style={styles.title}>Category</Text>
-				<TouchableOpacity style={styles.editButton} onPress={handleEditCategories}>
-					<Text style={styles.editButtonText}>Edit Categories</Text>
-				</TouchableOpacity>
-			</View>
-			<View style={styles.categoriesContainer}>{categoryRows}</View>
+			<SelectField
+				label={t('transactionForm.category')}
+				placeholder={t('transactionForm.categoryPlaceholder')}
+				options={options}
+				selected={selectedCategoryId}
+				onSelect={onSelectCategory}
+				featured={mostUsedSection(mostUsed, t)}
+				error={error}
+				labelAccessory={
+					<TouchableOpacity
+						style={styles.editButton}
+						onPress={handleEditCategories}
+						accessibilityRole="button"
+						accessibilityLabel={t('transactionForm.editCategories')}
+					>
+						<Text style={styles.editButtonText}>{t('transactionForm.editCategories')}</Text>
+					</TouchableOpacity>
+				}
+			/>
 		</View>
-	);
-};
-
-// Extracted to a separate function to improve readability
-const renderCategoryItem = (
-	item: Category,
-	selectedCategoryId: string | null,
-	onSelectCategory: (categoryId: string) => void
-) => {
-	const isSelected = selectedCategoryId === item.id;
-	return (
-		<TouchableOpacity
-			key={item.id}
-			style={[styles.categoryItem, isSelected && { borderColor: item.color, borderWidth: 2 }]}
-			onPress={() => onSelectCategory(item.id)}
-		>
-			<BlurView intensity={20} tint="dark" style={styles.blurContainer}>
-				<View style={[styles.iconContainer, { backgroundColor: item.color }]}>
-					{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
-					<Ionicons name={item.icon as any} size={24} color="#000000" />
-				</View>
-				<Text style={styles.categoryName}>{item.name}</Text>
-			</BlurView>
-		</TouchableOpacity>
 	);
 };
 
 const styles = StyleSheet.create({
 	container: {
 		marginVertical: 16,
-	},
-	headerContainer: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-		alignItems: 'center',
-		marginBottom: 12,
-	},
-	title: {
-		fontSize: 16,
-		fontWeight: '600',
-		color: '#ffffff',
 	},
 	editButton: {
 		backgroundColor: 'rgba(21, 232, 254, 0.2)',
@@ -127,45 +114,6 @@ const styles = StyleSheet.create({
 		color: '#15E8FE',
 		fontSize: 12,
 		fontWeight: '600',
-	},
-	categoriesContainer: {
-		width: '100%',
-	},
-	columnWrapper: {
-		flexDirection: 'row',
-		justifyContent: 'space-between',
-		marginBottom: 16,
-	},
-	categoryItem: {
-		width: ITEM_WIDTH,
-		height: 100,
-		borderRadius: 12,
-		overflow: 'hidden',
-		borderColor: 'transparent',
-		borderWidth: 2,
-	},
-	blurContainer: {
-		flex: 1,
-		padding: 12,
-		alignItems: 'center',
-		justifyContent: 'center',
-		borderWidth: 1,
-		borderColor: 'rgba(255, 255, 255, 0.1)',
-		borderRadius: 10,
-	},
-	iconContainer: {
-		width: 44,
-		height: 44,
-		borderRadius: 22,
-		alignItems: 'center',
-		justifyContent: 'center',
-		marginBottom: 8,
-	},
-	categoryName: {
-		fontSize: 14,
-		fontWeight: '500',
-		color: '#ffffff',
-		textAlign: 'center',
 	},
 });
 
@@ -188,6 +136,9 @@ export const categoryPickerPropsAreEqual = (
 ): boolean => {
 	if (prevProps.selectedCategoryId !== nextProps.selectedCategoryId) return false;
 	if (prevProps.isIncome !== nextProps.isIncome) return false;
+	if (prevProps.error !== nextProps.error) return false;
+	// A lista de lançamentos troca de identidade só quando muda: as "Mais usadas" seguem.
+	if (prevProps.transactions !== nextProps.transactions) return false;
 	if (prevProps.categories.length !== nextProps.categories.length) return false;
 
 	return prevProps.categories.every((category, index) => {

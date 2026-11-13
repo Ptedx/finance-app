@@ -99,7 +99,7 @@ const CardFace: React.FC<CardFaceProps> = ({ card, summary, onPress, position, s
 
 	const a11y = [
 		[bank, showName ? card.name : null, card.last4 ? t('cards.endingIn', { last4: card.last4 }) : null].filter(Boolean).join(', '),
-		`${invoiceTitle} ${formatCents(invoiceCents)}`,
+		summary ? `${invoiceTitle} ${formatCents(invoiceCents)}` : null,
 		closing,
 		pending,
 		closed,
@@ -130,10 +130,16 @@ const CardFace: React.FC<CardFaceProps> = ({ card, summary, onPress, position, s
 			</View>
 
 			<View style={styles.middle}>
-				<Text style={[styles.invoiceTitle, { color: ink }]}>{invoiceTitle}</Text>
-				<Text style={[styles.invoiceValue, { color: ink }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-					{formatCents(invoiceCents)}
-				</Text>
+				{/* Sem o resumo (a prévia do formulário do cartão), a figura não sabe o valor: mostrar
+				    "Valor devido R$ 0,00" num cartão que deve era mentir (E2E-49). */}
+				{summary ? (
+					<>
+						<Text style={[styles.invoiceTitle, { color: ink }]}>{invoiceTitle}</Text>
+						<Text style={[styles.invoiceValue, { color: ink }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+							{formatCents(invoiceCents)}
+						</Text>
+					</>
+				) : null}
 				<Text style={[styles.closing, { color: ink }]}>{closing}</Text>
 				{pending ? <Text style={[styles.closing, { color: ink }]}>{pending}</Text> : null}
 			</View>

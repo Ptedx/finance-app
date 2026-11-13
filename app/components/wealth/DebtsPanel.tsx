@@ -10,6 +10,7 @@ import { type DebtsSummary, type DebtVerdict, debtStateOn, termsOf } from '../..
 import { formatCents } from '../../utils/money';
 import { ACCENT } from '../cards/formParts';
 import DebtRow from '../debts/DebtRow';
+import HelpButton from '../tour/HelpButton';
 
 /**
  * As dívidas dentro do Patrimônio: o resumo (parcelas por mês, quando a última acaba), uma
@@ -34,9 +35,12 @@ const DebtsPanel: React.FC<{
 
 	return (
 		<View style={styles.card}>
-			<Text style={styles.title} accessibilityRole="header">
-				{t('debts.screenTitle')}
-			</Text>
+			<View style={styles.titleRow}>
+				<Text style={styles.title} accessibilityRole="header">
+					{t('debts.screenTitle')}
+				</Text>
+				<HelpButton trail="debts" here={{ screen: 'wealth' }} />
+			</View>
 			{active.length > 0 ? (
 				<Text style={styles.subtitle}>
 					{summary.lastPayoffDate
@@ -86,7 +90,15 @@ const styles = StyleSheet.create({
 		paddingVertical: 16,
 		marginBottom: 16,
 	},
+	// O "?" da trilha (SPD-131) ao lado do título, sem crescer o cabeçalho do card.
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		marginVertical: -12,
+	},
 	title: {
+		flex: 1,
 		fontSize: 18,
 		fontWeight: '600',
 		color: '#FFFFFF',

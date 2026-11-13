@@ -5,15 +5,14 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useAccounts } from '../contexts/AccountsContext';
 import type { Account, AccountKind } from '../database/schema';
 import { parseCardNames } from '../utils/cardNames';
+import { SelectField, type SelectOption } from './SelectField';
+import { TourTarget } from './tour/TourContext';
 
 /**
- * De qual conta ou cartão saiu (ou entrou) o dinheiro. Uma linha de fichas, com
- * "sem conta" como primeira opção: a conta é opcional, e um lançamento sem ela só fica
- * fora do saldo por conta — nunca fora dos relatórios.
- *
- * Fichas são botões de rádio para o leitor de tela (`accessibilityRole="radio"` com
- * `selected`), têm 48 pontos de altura e o estado selecionado não depende só de cor:
- * a ficha ativa ganha ícone de check.
+ * De qual conta ou cartão saiu (ou entrou) o dinheiro. Um campo que abre a lista das contas
+ * (`SelectField`, SPD-130 — antes, uma linha de fichas), com "sem conta" como primeira linha:
+ * a conta é opcional, e um lançamento sem ela só fica fora do saldo por conta — nunca fora
+ * dos relatórios.
  *
  * Com um cartão de crédito escolhido, uma segunda linha pergunta **qual cartão** fez a
  * compra: o físico e os virtuais já vistos nessa conta (pelo final), ou um final novo
@@ -28,6 +27,19 @@ export const ACCOUNT_KIND_ICONS: Record<AccountKind, React.ComponentProps<typeof
 	credit_card: 'card-outline',
 };
 
+/**
+ * As contas como opções de lista: ícone do tipo, cor da conta e o banco embaixo quando o nome
+ * não o diz (separa duas fichas de mesmo nome).
+ */
+export const accountSelectOptions = (accounts: Account[]): SelectOption<string>[] =>
+	accounts.map((account) => ({
+		value: account.id,
+		label: account.name,
+		color: account.color,
+		icon: ACCOUNT_KIND_ICONS[account.kind],
+		description: account.bankName && account.bankName !== account.name ? account.bankName : undefined,
+	}));
+
 interface AccountPickerProps {
 	selectedAccountId: string | null;
 	onSelect: (accountId: string | null) => void;
@@ -41,29 +53,6 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 	const { activeAccounts } = useAccounts();
 
 	if (activeAccounts.length === 0) return null;
-
-	const chip = (key: string, label: string, icon: React.ComponentProps<typeof Ionicons>['name'], value: string | null, color: string) => {
-		const selected = selectedAccountId === value;
-		return (
-			<Pressable
-				key={key}
-				onPress={() => pickAccount(value)}
-				accessibilityRole="radio"
-				accessibilityState={{ selected }}
-				accessibilityLabel={label}
-				style={({ pressed }) => [
-					styles.chip,
-					selected && { borderColor: color, backgroundColor: `${color}22` },
-					pressed && styles.pressed,
-				]}
-			>
-				<Ionicons name={selected ? 'checkmark-circle' : icon} size={18} color={selected ? color : 'rgba(255,255,255,0.8)'} />
-				<Text style={[styles.chipLabel, selected && { color }]} numberOfLines={1}>
-					{label}
-				</Text>
-			</Pressable>
-		);
-	};
 
 	const selectedAccount = activeAccounts.find((account) => account.id === selectedAccountId);
 	const showCards = Boolean(onSelectLast4) && selectedAccount?.kind === 'credit_card';
@@ -98,18 +87,19 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 
 	return (
 		<>
-		<View style={styles.group} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.picker.label')}>
-			<Text style={styles.label}>{t('accounts.picker.label')}</Text>
-			<Text style={styles.hint}>{t('accounts.picker.hint')}</Text>
-			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
-				{chip('none', t('accounts.picker.none'), 'remove-circle-outline', null, '#15E8FE')}
-				{activeAccounts.map((account: Account) =>
-					chip(account.id, account.name, ACCOUNT_KIND_ICONS[account.kind], account.id, account.color)
-				)}
-			</ScrollView>
+		<View style={styles.group}>
+			<SelectField
+				label={t('accounts.picker.label')}
+				hint={t('accounts.picker.hint')}
+				options={accountSelectOptions(activeAccounts)}
+				selected={selectedAccountId}
+				onSelect={pickAccount}
+				clearLabel={t('accounts.picker.none')}
+				onClear={() => pickAccount(null)}
+			/>
 		</View>
 		{showCards ? (
-			<View style={styles.group}>
+			<TourTarget id="add.whichCard" style={styles.group}>
 				<Text style={styles.label}>{t('accounts.picker.cardLabel')}</Text>
 				<Text style={styles.hint}>{t('accounts.picker.cardHint')}</Text>
 				<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} accessibilityRole="radiogroup" accessibilityLabel={t('accounts.picker.cardLabel')}>
@@ -129,7 +119,7 @@ const AccountPicker: React.FC<AccountPickerProps> = ({ selectedAccountId, onSele
 					placeholderTextColor="rgba(255,255,255,0.35)"
 					accessibilityLabel={t('accounts.picker.cardOther')}
 				/>
-			</View>
+			</TourTarget>
 		) : null}
 		</>
 	);

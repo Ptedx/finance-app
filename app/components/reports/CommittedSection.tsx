@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, Text, View } from 'react-native';
+import { capitalizeFirst } from '../../utils/capitalize';
 import { monthKeyName } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import type { CommittedMonth } from '../../utils/reportSeries';
@@ -26,7 +27,7 @@ const CommittedSection: React.FC<{ months: CommittedMonth[] }> = ({ months }) =>
 				<Text style={reportStyles.empty}>{t('reports.committed.empty')}</Text>
 			) : (
 				months.map((month) => {
-					const name = `${monthKeyName(month.month)} ${month.month.slice(0, 4)}`;
+					const name = capitalizeFirst(`${monthKeyName(month.month)} ${month.month.slice(0, 4)}`);
 					return (
 						<View key={month.month} style={styles.month} accessible accessibilityLabel={`${name}: ${t('reports.committed.total')} ${formatCents(month.totalCents)}. ${t('reports.committed.cards')} ${formatCents(month.cardCents)}, ${t('reports.committed.fixed')} ${formatCents(month.fixedCents)}.${month.debts.map((debt) => ` ${debt.inFixedCost ? t('reports.committed.debtInFixed', { name: debt.name }) : debt.name} ${formatCents(debt.cents)}.`).join('')}`}>
 							<View style={styles.monthHeader}>
@@ -77,7 +78,6 @@ const styles = StyleSheet.create({
 		fontSize: 15,
 		fontWeight: '600',
 		color: '#FFFFFF',
-		textTransform: 'capitalize',
 	},
 	line: {
 		flexDirection: 'row',

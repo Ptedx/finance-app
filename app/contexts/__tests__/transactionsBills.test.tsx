@@ -39,6 +39,11 @@ jest.mock('../../sync/queue', () => ({ schedule: jest.fn() }));
 
 jest.mock('../../hooks/useAfterPull', () => ({ useAfterPull: jest.fn() }));
 
+// As categorias padrão no idioma do app (SPD-088) têm teste próprio.
+jest.mock('../../utils/defaultCategoryNames', () => ({
+	localizeDefaultCategories: jest.fn(async () => 0),
+}));
+
 jest.mock('../PeriodContext', () => ({
 	usePeriod: () => ({ startDate: '2026-10-01', endDate: '2026-10-31' }),
 }));
@@ -253,5 +258,64 @@ describe('editar um lançamento (SPD-067)', () => {
 			null,
 			expect.objectContaining({ id: 'tx-sumido', accountId: 'nubank' })
 		);
+	});
+});
+
+// SPD-153: a baixa quita o mês mais antigo em aberto (SPD-145), que pode não ser o do
+// lançamento. Lançar e editar devolvem a conta e o mês quitados, para a tela avisar.
+describe('lançar ou editar diz a conta e o mês quitados (SPD-153)', () => {
+	const ALUGUEL = { id: 'aluguel', name: 'Aluguel' };
+
+	it('outubro em aberto, lançado em novembro: devolve o id e outubro', async () => {
+		(settleBillPayment as jest.Mock).mockResolvedValueOnce({ bill: ALUGUEL, month: '2026-10' });
+		const api = await mount();
+
+		let saved: unknown;
+		await act(async () => {
+			saved = await api().addNewTransaction({ ...TIM_PAYMENT, date: '2026-11-05' });
+		});
+
+		expect(saved).toEqual({ id: 'tx-novo', settledBill: { name: 'Aluguel', month: '2026-10' } });
+	});
+
+	it('só o mês atual em aberto: devolve o mês atual', async () => {
+		(settleBillPayment as jest.Mock).mockResolvedValueOnce({ bill: ALUGUEL, month: '2026-11' });
+		const api = await mount();
+
+		let saved: unknown;
+		await act(async () => {
+			saved = await api().addNewTransaction({ ...TIM_PAYMENT, date: '2026-11-14' });
+		});
+
+		expect(saved).toEqual({ id: 'tx-novo', settledBill: { name: 'Aluguel', month: '2026-11' } });
+	});
+
+	it('sem baixa (ou receita), não devolve conta', async () => {
+		const api = await mount();
+
+		let expense: unknown;
+		let income: unknown;
+		await act(async () => {
+			expense = await api().addNewTransaction(TIM_PAYMENT);
+			income = await api().addNewTransaction({ ...TIM_PAYMENT, isIncome: true });
+		});
+
+		expect(expense).toEqual({ id: 'tx-novo', settledBill: null });
+		expect(income).toEqual({ id: 'tx-novo', settledBill: null });
+	});
+
+	it('a edição que dá baixa devolve a conta e o mês; a que não dá, nada', async () => {
+		(resettleBillPayment as jest.Mock).mockResolvedValueOnce({ bill: ALUGUEL, month: '2026-10' });
+		const api = await mount();
+
+		let settled: unknown;
+		let unchanged: unknown = 'não chamou';
+		await act(async () => {
+			settled = await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim', date: '2026-11-05' });
+			unchanged = await api().updateExistingTransaction({ ...TIM_PAYMENT, id: 'tx-tim' });
+		});
+
+		expect(settled).toEqual({ name: 'Aluguel', month: '2026-10' });
+		expect(unchanged).toBeNull();
 	});
 });

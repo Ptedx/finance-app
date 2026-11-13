@@ -1,31 +1,39 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack } from 'expo-router';
-import { useState } from 'react';
+import { Stack, useRouter } from 'expo-router';
+import { type ComponentProps, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
 	Alert,
 	FlatList,
-	SafeAreaView,
 	StyleSheet,
 	Text,
 	TouchableOpacity,
 	View,
 } from 'react-native';
+// O `SafeAreaView` do react-native é só do iOS: no Android a tela ia para baixo da barra de
+// status e o "Adicionar categoria", para baixo da barra de gestos.
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import CategoryEditorModal from '../components/CategoryEditorModal';
+import { Button } from '../components/cards/formParts';
+import Sheet from '../components/cards/Sheet';
+import ScreenTopBar from '../components/ScreenTopBar';
+import { SelectField, type SelectOption } from '../components/SelectField';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { CATEGORY_NATURES, type Category, type CategoryDraft, type CategoryNature } from '../database/schema';
+import { CATEGORY_NATURES, type Category, type CategoryDraft } from '../database/schema';
 
-/** Rótulo de cada natureza, na tela. */
-const NATURE_LABEL: Record<CategoryNature, string> = {
-	essential: 'Essential',
-	discretionary: 'Discretionary',
-	passthrough: 'Pass-through',
-};
-
+/** A categoria que recebe o que sobra quando outra é apagada; o banco recusa apagá-la. */
+const UNCATEGORIZED_ID = 'uncategorized';
 
 const CategoryManagementScreen = () => {
-	const { categories, addCategory, updateCategory, deleteCategory } = useTransactions();
+	const { t } = useTranslation();
+	const router = useRouter();
+	const insets = useSafeAreaInsets();
+	const { categories, transactions, addCategory, updateCategory, deleteCategory } = useTransactions();
 	const [isEditorVisible, setIsEditorVisible] = useState(false);
 	const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+	// Categoria em uso sendo apagada: a folha pergunta para onde vão os lançamentos dela.
+	const [deleting, setDeleting] = useState<{ category: Category; count: number } | null>(null);
+	const [moveTarget, setMoveTarget] = useState<string | null>(null);
 
 	const handleAddCategory = () => {
 		setEditingCategory(null);
@@ -37,28 +45,39 @@ const CategoryManagementScreen = () => {
 		setIsEditorVisible(true);
 	};
 
+	const runDelete = async (category: Category, moveTo?: string) => {
+		try {
+			await deleteCategory(category.id, moveTo);
+			setDeleting(null);
+		} catch (_error) {
+			Alert.alert(t('categoryManagement.error'), t('categoryManagement.deleteFailed'));
+		}
+	};
+
+	/**
+	 * Apagar uma categoria sem lançamentos é só confirmar. Em uso, a tela diz quantos
+	 * lançamentos a usam e pede para onde eles vão: antes, o alerta só perguntava "tem
+	 * certeza" e a compra virava "Sem descrição · Uncategorized", perdendo o nome que vinha
+	 * da categoria.
+	 *
+	 * Conta só os lançamentos (`transactions` do contexto são todos, não só os do mês).
+	 */
 	const handleDeleteCategory = (category: Category) => {
+		const count = transactions.filter((tx) => tx.category === category.id).length;
+		if (count > 0) {
+			setMoveTarget(null);
+			setDeleting({ category, count });
+			return;
+		}
 		Alert.alert(
-			'Delete Category',
-			`Are you sure you want to delete the category "${category.name}"?`,
+			t('categoryManagement.deleteTitle'),
+			t('categoryManagement.deleteMessage', { name: category.name }),
 			[
+				{ text: t('categoryManagement.cancel'), style: 'cancel' },
 				{
-					text: 'Cancel',
-					style: 'cancel',
-				},
-				{
-					text: 'Delete',
+					text: t('categoryManagement.delete'),
 					style: 'destructive',
-					onPress: async () => {
-						try {
-							await deleteCategory(category.id);
-						} catch (_error) {
-							Alert.alert(
-								'Cannot Delete Category',
-								'This category is associated with existing transactions and cannot be deleted.'
-							);
-						}
-					},
+					onPress: () => runDelete(category),
 				},
 			]
 		);
@@ -81,7 +100,7 @@ const CategoryManagementScreen = () => {
 				nature: CATEGORY_NATURES[(CATEGORY_NATURES.indexOf(category.nature) + 1) % CATEGORY_NATURES.length],
 			});
 		} catch (_error) {
-			Alert.alert('Error', 'Failed to update category. Please try again.');
+			Alert.alert(t('categoryManagement.error'), t('categoryManagement.updateFailed'));
 		}
 	};
 
@@ -97,9 +116,16 @@ const CategoryManagementScreen = () => {
 			}
 			setIsEditorVisible(false);
 		} catch (_error) {
-			Alert.alert('Error', 'Failed to save category. Please try again.');
+			Alert.alert(t('categoryManagement.error'), t('categoryManagement.saveFailed'));
 		}
 	};
+
+	// Para onde os lançamentos podem ir: outra categoria do mesmo tipo, nunca a própria.
+	const moveOptions: SelectOption<string>[] = deleting
+		? categories
+				.filter((c) => c.type === deleting.category.type && c.id !== deleting.category.id)
+				.map((c) => ({ value: c.id, label: c.name, color: c.color, icon: c.icon as ComponentProps<typeof Ionicons>['name'] }))
+		: [];
 
 	const renderCategoryItem = ({ item }: { item: Category }) => (
 		<View style={styles.categoryItem}>
@@ -117,7 +143,7 @@ const CategoryManagementScreen = () => {
 					{/* Two categories can share a name across sides of the ledger, so the type
 					    has to be visible here to tell them apart. */}
 					<Text style={item.type === 'income' ? styles.incomeBadge : styles.expenseBadge}>
-						{item.type === 'income' ? 'Income' : 'Expense'}
+						{item.type === 'income' ? t('categoryManagement.income') : t('categoryManagement.expense')}
 					</Text>
 
 					{/* Income is neither a need nor a want, so the chip only exists on the
@@ -133,6 +159,12 @@ const CategoryManagementScreen = () => {
 										: styles.discretionaryChip,
 							]}
 							onPress={() => handleToggleNature(item)}
+							accessibilityRole="button"
+							accessibilityLabel={t('categoryManagement.natureLabel', {
+								name: item.name,
+								nature: t(`categoryManagement.nature.${item.nature}`),
+							})}
+							accessibilityHint={t('categoryManagement.natureHint')}
 						>
 							<Text
 								style={[
@@ -144,28 +176,40 @@ const CategoryManagementScreen = () => {
 											: styles.discretionaryChipText,
 								]}
 							>
-								{NATURE_LABEL[item.nature]}
+								{t(`categoryManagement.nature.${item.nature}`)}
 							</Text>
 						</TouchableOpacity>
 					)}
 				</View>
 			</View>
 			<View style={styles.categoryActions}>
-				<TouchableOpacity style={styles.actionButton} onPress={() => handleEditCategory(item)}>
+				<TouchableOpacity
+					style={styles.actionButton}
+					onPress={() => handleEditCategory(item)}
+					accessibilityRole="button"
+					accessibilityLabel={t('categoryManagement.editLabel', { name: item.name })}
+				>
 					<Ionicons name="pencil" size={20} color="#15E8FE" />
 				</TouchableOpacity>
-				<TouchableOpacity style={styles.actionButton} onPress={() => handleDeleteCategory(item)}>
-					<Ionicons name="trash-outline" size={20} color="#FF6B6B" />
-				</TouchableOpacity>
+				{item.id !== UNCATEGORIZED_ID && (
+					<TouchableOpacity
+						style={styles.actionButton}
+						onPress={() => handleDeleteCategory(item)}
+						accessibilityRole="button"
+						accessibilityLabel={t('categoryManagement.deleteLabel', { name: item.name })}
+					>
+						<Ionicons name="trash-outline" size={20} color="#FF6B6B" />
+					</TouchableOpacity>
+				)}
 			</View>
 		</View>
 	);
 
 	return (
-		<SafeAreaView style={styles.container}>
+		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen
 				options={{
-					title: 'Manage Categories',
+					title: t('categoryManagement.screenTitle'),
 					headerStyle: {
 						backgroundColor: '#1A1A1A',
 					},
@@ -174,30 +218,33 @@ const CategoryManagementScreen = () => {
 				}}
 			/>
 
+			{/* A pilha da raiz não desenha cabeçalho: sem este, a tela não tinha voltar. */}
+			<ScreenTopBar
+				title={t('categoryManagement.title')}
+				backLabel={t('categoryManagement.back')}
+				onBack={() => router.back()}
+			/>
 			<View style={styles.headerContainer}>
-				<Text style={styles.headerTitle}>Category Management</Text>
-				<Text style={styles.headerSubtitle}>
-					Add, edit, or remove categories for your transactions. Tap an expense's
-					essential/discretionary chip to split your spending into needs and wants.
-				</Text>
+				<Text style={styles.headerSubtitle}>{t('categoryManagement.subtitle')}</Text>
 			</View>
 
+			{/* O botão fica preso no pé, acima da barra de gestos; a lista rola até passar dele. */}
 			<FlatList
 				data={categories}
 				renderItem={renderCategoryItem}
 				keyExtractor={(item) => item.id}
-				contentContainerStyle={styles.categoryList}
+				contentContainerStyle={[styles.categoryList, { paddingBottom: insets.bottom + 80 }]}
 				ListEmptyComponent={
 					<View style={styles.emptyContainer}>
-						<Text style={styles.emptyText}>No categories found</Text>
+						<Text style={styles.emptyText}>{t('categoryManagement.empty')}</Text>
 					</View>
 				}
 			/>
 
-			<View style={styles.addButtonContainer}>
-				<TouchableOpacity style={styles.addButton} onPress={handleAddCategory}>
+			<View style={[styles.addButtonContainer, { paddingBottom: insets.bottom + 16 }]}>
+				<TouchableOpacity style={styles.addButton} onPress={handleAddCategory} accessibilityRole="button">
 					<Ionicons name="add" size={24} color="#000000" />
-					<Text style={styles.addButtonText}>Add Category</Text>
+					<Text style={styles.addButtonText}>{t('categoryManagement.add')}</Text>
 				</TouchableOpacity>
 			</View>
 
@@ -207,6 +254,51 @@ const CategoryManagementScreen = () => {
 				onSave={handleSaveCategory}
 				onCancel={() => setIsEditorVisible(false)}
 			/>
+
+			<Sheet
+				visible={deleting !== null}
+				onClose={() => setDeleting(null)}
+				title={t('categoryManagement.deleteTitle')}
+				subtitle={
+					deleting
+						? t('categoryManagement.deleteInUse', { count: deleting.count, name: deleting.category.name })
+						: undefined
+				}
+			>
+				{deleting && moveOptions.length > 0 ? (
+					<>
+						<SelectField
+							label={t('categoryManagement.moveTo')}
+							options={moveOptions}
+							selected={moveTarget}
+							onSelect={setMoveTarget}
+						/>
+						<Button
+							label={t('categoryManagement.moveAndDelete')}
+							icon="swap-horizontal"
+							variant="danger"
+							disabled={moveTarget === null}
+							onPress={() => {
+								if (moveTarget) runDelete(deleting.category, moveTarget);
+							}}
+						/>
+					</>
+				) : null}
+				{deleting && moveOptions.length === 0 ? (
+					<>
+						{/* Sem outra categoria do mesmo tipo, o banco põe os lançamentos em "Sem
+						    categoria", como antes; a tela diz isso em vez de travar o apagar. */}
+						<Text style={styles.noTarget}>{t('categoryManagement.noTarget')}</Text>
+						<Button
+							label={t('categoryManagement.deleteAnyway')}
+							icon="trash-outline"
+							variant="danger"
+							onPress={() => runDelete(deleting.category)}
+						/>
+					</>
+				) : null}
+				<Button label={t('categoryManagement.cancel')} variant="secondary" onPress={() => setDeleting(null)} />
+			</Sheet>
 		</SafeAreaView>
 	);
 };
@@ -265,17 +357,10 @@ const styles = StyleSheet.create({
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',
-		paddingTop: 60,
 	},
 	headerContainer: {
 		paddingHorizontal: 16,
-		paddingVertical: 12,
-	},
-	headerTitle: {
-		fontSize: 24,
-		fontWeight: '700',
-		color: '#FFFFFF',
-		marginBottom: 4,
+		paddingBottom: 12,
 	},
 	headerSubtitle: {
 		fontSize: 14,
@@ -283,7 +368,6 @@ const styles = StyleSheet.create({
 	},
 	categoryList: {
 		padding: 16,
-		paddingBottom: 80,
 	},
 	categoryItem: {
 		flexDirection: 'row',
@@ -347,6 +431,11 @@ const styles = StyleSheet.create({
 		fontSize: 16,
 		fontWeight: '600',
 		marginLeft: 8,
+	},
+	noTarget: {
+		fontSize: 14,
+		lineHeight: 20,
+		color: 'rgba(255, 255, 255, 0.85)',
 	},
 });
 

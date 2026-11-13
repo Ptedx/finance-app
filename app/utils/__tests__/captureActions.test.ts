@@ -12,7 +12,14 @@
  * o teste passaria sem exercitar o filtro que foi acrescentado do lado de cá.
  */
 
-import type { Account, Bill, Capture, MerchantRule, Transfer } from '../../database/schema';
+import type {
+	Account,
+	Bill,
+	BillPayment,
+	Capture,
+	MerchantRule,
+	Transfer,
+} from '../../database/schema';
 
 interface TransactionRow {
 	id: string;
@@ -32,6 +39,8 @@ const mockTransactions = new Map<string, TransactionRow>();
 const mockCaptures = new Map<string, Capture>();
 const mockRules = new Map<string, MerchantRule>();
 const mockBills = new Map<string, Bill>();
+/** Os meses registrados das contas a pagar (SPD-146), lápides inclusive. */
+const mockBillPayments = new Map<string, BillPayment>();
 const mockCounter = { value: 0 };
 const mockMakeId = (prefix: string): string => {
 	mockCounter.value += 1;
@@ -121,6 +130,18 @@ jest.mock('../../database/database', () => ({
 	findAccountByKey: jest.fn(async () => null),
 	reassignCaptureLedger: jest.fn(async () => undefined),
 	getBills: jest.fn(async () => [...mockBills.values()].filter((bill) => !bill.deletedAt)),
+	getBillPayments: jest.fn(async () =>
+		[...mockBillPayments.values()].filter((payment) => !payment.deletedAt)
+	),
+	saveBillPayments: jest.fn(
+		async (upserts: Omit<BillPayment, 'updatedAt' | 'deletedAt'>[], removeIds: string[] = []) => {
+			for (const draft of upserts) mockBillPayments.set(draft.id, { ...draft, updatedAt: '' });
+			for (const id of removeIds) {
+				const found = mockBillPayments.get(id);
+				if (found) mockBillPayments.set(id, { ...found, deletedAt: 'apagado' });
+			}
+		}
+	),
 	updateBill: jest.fn(async (id: string, patch: Omit<Bill, 'id' | 'updatedAt' | 'deletedAt'>) => {
 		const found = mockBills.get(id);
 		if (found) mockBills.set(id, { ...found, ...patch });
@@ -277,6 +298,7 @@ beforeEach(() => {
 	mockCaptures.clear();
 	mockRules.clear();
 	mockBills.clear();
+	mockBillPayments.clear();
 	jest.clearAllMocks();
 	for (const item of [CHECKING, CARD, OTHER_CARD]) mockAccounts.set(item.id, item);
 });
@@ -777,6 +799,38 @@ describe('baixa automática da conta a pagar (REM-04)', () => {
 		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
 	});
 
+	// SPD-153: a baixa quita o mês mais antigo em aberto (SPD-145), que pode não ser o do
+	// pagamento. A confirmação devolve a conta e o mês quitados para o aviso dizer qual foi.
+	it('com outubro em aberto e o pagamento em novembro, a confirmação diz que quitou outubro', async () => {
+		seedBill();
+		const capture = timPayment({ postedAt: '2026-11-05T12:00:00.000Z' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-10');
+		expect(result?.settledBill).toEqual({ name: 'Celular', month: '2026-10' });
+	});
+
+	it('com só novembro em aberto, a confirmação diz que quitou novembro', async () => {
+		seedBill({ paidThrough: '2026-10' });
+		const capture = timPayment({ postedAt: '2026-11-14T12:00:00.000Z' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(mockBills.get('tim')?.paidThrough).toBe('2026-11');
+		expect(result?.settledBill).toEqual({ name: 'Celular', month: '2026-11' });
+	});
+
+	it('sem baixa, a confirmação não diz conta nenhuma', async () => {
+		seedBill();
+		const capture = timPayment({ counterparty: 'PADARIA', merchantKey: 'padaria' });
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(result?.status).toBe('confirmed');
+		expect(result?.settledBill).toBeNull();
+	});
+
 	it('recebimento e compra parcelada não pagam conta', async () => {
 		seedBill();
 		const income = timPayment({ direction: 'in', kind: 'pix_in' });
@@ -898,6 +952,13 @@ describe('compra em moeda estrangeira vai para revisão (SPD-037)', () => {
 		postedAt: '2026-10-14T12:00:00.000Z',
 	});
 
+	// O cartão é o do final do aviso. Sem ele, com os dois cartões do Nubank deste teste, a
+	// compra cairia na dúvida de qual cartão (SPD-123) e nunca entraria sozinha — e o teste
+	// é sobre a moeda.
+	beforeEach(() => {
+		mockAccounts.set(CARD.id, { ...CARD, last4: '1534' });
+	});
+
 	const ONLY_DOLLAR = notification('Compra de US$ 15,99 APROVADA em NETFLIX.COM para o cartão com final 1534.');
 	const WITH_REAIS = notification('Compra de US$ 15,99 (R$ 87,10) APROVADA em NETFLIX.COM para o cartão com final 1534.');
 
@@ -1012,21 +1073,32 @@ describe('editar o lançamento que deu a baixa refaz a baixa (SPD-067)', () => {
 		expect(changed).toHaveBeenCalledTimes(1);
 	});
 
-	it('a data editada para fora da janela do vencimento desfaz a baixa', async () => {
+	it('a data editada para fora da janela do vencimento, sem o nome no texto, desfaz a baixa', async () => {
 		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 
-		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30' });
+		// SPD-145: depois da janela, só o nome/dica no texto ainda paga o mês atrasado.
+		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30', text: 'Pix enviado' });
 
 		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-09', paidByRef: null });
 	});
 
-	it('a data editada para o mês seguinte tira a baixa de outubro e dá a de novembro', async () => {
+	it('a data editada para depois da janela, com o nome no texto, continua pagando outubro, atrasado (SPD-145)', async () => {
+		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+
+		await resettleBillPayment(TIM, { ...TIM, date: '2026-10-30' });
+
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
+	});
+
+	it('a data editada para o mês seguinte, com outubro em aberto, quita outubro: nenhum mês é pulado (SPD-145)', async () => {
 		seedBill({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 
 		const match = await resettleBillPayment(TIM, { ...TIM, date: '2026-11-13' });
 
-		expect(match).toMatchObject({ month: '2026-11' });
-		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-11', paidByRef: 'tx-tim' });
+		// A baixa de outubro sai com a data de antes e volta com a nova: outubro é o mais antigo em
+		// aberto, e o pagamento com "TIM" no texto o quita (antes ia para novembro e outubro sumia).
+		expect(match).toMatchObject({ month: '2026-10' });
+		expect(mockBills.get('tim')).toMatchObject({ paidThrough: '2026-10', paidByRef: 'tx-tim' });
 		// Uma remarcação de lembretes e um aviso pela edição inteira, não um por gravação.
 		expect(scheduleBillReminders).toHaveBeenCalledTimes(1);
 		expect(changed).toHaveBeenCalledTimes(1);
@@ -1329,10 +1401,15 @@ describe('app bloqueado e banco conhecido (SPD-069)', () => {
 	});
 
 	it('o aviso do PicPay com um nome na tela que o app não reconhece vai para a revisão', async () => {
+		// Desde o SPD-112 o banco sai do pacote: o aviso cai na conta PicPay (aqui, a cadastrada
+		// à mão, que ganha o app), em vez de ficar "Sem conta".
+		mockAccounts.set('picpay', account({ id: 'picpay', kind: 'checking', role: 'main', bankName: 'PicPay' }));
 		const summary = await ingest(raw('com.picpay', 'Carteira digital', 'Pagamento', 'Você pagou R$ 30,00 para FULANO.'));
 
 		expect(summary.inserted).toBe(1);
-		expect([...mockCaptures.values()]).toEqual([expect.objectContaining({ packageName: 'com.picpay', status: 'pending' })]);
+		expect([...mockCaptures.values()]).toEqual([
+			expect.objectContaining({ packageName: 'com.picpay', status: 'pending', accountId: 'picpay' }),
+		]);
 	});
 });
 
@@ -1432,5 +1509,110 @@ describe('estorno usa a chave da compra, nunca a categoria dela (SPD-043, NOTIF-
 
 		const purchase = [...mockCaptures.values()].find((capture) => capture.kind !== 'refund');
 		expect(purchase).toMatchObject({ status: 'confirmed', suggestedCategory: 'health' });
+	});
+});
+
+/**
+ * SPD-111 (AUTO-11): a captura que caiu em "Sem conta" só mostrava o texto na revisão, e
+ * a única saída era confirmar e depois mover tudo de uma vez em "Lançamentos sem conta".
+ * Agora a conta é escolhida ali mesmo e o lançamento confirmado já nasce nela; num cartão,
+ * as parcelas seguem o ciclo dele, como em qualquer compra do cartão.
+ */
+describe('escolher a conta na revisão (SPD-111, AUTO-11)', () => {
+	const categories = [
+		{ id: 'other_expense', name: 'Outros', type: 'expense', icon: '', color: '', updatedAt: '' },
+		{ id: 'other_income', name: 'Outros', type: 'income', icon: '', color: '', updatedAt: '' },
+	] as unknown as Parameters<typeof confirmCapture>[2];
+
+	/** Fecha no dia 31: em fevereiro, o fechamento cai no último dia do mês. */
+	const CARD_31 = account({ id: 'card31', name: 'Cartão B', kind: 'credit_card', role: 'card', closingDay: 31 });
+
+	/** Seis da manhã UTC: dia 29 em São Paulo, em UTC e em Auckland. */
+	const orphan = (overrides: Partial<Capture> = {}): Capture =>
+		seedCapture({
+			accountId: null,
+			kind: 'purchase',
+			counterparty: 'PADARIA',
+			merchantKey: 'padaria',
+			postedAt: '2027-01-29T06:00:00.000Z',
+			amountCents: 30_000,
+			...overrides,
+		});
+
+	const live = () => [...mockTransactions.values()].filter((row) => !row.deleted);
+
+	it('a captura sem conta confirmada com a conta escolhida grava o lançamento nela', async () => {
+		const capture = orphan();
+
+		const result = await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		expect(live()).toEqual([
+			expect.objectContaining({ accountId: CHECKING.id, amountCents: 30_000, date: '2027-01-29', isIncome: false }),
+		]);
+		expect(result).toMatchObject({ status: 'confirmed', accountId: CHECKING.id });
+		expect(mockCaptures.get(capture.id)).toMatchObject({ status: 'confirmed', accountId: CHECKING.id });
+	});
+
+	it('trocar a conta que o app sugeriu também vale', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CARD.id);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: CARD.id })]);
+		expect(mockCaptures.get(capture.id)?.accountId).toBe(CARD.id);
+	});
+
+	it('sem escolha, fica a conta do aviso', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: CHECKING.id })]);
+	});
+
+	it('escolher "Sem conta" tira a conta sugerida', async () => {
+		const capture = orphan({ accountId: CHECKING.id });
+
+		await confirmCapture(capture.id, 'other_expense', categories, null);
+
+		expect(live()).toEqual([expect.objectContaining({ accountId: null })]);
+		expect(mockCaptures.get(capture.id)?.accountId).toBeNull();
+	});
+
+	it('num cartão, a compra em 3x segue o ciclo do cartão escolhido: uma parcela por fatura', async () => {
+		mockAccounts.set(CARD_31.id, CARD_31);
+		const capture = orphan({ installments: 3 });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CARD_31.id);
+
+		// 29/01 fecha em 31/01; somar um mês daria 28/02, que já é a fatura de março (o
+		// fechamento de fevereiro é o dia 28). A segunda parcela vai para o começo da de fevereiro.
+		expect(live().map((row) => [row.accountId, row.date, row.amountCents])).toEqual([
+			[CARD_31.id, '2027-01-29', 10_000],
+			[CARD_31.id, '2027-01-31', 10_000],
+			[CARD_31.id, '2027-03-29', 10_000],
+		]);
+	});
+
+	it('a mesma compra numa conta corrente vai de mês em mês', async () => {
+		const capture = orphan({ installments: 3 });
+
+		await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		expect(live().map((row) => [row.accountId, row.date])).toEqual([
+			[CHECKING.id, '2027-01-29'],
+			[CHECKING.id, '2027-02-28'],
+			[CHECKING.id, '2027-03-29'],
+		]);
+	});
+
+	it('reverter tira o lançamento da conta escolhida, e a captura volta para a revisão com ela', async () => {
+		const capture = orphan();
+		await confirmCapture(capture.id, 'other_expense', categories, CHECKING.id);
+
+		await revertCapture(capture.id);
+
+		expect(live()).toEqual([]);
+		expect(mockCaptures.get(capture.id)).toMatchObject({ status: 'pending', accountId: CHECKING.id });
 	});
 });

@@ -1,3 +1,4 @@
+import i18next from 'i18next';
 import type React from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
@@ -14,6 +15,7 @@ import {
 	getPeriodSummary,
 	getTotalByCategory,
 	getTransactions,
+	getTransactionsByCategory,
 	getTransactionsByDateRange,
 	initDatabase,
 	type PeriodSummary,
@@ -29,9 +31,10 @@ import type {
 } from '../database/schema';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
-import type { BillMovement } from '../utils/billMatcher';
+import { type BillMovement, type SettledBill, settledBillOf } from '../utils/billMatcher';
 import { resettleBillPayment, settleBillPayment, undoBillPayment } from '../utils/captureActions';
 import { getCurrentYear, todayISO } from '../utils/dateUtils';
+import { localizeDefaultCategories } from '../utils/defaultCategoryNames';
 import { usePeriod } from './PeriodContext';
 
 export interface CategoryTotal {
@@ -73,8 +76,13 @@ interface TransactionsContextType {
 	};
 
 	// Transaction Actions
-	addNewTransaction: (transaction: TransactionDraft) => Promise<string>;
-	updateExistingTransaction: (transaction: TransactionEdit) => Promise<void>;
+	/**
+	 * Devolve o id e a conta a pagar que o lançamento quitou (SPD-153): o mês quitado é o mais
+	 * antigo em aberto, que pode não ser o do lançamento, e a tela avisa qual foi.
+	 */
+	addNewTransaction: (transaction: TransactionDraft) => Promise<{ id: string; settledBill: SettledBill | null }>;
+	/** Devolve a conta a pagar que a edição quitou, ou `null` (SPD-153). */
+	updateExistingTransaction: (transaction: TransactionEdit) => Promise<SettledBill | null>;
 	removeTransaction: (id: string) => Promise<void>;
 	/** Todas as parcelas de uma compra parcelada, de uma vez. */
 	removeInstallmentGroup: (installmentGroup: string) => Promise<void>;
@@ -83,7 +91,8 @@ interface TransactionsContextType {
 	// Category Management Actions
 	addCategory: (category: CategoryDraft) => Promise<string>;
 	updateCategory: (category: CategoryEdit) => Promise<void>;
-	deleteCategory: (categoryId: string) => Promise<void>;
+	/** Com `moveToCategoryId`, os lançamentos da categoria vão para ela antes de apagar. */
+	deleteCategory: (categoryId: string, moveToCategoryId?: string) => Promise<void>;
 }
 
 const EMPTY_SUMMARY: PeriodSummary = { incomeCents: 0, expenseCents: 0, passThroughCents: 0, netCents: 0 };
@@ -113,6 +122,9 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		const initialize = async () => {
 			try {
 				await initDatabase();
+				// As padrão no idioma do app antes da primeira leitura (SPD-088): nascem em
+				// inglês, aqui e no servidor. O sync sobe o que trocou quando a fila começar.
+				await localizeDefaultCategories();
 				setIsReady(true);
 				await loadAllData();
 			} catch (error) {
@@ -197,8 +209,9 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 			const id = await addTransaction(transaction);
 			// A despesa à vista pode ser o pagamento de uma conta a pagar (REM-04). A baixa
 			// não falha: um erro nela fica no log e o lançamento continua gravado.
+			let settledBill: SettledBill | null = null;
 			if (!transaction.isIncome && !(transaction.installmentCount && transaction.installmentCount > 1)) {
-				await settleBillPayment({
+				const match = await settleBillPayment({
 					id,
 					amountCents: transaction.amountCents,
 					date: transaction.date,
@@ -206,10 +219,11 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 					text: transaction.note,
 					isExpense: true,
 				});
+				settledBill = settledBillOf(match);
 			}
 			await refreshData();
 			syncQueue.schedule();
-			return id;
+			return { id, settledBill };
 		} catch (error) {
 			console.error('Error adding transaction:', error);
 			Alert.alert('Error', 'Failed to add transaction. Please try again.');
@@ -226,6 +240,7 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 			// nem antes nem depois — a edição não muda as colunas de parcela. A baixa não
 			// falha: um erro nela fica no log e a edição continua gravada.
 			const installmentCount = before?.installmentCount ?? transaction.installmentCount ?? null;
+			let settledBill: SettledBill | null = null;
 			if (!(installmentCount && installmentCount > 1)) {
 				// `accountId` indefinido na edição preserva o gravado (`updateTransaction`).
 				const accountId =
@@ -241,13 +256,16 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 					text: tx.note,
 					isExpense: !tx.isIncome,
 				});
-				await resettleBillPayment(
-					before ? movementOf(before, before.accountId) : null,
-					movementOf(transaction, accountId)
+				settledBill = settledBillOf(
+					await resettleBillPayment(
+						before ? movementOf(before, before.accountId) : null,
+						movementOf(transaction, accountId)
+					)
 				);
 			}
 			await refreshData();
 			syncQueue.schedule();
+			return settledBill;
 		} catch (error) {
 			console.error('Error updating transaction:', error);
 			Alert.alert('Error', 'Failed to update transaction. Please try again.');
@@ -305,15 +323,33 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		}
 	};
 
-	const deleteCategory = async (categoryId: string): Promise<void> => {
+	/**
+	 * Apaga a categoria. Com destino, os lançamentos dela vão para o destino **antes**: sem
+	 * isso, o banco os jogava em "uncategorized" e a compra perdia o nome que vinha da
+	 * categoria. Mover um a um com `updateTransaction` deixa cada lançamento sujo para o
+	 * sync, como uma edição; se um falhar, a categoria não é apagada e nada se perde — os
+	 * já movidos ficam no destino, os outros continuam nela.
+	 *
+	 * As recorrências não são movidas aqui: o banco as põe em "uncategorized", como antes.
+	 * Quem avisa do erro é a tela, no idioma do app.
+	 */
+	const deleteCategory = async (categoryId: string, moveToCategoryId?: string): Promise<void> => {
 		try {
+			if (moveToCategoryId && moveToCategoryId !== categoryId) {
+				// Relidos do banco, não do estado: o lançamento inteiro é regravado.
+				for (const transaction of await getTransactionsByCategory(categoryId)) {
+					await updateTransaction({ ...transaction, category: moveToCategoryId });
+				}
+			}
 			await dbDeleteCategory(categoryId);
 			syncQueue.schedule();
-			// Transactions were reassigned to "uncategorized", so totals change too.
+			// Transactions were moved or reassigned to "uncategorized", so totals change too.
 			await refreshData();
 		} catch (error) {
 			console.error('Error deleting category:', error);
-			Alert.alert('Error', 'Failed to delete category. Please try again.');
+			// O que já foi movido precisa subir e aparecer, mesmo com a categoria ainda lá.
+			syncQueue.schedule();
+			await refreshData();
 			throw error;
 		}
 	};
@@ -339,8 +375,28 @@ export const TransactionsProvider: React.FC<{ children: React.ReactNode }> = ({ 
 		deleteCategory,
 	};
 
-	// O que o sync baixou da conta só aparece se a tela reler o banco.
-	useAfterPull(refreshData);
+	// O que o sync baixou da conta só aparece se a tela reler o banco. Antes, as padrão que
+	// vieram da conta no inglês da semente (o servidor cria as da conta assim) vão para o
+	// idioma do app — a regra que evita dois aparelhos renomeando uma contra o outro está em
+	// `utils/defaultCategoryNames.ts`.
+	useAfterPull(async () => {
+		if ((await localizeDefaultCategories()) > 0) syncQueue.schedule();
+		await refreshData();
+	});
+
+	// Trocar o idioma (em Ajustes, ou chegado pelo sync) leva as padrão junto.
+	useEffect(() => {
+		if (!isReady) return;
+		const onLanguageChanged = () => {
+			void localizeDefaultCategories().then(async (renamed) => {
+				if (renamed === 0) return;
+				syncQueue.schedule();
+				setCategories(await getCategories());
+			});
+		};
+		i18next.on('languageChanged', onLanguageChanged);
+		return () => i18next.off('languageChanged', onLanguageChanged);
+	}, [isReady]);
 
 	return <TransactionsContext.Provider value={value}>{children}</TransactionsContext.Provider>;
 };

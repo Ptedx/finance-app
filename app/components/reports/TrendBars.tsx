@@ -2,10 +2,12 @@ import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { usePeriod } from '../../contexts/PeriodContext';
+import { capitalizeFirst } from '../../utils/capitalize';
 import { monthKeyName } from '../../utils/dateUtils';
 import { formatCents } from '../../utils/money';
 import type { ProvisionalPart } from '../../utils/monthOverview';
 import type { MonthPoint } from '../../utils/reportSeries';
+import HelpButton from '../tour/HelpButton';
 import { ACCENT, EXPENSE_COLOR, INCOME_COLOR, reportStyles } from './reportStyles';
 
 const BAR_MAX_HEIGHT = 110;
@@ -32,9 +34,12 @@ const TrendBars: React.FC<{ series: MonthPoint[]; provisional?: ProvisionalPart 
 
 	return (
 		<View style={reportStyles.card}>
-			<Text style={reportStyles.sectionTitle} accessibilityRole="header">
-				{t('reports.trend.title')}
-			</Text>
+			<View style={reportStyles.sectionHeader}>
+				<Text style={reportStyles.sectionTitle} accessibilityRole="header">
+					{t('reports.trend.title')}
+				</Text>
+				<HelpButton trail="freedom" here={{ screen: 'reports' }} from="7" />
+			</View>
 			<Text style={reportStyles.sectionSubtitle}>{t('reports.trend.subtitle')}</Text>
 
 			{series.length === 0 ? (
@@ -92,7 +97,7 @@ const TrendBars: React.FC<{ series: MonthPoint[]; provisional?: ProvisionalPart 
 								.filter(Boolean)
 								.join('. ')}
 						>
-							<Text style={styles.selectedMonth}>{`${monthKeyName(selected.month)} ${selected.month.slice(0, 4)}`}</Text>
+							<Text style={styles.selectedMonth}>{capitalizeFirst(`${monthKeyName(selected.month)} ${selected.month.slice(0, 4)}`)}</Text>
 							<View style={styles.selectedValues}>
 								<Text style={[styles.selectedValue, { color: INCOME_COLOR }]}>{formatCents(selected.overview.incomeCents)}</Text>
 								<Text style={[styles.selectedValue, { color: EXPENSE_COLOR }]}>{formatCents(selected.overview.totalSpendCents)}</Text>
@@ -175,7 +180,6 @@ const styles = StyleSheet.create({
 	selectedMonth: {
 		fontSize: 13,
 		color: 'rgba(255, 255, 255, 0.7)',
-		textTransform: 'capitalize',
 		marginBottom: 4,
 	},
 	selectedValues: {

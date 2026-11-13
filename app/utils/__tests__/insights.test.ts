@@ -1,10 +1,12 @@
 import { buildHealthIndicators, type HealthInput } from '../healthScore';
 import {
+	buildCategoryJumpInsights,
 	buildDebtInsights,
 	buildFixedCostInsights,
 	buildGoalInsights,
 	buildInsights,
 	buildSavingsRateInsights,
+	CATEGORY_INSIGHT_IDS,
 	computeWealthMetrics,
 	FIXED_COST_INSIGHT_IDS,
 	type Insight,
@@ -12,7 +14,8 @@ import {
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthSnapshot,
 } from '../insights';
-import { fixedCostShare } from '../metrics';
+import { categoryDeltas, fixedCostShare } from '../metrics';
+import { configureMoney } from '../money';
 import { buildMonthOverview } from '../monthOverview';
 import { buildRetirementReadModel, type RetirementInput } from '../retirement';
 
@@ -21,9 +24,9 @@ const snapshotOf = (overrides: Partial<WealthSnapshot> = {}): WealthSnapshot => 
 	periodTotals: { incomeCents: 10_000_00, expenseCents: 7_000_00 },
 	previousPeriodTotals: { incomeCents: 10_000_00, expenseCents: 7_500_00 },
 	liquidCents: 30_000_00,
-	recurring: [
-		{ recurrenceType: 'monthly', day: 5, amountCents: 3_000_00, isIncome: false, active: true },
-	],
+	// O custo fixo de R$ 3.000 vem de uma conta a pagar: as recorrências antigas não contam
+	// mais (SPD-122).
+	bills: [{ amountCents: 3_000_00, active: true, debtId: null }],
 	expenseTotalsByNature: { essentialCents: 4_000_00, discretionaryCents: 3_000_00 },
 	categoryTotals: [{ categoryId: 'food', totalCents: 1_000_00 }],
 	previousCategoryTotals: [{ categoryId: 'food', totalCents: 900_00 }],
@@ -56,14 +59,30 @@ describe('computeWealthMetrics', () => {
 		expect(metrics.savingsRateDeltaBasisPoints).toBeNull();
 	});
 
-	// Sem recorrência cadastrada não existe custo fixo, e sem custo fixo o fôlego é uma
+	// Sem conta a pagar nem parcela não existe custo fixo, e sem custo fixo o fôlego é uma
 	// divisão por zero — `null` em vez de "infinitos meses de reserva".
-	it('has no runway to report without recurring expenses', () => {
-		const metrics = computeWealthMetrics(snapshotOf({ recurring: [] }));
+	it('has no runway to report without fixed costs', () => {
+		const metrics = computeWealthMetrics(snapshotOf({ bills: [] }));
 
 		expect(metrics.monthlyFixedCents).toBe(0);
 		expect(metrics.runwayMonths).toBeNull();
 		expect(metrics.fixedCostBasisPoints).toBe(0);
+	});
+
+	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
+	// nas parcelas, e o fôlego que só olhava as recorrências dizia que não havia custo fixo.
+	it('E2E-24 — o custo fixo e o fôlego contam as contas a pagar e as parcelas das dívidas', () => {
+		const metrics = computeWealthMetrics(
+			snapshotOf({ bills: [{ amountCents: 1_000_00, active: true, debtId: null }], debtInstallmentsCents: 1_500_00, liquidCents: 30_000_00 })
+		);
+
+		expect(metrics.monthlyFixedCents).toBe(2_500_00);
+		expect(metrics.runwayMonths).toBe(12);
+		expect(metrics.fixedCostBasisPoints).toBe(2_500);
+		// A conta ligada à dívida entra pela parcela, não duas vezes.
+		expect(
+			computeWealthMetrics(snapshotOf({ bills: [{ amountCents: 1_500_00, active: true, debtId: 'car' }], debtInstallmentsCents: 1_500_00 })).monthlyFixedCents
+		).toBe(1_500_00);
 	});
 });
 
@@ -191,7 +210,7 @@ describe('o custo fixo tem uma base só', () => {
 			computeWealthMetrics(
 				snapshotOf({
 					periodTotals: { incomeCents: 100_000, expenseCents: 50_000 },
-					recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: fixed, isIncome: false, active: true }],
+					bills: [{ amountCents: fixed, active: true, debtId: null }],
 				})
 			)
 		);
@@ -214,12 +233,43 @@ describe('o custo fixo tem uma base só', () => {
 
 	it('a frase do helper é a mesma de buildInsights, e está na lista que a tela troca', () => {
 		const insights = buildInsights(
-			computeWealthMetrics(snapshotOf({ recurring: [{ recurrenceType: 'monthly', day: 5, amountCents: 9_000_00, isIncome: false, active: true }] }))
+			computeWealthMetrics(snapshotOf({ bills: [{ amountCents: 9_000_00, active: true, debtId: null }] }))
 		);
 		const fromHelper = buildFixedCostInsights({ monthlyFixedCents: 9_000_00, basisPoints: 9_000 });
 		expect(fromHelper).toHaveLength(1);
 		expect(insights.find((i) => i.id === 'fixed-cost-heavy')).toEqual(fromHelper[0]);
 		for (const id of idsOf(fromHelper)) expect(FIXED_COST_INSIGHT_IDS).toContain(id);
+	});
+});
+
+// A categoria que saltou também é refeita na tela de Relatórios, sobre as categorias sem o
+// ajuste de fatura e com os encargos do cartão na linha deles (SPD-092, E2E-25).
+describe('a categoria que saltou tem uma base só', () => {
+	it('é a mesma regra do buildInsights, com o nome que a tela passa', () => {
+		const deltas = categoryDeltas([{ categoryId: 'food', totalCents: 1_500_00 }], [{ categoryId: 'food', totalCents: 1_000_00 }]);
+		const [jump] = buildCategoryJumpInsights(deltas, { food: 'Food' });
+		expect(jump).toMatchObject({ id: 'category-jump', params: { category: 'Food', percent: '50%' }, valueCents: 500_00, categoryId: 'food' });
+		expect(CATEGORY_INSIGHT_IDS).toEqual(['category-jump']);
+
+		const snapshot = snapshotOf({
+			categoryTotals: [{ categoryId: 'food', totalCents: 1_500_00 }],
+			previousCategoryTotals: [{ categoryId: 'food', totalCents: 1_000_00 }],
+		});
+		const fromWealth = buildInsights(computeWealthMetrics(snapshot), snapshot).find((insight) => insight.id === 'category-jump');
+		expect(fromWealth).toEqual(jump);
+	});
+
+	it('o ajuste de R$ 2.000 que sai das categorias não vira "Other Expense saltou"', () => {
+		// Outubro: R$ 100 em Other Expense. Novembro: R$ 100 de compra + R$ 2.000 de ajuste.
+		const withAdjustment = categoryDeltas([{ categoryId: 'other_expense', totalCents: 2_100_00 }], [{ categoryId: 'other_expense', totalCents: 100_00 }]);
+		expect(buildCategoryJumpInsights(withAdjustment)).toHaveLength(1);
+		const withoutAdjustment = categoryDeltas([{ categoryId: 'other_expense', totalCents: 100_00 }], [{ categoryId: 'other_expense', totalCents: 100_00 }]);
+		expect(buildCategoryJumpInsights(withoutAdjustment)).toEqual([]);
+	});
+
+	it('sem nome, fica o id', () => {
+		const deltas = categoryDeltas([{ categoryId: 'food', totalCents: 1_500_00 }], [{ categoryId: 'food', totalCents: 1_000_00 }]);
+		expect(buildCategoryJumpInsights(deltas)[0].params.category).toBe('food');
 	});
 });
 
@@ -284,9 +334,7 @@ describe('buildInsights', () => {
 
 	it('warns when fixed costs already eat half the income', () => {
 		const insights = insightsOf({
-			recurring: [
-				{ recurrenceType: 'monthly', day: 5, amountCents: 6_000_00, isIncome: false, active: true },
-			],
+			bills: [{ amountCents: 6_000_00, active: true, debtId: null }],
 		});
 
 		const heavy = insights.find((i) => i.id === 'fixed-cost-heavy');
@@ -297,6 +345,17 @@ describe('buildInsights', () => {
 	it('treats a thin runway as critical and a solid one as good news', () => {
 		expect(idsOf(insightsOf({ liquidCents: 5_000_00 }))).toContain('runway-thin');
 		expect(idsOf(insightsOf({ liquidCents: 100_000_00 }))).toContain('runway-solid');
+	});
+
+	it('E2E-29 — os meses de fôlego saem no separador do idioma: 1,7 em português', () => {
+		try {
+			configureMoney({ locale: 'pt-BR', currencyCode: 'BRL', currencySymbol: 'R$' });
+			expect(insightsOf({ liquidCents: 5_000_00 }).find((i) => i.id === 'runway-thin')?.params.months).toBe('1,7');
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+			expect(insightsOf({ liquidCents: 5_000_00 }).find((i) => i.id === 'runway-thin')?.params.months).toBe('1.7');
+		} finally {
+			configureMoney({ locale: 'en-US', currencyCode: 'USD', currencySymbol: '$' });
+		}
 	});
 
 	// Enquanto nada está classificado tudo cai em "desejos", e comparar isso com a

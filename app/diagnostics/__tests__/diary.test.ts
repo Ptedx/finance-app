@@ -119,6 +119,7 @@ import * as Sharing from 'expo-sharing';
 import { STORAGE_KEYS } from '../../utils/storageUtils';
 import { DIAGNOSTIC_LIMITS, type DiagnosticEvent } from '../contract';
 import {
+	clearDiary,
 	DIARY_DIRECTORY,
 	DIARY_LIMITS,
 	flushDiary,
@@ -452,6 +453,57 @@ describe('instante do último envio (SPD-016)', () => {
 		logEvent('app', 'a');
 		await writeUploadStamp(1_761_300_000_000);
 		expect((await readEvents()).map((event) => event.event)).toEqual(['a']);
+	});
+});
+
+describe('apagar o diário ("Apagar todos os dados", SPD-082)', () => {
+	it('some tudo: os arquivos, a fila na memória, a marca do que subiu e o instante do último envio', async () => {
+		logEvent('app', 'gravado');
+		await flushDiary();
+		const [first] = await readEvents();
+		await markUploaded(first.id);
+		await writeUploadStamp(1_761_300_000_000);
+		logEvent('app', 'ainda na fila');
+
+		await clearDiary();
+
+		expect(
+			[...mockFs.files.keys()].filter((path) => path.includes(`/${DIARY_DIRECTORY}/`))
+		).toEqual([]);
+		expect(pendingInQueue()).toBe(0);
+		expect(await readEvents()).toEqual([]);
+		expect(await readUploadStamp()).toBeNull();
+	});
+
+	it('o id da instalação fica: o aparelho continua sendo o mesmo', async () => {
+		const before = await getInstallId();
+
+		await clearDiary();
+		resetDiaryForTests();
+
+		expect(await getInstallId()).toBe(before);
+	});
+
+	it('depois de apagar, o diário recomeça do zero e só tem o que veio depois', async () => {
+		logEvent('app', 'antes');
+		await flushDiary();
+
+		await clearDiary();
+		logEvent('app', 'depois');
+
+		expect((await readEvents()).map((event) => event.event)).toEqual(['depois']);
+		expect((await readEvents({ pendingOnly: true })).map((event) => event.event)).toEqual([
+			'depois',
+		]);
+	});
+
+	it('sem diário ainda, ou com o disco falhando: não lança', async () => {
+		await expect(clearDiary()).resolves.toBeUndefined();
+
+		logEvent('app', 'a');
+		await flushDiary();
+		mockFs.failWrites = true;
+		await expect(clearDiary()).resolves.toBeUndefined();
 	});
 });
 

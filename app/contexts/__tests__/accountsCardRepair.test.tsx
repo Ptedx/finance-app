@@ -28,7 +28,7 @@ const mockStore: {
 };
 
 jest.mock('../../database/database', () => ({
-	db: { withTransactionAsync: jest.fn(async (fn: () => Promise<void>) => fn()) },
+	runInTransaction: jest.fn(async (fn: () => Promise<void>) => fn()),
 	getAccounts: jest.fn(async () => mockStore.accounts.map((account) => ({ ...account }))),
 	getAccount: jest.fn(async (id: string) => {
 		const found = mockStore.accounts.find((account) => account.id === id);
@@ -44,7 +44,11 @@ jest.mock('../../database/database', () => ({
 		for (const tx of mockStore.transactions) if (tx.accountId === fromId) tx.accountId = toId;
 	}),
 	repointTransfers: jest.fn(async () => undefined),
-	deleteAccount: jest.fn(async (id: string) => {
+	mergeCardInto: jest.fn(async () => undefined),
+	setAccountCardNames: jest.fn(async () => undefined),
+	deleteTransfersOf: jest.fn(async () => undefined),
+	// Juntar e levar para o débito apagam a ficha que sai sem a guarda de conta vazia (SPD-144).
+	retireMergedAccount: jest.fn(async (id: string) => {
 		mockStore.accounts = mockStore.accounts.filter((account) => account.id !== id);
 	}),
 	getAccountBalances: jest.fn(async () => new Map()),
@@ -123,7 +127,14 @@ jest.mock('../PeriodContext', () => ({ usePeriod: () => mockPeriod }));
 
 import { act, create } from 'react-test-renderer';
 import { getAllCaptures } from '../../database/captures';
-import { foldAccountBalance, moveAccountLedger, reassignCaptureLedger } from '../../database/database';
+import {
+	foldAccountBalance,
+	mergeCardInto,
+	moveAccountLedger,
+	reassignCaptureLedger,
+	retireMergedAccount,
+} from '../../database/database';
+import { onBillsChanged } from '../../utils/billEvents';
 import { AccountsProvider, useAccounts } from '../AccountsContext';
 
 const NUBANK = 'com.nu.production';
@@ -200,7 +211,11 @@ const posted = (overrides: Partial<Transaction>): Transaction => ({
 	...overrides,
 });
 
-/** O cartão como a tela de cartão manda: banco escolhido, sem app ligado. */
+/**
+ * O cartão como a tela de cartão manda: banco escolhido, sem app ligado. Com o final das
+ * compras: um final que não é dele, com a conta do Nubank no app, hoje seria perguntado, e o
+ * conserto não o chuta para o cartão (SPD-132).
+ */
 const cardDraft = (overrides: Partial<AccountDraft> = {}): AccountDraft => {
 	const {
 		id: _id,
@@ -211,7 +226,7 @@ const cardDraft = (overrides: Partial<AccountDraft> = {}): AccountDraft => {
 		kind: 'credit_card',
 		role: 'card',
 		bankName: 'Nubank',
-		last4: '1534',
+		last4: '6422',
 		closingDay: 25,
 		closingDaysBefore: 7,
 		openingBalanceDate: '2026-09-30',
@@ -274,6 +289,19 @@ describe('AccountsContext — criar ou editar cartão conserta o livro', () => {
 		expect(api().cardLedgerRepair).toBeNull();
 	});
 
+	// SPD-132: "Compra aprovada" com um final que não é do cartão, e a conta do Nubank no app,
+	// é o virtual do Nubank ou um débito: um aviso igual hoje vai para a revisão.
+	it('criar o cartão com outro final não puxa a compra que hoje seria perguntada', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().createAccount(cardDraft({ last4: '1534' }));
+		});
+		expect(captureById('c')?.accountId).toBe('nu-pf');
+		expect(txById('tx-c')?.accountId).toBe('nu-pf');
+		expect(reassignCaptureLedger).not.toHaveBeenCalled();
+		expect(api().cardLedgerRepair).toBeNull();
+	});
+
 	it('criar uma conta (não cartão) não mexe em compra nenhuma', async () => {
 		const api = await mount();
 		await act(async () => {
@@ -317,6 +345,7 @@ describe('AccountsContext — criar ou editar cartão conserta o livro', () => {
 				kind: 'credit_card',
 				role: 'card',
 				bankName: 'Inter',
+				last4: '6422',
 				closingDay: 5,
 			})
 		);
@@ -386,5 +415,68 @@ describe('AccountsContext — juntar contas (SPD-073)', () => {
 		expect(kept?.openingBalanceDate).toBe('2026-09-01');
 		expect(mockStore.accounts.some((item) => item.id === 'inter-pf')).toBe(false);
 		expect(txById('tx-inter')?.accountId).toBe('inter');
+	});
+});
+
+/*
+ * Juntar leva as contas a pagar e as dívidas da conta que sai (SPD-099). As listas delas
+ * moram em outros providers, abaixo deste: sem o aviso, a conta a pagar e a dívida em
+ * memória continuavam na conta apagada, e a próxima gravação a partir delas a devolvia.
+ */
+describe('AccountsContext — juntar avisa contas a pagar e dívidas (SPD-099)', () => {
+	let changed: jest.Mock;
+	let unsubscribe: () => void;
+
+	beforeEach(() => {
+		changed = jest.fn();
+		unsubscribe = onBillsChanged(changed);
+		mockStore.accounts.push(
+			account({ id: 'inter', name: 'Inter', bankName: 'Inter' }),
+			account({ id: 'inter-pf', name: 'Inter PF', bankName: 'Inter' }),
+			account({ id: 'cartao', name: 'Inter débito', bankName: 'Inter', kind: 'credit_card', role: 'card', last4: '4321' })
+		);
+	});
+
+	afterEach(() => unsubscribe());
+
+	/** O aviso tem que vir depois da gravação: antes, quem recarrega leria o banco de antes. */
+	const expectNoticeAfter = (write: jest.Mock) => {
+		expect(changed).toHaveBeenCalledTimes(1);
+		const writes = write.mock.invocationCallOrder;
+		expect(changed.mock.invocationCallOrder[0]).toBeGreaterThan(writes[writes.length - 1]);
+	};
+
+	it('juntar contas avisa depois de mover e apagar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().mergeAccounts('inter-pf', 'inter');
+		});
+		expect(moveAccountLedger).toHaveBeenCalledWith('inter-pf', 'inter', null);
+		expectNoticeAfter(retireMergedAccount as jest.Mock);
+	});
+
+	it('juntar cartões avisa depois de juntar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().mergeCards('cartao', 'inter');
+		});
+		expectNoticeAfter(mergeCardInto as jest.Mock);
+	});
+
+	it('o cartão de débito que vira a conta avisa depois de mover e apagar', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().convertCardToDebit('cartao', 'inter');
+		});
+		expect(moveAccountLedger).toHaveBeenCalledWith('cartao', 'inter', '4321');
+		expectNoticeAfter(retireMergedAccount as jest.Mock);
+	});
+
+	it('só juntar avisa: criar uma conta não', async () => {
+		const api = await mount();
+		await act(async () => {
+			await api().createAccount(cardDraft({ kind: 'checking', role: 'main', last4: null }));
+		});
+		expect(changed).not.toHaveBeenCalled();
 	});
 });

@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
 	AccessibilityInfo,
 	Alert,
+	BackHandler,
 	KeyboardAvoidingView,
 	Platform,
 	Pressable,
@@ -15,7 +16,12 @@ import {
 	View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, ChipGroup, Field } from '../components/cards/formParts';
+import { accountSelectOptions } from '../components/AccountPicker';
+import { categoryChoices } from '../components/CategoryPicker';
+import { Button, Field } from '../components/cards/formParts';
+import { SelectField } from '../components/SelectField';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
+import { SampleBanner, useSampleAccount, useSampleBill } from '../components/tour/TrailSample';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -28,6 +34,7 @@ import {
 	isLockedByDebt,
 	isValidDueDay,
 } from '../utils/billRules';
+import { looksLikeCardInvoice } from '../utils/cardInvoiceBill';
 import { formatDayMonth, monthKeyOf, todayISO } from '../utils/dateUtils';
 import {
 	centsToDisplayInput,
@@ -35,6 +42,7 @@ import {
 	formatAmountInput,
 	parseAmountToCents,
 } from '../utils/money';
+import { SAMPLE_IDS } from '../utils/trailSample';
 
 /**
  * Cadastrar ou corrigir uma conta a pagar.
@@ -50,17 +58,46 @@ import {
  *
  * A conta que vem de uma dívida mostra nome, dia e valor sem deixar editar: eles seguem a
  * dívida. Enquanto a dívida estiver viva, a conta também não se desliga nem se apaga.
+ *
+ * Sair sem salvar (a seta do topo ou o voltar do Android) com algo digitado ou alterado
+ * pergunta antes, como a dica do Acertar (SPD-142): "Sair e perder o que você digitou?". Sem
+ * nada alterado sai direto; depois de salvar, não pergunta.
+ *
+ * A conta a pagar de exemplo (SPD-160): a trilha abre `/bills/edit/exemplo-conta-a-pagar` quando o
+ * usuário não tem nenhuma. A tela mostra os campos dela, com a faixa "Exemplo" e a conta de
+ * exemplo como "Conta que paga"; Salvar, Desativar e Apagar não fazem nada, e sair não pergunta.
  */
 
 const onlyDigits = (text: string, max: number) => text.replace(/\D/g, '').slice(0, max);
+
+/** O que está nos campos, para comparar com o que a tela abriu. */
+interface FormFields {
+	name: string;
+	dueDay: string;
+	amount: string;
+	accountId: string | null;
+	category: string | null;
+	matchHint: string;
+}
+
+const EMPTY_FORM: FormFields = { name: '', dueDay: '', amount: '', accountId: null, category: null, matchHint: '' };
+
+const snapshotOf = (fields: FormFields): string => JSON.stringify(fields);
 
 const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { bills, createBill, saveBill, setBillActive, removeBill } = useBills();
-	const { bankAccounts } = useAccounts();
+	const { accounts, bankAccounts } = useAccounts();
 	const { categories } = useTransactions();
-	const existing = useMemo(() => bills.find((bill) => bill.id === billId), [bills, billId]);
+	const sample = useSampleBill(billId);
+	const sampleAccount = useSampleAccount(sample ? SAMPLE_IDS.account : undefined);
+	const existing = useMemo(
+		() => sample ?? bills.find((bill) => bill.id === billId),
+		[sample, bills, billId]
+	);
+	// "Conta que paga": no exemplo, só a conta de exemplo, que nenhuma lista de verdade tem.
+	const payingAccounts = sampleAccount ? [sampleAccount] : bankAccounts;
 	const fromDebt = Boolean(existing?.debtId);
 	const locked = existing ? isLockedByDebt(existing) : false;
 
@@ -72,19 +109,83 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const [matchHint, setMatchHint] = useState('');
 	const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 	const [saving, setSaving] = useState(false);
+	// A trilha das contas a pagar (SPD-131c) mostra os campos daqui, sem digitar nem salvar nada.
+	// A conta gravada fica pronta quando carrega.
+	useScreenTour('billEdit', { ready: !billId || Boolean(existing) });
+	const tourScroll = useTourScroll('billEdit');
+
+	// O que os campos tinham ao abrir: vazio na conta nova; na gravada, quando ela carrega (até
+	// lá, `null`, e sair não pergunta).
+	const openedWith = useRef<string | null>(billId ? null : snapshotOf(EMPTY_FORM));
+	// Salvo: sair (a tela fechando) não pergunta mais.
+	const saved = useRef(false);
 
 	// Os campos abrem uma vez com a conta gravada; uma recarga depois não apaga o que se digitou.
 	const loadedId = useRef<string | null>(null);
 	useEffect(() => {
 		if (!existing || loadedId.current === existing.id) return;
 		loadedId.current = existing.id;
-		setName(existing.name);
-		setDueDay(String(existing.dueDay));
-		setAmount(existing.amountCents === null ? '' : centsToDisplayInput(existing.amountCents));
-		setAccountId(existing.accountId);
-		setCategory(existing.category);
-		setMatchHint(existing.matchHint ?? '');
+		const loaded: FormFields = {
+			name: existing.name,
+			dueDay: String(existing.dueDay),
+			amount: existing.amountCents === null ? '' : centsToDisplayInput(existing.amountCents),
+			accountId: existing.accountId,
+			category: existing.category,
+			matchHint: existing.matchHint ?? '',
+		};
+		openedWith.current = snapshotOf(loaded);
+		setName(loaded.name);
+		setDueDay(loaded.dueDay);
+		setAmount(loaded.amount);
+		setAccountId(loaded.accountId);
+		setCategory(loaded.category);
+		setMatchHint(loaded.matchHint);
 	}, [existing]);
+
+	const changed =
+		!sample &&
+		openedWith.current !== null &&
+		snapshotOf({ name, dueDay, amount, accountId, category, matchHint }) !== openedWith.current;
+
+	/** Volta; com algo alterado e não salvo, pergunta antes. */
+	const leave = () => {
+		if (!changed || saved.current) {
+			router.back();
+			return;
+		}
+		Alert.alert(
+			t('tutorial.tip.leaveTitle'),
+			t('tutorial.tip.leaveBody'),
+			[
+				{ text: t('tutorial.tip.stay'), style: 'cancel' },
+				{ text: t('tutorial.tip.leave'), style: 'destructive', onPress: () => router.back() },
+			],
+			{ cancelable: true }
+		);
+	};
+
+	// O voltar do Android, só com a tela em foco (com a dívida aberta por cima, não é com ela).
+	// Sem nada alterado, deixa a navegação voltar sozinha.
+	const backRef = useRef({ changed, leave });
+	backRef.current = { changed, leave };
+	useFocusEffect(
+		useCallback(() => {
+			const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+				if (!backRef.current.changed || saved.current) return false;
+				backRef.current.leave();
+				return true;
+			});
+			return () => subscription.remove();
+		}, [])
+	);
+
+	// A fatura do cartão cadastrada aqui conta em dobro (SPD-137): as compras parceladas do cartão
+	// já entram no custo fixo e o app já avisa o vencimento da fatura. Avisa perto do nome, sem impedir.
+	const cards = useMemo(
+		() => accounts.filter((account) => account.kind === 'credit_card' && !account.archived),
+		[accounts]
+	);
+	const looksLikeCardBill = !fromDebt && looksLikeCardInvoice(name, cards);
 
 	const expenseCategories = useMemo(
 		() => categories.filter((item) => item.type === 'expense' && item.id !== 'uncategorized'),
@@ -94,6 +195,8 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	const announce = (message: string) => AccessibilityInfo.announceForAccessibility(message);
 
 	const handleSave = async () => {
+		// O exemplo não grava nada.
+		if (sample) return;
 		const dueDayNumber = Number(dueDay);
 		const amountCents = amount.trim() === '' ? null : parseAmountToCents(amount);
 		const next: Record<string, string | undefined> = {};
@@ -123,6 +226,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 			setSaving(true);
 			try {
 				await write();
+				saved.current = true;
 				announce(t('bills.edit.saved'));
 				router.back();
 			} finally {
@@ -162,14 +266,14 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	};
 
 	const handleToggleActive = async () => {
-		if (!existing || !canToggleActive(existing)) return;
+		if (sample || !existing || !canToggleActive(existing)) return;
 		await setBillActive(existing.id, !existing.active);
 		announce(existing.active ? t('bills.edit.deactivated') : t('bills.edit.activated'));
 		router.back();
 	};
 
 	const handleDelete = () => {
-		if (!existing || !canDeleteBill(existing)) return;
+		if (sample || !existing || !canDeleteBill(existing)) return;
 		Alert.alert(t('bills.edit.deleteTitle'), t('bills.edit.deleteBody', { name: existing.name }), [
 			{ text: t('bills.edit.cancel'), style: 'cancel' },
 			{
@@ -185,13 +289,14 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
 			<Stack.Screen options={{ headerShown: false }} />
+			{/* No Android, sem `behavior` nada encolhia e o teclado cobria o salvar no fim da rolagem (SPD-121): o `height` encolhe a área, como na `Sheet`. */}
 			<KeyboardAvoidingView
 				style={styles.flex}
-				behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+				behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 			>
 				<View style={styles.header}>
 					<Pressable
-						onPress={() => router.back()}
+						onPress={leave}
 						accessibilityRole="button"
 						accessibilityLabel={t('bills.back')}
 						style={styles.iconButton}
@@ -203,7 +308,8 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					</Text>
 				</View>
 
-				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+				{sample ? <SampleBanner /> : null}
+				<ScrollView ref={tourScroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					{existing && fromDebt ? (
 						<View style={styles.note} accessible>
 							<Ionicons name="information-circle-outline" size={20} color="#15E8FE" />
@@ -225,77 +331,91 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 						/>
 					) : null}
 
-					<Field
-						label={t('bills.edit.name')}
-						value={name}
-						onChangeText={setName}
-						editable={!fromDebt}
-						placeholder={t('bills.edit.namePlaceholder')}
-						placeholderTextColor="rgba(255,255,255,0.35)"
-						error={errors.name}
-					/>
-
-					<Field
-						label={t('bills.edit.dueDay')}
-						hint={t('bills.edit.dueDayHint')}
-						value={dueDay}
-						onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
-						editable={!fromDebt}
-						keyboardType="number-pad"
-						maxLength={2}
-						error={errors.dueDay}
-					/>
-
-					<Field
-						label={t('bills.edit.amount')}
-						optionalLabel={fromDebt ? undefined : t('bills.edit.optional')}
-						hint={fromDebt ? undefined : t('bills.edit.amountHint')}
-						value={fromDebt && amount === '' ? t('bills.variable') : amount}
-						onChangeText={(text) => setAmount(formatAmountInput(text))}
-						onBlur={() => setAmount(amount.trim() === '' ? '' : finaliseAmountInput(amount))}
-						editable={!fromDebt}
-						keyboardType="decimal-pad"
-						selectTextOnFocus
-						error={errors.amount}
-					/>
-
-					{bankAccounts.length > 0 && !fromDebt ? (
-						<ChipGroup<string>
-							label={`${t('bills.edit.account')} · ${t('bills.edit.optional')}`}
-							hint={t('bills.edit.accountHint')}
-							options={bankAccounts.map((account) => ({
-								value: account.id,
-								label: account.name,
-								color: account.color,
-							}))}
-							selected={accountId}
-							onSelect={(value) => setAccountId(value === accountId ? null : value)}
+					<TourTarget id="billEdit.name">
+						<Field
+							label={t('bills.edit.name')}
+							value={name}
+							onChangeText={setName}
+							editable={!fromDebt}
+							placeholder={t('bills.edit.namePlaceholder')}
+							placeholderTextColor="rgba(255,255,255,0.35)"
+							error={errors.name}
 						/>
+					</TourTarget>
+					{looksLikeCardBill ? (
+						<View style={[styles.note, styles.warning]} accessible accessibilityLiveRegion="polite">
+							<Ionicons name="card-outline" size={20} color="#FFD166" />
+							<Text style={styles.noteText}>{t('bills.edit.cardInvoiceWarning')}</Text>
+						</View>
+					) : null}
+
+					<TourTarget id="billEdit.dueDay">
+						<Field
+							label={t('bills.edit.dueDay')}
+							hint={t('bills.edit.dueDayHint')}
+							value={dueDay}
+							onChangeText={(text) => setDueDay(onlyDigits(text, 2))}
+							editable={!fromDebt}
+							keyboardType="number-pad"
+							maxLength={2}
+							error={errors.dueDay}
+						/>
+					</TourTarget>
+
+					<TourTarget id="billEdit.amount">
+						<Field
+							label={t('bills.edit.amount')}
+							optionalLabel={fromDebt ? undefined : t('bills.edit.optional')}
+							hint={fromDebt ? undefined : t('bills.edit.amountHint')}
+							value={fromDebt && amount === '' ? t('bills.variable') : amount}
+							onChangeText={(text) => setAmount(formatAmountInput(text))}
+							onBlur={() => setAmount(amount.trim() === '' ? '' : finaliseAmountInput(amount))}
+							editable={!fromDebt}
+							keyboardType="decimal-pad"
+							selectTextOnFocus
+							error={errors.amount}
+						/>
+					</TourTarget>
+
+					{payingAccounts.length > 0 && !fromDebt ? (
+						<TourTarget id="billEdit.account">
+							<SelectField
+								label={t('bills.edit.account')}
+								optionalLabel={t('bills.edit.optional')}
+								options={accountSelectOptions(payingAccounts)}
+								selected={accountId}
+								onSelect={setAccountId}
+								clearLabel={t('select.none')}
+								onClear={() => setAccountId(null)}
+							/>
+						</TourTarget>
 					) : null}
 
 					{expenseCategories.length > 0 ? (
-						<ChipGroup<string>
-							label={`${t('bills.edit.category')} · ${t('bills.edit.optional')}`}
-							hint={t('bills.edit.accountHint')}
-							options={expenseCategories.map((item) => ({
-								value: item.id,
-								label: item.name,
-								color: item.color,
-							}))}
-							selected={category}
-							onSelect={(value) => setCategory(value === category ? null : value)}
-						/>
+						<TourTarget id="billEdit.category">
+							<SelectField
+								label={t('bills.edit.category')}
+								optionalLabel={t('bills.edit.optional')}
+								options={categoryChoices(expenseCategories, false).options}
+								selected={category}
+								onSelect={setCategory}
+								clearLabel={t('select.none')}
+								onClear={() => setCategory(null)}
+							/>
+						</TourTarget>
 					) : null}
 
-					<Field
-						label={t('bills.edit.matchHint')}
-						optionalLabel={t('bills.edit.optional')}
-						hint={t('bills.edit.matchHintHint')}
-						value={matchHint}
-						onChangeText={setMatchHint}
-						autoCapitalize="none"
-						autoCorrect={false}
-					/>
+					<TourTarget id="billEdit.match">
+						<Field
+							label={t('bills.edit.matchHint')}
+							optionalLabel={t('bills.edit.optional')}
+							hint={t('bills.edit.matchHintHint')}
+							value={matchHint}
+							onChangeText={setMatchHint}
+							autoCapitalize="none"
+							autoCorrect={false}
+						/>
+					</TourTarget>
 
 					<Button
 						label={t('bills.edit.save')}
@@ -305,7 +425,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 					/>
 
 					{existing && (canToggleActive(existing) || canDeleteBill(existing)) ? (
-						<View style={styles.secondary}>
+						<TourTarget id="billEdit.actions" style={styles.secondary}>
 							{canToggleActive(existing) ? (
 								<Button
 									label={existing.active ? t('bills.edit.deactivate') : t('bills.edit.activate')}
@@ -323,7 +443,7 @@ const BillEditScreen: React.FC<{ billId?: string }> = ({ billId }) => {
 									icon="trash-outline"
 								/>
 							) : null}
-						</View>
+						</TourTarget>
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>
@@ -376,6 +496,9 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		lineHeight: 20,
 		color: '#FFFFFF',
+	},
+	warning: {
+		backgroundColor: 'rgba(255,209,102,0.12)',
 	},
 	secondary: {
 		gap: 10,

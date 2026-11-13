@@ -3,8 +3,8 @@
  *
  * Não há SQLite no jest: o `expo-sqlite` é substituído por um dublê que anota cada
  * comando e cada parâmetro. É um teste de implementação, e de propósito — os três
- * defeitos que ele cobre são **comandos que faltavam**: a lápide das transferências ao
- * apagar uma conta, a contagem do que some atrás da âncora e o conserto das capturas no
+ * defeitos que ele cobre são **comandos que faltavam**: a contagem antes de apagar uma
+ * conta (SPD-144), a contagem do que some atrás da âncora e o conserto das capturas no
  * reset. A álgebra em si (saldo, âncora) é testada em `utils/accountMath`.
  */
 
@@ -51,6 +51,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import {
+	AccountInUseError,
 	applyMigrations,
 	assignUnassignedToAccount,
 	deleteAccount,
@@ -78,49 +79,58 @@ const sqlOf = (statements: Statement[]): string[] =>
 
 beforeEach(reset);
 
-describe('apagar uma conta', () => {
-	it('põe lápide nas transferências da conta, na mesma transação', async () => {
-		await deleteAccount('reserva');
+describe('apagar uma conta (SPD-144: só conta vazia)', () => {
+	it('vazia: lápide na conta e contas a pagar e dívidas sem conta, na mesma transação; lançamento e transferência não são tocados', async () => {
+		await deleteAccount('vazia');
 
 		const begin = mockStatements.findIndex((s) => s.sql === 'BEGIN');
 		const commit = mockStatements.findIndex((s) => s.sql === 'COMMIT');
 		expect(begin).toBeGreaterThanOrEqual(0);
 		expect(commit).toBeGreaterThan(begin);
 
+		// A contagem do que está ligado vem antes da lápide, dentro da mesma transação.
+		const count = mockStatements.findIndex((s) => s.sql.includes('SELECT') && s.sql.includes('FROM transfers'));
+		const account = matching('UPDATE accounts', 'deletedAt = ?');
+		expect(account).toHaveLength(1);
+		expect(count).toBeGreaterThan(begin);
+		expect(count).toBeLessThan(mockStatements.indexOf(account[0]));
+
+		for (const table of ['bills', 'debts']) {
+			const unlinked = matching(`UPDATE ${table}`, 'accountId = NULL');
+			expect(unlinked).toHaveLength(1);
+			// Sujas e com carimbo novo, para o sync levar; só as vivas.
+			expect(unlinked[0].sql).toContain('dirty = 1');
+			expect(unlinked[0].sql).toContain('deletedAt IS NULL');
+			expect(unlinked[0].params).toEqual([account[0].params[0], 'vazia']);
+			const index = mockStatements.indexOf(unlinked[0]);
+			expect(index).toBeGreaterThan(begin);
+			expect(index).toBeLessThan(commit);
+		}
+
+		expect(matching('UPDATE transactions')).toEqual([]);
+		expect(matching('UPDATE transfers')).toEqual([]);
+	});
+
+	it('com conteúdo (um lançamento): recusa com AccountInUseError e não grava nada', async () => {
+		mockFirstRow = { transactions: 1, transfers: 0, captures: 0, bills: 0, debts: 0, openingBalanceCents: 0 };
+		await expect(deleteAccount('corrente')).rejects.toBeInstanceOf(AccountInUseError);
+		expect(mockStatements.filter((s) => s.sql.trimStart().startsWith('UPDATE'))).toEqual([]);
+		expect(matching('COMMIT')).toEqual([]);
+	});
+
+	it('só com saldo de partida (a âncora de R$ 5.000): também recusa', async () => {
+		mockFirstRow = { transactions: 0, transfers: 0, captures: 0, bills: 0, debts: 0, openingBalanceCents: 500_000 };
+		await expect(deleteAccount('reserva')).rejects.toBeInstanceOf(AccountInUseError);
+		expect(matching('UPDATE accounts')).toEqual([]);
+	});
+
+	it('a conversão de cartão em conta (`deleteTransfersOf`) ainda põe lápide nas transferências dos dois lados', async () => {
+		await deleteTransfersOf('conta');
 		const transfers = matching('UPDATE transfers', 'deletedAt = ?');
 		expect(transfers).toHaveLength(1);
-
-		// Dentro da transação, não depois dela: ou a conta e as transferências somem
-		// juntas, ou nada some.
-		const index = mockStatements.indexOf(transfers[0]);
-		expect(index).toBeGreaterThan(begin);
-		expect(index).toBeLessThan(commit);
-
-		// Os dois lados: a reserva que recebeu os R$ 40.000 e a principal que os mandou.
 		expect(transfers[0].sql).toContain('fromAccountId = ? OR toAccountId = ?');
-		expect(transfers[0].params.slice(2)).toEqual(['reserva', 'reserva']);
-		// Só as vivas, para não reescrever o carimbo de uma lápide antiga.
+		expect(transfers[0].params.slice(2)).toEqual(['conta', 'conta']);
 		expect(transfers[0].sql).toContain('deletedAt IS NULL');
-
-		// Mesmo instante da lápide da conta: o sync vê uma única mudança coerente.
-		const account = matching('UPDATE accounts', 'deletedAt = ?')[0];
-		expect(transfers[0].params[0]).toBe(account.params[0]);
-	});
-
-	it('os lançamentos ficam sem conta em vez de sumir — eles são dinheiro que andou', async () => {
-		await deleteAccount('reserva');
-
-		const transactions = matching('UPDATE transactions', 'accountId = NULL');
-		expect(transactions).toHaveLength(1);
-		expect(sqlOf(matching('UPDATE transactions', 'deletedAt = ?'))).toEqual([]);
-	});
-
-	it('usa o mesmo comando da conversão de cartão (`deleteTransfersOf`)', async () => {
-		await deleteAccount('conta');
-		const fromDelete = sqlOf(matching('UPDATE transfers', 'deletedAt = ?'));
-		reset();
-		await deleteTransfersOf('conta');
-		expect(sqlOf(matching('UPDATE transfers', 'deletedAt = ?'))).toEqual(fromDelete);
 	});
 });
 
@@ -244,6 +254,8 @@ describe('apagar tudo (reset e primeiro passo da importação)', () => {
 			'reserve_goals',
 			// As contas a pagar entram no v20, junto com o resto do livro.
 			'bills',
+			// E os meses delas no v23 (SPD-146).
+			'bill_payments',
 			// A caixa de entrada entra na lista no v19, depois do conserto dos ponteiros.
 			'captures',
 		]);

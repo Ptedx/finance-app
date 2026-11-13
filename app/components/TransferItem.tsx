@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Account, Transfer } from '../database/schema';
 import { formatDate } from '../utils/dateUtils';
 import { formatCents } from '../utils/money';
@@ -14,15 +14,23 @@ import { formatCents } from '../utils/money';
  * pagar a fatura muda o saldo das contas e não muda o mês. Por isso a linha é cinza, sem
  * "+" nem "−": sem ela, uma conta com muito movimento e poucas compras parecia vazia.
  */
-const TransferItem: React.FC<{ transfer: Transfer; accountsById: Map<string, Account> }> = ({ transfer, accountsById }) => {
+const TransferItem: React.FC<{ transfer: Transfer; accountsById: Map<string, Account>; onPress?: (transfer: Transfer) => void }> = ({
+	transfer,
+	accountsById,
+	onPress,
+}) => {
 	const { t } = useTranslation();
 	const nameOf = (id: string | null) => (id ? (accountsById.get(id)?.name ?? t('transactionsList.unknownAccount')) : t('transactionsList.outside'));
 	const route = t('transactionsList.transferBetween', { from: nameOf(transfer.fromAccountId), to: nameOf(transfer.toAccountId) });
 
+	// Tocável quando a lista sabe abrir a edição (E2E-28): editar e excluir a transferência.
 	return (
-		<View
-			style={styles.container}
+		<Pressable
+			style={({ pressed }) => [styles.container, pressed && styles.pressed]}
+			onPress={onPress ? () => onPress(transfer) : undefined}
+			disabled={!onPress}
 			accessible
+			accessibilityRole={onPress ? 'button' : undefined}
 			accessibilityLabel={`${t('transactionsList.transfer')}, ${route}, ${formatCents(transfer.amountCents)}, ${formatDate(transfer.date)}`}
 		>
 			<View style={styles.icon}>
@@ -42,7 +50,7 @@ const TransferItem: React.FC<{ transfer: Transfer; accountsById: Map<string, Acc
 				<Text style={styles.amount}>{formatCents(transfer.amountCents)}</Text>
 				<Text style={styles.date}>{formatDate(transfer.date)}</Text>
 			</View>
-		</View>
+		</Pressable>
 	);
 };
 
@@ -54,6 +62,9 @@ const styles = StyleSheet.create({
 		gap: 12,
 		borderBottomWidth: 1,
 		borderBottomColor: 'rgba(255,255,255,0.06)',
+	},
+	pressed: {
+		opacity: 0.7,
 	},
 	icon: {
 		width: 36,

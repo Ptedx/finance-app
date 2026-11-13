@@ -15,11 +15,19 @@
  * vezes: ali a lápide conta como existente, e está dito caso a caso.
  */
 
-import { BLOCKED_PACKAGES, isSmsPackage } from '../utils/captureMatcher';
+import { BLOCKED_PACKAGES, isSmsPackage, STATEMENT_PACKAGE_PREFIX } from '../utils/captureMatcher';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { nowTimestamp } from '../utils/dateUtils';
+import { nextStampSql } from '../utils/syncStamp';
 import { db } from './database';
 import type { Capture, MerchantRule } from './schema';
+
+/**
+ * O `updatedAt` de uma gravação em linha que já existe: agora, ou 1 ms depois do carimbo
+ * dela (SPD-107, como o `NEXT_STAMP` de `database.ts`). Sem isso, a edição de uma captura
+ * que desceu com carimbo no futuro perdia para a cópia do servidor e voltava no pull.
+ */
+const NEXT_STAMP = nextStampSql();
 
 interface CaptureRow extends Omit<Capture, 'autoConfirmed' | 'deletedAt'> {
 	autoConfirmed: number;
@@ -181,11 +189,18 @@ export const restoreCapture = async (capture: Capture): Promise<void> => {
  * mesmo aviso de virar dinheiro duas vezes. Ignorar a lápide aqui faria o funil tentar
  * inserir sobre uma linha podada e estourar — e, se não estourasse, a compra entraria
  * duas vezes.
+ *
+ * E **com o que o "Apagar todos os dados" levou** (v22, SPD-082): a captura sai de vez e
+ * fica só a impressão digital em `seen_capture_fingerprints`. Sem consultar lá, a
+ * notificação que o Android reentregasse depois do apagar viraria compra de novo.
  */
 export const hasCaptureFingerprint = async (fingerprint: string): Promise<boolean> => {
-	const row = await db.getFirstAsync<{ id: string }>(
-		'SELECT id FROM captures WHERE fingerprint = ?',
-		[fingerprint]
+	const row = await db.getFirstAsync<{ seen: number }>(
+		`SELECT 1 AS seen FROM captures WHERE fingerprint = ?
+     UNION ALL
+     SELECT 1 AS seen FROM seen_capture_fingerprints WHERE fingerprint = ?
+     LIMIT 1`,
+		[fingerprint, fingerprint]
 	);
 	return row !== null;
 };
@@ -238,6 +253,21 @@ export const getResolvedCaptures = async (limit: number): Promise<Capture[]> => 
 	return rows.map(toCapture);
 };
 
+/**
+ * O instante da notificação mais recente, em qualquer status, ou nulo. Linha de extrato
+ * (`ofx:`) não é notificação e fica de fora. É o relógio do aviso de captura parada
+ * (SPD-112): as 60 resolvidas mais recentes não servem, porque um extrato grande as enche
+ * de linhas `ofx:` e o último aviso de verdade some da lista. O `MAX` anda pelo índice de
+ * `postedAt` (`idx_captures_posted`) do fim para o começo.
+ */
+export const getLastNotificationPostedAt = async (): Promise<string | null> => {
+	const row = await db.getFirstAsync<{ last: string | null }>(
+		'SELECT MAX(postedAt) AS last FROM captures WHERE packageName NOT LIKE ? AND deletedAt IS NULL',
+		[`${STATEMENT_PACKAGE_PREFIX}%`]
+	);
+	return row?.last ?? null;
+};
+
 export type CapturePatch = Partial<
 	Pick<
 		Capture,
@@ -251,6 +281,9 @@ export type CapturePatch = Partial<
 		| 'accountId'
 		| 'transferId'
 		| 'installments'
+		// "Entrou" ou "Saiu" na revisão (SPD-123): a direção do aviso era um palpite do parser.
+		| 'direction'
+		| 'kind'
 	>
 >;
 
@@ -266,7 +299,7 @@ export const updateCapture = async (id: string, patch: CapturePatch): Promise<vo
 
 	// Toda decisão do usuário precisa subir: sem `dirty = 1` ela ficaria só aqui, e o
 	// outro aparelho continuaria perguntando o que já foi respondido.
-	assignments.push('updatedAt = ?', 'dirty = 1');
+	assignments.push(`updatedAt = ${NEXT_STAMP}`, 'dirty = 1');
 	values.push(nowTimestamp());
 	values.push(id);
 
@@ -285,7 +318,7 @@ export const updateCapture = async (id: string, patch: CapturePatch): Promise<vo
 export const pruneResolvedCaptures = async (olderThanISO: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		`UPDATE captures SET deletedAt = ?, updatedAt = ?, dirty = 1
+		`UPDATE captures SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1
      WHERE status <> 'pending' AND updatedAt < ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, olderThanISO]
 	);
@@ -347,7 +380,7 @@ export const saveMerchantRule = async (
      VALUES (?, ?, ?, ?, ?, NULL, 1)
      ON CONFLICT (merchantKey) DO UPDATE SET
        categoryId = excluded.categoryId, treatAs = excluded.treatAs,
-       confirmations = excluded.confirmations, updatedAt = excluded.updatedAt,
+       confirmations = excluded.confirmations, updatedAt = ${nextStampSql('excluded.updatedAt')},
        deletedAt = NULL, dirty = 1`,
 		[rule.merchantKey, rule.categoryId, rule.treatAs, rule.confirmations, nowTimestamp()]
 	);
@@ -361,7 +394,7 @@ export const saveMerchantRule = async (
 export const deleteMerchantRule = async (merchantKey: string): Promise<void> => {
 	const timestamp = nowTimestamp();
 	await db.runAsync(
-		'UPDATE merchant_rules SET deletedAt = ?, updatedAt = ?, dirty = 1 WHERE merchantKey = ? AND deletedAt IS NULL',
+		`UPDATE merchant_rules SET deletedAt = ?, updatedAt = ${NEXT_STAMP}, dirty = 1 WHERE merchantKey = ? AND deletedAt IS NULL`,
 		[timestamp, timestamp, merchantKey]
 	);
 };
@@ -486,6 +519,7 @@ export default {
 	getPendingCaptures,
 	countPendingCaptures,
 	getResolvedCaptures,
+	getLastNotificationPostedAt,
 	updateCapture,
 	pruneResolvedCaptures,
 	getMerchantRule,

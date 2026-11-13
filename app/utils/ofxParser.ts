@@ -19,6 +19,7 @@
  * `decodeOfxBytes`, também pura, para ser testada com arquivos reais.
  */
 
+import { brandFor } from './bankBrands';
 import { guessCategory, merchantKeyOf, normalizeText } from './captureParser';
 import type { CaptureDirection, CaptureKind } from './captureParser';
 
@@ -47,7 +48,11 @@ export interface OfxAccount {
 	acctId: string;
 	acctType: string | null;
 	isCard: boolean;
-	/** Nome do banco, pelo código ou pelo `<ORG>` do arquivo. */
+	/**
+	 * Nome do banco: pelo código (`BANKID`, ou o `FID` do cabeçalho quando o extrato não traz
+	 * `BANKID`, como no de cartão), pela marca do `<ORG>` ("NU PAGAMENTOS S.A." é o Nubank)
+	 * ou, sem nada disso, o `<ORG>` como veio.
+	 */
 	bankName: string;
 	currency: string | null;
 	entries: OfxEntry[];
@@ -57,8 +62,9 @@ export interface OfxAccount {
 	 * Saldo **contábil** que o banco imprimiu no extrato (`LEDGERBAL`) e o dia a que ele
 	 * se refere. É a melhor âncora possível para o saldo de uma conta: vem do próprio
 	 * banco. Nulos quando o arquivo não traz — e nunca preenchidos com o `AVAILBAL`, que
-	 * é o disponível e inclui o limite do cheque especial. Ignorados pelo app em extratos
-	 * de cartão, cujo sinal varia entre bancos.
+	 * é o disponível e inclui o limite do cheque especial. No cartão o app só usa o
+	 * negativo (o devido, como na especificação), e só no cartão que o extrato cria
+	 * (`resolveAccountForStatement`): o sinal varia entre bancos.
 	 */
 	ledgerBalanceCents: number | null;
 	ledgerDate: string | null;
@@ -341,9 +347,10 @@ const BALANCE_AGGREGATES = new Set(['LEDGERBAL', 'AVAILBAL']);
  * são atribuídas ao agregado corrente; a pilha só tem agregados, então um
  * `</NAME>` de XML é simplesmente ignorado por não bater com o topo.
  */
-const tokenize = (content: string): { org: string | null; statements: RawStatement[] } => {
+const tokenize = (content: string): { org: string | null; fid: string | null; statements: RawStatement[] } => {
 	const statements: RawStatement[] = [];
 	let org: string | null = null;
+	let fid: string | null = null;
 	let current: RawStatement | null = null;
 	let transaction: RawTransaction | null = null;
 	const stack: string[] = [];
@@ -374,6 +381,10 @@ const tokenize = (content: string): { org: string | null; statements: RawStateme
 			transaction[name] = value;
 		} else if (name === 'ORG') {
 			org = value;
+		} else if (name === 'FID' && !current) {
+			// O `FID` do `<FI>` do cabeçalho: no Nubank é o código COMPE (260). O extrato de
+			// cartão não tem `BANKID`, e sem isto o banco era só o `<ORG>`.
+			fid = value;
 		} else if (current) {
 			// Chaves de conta ficam distintas das da lista de transações.
 			const parent = stack[stack.length - 1];
@@ -383,7 +394,7 @@ const tokenize = (content: string): { org: string | null; statements: RawStateme
 		match = tagPattern.exec(content);
 	}
 
-	return { org, statements };
+	return { org, fid, statements };
 };
 
 // ---------------------------------------------------------------------------
@@ -391,15 +402,17 @@ const tokenize = (content: string): { org: string | null; statements: RawStateme
 // ---------------------------------------------------------------------------
 
 export const parseOfx = (content: string): OfxStatement => {
-	const { org, statements } = tokenize(stripHeader(content));
+	const { org, fid, statements } = tokenize(stripHeader(content));
 
 	const accounts: OfxAccount[] = statements.map((statement) => {
 		const bankId = statement.fields.BANKID ?? null;
 		const acctId = statement.fields.ACCTID ?? 'unknown';
-		// COMPE tem três dígitos; alguns bancos exportam "0260", outros "260".
-		const compe = bankId ? bankId.replace(/^0+(?=\d{3}$)/, '').padStart(3, '0') : null;
+		// COMPE tem três dígitos; alguns bancos exportam "0260", outros "260". O `FID` só
+		// nomeia o banco: a chave da conta continua sendo a do `BANKID`, a de sempre.
+		const code = bankId ?? (fid && /^\d{1,4}$/.test(fid) ? fid : null);
+		const compe = code ? code.replace(/^0+(?=\d{3}$)/, '').padStart(3, '0') : null;
 		const bankName =
-			(compe && BANK_NAMES[compe]) || org || (bankId ? `Banco ${bankId}` : 'Extrato');
+			(compe && BANK_NAMES[compe]) || brandFor(org)?.name || org || (bankId ? `Banco ${bankId}` : 'Extrato');
 		const isCard = statement.isCard || statement.fields.ACCTTYPE === 'CREDITCARD';
 		const accountKey = `${bankId ?? 'card'}:${acctId}`;
 

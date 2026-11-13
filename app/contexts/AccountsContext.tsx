@@ -8,81 +8,112 @@ import {
 	assignUnassignedToAccount,
 	countUnassignedOnOrBeforeAnchor,
 	type UnassignedAssignment,
-	db,
 	deleteAccount,
-	deleteTransfersOf,
+	deleteTransfer,
 	foldAccountBalance,
+	getAccountContents,
 	getAccount,
-	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
 	getAccountTransactions,
 	getAccountTransfers,
-	getCardPurchasesOriginated,
+	getBills,
+	getDebts,
 	getTransactions,
-	getUnassignedNet,
-	getUnassignedPeriodSummary,
-	getTransfersByDateRange,
+	mergeCardInto,
 	moveAccountLedger,
 	normalizeAccountDraft,
 	reassignCaptureLedger,
 	repointTransfers,
+	retireMergedAccount,
+	runInTransaction,
 	setAccountCardNames,
 	setAccountAnchor,
 	setAccountBalanceToday,
+	undoAccountClose,
 	updateAccount,
 	updateTransfer,
 } from '../database/database';
 import { getAllCaptures, getPendingCaptures, updateCapture } from '../database/captures';
 import type { Account, AccountDraft, AccountEdit, Transfer } from '../database/schema';
+import { log } from '../diagnostics/log';
 import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import {
 	type AccountsOverview,
-	periodSpentCents,
 	provisionalBalanceCents,
 	provisionalEntries,
 	provisionalEntriesByAccount,
-	provisionalFlows,
 	spendingAdjustment,
 	summarizeAccounts,
 	withProvisionalBalances,
 } from '../utils/accountMath';
 import {
+	type AccountContents,
+	CLOSING_TRANSFER_NOTE,
+	type ClosePlan,
+	type CloseUndo,
+	canUndoClose,
+	closeUndoRemainingMs,
+	planAccountClose,
+} from '../utils/accountClosing';
+import { canMergeAccounts, DebitFutureError, isDebitTarget, MergeRoleError } from '../utils/accountMerging';
+import { clearRevivalNotices, getRevivalNotices, type RevivalNotice } from '../utils/accountRevival';
+import {
+	type ClosedReviewItem,
+	type ClosedSettlement,
+	closedReviewItems,
+	getClosedReviewSeen,
+	markClosedReviewSeen,
+	unseenClosedReview,
+} from '../utils/closedReview';
+import { emitBillsChanged } from '../utils/billEvents';
+import {
 	buildCardSummary,
+	CARD_ADJUSTMENT_NOTE,
+	type CardChargeKind,
+	cardChargeNote,
+	cardChargeShown,
+	type CardAnchor,
 	type CardEntry,
 	type CardMovement,
+	type CardSettings,
 	type CardSummary,
 	cycleRuleOf,
 	existingInstallmentDates,
-	invoicesClosingBetween,
+	type InvoiceChange,
+	invoiceChangesForRule,
 	isSameCardPayment,
+	openInvoiceInformed,
 	pickOpenCardPayment,
 	planCardAdjustment,
+	planCardOpening,
+	reanchorForRule,
+	splitCardCharges,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
 import { changesCardRouting, planCardLedgerRepair } from '../utils/cardLedgerRepair';
 import { generateUniqueId } from '../utils/categoryEditUtils';
 import { feedOwnerOf } from '../utils/accountBinding';
+import { type AccountLinks, autoMergeCandidates, isEmptyUntouched, planAutoMerges } from '../utils/autoMergeAccounts';
+import { type AutoMergeNotice, addAutoMergeNotice, clearAutoMergeNotices, getAutoMergeNotices } from '../utils/autoMergeNotices';
+import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { planBusinessFeed } from '../utils/businessFeed';
-import { setBusinessFeed } from '../utils/businessFeedPreference';
-import {
-	externalTransfersInByMonth,
-	externalTransfersOutByMonth,
-	investmentIncomeRows,
-	lastInvestmentIncomeDateByAccount,
-} from '../utils/reportSeries';
+import { getBusinessFeeds, setBusinessFeed } from '../utils/businessFeedPreference';
+import { getDistinctAccountPairs } from '../utils/distinctAccounts';
 import { parseCardNames, withCardName } from '../utils/cardNames';
-import { addDays, monthKeyOf, monthKeyRange, shiftMonthKey, todayISO } from '../utils/dateUtils';
-import {
-	type AccountMonthActivity,
-	buildMonthOverview,
-	type MonthOverview,
-	type ProvisionalPart,
-	provisionalPart,
-} from '../utils/monthOverview';
+import { addDays, todayISO } from '../utils/dateUtils';
+import type { MonthOverview, ProvisionalPart } from '../utils/monthOverview';
 import { type CdiRate, loadCachedCdi, refreshCdi } from '../api/cdi';
-import { accruedYieldCents, type YieldFlow } from '../utils/yield';
+import {
+	accruedYield12mByAccount,
+	accruedYieldByAccount,
+	activeAccountsOf,
+	balancesWithAccruedYield,
+	cardsTotalsOf,
+	loadAccountsState,
+	type YieldAccountInput,
+} from '../utils/accountsLoad';
 import { usePeriod } from './PeriodContext';
 import { useTransactions } from './TransactionsContext';
 
@@ -120,6 +151,21 @@ export interface CardLedgerRepairNotice {
 	movedCount: number;
 	/** Compras que iriam, mas ficaram porque o usuário editou o lançamento à mão. */
 	keptCount: number;
+}
+
+/**
+ * Uma transferência entre contas suas, como o formulário a manda: sem `id` é nova, com `id`
+ * é a edição daquela. Um lado nulo é "fora do app" — só aparece ao editar uma transferência
+ * que a captura gravou assim; a manual nova tem os dois lados.
+ */
+export interface TransferInput {
+	id?: string;
+	fromAccountId: string | null;
+	toAccountId: string | null;
+	amountCents: number;
+	/** `YYYY-MM-DD`. */
+	date: string;
+	note: string;
 }
 
 export interface ExistingInstallmentsInput {
@@ -185,7 +231,63 @@ interface AccountsContextType {
 	cardLedgerRepair: CardLedgerRepairNotice | null;
 	/** A tela já avisou: some o aviso. */
 	dismissCardLedgerRepair: () => void;
+	/**
+	 * Apaga só conta vazia (SPD-144, `isAccountEmpty`); com conteúdo, rejeita com
+	 * `AccountInUseError` e nada muda.
+	 */
 	removeAccount: (id: string) => Promise<void>;
+	/** O que está ligado à conta: lançamentos, transferências, capturas, saldo de partida, contas a pagar e dívidas. */
+	loadAccountContents: (id: string) => Promise<AccountContents>;
+	/** Como encerrar a conta agora sem mexer no patrimônio (`planAccountClose`). */
+	planClose: (id: string) => Promise<ClosePlan>;
+	/**
+	 * Encerra a conta (`archived`). Com saldo, antes uma transferência de hoje leva o saldo
+	 * para `counterpartId` (ou traz dele): o patrimônio não muda. Rejeita o plano bloqueado.
+	 * Devolve o que desfazer logo depois (nulo se a conta já estava encerrada).
+	 */
+	closeAccount: (id: string, counterpartId: string | null) => Promise<CloseUndo | null>;
+	/**
+	 * O encerramento que acabou de acontecer (SPD-154): o "Desfazer" aparece enquanto ele
+	 * existe, por `CLOSE_UNDO_WINDOW_MS` ou até sair da tela (`dismissClosingUndo`).
+	 */
+	closingUndo: CloseUndo | null;
+	/**
+	 * Desfaz o encerramento de `id` que acabou de acontecer: a conta volta a ativa com a âncora
+	 * de antes e a transferência de encerramento é apagada — os números voltam a ser os de
+	 * antes. Fora da janela, ou de outra conta, rejeita sem mudar nada.
+	 */
+	undoClose: (id: string) => Promise<void>;
+	/** O "Desfazer" sai da tela (a tela fechou). */
+	dismissClosingUndo: () => void;
+	/** Reabre uma conta encerrada. */
+	reopenAccount: (id: string) => Promise<void>;
+	/**
+	 * Encerradas com saldo (SPD-150): contas e cartões arquivados com saldo diferente de zero,
+	 * fora a externa (`closedReviewItems`). Nada muda nelas sem `settleClosedAccount`.
+	 */
+	closedReview: ClosedReviewItem[];
+	/**
+	 * A decisão do usuário para uma encerrada com saldo: transferir o saldo para outra conta (no
+	 * cartão devendo, pagar com ela), reabrir, ou zerar sem gasto nem receita no histórico
+	 * (conta: o saldo de partida; cartão: a fatura paga fora do app). Recusa — sem mudar nada —
+	 * compra a revisar ou lançamento futuro na conta.
+	 */
+	settleClosedAccount: (id: string, decision: ClosedSettlement) => Promise<void>;
+	/**
+	 * Há encerrada com saldo que a lista ainda não mostrou neste aparelho: o aviso curto da tela
+	 * inicial aparece até a tela de Contas mostrá-la (`markClosedReviewShown`).
+	 */
+	closedReviewUnseen: boolean;
+	/** A tela de Contas mostrou a lista: as encerradas de agora contam como vistas. */
+	markClosedReviewShown: () => void;
+	/**
+	 * "Voltou como encerrada" (SPD-149): as contas apagadas que o reparo da carga trouxe de
+	 * volta, com o efeito em R$ de cada mês. Ficam guardadas no aparelho até a tela de Contas
+	 * mostrá-las.
+	 */
+	revivalNotices: RevivalNotice[];
+	/** A tela mostrou: os avisos saem, aqui e no aparelho. */
+	dismissRevivalNotices: () => void;
 	/**
 	 * Acerta uma conta com o que o banco mostra: quanto já saiu neste mês e quanto ainda há
 	 * na conta. A diferença de gasto entra como lançamento de hoje (aparece no mês e na
@@ -201,22 +303,80 @@ interface AccountsContextType {
 	 * "O banco mostra X na fatura aberta e Y na fechada ainda não paga". As duas ficam
 	 * separadas: Y na fatura fechada, X na aberta (`planCardAdjustment`). `null` é "não
 	 * informei": aquela fatura fica valendo o que já valia.
+	 *
+	 * `opening`: é o cadastro do cartão. A aberta vira a âncora sempre que dá, sem lançamento
+	 * de ajuste (`planCardOpening`) — como o saldo informado de uma conta.
+	 *
+	 * `asCharge`: o dono disse que a diferença a mais é juros, IOF, anuidade ou tarifa. O que
+	 * passa do que o app mostrava vira encargo do cartão em cada fatura (`splitCardCharges`), e
+	 * o resto segue o acerto de sempre. Devolve quanto foi lançado como encargo.
 	 */
-	adjustCardInvoices: (cardId: string, openCents: number | null, closedCents: number | null) => Promise<void>;
+	adjustCardInvoices: (
+		cardId: string,
+		openCents: number | null,
+		closedCents: number | null,
+		options?: { opening?: boolean; asCharge?: boolean }
+	) => Promise<number>;
+	/**
+	 * O dia de fechamento do cartão vai mudar (SPD-179): a âncora com o novo dia
+	 * (`reanchorForRule`), que o salvar grava junto, e as faturas que mudam de valor mesmo assim
+	 * (`invoiceChangesForRule`), para o aviso antes de salvar. Lido do banco na hora, como o
+	 * "Acertar valor". Nulo quando o cartão não existe.
+	 */
+	planCardClosingChange: (
+		cardId: string,
+		cycle: Pick<CardSettings, 'closingDay' | 'closingDaysBefore' | 'dueDay'>
+	) => Promise<{ anchor: CardAnchor; changes: InvoiceChange[] } | null>;
+	/**
+	 * Juros, IOF, anuidade, multa ou tarifa cobrados no cartão: um lançamento "Encargo do
+	 * cartão" na data, que entra na fatura do ciclo dela e não conta como compra.
+	 */
+	addCardCharge: (cardId: string, kind: CardChargeKind, amountCents: number, date: string) => Promise<void>;
 	/**
 	 * Pagamento de fatura: transferência da conta (ou de fora) para o cartão. Devolve falso
 	 * quando o mesmo pagamento já estava registrado (pela notificação, por exemplo).
 	 */
 	recordCardPayment: (cardId: string, fromAccountId: string | null, amountCents: number, date: string) => Promise<boolean>;
-	/** Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. */
+	/**
+	 * Transferência manual entre contas suas (o "+" e a edição em Lançamentos, E2E-28): não
+	 * é receita nem despesa, só muda o saldo das duas pontas. Nova para um cartão de crédito
+	 * é pagamento de fatura e vai por `recordCardPayment`. Devolve falso quando aquele
+	 * pagamento já estava registrado; recusa De igual a Para e valor que não seja positivo.
+	 */
+	saveTransfer: (input: TransferInput) => Promise<boolean>;
+	/** Apaga (com lápide, que o sync leva) uma transferência. */
+	removeTransfer: (id: string) => Promise<void>;
+	/**
+	 * Compra parcelada feita antes do app: cria as parcelas restantes. Devolve quantas. Com a
+	 * fatura aberta já informada (`openInvoiceInformed`), a parcela atual já está no valor
+	 * dela e não é criada.
+	 */
 	addExistingInstallments: (input: ExistingInstallmentsInput) => Promise<number>;
 	/**
 	 * Cartão de débito cadastrado como cartão: leva os lançamentos para a conta de onde o
-	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite.
+	 * dinheiro sai de verdade e apaga o cartão. Débito não tem fatura nem limite. O saldo do
+	 * cartão e as transferências vão junto: o patrimônio não muda (SPD-152). Com lançamento de
+	 * data futura no cartão (parcela por cair), recusa sem mudar nada (`DebitFutureError`).
 	 */
 	convertCardToDebit: (cardId: string, accountId: string) => Promise<void>;
-	/** Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. */
+	/**
+	 * Junta duas fichas da mesma conta do banco: tudo vai para `intoId` e a outra sai. Papéis
+	 * diferentes, com a que sai não vazia, recusam com `MergeRoleError` (SPD-152).
+	 */
 	mergeAccounts: (fromId: string, intoId: string) => Promise<void>;
+	/**
+	 * "Juntamos X em Y": as fichas duplicadas vazias que o app juntou sozinho e que a tela de
+	 * Contas ainda não mostrou (SPD-116). Ficam guardadas no aparelho até lá.
+	 */
+	autoMergeNotices: AutoMergeNotice[];
+	/** A tela mostrou: os avisos saem, aqui e no aparelho. */
+	dismissAutoMergeNotices: () => void;
+	/**
+	 * Junta dois cartões de crédito do mesmo cartão do banco (E2E-34): compras, parcelas,
+	 * encargos, ajustes e pagamentos vão para `intoId`, que mantém fechamento e limite; a
+	 * dívida dos dois soma, e o patrimônio não muda (`mergeCardInto`, SPD-152).
+	 */
+	mergeCards: (fromId: string, intoId: string) => Promise<void>;
 	/** As compras que o app do banco avisa passam a cair nesta conta, e não na outra. */
 	takeNotifications: (accountId: string) => Promise<void>;
 	/** Os avisos da PJ ("da conta Nu Empresas") passam a cair nesta conta (SPD-074). */
@@ -234,36 +394,8 @@ interface AccountsContextType {
 
 const AccountsContext = createContext<AccountsContextType | undefined>(undefined);
 
-/** O que a estimativa de rendimento precisa saber de uma conta que rende. */
-interface YieldAccountInput {
-	anchorCents: number;
-	anchorDate: string;
-	flows: YieldFlow[];
-	percentOfCdiBp: number;
-	/** A data do último rendimento lançado na conta; nula sem nenhum. */
-	lastPostedYieldDate: string | null;
-}
-
-/** Quantos meses a janela do "rendeu nos últimos 12 meses" cobre, contando o de hoje. */
-const YIELD_WINDOW_MONTHS = 12;
-
-/** Nota do lançamento de ajuste: o mesmo texto em qualquer idioma, é um marcador. */
-const ADJUSTMENT_NOTE = 'Ajuste com a fatura do banco';
-
 /** Nota do lançamento que acerta o saldo de uma conta. */
 const BALANCE_ADJUSTMENT_NOTE = 'Ajuste com o saldo do banco';
-
-const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-
-/** Soma por conta um mapa `mês|contaId`: aqui só há transferências do período pedido. */
-const sumByAccount = (byKey: Map<string, number>): Map<string, number> => {
-	const byAccount = new Map<string, number>();
-	for (const [key, cents] of byKey) {
-		const accountId = key.slice(key.indexOf('|') + 1);
-		byAccount.set(accountId, (byAccount.get(accountId) ?? 0) + cents);
-	}
-	return byAccount;
-};
 
 /**
  * Aplica o conserto de um cartão do jeito da migração v12 (`migrateCardPurchasesToRealCard`):
@@ -281,7 +413,7 @@ const repairCardLedger = async (cardId: string): Promise<CardLedgerRepairNotice 
 		const plan = planCardLedgerRepair(cardId, list, captures, ledger);
 		keptCount = plan.keptEdited.length;
 		for (const move of plan.moves) {
-			await db.withTransactionAsync(async () => {
+			await runInTransaction(async () => {
 				await updateCapture(move.captureId, { accountId: move.toId });
 				if (move.transactionIds.length > 0) await reassignCaptureLedger(move.transactionId, move.captureId, move.toId);
 			});
@@ -291,6 +423,58 @@ const repairCardLedger = async (cardId: string): Promise<CardLedgerRepairNotice 
 		console.error('Error repairing card ledger:', error);
 	}
 	return movedCount > 0 || keptCount > 0 ? { cardId, movedCount, keptCount } : null;
+};
+
+/**
+ * O que está ligado a uma conta, para dizer se ela está vazia (`isEmptyUntouched`). Para no
+ * primeiro tipo que achar: a ficha com captura ou lançamento é o caso comum do par, e não
+ * precisa ler o resto. Nula se a leitura falhar — na dúvida, a conta não é vazia.
+ */
+const linksOf = async (accountId: string): Promise<AccountLinks | null> => {
+	const links: AccountLinks = { transactions: 0, transfers: 0, captures: 0, bills: 0, debts: 0 };
+	try {
+		links.transactions = (await getAccountTransactions(accountId)).length;
+		if (links.transactions > 0) return links;
+		links.transfers = (await getAccountTransfers(accountId)).length;
+		if (links.transfers > 0) return links;
+		// Viva, de qualquer status: a descartada também diz que o banco avisou algo ali.
+		links.captures = (await getAllCaptures()).filter((capture) => capture.accountId === accountId).length;
+		if (links.captures > 0) return links;
+		links.bills = (await getBills()).filter((bill) => bill.accountId === accountId).length;
+		links.debts = (await getDebts()).filter((debt) => debt.accountId === accountId).length;
+		return links;
+	} catch (error) {
+		console.error('Error reading account links:', error);
+		return null;
+	}
+};
+
+/**
+ * As compras e os pagamentos de um cartão, lidos do banco na hora: o que o "Acertar valor" e a
+ * troca do dia de fechamento calculam. As compras ainda na caixa de entrada já estão na fatura
+ * do banco, então entram.
+ */
+const loadCardInputs = async (card: Account): Promise<{ entries: CardEntry[]; movements: CardMovement[] }> => {
+	const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
+	const entries: CardEntry[] = cardTransactions.map((tx) => ({
+		id: tx.id,
+		amountCents: tx.amountCents,
+		isIncome: tx.isIncome,
+		date: tx.date,
+		note: tx.note,
+		category: tx.category,
+		installmentGroup: tx.installmentGroup,
+		installmentIndex: tx.installmentIndex,
+		installmentCount: tx.installmentCount,
+		cardLast4: tx.cardLast4,
+	}));
+	for (const capture of await getPendingCaptures()) entries.push(...provisionalEntries(capture, card));
+	const movements: CardMovement[] = cardTransfers.map((transfer) => ({
+		amountCents: transfer.amountCents,
+		date: transfer.date,
+		inbound: transfer.toAccountId === card.id,
+	}));
+	return { entries, movements };
 };
 
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -309,6 +493,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [unassignedNetCents, setUnassignedNetCents] = useState(0);
 	const [periodSpentByAccount, setPeriodSpentByAccount] = useState<Map<string, number>>(new Map());
 	const [periodTransfers, setPeriodTransfers] = useState<Transfer[]>([]);
+	const [revivalNotices, setRevivalNotices] = useState<RevivalNotice[]>([]);
 	// Lido dentro do acerto sem virar dependência dele.
 	const periodSpentRef = useRef(periodSpentByAccount);
 	periodSpentRef.current = periodSpentByAccount;
@@ -321,168 +506,26 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const refresh = useCallback(async () => {
 		const mine = ++generation.current;
 		try {
-			const today = todayISO();
-			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
-			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
-			const periodEnd = endDate < today ? endDate : today;
-			const [list, ledgerBalances, unassigned, unassignedPeriod, pendingCaptures, ledgerStartBalances, ledgerEndBalances, transfersInPeriod] =
-				await Promise.all([
-				getAccounts(),
-				getAccountBalances(today),
-				getUnassignedNet(today),
-				getUnassignedPeriodSummary(startDate, endDate),
-				getPendingCaptures(),
-				getAccountBalances(addDays(startDate, -1)),
-				getAccountBalances(periodEnd),
-				getTransfersByDateRange(startDate, endDate),
+			// A carga mora em `utils/accountsLoad.ts` (SPD-163b): o Mirai lê dela os mesmos números.
+			const [state, revived] = await Promise.all([
+				loadAccountsState(startDate, endDate, todayISO()),
+				// O aviso da conta que voltou encerrada (SPD-149) é guardado pela carga do banco, que
+				// pode terminar depois da primeira leitura daqui.
+				getRevivalNotices(),
 			]);
 
-			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período, e o
-			// que as suas mandaram para elas: o líquido é receita do mês, e no livro é
-			// transferência. O mapa é por mês e conta, mas aqui só há transferências do período
-			// pedido, então vale somar todos os meses de cada conta.
-			const live = list.filter((account) => !account.deletedAt);
-			const fromExternalByAccount = sumByAccount(externalTransfersInByMonth(transfersInPeriod, live));
-			const toExternalByAccount = sumByAccount(externalTransfersOutByMonth(transfersInPeriod, live));
-
-			// As compras da caixa de entrada sem pergunta em aberto contam como provisórias em
-			// todo lugar — saldo, cartão e mês —, como o cartão já fazia. Uma regra só
-			// (`provisionalEntries`), para o saldo da conta corrente e o "Gastou" não divergirem
-			// do cartão nem dos Relatórios.
-			const provisional = provisionalEntriesByAccount(pendingCaptures, live);
-			const nextBalances = withProvisionalBalances(ledgerBalances, live, provisional, today);
-			const startBalances = withProvisionalBalances(ledgerStartBalances, live, provisional, addDays(startDate, -1));
-			const endBalances = withProvisionalBalances(ledgerEndBalances, live, provisional, periodEnd);
-			const nextProvisionalBalances = new Map<string, number>();
-			for (const [accountId, cents] of nextBalances) {
-				const delta = cents - (ledgerBalances.get(accountId) ?? cents);
-				if (delta !== 0) nextProvisionalBalances.set(accountId, delta);
-			}
-
-			const nextSummaries = new Map<string, CardSummary>();
-			const nextYieldInputs = new Map<string, YieldAccountInput>();
-			const activity: AccountMonthActivity[] = [];
-			// O mesmo mês só com o livro: a diferença é a parte "a revisar" (`provisionalPart`).
-			const ledgerActivity: AccountMonthActivity[] = [];
-
-			for (const account of list) {
-				if (account.deletedAt) continue;
-
-				const period = await getAccountActivity(account.id, startDate, endDate);
-				const isCard = account.kind === 'credit_card';
-				const pending = provisional.get(account.id) ?? [];
-				const pendingFlows = provisionalFlows(pending, startDate, endDate);
-				const purchasesOriginatedCents = isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined;
-				// Rendimento é só a receita em categoria de rendimento de investimento. Sem isto,
-				// toda receita que encostasse numa conta de reserva — o Pix de um amigo, um
-				// reembolso — era anunciada como rentabilidade que não houve.
-				const investmentIncomeCents =
-					account.role === 'reserve'
-						? investmentIncomeRows(
-								(await getAccountTransactions(account.id)).filter((tx) => tx.date >= startDate && tx.date <= endDate)
-							).reduce((total, row) => total + row.cents, 0)
-						: 0;
-				const ledgerItem: AccountMonthActivity = {
-					accountId: account.id,
-					name: account.name,
-					kind: account.kind,
-					// O papel de verdade, inclusive de conta arquivada: trocá-lo por `external` aqui
-					// reescrevia o passado — arquivar um cartão apagava as faturas dele dos meses
-					// fechados. Arquivada fica fora dos totais de hoje, nunca de um mês fechado.
-					role: account.role,
-					incomeCents: period.incomeCents,
-					investmentIncomeCents,
-					expenseCents: period.expenseCents,
-					passThroughCents: period.passThroughCents,
-					transfersInCents: period.transfersInCents,
-					transfersInFromExternalCents: fromExternalByAccount.get(account.id) ?? 0,
-					transfersOutCents: period.transfersOutCents,
-					transfersOutToExternalCents: toExternalByAccount.get(account.id) ?? 0,
-					purchasesOriginatedCents,
-					envelopeMonthlyCents: account.envelopeMonthlyCents,
-					startBalanceCents: ledgerStartBalances.get(account.id) ?? 0,
-					endBalanceCents: ledgerEndBalances.get(account.id) ?? 0,
-				};
-				ledgerActivity.push(ledgerItem);
-				activity.push({
-					...ledgerItem,
-					incomeCents: period.incomeCents + pendingFlows.incomeCents,
-					expenseCents: period.expenseCents + pendingFlows.expenseCents,
-					purchasesOriginatedCents: purchasesOriginatedCents === undefined ? undefined : purchasesOriginatedCents + pendingFlows.purchasesCents,
-					startBalanceCents: startBalances.get(account.id) ?? 0,
-					endBalanceCents: endBalances.get(account.id) ?? 0,
-				});
-
-				// Conta que rende: a âncora e o que entrou e saiu depois dela, para estimar o
-				// rendimento até hoje.
-				if (!isCard && (account.yieldCdiBp ?? 0) > 0) {
-					const [ownTransactions, ownTransfers] = await Promise.all([getAccountTransactions(account.id), getAccountTransfers(account.id)]);
-					const flows: YieldFlow[] = [
-						...ownTransactions.map((tx) => ({ date: tx.date, cents: tx.isIncome ? tx.amountCents : -tx.amountCents })),
-						...ownTransfers.map((transfer) => ({
-							date: transfer.date,
-							cents: transfer.toAccountId === account.id ? transfer.amountCents : -transfer.amountCents,
-						})),
-					].filter((flow) => flow.date > account.openingBalanceDate);
-					nextYieldInputs.set(account.id, {
-						anchorCents: account.openingBalanceCents,
-						anchorDate: account.openingBalanceDate,
-						flows,
-						percentOfCdiBp: account.yieldCdiBp ?? 0,
-						// Ou se lança o rendimento, ou se estima — nunca os dois no mesmo período. O
-						// último rendimento lançado cobre tudo até a data dele; antes dela quem vale é
-						// o livro. Sem isto, a receita de rendimento já estava no saldo e continuava
-						// sendo estimada por cima, compondo sobre a duplicata: inflava reserva,
-						// capital, patrimônio e progresso da meta, e podia declarar a reserva cheia
-						// antes da hora.
-						lastPostedYieldDate: lastInvestmentIncomeDateByAccount(ownTransactions).get(account.id) ?? null,
-					});
-				}
-
-				if (!isCard) continue;
-				const cardActivity = activity[activity.length - 1];
-
-				const [cardTransactions, cardTransfers] = await Promise.all([
-					getAccountTransactions(account.id),
-					getAccountTransfers(account.id),
-				]);
-				const ledgerEntries: CardEntry[] = cardTransactions.map((tx) => ({
-					id: tx.id,
-					amountCents: tx.amountCents,
-					isIncome: tx.isIncome,
-					date: tx.date,
-					note: tx.note,
-					category: tx.category,
-					installmentGroup: tx.installmentGroup,
-					installmentIndex: tx.installmentIndex,
-					installmentCount: tx.installmentCount,
-				cardLast4: tx.cardLast4,
-				}));
-				const entries = [...ledgerEntries, ...pending];
-				const movements: CardMovement[] = cardTransfers.map((transfer) => ({
-					amountCents: transfer.amountCents,
-					date: transfer.date,
-					inbound: transfer.toAccountId === account.id,
-				}));
-				nextSummaries.set(account.id, buildCardSummary(account, entries, movements, today));
-				cardActivity.invoiceCents = invoicesClosingBetween(account, entries, startDate, endDate);
-				ledgerActivity[ledgerActivity.length - 1].invoiceCents = invoicesClosingBetween(account, ledgerEntries, startDate, endDate);
-			}
-
 			if (mine !== generation.current) return;
-			const nextMonth = buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod });
-			setAccounts(list);
-			setBalances(nextBalances);
-			setProvisionalBalances(nextProvisionalBalances);
-			setYieldInputs(nextYieldInputs);
-			setCardSummaries(nextSummaries);
-			setUnassignedNetCents(unassigned);
-			setPeriodTransfers(transfersInPeriod);
-			setPeriodSpentByAccount(
-				new Map(activity.map((item) => [item.accountId, periodSpentCents(item, item.role)]))
-			);
-			setMonth(nextMonth);
-			setProvisionalMonth(provisionalPart(nextMonth, buildMonthOverview({ accounts: ledgerActivity, unassigned: unassignedPeriod })));
+			setAccounts(state.list);
+			setBalances(state.balances);
+			setProvisionalBalances(state.provisionalBalances);
+			setYieldInputs(state.yieldInputs);
+			setCardSummaries(state.cardSummaries);
+			setUnassignedNetCents(state.unassignedNetCents);
+			setPeriodTransfers(state.periodTransfers);
+			setPeriodSpentByAccount(state.periodSpentByAccount);
+			setMonth(state.month);
+			setRevivalNotices((current) => (current.length === 0 && revived.length === 0 ? current : revived));
+			setProvisionalMonth(state.provisionalMonth);
 		} catch (error) {
 			console.error('Error loading accounts:', error);
 		} finally {
@@ -513,42 +556,16 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	/** O rendimento estimado de cada conta que rende, até ontem, no CDI em uso. */
-	const accruedYield = useMemo(() => {
-		const result = new Map<string, number>();
-		if (!cdi) return result;
-		const today = todayISO();
-		for (const [accountId, input] of yieldInputs) {
-			result.set(accountId, accruedYieldCents({ ...input, notBefore: input.lastPostedYieldDate, today, cdiAnnualBp: cdi.annualBp }));
-		}
-		return result;
-	}, [yieldInputs, cdi]);
+	const accruedYield = useMemo(() => accruedYieldByAccount(yieldInputs, cdi?.annualBp ?? null, todayISO()), [yieldInputs, cdi]);
 
 	/**
-	 * O mesmo rendimento estimado, recortado nos últimos 12 meses: é o que o indicador
-	 * "rendeu nos últimos 12 meses" precisa para não afirmar 0% num CDB de 120% do CDI,
-	 * onde o acréscimo é estimado em memória e nada é lançado no livro. O recorte usa a
-	 * data mais recente entre o começo da janela e o último rendimento lançado — o livro
-	 * responde pelo período que ele cobre, a estimativa só pelo resto.
+	 * O mesmo rendimento estimado, recortado nos últimos 12 meses (`accruedYield12mByAccount`):
+	 * é o que o indicador "rendeu nos últimos 12 meses" precisa para não afirmar 0% num CDB de
+	 * 120% do CDI.
 	 */
-	const accruedYield12m = useMemo(() => {
-		const result = new Map<string, number>();
-		if (!cdi) return result;
-		const today = todayISO();
-		const windowStart = monthKeyRange(shiftMonthKey(monthKeyOf(today), -(YIELD_WINDOW_MONTHS - 1))).startDate;
-		const notBeforeWindow = addDays(windowStart, -1);
-		for (const [accountId, input] of yieldInputs) {
-			const notBefore = input.lastPostedYieldDate !== null && input.lastPostedYieldDate > notBeforeWindow ? input.lastPostedYieldDate : notBeforeWindow;
-			result.set(accountId, accruedYieldCents({ ...input, notBefore, today, cdiAnnualBp: cdi.annualBp }));
-		}
-		return result;
-	}, [yieldInputs, cdi]);
+	const accruedYield12m = useMemo(() => accruedYield12mByAccount(yieldInputs, cdi?.annualBp ?? null, todayISO()), [yieldInputs, cdi]);
 
-	const balances = useMemo(() => {
-		if (accruedYield.size === 0) return rawBalances;
-		const next = new Map(rawBalances);
-		for (const [accountId, cents] of accruedYield) next.set(accountId, (next.get(accountId) ?? 0) + cents);
-		return next;
-	}, [rawBalances, accruedYield]);
+	const balances = useMemo(() => balancesWithAccruedYield(rawBalances, accruedYield), [rawBalances, accruedYield]);
 
 	const [cardLedgerRepair, setCardLedgerRepair] = useState<CardLedgerRepairNotice | null>(null);
 	const dismissCardLedgerRepair = useCallback(() => setCardLedgerRepair(null), []);
@@ -598,14 +615,233 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[afterAccountSaved, refresh]
 	);
 
+	/**
+	 * Apaga só conta vazia (SPD-144): com conteúdo, `deleteAccount` recusa com
+	 * `AccountInUseError` e nada muda. As contas a pagar e dívidas dela ficam sem conta; as
+	 * listas delas estão em providers abaixo deste, e só o aviso as faz reler.
+	 */
 	const removeAccount = useCallback(
 		async (id: string) => {
 			await deleteAccount(id);
+			syncQueue.schedule();
+			emitBillsChanged();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[refresh, refreshData]
+	);
+
+	const loadAccountContents = useCallback((id: string) => getAccountContents(id), []);
+
+	/**
+	 * Como encerrar a conta agora sem mexer no patrimônio (`planAccountClose`), lido do banco
+	 * na hora: o saldo de hoje como a tela mostra (com as compras provisórias da caixa de
+	 * entrada e o rendimento estimado), as compras pendentes dela e o que ela tem com data
+	 * depois de hoje.
+	 */
+	const planClose = useCallback(
+		async (id: string): Promise<ClosePlan> => {
+			const today = todayISO();
+			const [list, ledger, pending, entries, moves] = await Promise.all([
+				getAccounts(),
+				getAccountBalances(today),
+				getPendingCaptures(),
+				getAccountTransactions(id),
+				getAccountTransfers(id),
+			]);
+			const live = list.filter((account) => !account.deletedAt);
+			const account = live.find((candidate) => candidate.id === id);
+			if (!account) throw new Error('Conta não encontrada');
+			const shown = withProvisionalBalances(ledger, live, provisionalEntriesByAccount(pending, live), today);
+			return planAccountClose({
+				account,
+				balanceCents: (shown.get(id) ?? 0) + (accruedYield.get(id) ?? 0),
+				pendingCaptures: pending.filter((capture) => capture.accountId === id).length,
+				futureEntries:
+					entries.filter((entry) => entry.date > today).length + moves.filter((move) => move.date > today).length,
+			});
+		},
+		[accruedYield]
+	);
+
+	// O encerramento que acabou de acontecer (SPD-154). Sai sozinho no fim da janela.
+	const [closingUndo, setClosingUndo] = useState<CloseUndo | null>(null);
+	useEffect(() => {
+		if (!closingUndo) return undefined;
+		const timer = setTimeout(
+			() => setClosingUndo((current) => (current === closingUndo ? null : current)),
+			closeUndoRemainingMs(closingUndo, Date.now())
+		);
+		return () => clearTimeout(timer);
+	}, [closingUndo]);
+	const dismissClosingUndo = useCallback(() => setClosingUndo(null), []);
+
+	/**
+	 * Encerra (`archived`) sem mexer no patrimônio. Com saldo, uma transferência de hoje leva
+	 * o saldo para `counterpartId` (ou traz dele, se negativo) antes: o dinheiro muda de conta
+	 * e o total fica. O histórico não é tocado. Recusa — sem mudar nada — o plano bloqueado
+	 * (cartão devendo, compra a revisar, lançamento futuro) e a transferência sem destino.
+	 *
+	 * Serve também para acertar o saldo de uma conta que já estava encerrada com saldo.
+	 *
+	 * Encerrando uma conta ativa, guarda o que mudou (a âncora de antes e a transferência
+	 * criada) para o "Desfazer" curto que vem logo depois (SPD-154).
+	 */
+	const closeAccount = useCallback(
+		async (id: string, counterpartId: string | null): Promise<CloseUndo | null> => {
+			const plan = await planClose(id);
+			if (plan.kind === 'blocked') throw new Error(`Encerrar recusado: ${plan.reason}`);
+			const account = await getAccount(id);
+			if (!account || account.deletedAt) throw new Error('Conta não encontrada');
+
+			let transferId: string | null = null;
+			if (plan.kind === 'transfer') {
+				const counterpart = counterpartId && counterpartId !== id ? await getAccount(counterpartId) : null;
+				if (!counterpart || counterpart.deletedAt) throw new Error('Encerrar com saldo precisa de uma conta de destino');
+				const today = todayISO();
+				// A transferência leva o saldo da tela, rendimento estimado inclusive (`planClose`).
+				// A âncora não muda: regravá-la com o estimado empurraria esses centavos para o
+				// patrimônio de cada mês passado (SPD-155). No livro a conta fica com −estimado, e o
+				// estimado, calculado da mesma âncora, a deixa em zero na tela.
+				transferId = await addTransfer({
+					fromAccountId: plan.direction === 'out' ? id : counterpart.id,
+					toAccountId: plan.direction === 'out' ? counterpart.id : id,
+					amountCents: plan.amountCents,
+					date: today,
+					note: CLOSING_TRANSFER_NOTE,
+				});
+			}
+			if (!account.archived) await updateAccount({ ...account, archived: true });
+			// A conta que já estava encerrada (acertar o saldo) não ganha "Desfazer": o caminho dela é Reabrir.
+			const undo: CloseUndo | null = account.archived
+				? null
+				: {
+						accountId: id,
+						openingBalanceCents: account.openingBalanceCents,
+						openingBalanceDate: account.openingBalanceDate,
+						transferId,
+						closedAt: Date.now(),
+					};
+			if (undo) setClosingUndo(undo);
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+			return undo;
+		},
+		[planClose, refresh, refreshData]
+	);
+
+	/**
+	 * Desfaz o encerramento que acabou de acontecer (SPD-154): a conta volta a ativa, com a
+	 * âncora de antes (se o encerramento a mexeu ao levar o rendimento estimado, ela volta), e a
+	 * transferência de encerramento é apagada (lápide, suja para o sync). Nada mais é tocado:
+	 * a impressão digital financeira volta a ser exatamente a de antes do encerramento.
+	 * Passada a janela, ou para outra conta, rejeita sem mudar nada — o caminho é "Reabrir".
+	 */
+	const undoClose = useCallback(
+		async (id: string) => {
+			const undo = closingUndo;
+			if (!undo || undo.accountId !== id || !canUndoClose(undo, Date.now())) {
+				throw new Error('Desfazer o encerramento não está mais disponível');
+			}
+			setClosingUndo(null);
+			const undone = await undoAccountClose(undo);
+			if (!undone) throw new Error('A conta não está mais encerrada');
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[closingUndo, refresh, refreshData]
+	);
+
+	/** Reabre uma conta encerrada: volta às listas, aos seletores e aos totais de hoje. */
+	const reopenAccount = useCallback(
+		async (id: string) => {
+			// Reaberta, não há mais encerramento para desfazer.
+			setClosingUndo((current) => (current?.accountId === id ? null : current));
+			const account = await getAccount(id);
+			if (!account || account.deletedAt || !account.archived) return;
+			await updateAccount({ ...account, archived: false });
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[refresh, refreshData]
 	);
+
+	/**
+	 * A decisão para uma encerrada com saldo (SPD-150). A lista mostrou antes o efeito em R$
+	 * (`closedDecisionEffect`); aqui ele acontece, sem gasto nem receita no histórico:
+	 *
+	 * - transferir: o encerramento do SPD-144 (`closeAccount`), uma transferência de hoje para
+	 *   a conta escolhida ou dela. No cartão devendo, a conta escolhida paga a fatura;
+	 * - reabrir: `reopenAccount`;
+	 * - zerar: a conta ganha um saldo de partida que a deixa em zero hoje (o passado dela some
+	 *   junto: o dinheiro não existe mais); o cartão recebe a fatura como paga fora do app (ou
+	 *   o crédito sai para fora), uma transferência de hoje com o outro lado vazio — mexer na
+	 *   âncora do cartão reescreveria as faturas dos meses fechados.
+	 *
+	 * Compra a revisar ou lançamento com data futura na conta recusam (o saldo ainda vai mudar),
+	 * como no encerrar; reabrir vale sempre.
+	 */
+	const settleClosedAccount = useCallback(
+		async (id: string, decision: ClosedSettlement) => {
+			const account = await getAccount(id);
+			if (!account || account.deletedAt || !account.archived) throw new Error('Conta encerrada não encontrada');
+			if (decision.kind === 'reopen') {
+				await reopenAccount(id);
+				return;
+			}
+			const plan = await planClose(id);
+			if (plan.kind === 'blocked' && plan.reason !== 'cardOwes') throw new Error(`Decisão recusada: ${plan.reason}`);
+			if (plan.kind === 'direct') {
+				await refresh();
+				return;
+			}
+			const today = todayISO();
+			const owes = plan.kind === 'blocked' || plan.direction === 'in';
+
+			if (decision.kind === 'transfer') {
+				if (plan.kind !== 'blocked') {
+					// Só conta principal ativa recebe (ou cobre) o saldo, a regra da lista
+					// (`closedReviewTargets`, SPD-155). O encerrar normal tem a lista dele.
+					const target = await getAccount(decision.targetId);
+					if (!target || target.id === id || !isDebitTarget(target)) {
+						throw new Error('Transferir o saldo precisa de uma conta principal ativa');
+					}
+					await closeAccount(id, decision.targetId);
+					return;
+				}
+				// O cartão devendo: a conta escolhida paga a fatura. Só conta principal ativa, a regra
+				// da lista (`closedReviewTargets`, SPD-155): nem Reserva, nem externa.
+				const payer = await getAccount(decision.targetId);
+				if (!payer || !isDebitTarget(payer)) {
+					throw new Error('Pagar a fatura precisa de uma conta principal ativa');
+				}
+				await addTransfer({ fromAccountId: payer.id, toAccountId: id, amountCents: plan.amountCents, date: today, note: CLOSING_TRANSFER_NOTE });
+			} else if (account.kind === 'credit_card') {
+				await addTransfer({
+					fromAccountId: owes ? null : id,
+					toAccountId: owes ? id : null,
+					amountCents: plan.amountCents,
+					date: today,
+					note: CLOSING_TRANSFER_NOTE,
+				});
+			} else {
+				await setAccountBalanceToday(id, 0);
+			}
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[planClose, closeAccount, reopenAccount, refresh, refreshData]
+	);
+
+	const dismissRevivalNotices = useCallback(() => {
+		setRevivalNotices([]);
+		void clearRevivalNotices();
+	}, []);
+
+	// As encerradas com saldo que a lista já mostrou (só neste aparelho). Nulo até ler.
+	const [closedReviewSeen, setClosedReviewSeen] = useState<Set<string> | null>(null);
+	useEffect(() => {
+		void getClosedReviewSeen().then(setClosedReviewSeen);
+	}, []);
 
 	const adjustAccountMonth = useCallback(
 		async (id: string, input: { spentCents: number; balanceCents: number }) => {
@@ -648,33 +884,32 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh, refreshData, categories]
 	);
 
-	const adjustCardInvoices = useCallback(
-		async (cardId: string, openCents: number | null, closedCents: number | null) => {
+	const planCardClosingChange = useCallback(
+		async (cardId: string, cycle: Pick<CardSettings, 'closingDay' | 'closingDaysBefore' | 'dueDay'>) => {
 			const card = (await getAccounts()).find((account) => account.id === cardId);
-			if (!card) return;
-			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
-			const entries: CardEntry[] = cardTransactions.map((tx) => ({
-				id: tx.id,
-				amountCents: tx.amountCents,
-				isIncome: tx.isIncome,
-				date: tx.date,
-				note: tx.note,
-				category: tx.category,
-				installmentGroup: tx.installmentGroup,
-				installmentIndex: tx.installmentIndex,
-				installmentCount: tx.installmentCount,
-				cardLast4: tx.cardLast4,
-			}));
-			// Compras ainda na caixa de entrada já estão na fatura do banco: entram na conta.
-			for (const capture of await getPendingCaptures()) entries.push(...provisionalEntries(capture, card));
-			const movements: CardMovement[] = cardTransfers.map((transfer) => ({
-				amountCents: transfer.amountCents,
-				date: transfer.date,
-				inbound: transfer.toAccountId === card.id,
-			}));
+			if (!card) return null;
+			const { entries, movements } = await loadCardInputs(card);
+			const next = { ...card, ...cycle };
+			const anchor = reanchorForRule(card, cycleRuleOf(next), entries, movements);
+			const changes = invoiceChangesForRule(card, { ...next, ...anchor }, entries, movements, todayISO());
+			return { anchor, changes };
+		},
+		[]
+	);
+
+	const adjustCardInvoices = useCallback(
+		async (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean; asCharge?: boolean }) => {
+			const card = (await getAccounts()).find((account) => account.id === cardId);
+			if (!card) return 0;
+			const { entries, movements } = await loadCardInputs(card);
 
 			const today = todayISO();
-			const plan = planCardAdjustment(card, entries, movements, today, openCents, closedCents);
+			// A diferença a mais como encargo: comparada com o que a folha mostrou, que é o mesmo
+			// resumo calculado aqui, e o resto vai para o acerto de sempre.
+			const split = options?.asCharge
+				? splitCardCharges(cardChargeShown(card, buildCardSummary(card, entries, movements, today)), today, openCents, closedCents)
+				: { openCents, closedCents, charges: [], totalCents: 0 };
+			const plan = (options?.opening ? planCardOpening : planCardAdjustment)(card, entries, movements, today, split.openCents, split.closedCents);
 			// Sem a fatura fechada informada não há âncora nova: mexer nela zeraria a fechada
 			// que o usuário não falou nada sobre.
 			if (plan.anchor) await setAccountAnchor(card.id, plan.anchor.cents, plan.anchor.date);
@@ -684,11 +919,41 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					amountCents: Math.abs(plan.adjustmentCents),
 					category: resolveCategoryId(isIncome ? 'other_income' : 'other_expense', isIncome ? 'in' : 'out', categories),
 					date: today,
-					note: ADJUSTMENT_NOTE,
+					note: CARD_ADJUSTMENT_NOTE,
 					isIncome,
 					accountId: card.id,
 				});
 			}
+			for (const charge of split.charges) {
+				await addTransaction({
+					amountCents: charge.cents,
+					category: resolveCategoryId('other_expense', 'out', categories),
+					date: charge.date,
+					note: cardChargeNote('bank'),
+					isIncome: false,
+					accountId: card.id,
+				});
+			}
+			syncQueue.schedule();
+			await Promise.all([refresh(), refreshData()]);
+			return split.totalCents;
+		},
+		[refresh, refreshData, categories]
+	);
+
+	const addCardCharge = useCallback(
+		async (cardId: string, kind: CardChargeKind, amountCents: number, date: string) => {
+			if (amountCents <= 0) return;
+			await addTransaction({
+				amountCents,
+				// Nasce em "Outras despesas", como o ajuste; os relatórios o tiram de lá e mostram
+				// numa linha própria pela nota (`isCardCharge`), seja qual for a categoria.
+				category: resolveCategoryId('other_expense', 'out', categories),
+				date,
+				note: cardChargeNote(kind),
+				isIncome: false,
+				accountId: cardId,
+			});
 			syncQueue.schedule();
 			await Promise.all([refresh(), refreshData()]);
 		},
@@ -740,16 +1005,69 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh]
 	);
 
+	const saveTransfer = useCallback(
+		async (input: TransferInput) => {
+			const { fromAccountId, toAccountId, amountCents, date } = input;
+			if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error('Transfer amount must be positive');
+			if (fromAccountId === toAccountId || (fromAccountId === null && toAccountId === null)) {
+				throw new Error('Transfer needs two different accounts');
+			}
+			const note = input.note.trim();
+			if (input.id) {
+				// O mesmo `updateTransfer` com que a captura e o pagamento de fatura completam uma
+				// transferência: a linha fica suja e a fila de sync a leva.
+				await updateTransfer({ id: input.id, fromAccountId, toAccountId, amountCents, date, note });
+			} else {
+				// Para um cartão é o pagamento de fatura, com a mesma conferência do botão "Pagar
+				// fatura" (não lança de novo o que o aviso do banco já registrou). Dois caminhos
+				// para o mesmo dinheiro divergiriam na primeira notificação.
+				const destination = toAccountId ? await getAccount(toAccountId) : null;
+				if (toAccountId && destination?.kind === 'credit_card') {
+					return recordCardPayment(toAccountId, fromAccountId, amountCents, date);
+				}
+				await addTransfer({ fromAccountId, toAccountId, amountCents, date, note });
+			}
+			syncQueue.schedule();
+			await refresh();
+			return true;
+		},
+		[refresh, recordCardPayment]
+	);
+
+	const removeTransfer = useCallback(
+		async (id: string) => {
+			await deleteTransfer(id);
+			syncQueue.schedule();
+			await refresh();
+		},
+		[refresh]
+	);
+
 	const addExistingInstallments = useCallback(
 		async (input: ExistingInstallmentsInput) => {
 			const card = accounts.find((account) => account.id === input.cardId);
 			if (!card) return 0;
+			const today = todayISO();
+			// A parcela atual já está na fatura informada? A mesma pergunta que a prévia da folha
+			// faz, com os lançamentos gravados do cartão.
+			const ledger: CardEntry[] = (await getAccountTransactions(card.id)).map((tx) => ({
+				id: tx.id,
+				amountCents: tx.amountCents,
+				isIncome: tx.isIncome,
+				date: tx.date,
+				note: tx.note,
+				category: tx.category,
+				installmentGroup: tx.installmentGroup,
+				installmentIndex: tx.installmentIndex,
+				installmentCount: tx.installmentCount,
+			}));
 			const dates = existingInstallmentDates(
 				input.currentIndex,
 				input.totalCount,
 				cycleRuleOf(card),
-				todayISO(),
-				card.openingBalanceDate
+				today,
+				card.openingBalanceDate,
+				openInvoiceInformed(card, ledger, today)
 			);
 			const group = generateUniqueId();
 			for (const { index, date } of dates) {
@@ -765,8 +1083,10 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 					installmentCount: input.totalCount,
 				});
 			}
-			syncQueue.schedule();
-			await refreshData();
+			if (dates.length > 0) {
+				syncQueue.schedule();
+				await refreshData();
+			}
 			return dates.length;
 		},
 		[accounts, refreshData]
@@ -780,12 +1100,19 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	 * O total não muda (SPD-073): o saldo da que sai passa para a que fica. Se as duas
 	 * contavam o mesmo dinheiro, o total já estava dobrado antes de juntar, e "Acertar com o
 	 * banco" corrige; somar em silêncio menos do que havia é que não pode.
+	 *
+	 * Só do mesmo papel (SPD-152), ou com a que sai vazia: a reserva juntada na corrente
+	 * mantinha o total de hoje, mas o "Guardado" de outubro sumia do histórico. Papéis
+	 * diferentes com conteúdo recusam com `MergeRoleError`, sem mudar nada.
 	 */
 	const mergeAccounts = useCallback(
 		async (fromId: string, intoId: string) => {
 			const from = accounts.find((account) => account.id === fromId);
 			const into = accounts.find((account) => account.id === intoId);
 			if (!from || !into || fromId === intoId) return;
+			// Do mesmo papel nem precisa contar o que a que sai tem.
+			const sameRole = from.role === into.role && from.kind !== 'credit_card' && into.kind !== 'credit_card';
+			if (!sameRole && !canMergeAccounts(from, into, await getAccountContents(fromId))) throw new MergeRoleError();
 
 			await foldAccountBalance(fromId, intoId);
 			await moveAccountLedger(fromId, intoId, from.last4);
@@ -815,11 +1142,95 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				envelopeMonthlyCents: into.envelopeMonthlyCents ?? from.envelopeMonthlyCents,
 				yieldCdiBp: into.yieldCdiBp ?? from.yieldCdiBp,
 			});
-			await deleteAccount(fromId);
+			await retireMergedAccount(fromId);
 			syncQueue.schedule();
+			// As contas a pagar e as dívidas da que saiu vieram junto (SPD-099); as listas delas
+			// estão em providers abaixo deste, e só o aviso as faz reler.
+			emitBillsChanged();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[accounts, refresh, refreshData]
+	);
+
+	/**
+	 * Juntar sozinho a ficha duplicada vazia (SPD-116, DEC-36 Q4).
+	 *
+	 * Roda aqui porque é onde as contas são carregadas: na abertura, depois de cada escrita,
+	 * ao voltar ao app e depois do sync (`useAfterPull`), sempre por `setAccounts`. Do par do
+	 * aviso "Duas contas do mesmo banco", a ficha totalmente vazia e nunca editada
+	 * (`autoMergeAccounts.ts`) vai para a outra pelo `mergeAccounts` de sempre — sync, lápide,
+	 * contas a pagar, tudo como no botão. O par marcado como contas diferentes, o da PJ e os
+	 * cartões ficam com o aviso.
+	 *
+	 * Com o sync no meio, não: uma ficha baixada pode parecer vazia só porque os lançamentos
+	 * dela ainda estão numa página por vir (o mesmo cuidado do reparo das contas fantasma). O
+	 * fim da rodada relê as contas e isto roda de novo.
+	 *
+	 * Cada ficha é tentada uma vez por abertura do app: junta, e a ficha sai; se a junção
+	 * falhar no meio, o aviso de sempre continua lá para o usuário decidir.
+	 */
+	const [autoMergeNotices, setAutoMergeNotices] = useState<AutoMergeNotice[]>([]);
+	const autoMergeBusy = useRef(false);
+	const autoMergeTried = useRef(new Set<string>());
+
+	useEffect(() => {
+		void getAutoMergeNotices().then((stored) => {
+			if (stored.length > 0) setAutoMergeNotices((current) => (current.length > 0 ? current : stored));
+		});
+	}, []);
+
+	const dismissAutoMergeNotices = useCallback(() => {
+		setAutoMergeNotices([]);
+		void clearAutoMergeNotices();
+	}, []);
+
+	useEffect(() => {
+		if (autoMergeBusy.current) return;
+		const candidates = autoMergeCandidates(accounts).filter((account) => !autoMergeTried.current.has(account.id));
+		if (candidates.length === 0) return;
+
+		autoMergeBusy.current = true;
+		void (async () => {
+			try {
+				if (syncQueue.getState().status === 'syncing') return;
+				const [distinct, feeds, dismissed] = await Promise.all([
+					getDistinctAccountPairs(),
+					getBusinessFeeds(),
+					getDismissedBalanceUnset(),
+				]);
+				const empty = new Set<string>();
+				for (const account of candidates) {
+					if (isEmptyUntouched(account, await linksOf(account.id), dismissed.has(account.id))) empty.add(account.id);
+				}
+				for (const { from, into } of planAutoMerges(accounts, empty, distinct, Object.values(feeds))) {
+					autoMergeTried.current.add(from.id);
+					await mergeAccounts(from.id, into.id);
+					setAutoMergeNotices(await addAutoMergeNotice({ from: from.name, into: into.name }));
+					// Diário (SPD-014): a decisão, sem nome nem valor.
+					log('app', 'account_auto_merged', { data: { reason: 'empty_duplicate' } });
+				}
+			} catch (error) {
+				console.error('Error auto-merging accounts:', error);
+			} finally {
+				autoMergeBusy.current = false;
+			}
+		})();
+	}, [accounts, mergeAccounts]);
+
+	/**
+	 * Dois cartões para o mesmo cartão do banco — o cadastrado à mão e o que o extrato OFX
+	 * criou, por exemplo. Como no `mergeAccounts`, a dívida de um soma na do outro e o
+	 * patrimônio não muda (SPD-152). A regra inteira está em `mergeCardInto`.
+	 */
+	const mergeCards = useCallback(
+		async (fromId: string, intoId: string) => {
+			await mergeCardInto(fromId, intoId);
+			syncQueue.schedule();
+			// Como em `mergeAccounts`: contas a pagar e dívidas mudaram de cartão.
+			emitBillsChanged();
+			await Promise.all([refresh(), refreshData()]);
+		},
+		[refresh, refreshData]
 	);
 
 	/**
@@ -867,19 +1278,46 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[accounts, refresh]
 	);
 
+	/**
+	 * O "cartão de crédito" que era o débito de uma conta vira o cartão de débito dela: as
+	 * compras passam para a conta, e o cartão sai.
+	 *
+	 * O patrimônio não muda (SPD-152), como em `mergeAccounts`: o saldo do cartão — a dívida —
+	 * entra na âncora da conta (`foldAccountBalance`), e as transferências vêm junto
+	 * (`repointTransfers`). Antes elas eram apagadas: o pagamento de R$ 800 da Corrente ao
+	 * cartão voltava para a Corrente, e a fatura informada sumia — o saldo da conta e o
+	 * patrimônio subiam sem aviso. O pagamento da própria conta ao cartão vira transferência da
+	 * conta para ela mesma e some (o mesmo dinheiro com duas fichas); o de outra conta continua
+	 * saindo dela e passa a entrar nesta. A confirmação mostra o saldo da conta antes e depois.
+	 * Só para conta principal (`isDebitTarget`): em reserva ou externa o histórico mudaria.
+	 *
+	 * Com parcela por cair (lançamento ou transferência do cartão com data depois de hoje),
+	 * recusa (`DebitFutureError`) antes de mexer em qualquer coisa: no cartão ela já é dívida;
+	 * na conta, só sairia no dia dela — 2 × R$ 250 fariam o patrimônio de hoje subir R$ 500
+	 * sem nada ter sido pago. Depois da última, leva normalmente.
+	 */
 	const convertCardToDebit = useCallback(
 		async (cardId: string, accountId: string) => {
 			const card = accounts.find((account) => account.id === cardId);
 			const checking = accounts.find((account) => account.id === accountId);
+			if (!card || !checking || card.kind !== 'credit_card' || !isDebitTarget(checking)) return;
+			const today = todayISO();
+			const [entries, moves] = await Promise.all([getAccountTransactions(cardId), getAccountTransfers(cardId)]);
+			if (entries.some((entry) => entry.date > today) || moves.some((move) => move.date > today)) {
+				throw new DebitFutureError();
+			}
 			// O nome do "cartão" vira o nome do cartão de débito da conta.
-			if (card?.last4 && checking) {
+			if (card.last4) {
 				await setAccountCardNames(checking.id, withCardName(checking.cardNames, card.last4, card.name));
 			}
-			await moveAccountLedger(cardId, accountId, card?.last4 ?? null);
-			// "Pagamentos" para um débito não existiram: tirá-los evita debitar a conta duas vezes.
-			await deleteTransfersOf(cardId);
-			await deleteAccount(cardId);
+			// Antes de mover: depois o cartão não tem mais saldo para ler.
+			await foldAccountBalance(cardId, accountId);
+			await moveAccountLedger(cardId, accountId, card.last4);
+			await repointTransfers(cardId, accountId);
+			await retireMergedAccount(cardId);
 			syncQueue.schedule();
+			// Como em `mergeAccounts`: contas a pagar e dívidas do cartão foram para a conta.
+			emitBillsChanged();
 			await Promise.all([refresh(), refreshData()]);
 		},
 		[accounts, refresh, refreshData]
@@ -911,7 +1349,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[]
 	);
 
-	const activeAccounts = useMemo(() => accounts.filter((account) => !account.archived).sort(byOrder), [accounts]);
+	const activeAccounts = useMemo(() => activeAccountsOf(accounts), [accounts]);
 	const bankAccounts = useMemo(() => activeAccounts.filter((account) => account.kind !== 'credit_card'), [activeAccounts]);
 	const creditCards = useMemo(() => activeAccounts.filter((account) => account.kind === 'credit_card'), [activeAccounts]);
 	const overview = useMemo(
@@ -926,6 +1364,20 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		const withoutPending = summarizeAccounts(accounts, ledgerOnly, unassignedNetCents);
 		return { cashCents: overview.cashCents - withoutPending.cashCents, netCents: overview.netCents - withoutPending.netCents };
 	}, [accounts, balances, provisionalBalances, unassignedNetCents, overview]);
+
+	// O devido de cada cartão como o Patrimônio soma, para o efeito que a lista mostra.
+	const closedReview = useMemo(() => {
+		const cardOwed = new Map<string, number>();
+		for (const [cardId, summary] of cardSummaries) cardOwed.set(cardId, summary.owedCents);
+		return closedReviewItems(accounts, balances, cardOwed);
+	}, [accounts, balances, cardSummaries]);
+	const closedReviewUnseen = closedReviewSeen !== null && unseenClosedReview(closedReview, closedReviewSeen);
+	const markClosedReviewShown = useCallback(() => {
+		const ids = closedReview.map((item) => item.account.id);
+		if (ids.length === 0) return;
+		setClosedReviewSeen((current) => new Set([...(current ?? []), ...ids]));
+		void markClosedReviewSeen(ids);
+	}, [closedReview]);
 
 	const debitCards = useMemo<DebitCard[]>(() => {
 		const byKey = new Map<string, DebitCard>();
@@ -953,23 +1405,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		);
 	}, [bankAccounts, transactions, startDate, endDate]);
 
-	const cardsTotals = useMemo(() => {
-		let toPayCents = 0;
-		let openInvoicesCents = 0;
-		let limitUsedCents = 0;
-		let limitAvailableCents: number | null = null;
-		for (const card of creditCards) {
-			const summary = cardSummaries.get(card.id);
-			if (!summary) continue;
-			toPayCents += summary.toPayCents;
-			openInvoicesCents += Math.max(0, summary.openInvoiceCents);
-			limitUsedCents += summary.limitUsedCents;
-			if (summary.limitAvailableCents !== null) {
-				limitAvailableCents = (limitAvailableCents ?? 0) + summary.limitAvailableCents;
-			}
-		}
-		return { toPayCents, openInvoicesCents, limitAvailableCents, limitUsedCents };
-	}, [creditCards, cardSummaries]);
+	const cardsTotals = useMemo(() => cardsTotalsOf(creditCards, cardSummaries), [creditCards, cardSummaries]);
 
 	const value = useMemo<AccountsContextType>(
 		() => ({
@@ -999,12 +1435,32 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			cardLedgerRepair,
 			dismissCardLedgerRepair,
 			removeAccount,
+			loadAccountContents,
+			planClose,
+			closeAccount,
+			closingUndo,
+			undoClose,
+			dismissClosingUndo,
+			reopenAccount,
+			closedReview,
+			settleClosedAccount,
+			closedReviewUnseen,
+			markClosedReviewShown,
+			revivalNotices,
+			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			planCardClosingChange,
+			addCardCharge,
 			recordCardPayment,
+			saveTransfer,
+			removeTransfer,
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			autoMergeNotices,
+			dismissAutoMergeNotices,
+			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,
 			renameCard,
@@ -1038,12 +1494,32 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			cardLedgerRepair,
 			dismissCardLedgerRepair,
 			removeAccount,
+			loadAccountContents,
+			planClose,
+			closeAccount,
+			closingUndo,
+			undoClose,
+			dismissClosingUndo,
+			reopenAccount,
+			closedReview,
+			settleClosedAccount,
+			closedReviewUnseen,
+			markClosedReviewShown,
+			revivalNotices,
+			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			planCardClosingChange,
+			addCardCharge,
 			recordCardPayment,
+			saveTransfer,
+			removeTransfer,
 			addExistingInstallments,
 			convertCardToDebit,
 			mergeAccounts,
+			autoMergeNotices,
+			dismissAutoMergeNotices,
+			mergeCards,
 			takeNotifications,
 			takeBusinessNotifications,
 			renameCard,

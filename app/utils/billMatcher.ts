@@ -6,18 +6,31 @@
  * propósito — melhor deixar a conta pendente (rende um lembrete a mais) do que dar baixa na
  * conta errada (esconde um vencimento de verdade):
  *
- *  - só despesa; conta ativa, não apagada, com o mês ainda não pago e cuja última baixa
- *    não foi este mesmo movimento;
- *  - a data cai de 10 dias antes a 5 dias depois do vencimento (dia preso ao fim do mês,
- *    `billDueDate`); o mês quitado é o desse vencimento;
+ *  - só despesa; conta ativa, não apagada, cuja última baixa não foi este mesmo movimento;
+ *  - o mês quitado é sempre o mais antigo em aberto (`firstOpenMonth`, visto do mês do
+ *    movimento, até 3 meses para trás — SPD-145): com outubro em aberto, um pagamento de
+ *    05/11 quita outubro, nunca novembro. Nenhum mês em aberto é pulado;
+ *  - a data cai de 10 dias antes a 5 dias depois do vencimento desse mês (dia preso ao fim do
+ *    mês, `billDueDate`); depois disso o mês está atrasado e o pagamento ainda vale, mas só
+ *    com o nome/dica no texto — só o valor é pouco para dizer que é dela. Antes da janela,
+ *    não casa;
  *  - a conta de pagamento, se a conta a pagar tiver uma, é a do movimento;
  *  - com valor: dentro de 1% ou R$ 1 (o maior), e o nome/dica no texto ou o valor exato;
  *    sem valor (varia): o nome ou uma das dicas no texto, palavra inteira;
  *  - mais de uma candidata: fica a de texto casado; empate, nenhuma.
+ *
+ * A conta sem mês pago nenhum (`paidThrough` nulo: a de dívida antes do mês de partida) não tem
+ * passado em aberto: o mês quitado é o do vencimento mais próximo, como antes.
+ *
+ * Com os registros dos meses (SPD-146): o mês pulado e o pago fora de ordem não são "em
+ * aberto" — o mais antigo em aberto passa por cima deles —, e um lançamento que já é o
+ * pagamento de um mês registrado não casa de novo.
  */
 
-import type { Bill, BillDraft } from '../database/schema';
-import { billDueDate } from './billReminders';
+import type { Bill, BillDraft, BillPayment, BillPaymentDraft } from '../database/schema';
+import { paymentByTransaction, paymentFor } from './billPayments';
+import { billDueDate, firstUnsettledMonth } from './billReminders';
+import { undoMonth } from './billRules';
 import { monthKeyOf, shiftMonthKey } from './dateUtils';
 
 /** Quantos dias antes do vencimento um pagamento ainda é daquele mês. */
@@ -44,6 +57,50 @@ export interface BillMatch {
 	/** Mês quitado, `YYYY-MM`. */
 	month: string;
 }
+
+/**
+ * A conta a pagar que um lançamento quitou, para o aviso dizer qual foi (SPD-153): o mês
+ * quitado é o mais antigo em aberto, que pode não ser o do pagamento.
+ */
+export interface SettledBill {
+	name: string;
+	/** Mês quitado, `YYYY-MM`. */
+	month: string;
+}
+
+/** O que o aviso precisa de uma baixa: o nome da conta e o mês. */
+export const settledBillOf = (match: BillMatch | null): SettledBill | null =>
+	match ? { name: match.bill.name, month: match.month } : null;
+
+/**
+ * O nome da conta a pagar cuja última baixa foi o lançamento `ref`, ou `null`. Só o nome: o
+ * mês não sai daqui com segurança, porque "Só marcar como paga" avança `paidThrough` e mantém
+ * o `paidByRef` (`markedPaid`) — o mês gravado pode ser um pago à mão depois (SPD-153).
+ */
+export const billNameSettledBy = (bills: Pick<Bill, 'name' | 'paidByRef' | 'deletedAt'>[], ref: string | null): string | null => {
+	if (!ref) return null;
+	return bills.find((bill) => bill.paidByRef === ref && !bill.deletedAt)?.name ?? null;
+};
+
+/**
+ * A conta a pagar que o lançamento `ref` quitou, com o mês quando há registro dele (SPD-146):
+ * o registro guarda o lançamento de cada mês, então o mês sai certo. Sem registro (baixa de
+ * antes do SPD-146, ou desfeita), só o nome, pela última baixa (`billNameSettledBy`).
+ */
+export const billSettledBy = (
+	bills: Pick<Bill, 'id' | 'name' | 'paidByRef' | 'deletedAt'>[],
+	payments: readonly BillPayment[],
+	ref: string | null
+): { name: string; month: string | null } | null => {
+	if (!ref) return null;
+	const record = paymentByTransaction(payments, ref);
+	const bill = record
+		? bills.find((candidate) => candidate.id === record.billId && !candidate.deletedAt)
+		: undefined;
+	if (record && bill) return { name: bill.name, month: record.month };
+	const name = billNameSettledBy(bills, ref);
+	return name === null ? null : { name, month: null };
+};
 
 /** Número do dia, em UTC só para contar: não depende do fuso do aparelho. */
 const dayNumber = (isoDate: string): number => {
@@ -101,40 +158,88 @@ const textMatches = (bill: Bill, text: string | null): boolean => {
 /** Tolerância do valor: 1% ou R$ 1, o maior. */
 const toleranceOf = (amountCents: number): number => Math.max(Math.round(Math.abs(amountCents) * 0.01), 100);
 
-const isMonthPaid = (bill: Pick<Bill, 'paidThrough'>, month: string): boolean =>
-	bill.paidThrough !== null && bill.paidThrough !== undefined && bill.paidThrough >= month;
+/**
+ * Como o movimento casa com a conta, sem olhar a data: `'text'` (nome ou dica no texto, e o
+ * valor dentro da tolerância), `'amount'` (só o valor exato) ou `null`. Também confere que é
+ * despesa e que saiu da conta de pagamento exigida.
+ */
+const fitOf = (bill: Bill, movement: BillMovement): 'text' | 'amount' | null => {
+	if (!movement.isExpense) return null;
+	const amount = Math.abs(movement.amountCents);
+	if (amount === 0) return null;
+	if (bill.accountId && bill.accountId !== movement.accountId) return null;
+
+	const byText = textMatches(bill, movement.text);
+	if (bill.amountCents === null || bill.amountCents === undefined) return byText ? 'text' : null;
+
+	const expected = Math.abs(bill.amountCents);
+	if (Math.abs(amount - expected) > toleranceOf(expected)) return null;
+	if (byText) return 'text';
+	return amount === expected ? 'amount' : null;
+};
+
+/**
+ * Este movimento paga o mês `month` (`YYYY-MM`) desta conta? Da janela do vencimento (10 dias
+ * antes a 5 depois) em diante: na janela, pelo texto ou pelo valor exato; depois dela (o mês
+ * atrasado), só pelo texto — salvo `lateByAmount`, que o "Já paguei" usa para achar um
+ * pagamento já lançado: ali é o usuário quem diz que pagou. Antes da janela, não.
+ *
+ * Não olha se o mês está pago nem a última baixa: isso é de quem chama.
+ */
+export const paysBillMonth = (
+	bill: Bill,
+	movement: BillMovement,
+	month: string,
+	options: { lateByAmount?: boolean } = {}
+): boolean => {
+	const offset = dayNumber(movement.date) - dayNumber(billDueDate(bill, month));
+	if (offset < -BILL_MATCH_DAYS_BEFORE) return false;
+	const fit = fitOf(bill, movement);
+	if (!fit) return false;
+	if (offset <= BILL_MATCH_DAYS_AFTER) return true;
+	return fit === 'text' || options.lateByAmount === true;
+};
+
+/**
+ * O mês que o movimento quitaria nesta conta: o mais antigo em aberto, visto do mês do
+ * movimento, sem os que já têm registro. Sem mês pago nenhum, o do vencimento mais próximo
+ * (`dueMonthFor`), se ainda não tiver registro.
+ */
+const monthToSettle = (
+	bill: Bill,
+	date: string,
+	payments: readonly BillPayment[]
+): string | null => {
+	if (bill.paidThrough !== null && bill.paidThrough !== undefined) {
+		return firstUnsettledMonth(bill, monthKeyOf(date), payments);
+	}
+	const month = dueMonthFor(bill, date);
+	return month && !paymentFor(payments, bill.id, month) ? month : null;
+};
 
 /**
  * Qual conta a pagar (e qual mês) este movimento quita, ou `null`.
  *
  * Na dúvida, `null`: duas candidatas com o texto casado (duas contas iguais), ou duas
- * só pelo valor exato, não dão baixa em nenhuma.
+ * só pelo valor exato, não dão baixa em nenhuma. O lançamento que já é o pagamento registrado
+ * de um mês (`payments`) não casa de novo.
  */
-export const matchBillPayment = (bills: Bill[], movement: BillMovement): BillMatch | null => {
-	if (!movement.isExpense) return null;
-	const amount = Math.abs(movement.amountCents);
-	if (amount === 0) return null;
-
+export const matchBillPayment = (
+	bills: Bill[],
+	movement: BillMovement,
+	payments: readonly BillPayment[] = []
+): BillMatch | null => {
+	if (paymentByTransaction(payments, movement.id)) return null;
 	const candidates: { match: BillMatch; byText: boolean }[] = [];
 
 	for (const bill of bills) {
 		if (!bill.active || bill.deletedAt) continue;
 		if (bill.paidByRef === movement.id) continue;
-		if (bill.accountId && bill.accountId !== movement.accountId) continue;
 
-		const month = dueMonthFor(bill, movement.date);
-		if (!month || isMonthPaid(bill, month)) continue;
+		const month = monthToSettle(bill, movement.date, payments);
+		if (!month || !paysBillMonth(bill, movement, month)) continue;
 
-		const byText = textMatches(bill, movement.text);
-		if (bill.amountCents === null || bill.amountCents === undefined) {
-			if (!byText) continue;
-		} else {
-			const expected = Math.abs(bill.amountCents);
-			if (Math.abs(amount - expected) > toleranceOf(expected)) continue;
-			if (!byText && amount !== expected) continue;
-		}
-
-		candidates.push({ match: { bill, month }, byText });
+		candidates.push({ match: { bill, month }, byText: fitOf(bill, movement) === 'text' });
 	}
 
 	const byText = candidates.filter((candidate) => candidate.byText);
@@ -158,27 +263,88 @@ const draftOf = (bill: Bill): BillDraft => ({
 	sortOrder: bill.sortOrder,
 });
 
-/** A baixa: `paidThrough` vai ao mês casado (nunca diminui) e `paidByRef` é o lançamento. */
-export const billPaymentPatch = (bill: Bill, month: string, ref: string): BillDraft => ({
-	...draftOf(bill),
-	paidThrough: bill.paidThrough && bill.paidThrough > month ? bill.paidThrough : month,
-	paidByRef: ref,
-});
+/**
+ * A baixa: `paidThrough` vai ao mês casado (nunca diminui) e segue por cima dos meses
+ * seguintes que já têm registro (`payments`, SPD-146); `paidByRef` é o lançamento.
+ */
+export const billPaymentPatch = (
+	bill: Bill,
+	month: string,
+	ref: string,
+	payments: readonly BillPayment[] = []
+): BillDraft => {
+	let paidThrough = bill.paidThrough && bill.paidThrough > month ? bill.paidThrough : month;
+	while (paymentFor(payments, bill.id, shiftMonthKey(paidThrough, 1)))
+		paidThrough = shiftMonthKey(paidThrough, 1);
+	return { ...draftOf(bill), paidThrough, paidByRef: ref };
+};
+
+/**
+ * O mês mais adiante que um pagamento desta data pode ter quitado: o último cuja janela já
+ * tinha começado (vencimento − 10 dias). Como a baixa vai sempre ao mais antigo em aberto, o
+ * mês quitado pode ser anterior (o de 05/11 pode ter quitado outubro), nunca posterior.
+ */
+const latestMonthPayableOn = (bill: Pick<Bill, 'dueDay'>, date: string): string => {
+	const current = monthKeyOf(date);
+	for (const delta of [1, 0]) {
+		const month = shiftMonthKey(current, delta);
+		if (dayNumber(date) - dayNumber(billDueDate(bill, month)) >= -BILL_MATCH_DAYS_BEFORE) return month;
+	}
+	return shiftMonthKey(current, -1);
+};
 
 /**
  * Desfaz a baixa quando o lançamento `ref` foi apagado, ou `null` se não há o que desfazer
  * (a última baixa já é de outro lançamento, ou de nenhum).
  *
- * O mês casado sai de novo da data do lançamento. Se `paidThrough` ainda é ele, volta ao
- * mês anterior; se já passou dele (um mês pago depois, à mão), fica — só a referência sai.
- * Sem a data, volta um mês do que está gravado.
+ * A baixa que ele deu foi a do último mês pago (`paidThrough`), que volta a ficar em aberto —
+ * só ele, um mês. Se `paidThrough` já está adiante de qualquer mês que um pagamento daquela
+ * data poderia quitar (um mês pago depois, à mão), fica — só a referência sai. Sem a data,
+ * volta um mês do que está gravado.
  */
 export const billPaymentUndo = (bill: Bill, ref: string, date: string | null): BillDraft | null => {
 	if (bill.paidByRef !== ref) return null;
 
-	const matched = (date ? dueMonthFor(bill, date) : null) ?? bill.paidThrough;
+	const reach = date ? latestMonthPayableOn(bill, date) : bill.paidThrough;
 	const paidThrough =
-		matched && bill.paidThrough === matched ? shiftMonthKey(matched, -1) : bill.paidThrough;
+		bill.paidThrough && reach && bill.paidThrough <= reach ? shiftMonthKey(bill.paidThrough, -1) : bill.paidThrough;
 
 	return { ...draftOf(bill), paidThrough, paidByRef: null };
+};
+
+/** O que apagar o lançamento de uma baixa desfaz: a conta, o registro que sai e os que entram. */
+export interface BillSettlementUndo {
+	draft: BillDraft;
+	remove: BillPayment | null;
+	fill: BillPaymentDraft[];
+}
+
+/**
+ * Desfaz a baixa do lançamento `ref`, apagado. Com o registro do mês que ele pagou (SPD-146),
+ * reabre exatamente aquele mês (`undoMonth`) e tira a referência, se for a da última baixa.
+ * Sem registro (baixa de antes do SPD-146), a regra da fase 1 (`billPaymentUndo`). `null`
+ * quando não há o que desfazer.
+ */
+export const billSettlementUndo = (
+	bill: Bill,
+	ref: string,
+	date: string | null,
+	payments: readonly BillPayment[]
+): BillSettlementUndo | null => {
+	const record = paymentByTransaction(payments, ref);
+	if (record && record.billId === bill.id) {
+		const undo = undoMonth(bill, payments, record.month);
+		if (!undo) return null;
+		return {
+			draft: {
+				...draftOf(bill),
+				paidThrough: undo.paidThrough,
+				paidByRef: bill.paidByRef === ref ? null : bill.paidByRef,
+			},
+			remove: undo.remove,
+			fill: undo.fill,
+		};
+	}
+	const draft = billPaymentUndo(bill, ref, date);
+	return draft ? { draft, remove: null, fill: [] } : null;
 };

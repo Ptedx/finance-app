@@ -18,7 +18,9 @@
  * de ficarem enterrados em `if`s.
  */
 
+import { formatMonthsCovered } from './emergencyReserve';
 import {
+	type BillCommitment,
 	type CategoryDelta,
 	categoryDeltas,
 	consecutiveSavingsRateDrops,
@@ -26,14 +28,12 @@ import {
 	fixedCostShare,
 	type MonthlySavingsRate,
 	type MonthlyTotal,
-	monthlyFixedCostCents,
-	monthlyRecurringIncomeCents,
+	monthlyFixedCommitmentsCents,
 	NEEDS_WANTS_SAVINGS_TARGET,
 	type NeedsWantsSavings,
 	needsWantsSavingsSplit,
 	type PeriodTotals,
 	type CategoryTotal as PeriodCategoryTotal,
-	type RecurringCommitment,
 	type SavingsRate,
 	runwayMonths,
 	savingsRate,
@@ -68,8 +68,19 @@ export interface WealthSnapshot {
 	 * Pilar 1 existir passa a ser o ativo líquido real, e só este campo muda.
 	 */
 	liquidCents: Cents;
-	/** Recorrências vivas, ativas ou não — o filtro é feito por `metrics.ts`. */
-	recurring: RecurringCommitment[];
+	/**
+	 * As contas a pagar, ativas ou não, e as parcelas do mês das dívidas
+	 * (`debtInstallmentsMonthlyCents`). São o custo fixo e o fôlego
+	 * (`monthlyFixedCommitmentsCents`); ausentes, contam como nada. As recorrências antigas
+	 * não entram (SPD-122).
+	 */
+	bills?: BillCommitment[];
+	debtInstallmentsCents?: Cents;
+	/**
+	 * As parcelas do mês das compras parceladas nos cartões (`cardInstallmentsMonthlyCents`),
+	 * até a última (SPD-126). Também custo fixo e fôlego; ausente, conta como nada.
+	 */
+	cardInstallmentsCents?: Cents;
 	/** Despesas do período separadas pela natureza da categoria. */
 	expenseTotalsByNature: ExpenseTotalsByNature;
 	/** Totais por categoria do período e do período anterior. */
@@ -90,7 +101,6 @@ export interface WealthMetrics {
 	/** Há quantos meses seguidos a taxa cai, terminando no mês selecionado. */
 	consecutiveDrops: number;
 	monthlyFixedCents: Cents;
-	monthlyRecurringIncomeCents: Cents;
 	/** Fatia da renda já comprometida com custo fixo, em pontos-base. */
 	fixedCostBasisPoints: number | null;
 	/** Meses de fôlego. `null` quando não há custo fixo cadastrado. */
@@ -106,7 +116,14 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		? savingsRate(snapshot.previousPeriodTotals)
 		: null;
 
-	const monthlyFixedCents = monthlyFixedCostCents(snapshot.recurring);
+	// A tela de recorrências saiu (SPD-079): o que vence todo mês mora nas contas a pagar e
+	// nas parcelas — das dívidas e do cartão (SPD-126). As regras antigas ficaram de fora do
+	// custo fixo (SPD-122).
+	const monthlyFixedCents = monthlyFixedCommitmentsCents({
+		bills: snapshot.bills ?? [],
+		debtInstallmentsCents: snapshot.debtInstallmentsCents ?? 0,
+		cardInstallmentsCents: snapshot.cardInstallmentsCents ?? 0,
+	});
 	const trend = savingsRateTrend(snapshot.monthlyIncome, snapshot.monthlyExpense);
 
 	return {
@@ -115,7 +132,6 @@ export const computeWealthMetrics = (snapshot: WealthSnapshot): WealthMetrics =>
 		savingsRateDeltaBasisPoints: previous ? savingsRateDelta(current, previous) : null,
 		consecutiveDrops: consecutiveSavingsRateDrops(trend, snapshot.month),
 		monthlyFixedCents,
-		monthlyRecurringIncomeCents: monthlyRecurringIncomeCents(snapshot.recurring),
 		fixedCostBasisPoints: fixedCostShare({
 			monthlyFixedCents,
 			incomeCents: snapshot.periodTotals.incomeCents,
@@ -179,6 +195,11 @@ export interface Insight {
 	pct?: number;
 	months?: number;
 	categoryId?: string;
+	/**
+	 * O lançamento que a ação do insight mexe, quando ele tem uma: na cobrança dupla, o
+	 * `[Auto]` que o botão "Apagar o [Auto]" apaga (SPD-113).
+	 */
+	transactionId?: string;
 }
 
 /** A partir daqui a taxa de poupança é digna de comemoração (20%). */
@@ -213,8 +234,8 @@ const SEVERITY_ORDER: Record<InsightSeverity, number> = {
 /** Pontos-base como texto de porcentagem, sem casas decimais falsas. */
 const percentText = (basisPoints: number): string => `${Math.round(basisPoints / 100)}%`;
 
-/** Meses com uma casa, que é toda a precisão que "meses de fôlego" comporta. */
-const monthsText = (months: number): string => months.toFixed(1);
+/** Meses com uma casa, que é toda a precisão que "meses de fôlego" comporta, no separador do idioma. */
+const monthsText = (months: number): string => formatMonthsCovered(months);
 
 /**
  * As frases que falam da taxa de poupança, e só elas.
@@ -366,18 +387,37 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 	}
 
 	// --- A categoria que explica o mês --------------------------------------
-	const jump = metrics.categoryDeltas.find(
+	insights.push(...buildCategoryJumpInsights(metrics.categoryDeltas, snapshot?.categoryNameById));
+
+	// Empate resolvido pela ordem de inserção acima, que já vai do estrutural (poupança,
+	// custo fixo) para o episódico (uma categoria que saltou num mês).
+	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+};
+
+/**
+ * A frase da categoria que saltou, e só ela.
+ *
+ * Separada pelo mesmo motivo das de poupança e de custo fixo: os totais por categoria do
+ * período contam o lançamento de ajuste com a fatura do banco como gasto, e o "Other Expense
+ * subiu 2.000%" de um mês de acerto de fatura não explica nada. A tela de Relatórios passa
+ * aqui as variações das categorias sem o ajuste e com os encargos do cartão na linha deles
+ * (`separateCardBookkeeping`, SPD-092).
+ */
+export const CATEGORY_INSIGHT_IDS: InsightId[] = ['category-jump'];
+
+export const buildCategoryJumpInsights = (deltas: CategoryDelta[], nameById?: Record<string, string>): Insight[] => {
+	const jump = deltas.find(
 		(delta) =>
 			delta.pct !== null &&
 			delta.pct >= CATEGORY_JUMP_PCT &&
 			delta.deltaCents >= CATEGORY_JUMP_MIN_CENTS
 	);
+	if (!jump) return [];
 
-	if (jump) {
-		const name = snapshot?.categoryNameById?.[jump.categoryId] ?? jump.categoryId;
-		const percent = `${Math.round((jump.pct ?? 0) * 100)}%`;
-
-		insights.push({
+	const name = nameById?.[jump.categoryId] ?? jump.categoryId;
+	const percent = `${Math.round((jump.pct ?? 0) * 100)}%`;
+	return [
+		{
 			id: 'category-jump',
 			severity: 'attention',
 			title: `You spent ${percent} more on ${name} than last month (${formatCents(jump.deltaCents)}).`,
@@ -385,12 +425,8 @@ export const buildInsights = (metrics: WealthMetrics, snapshot?: WealthSnapshot)
 			valueCents: jump.deltaCents,
 			pct: jump.pct ?? undefined,
 			categoryId: jump.categoryId,
-		});
-	}
-
-	// Empate resolvido pela ordem de inserção acima, que já vai do estrutural (poupança,
-	// custo fixo) para o episódico (uma categoria que saltou num mês).
-	return insights.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+		},
+	];
 };
 
 // ---------------------------------------------------------------------------
@@ -403,7 +439,12 @@ export const GOAL_ON_TRACK_YEARS = 20;
 /** Rendimento observado abaixo da metade do esperado merece uma frase. */
 export const LOW_REALIZED_YIELD_RATIO = 0.5;
 
-const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : years.toFixed(1));
+/**
+ * Anos com uma casa e o separador do idioma: "12,5" em português, "12.5" em inglês (E2E-45).
+ * A casa decimal é a mesma dos meses de reserva (`formatMonthsCovered`). O cartão do
+ * objetivo (`FreedomHero`) usa esta mesma função.
+ */
+export const yearsText = (years: number): string => (Number.isInteger(years) ? String(years) : formatMonthsCovered(years));
 
 const monthText = (key: string): string => `${monthKeyName(key)} ${key.slice(0, 4)}`;
 
@@ -422,12 +463,14 @@ export const buildGoalInsights = (
 
 	// --- Gasto cobrado duas vezes: a recorrente e a cobrança de verdade ---------------
 	// Vem junto da receita duplicada porque é o mesmo estrago, do outro lado: enquanto os
-	// dois lançamentos existem, o gasto do mês e o "já comprometido" estão inflados.
+	// dois lançamentos existem, o gasto do mês e o "já comprometido" estão inflados. O app
+	// não lança mais `[Auto]` (SPD-113), mas os antigos ficaram: o insight leva o id do
+	// `[Auto]` para a tela oferecer apagá-lo.
 	for (const charge of doubleCharges) {
 		insights.push({
 			id: 'expense-possibly-duplicated',
 			severity: 'critical',
-			title: `${formatCents(charge.amountCents)} was charged twice for "${charge.note}" (${charge.dates[0]} and ${charge.dates[1]}): the recurring entry and the real charge. If it is the same money, delete one.`,
+			title: `${formatCents(charge.amountCents)} was charged twice for "${charge.note}" (${charge.dates[0]} and ${charge.dates[1]}): an automatic [Auto] entry from an old recurring rule and the real charge. If it is the same money, delete the [Auto].`,
 			params: {
 				amount: formatCents(charge.amountCents),
 				note: charge.note,
@@ -435,6 +478,7 @@ export const buildGoalInsights = (
 				second: charge.dates[1],
 			},
 			valueCents: charge.amountCents,
+			transactionId: charge.autoId,
 		});
 	}
 
@@ -606,4 +650,5 @@ export default {
 	buildGoalInsights,
 	buildDebtInsights,
 	mergeInsights,
+	buildCategoryJumpInsights,
 };

@@ -71,6 +71,15 @@ export interface ParsedCapture {
 	 * que não é real e não pode virar lançamento sem alguém olhar.
 	 */
 	foreign?: ForeignAmount;
+	/**
+	 * Presente só quando o Pix ou a transferência tem pista de entrada **e** de saída, sem
+	 * certeza de nenhum lado ("Pix recebido — Ana enviou R$ 20,00"; "Ana te enviou" é entrada,
+	 * SPD-162): `direction` é então um palpite (saída, como sempre foi), que a revisão não grava
+	 * sem resposta, e o aviso vai para a revisão perguntar (SPD-123, NOTIF-11). O valor são as
+	 * duas pistas que o parser achou ("recebido/enviou"), do vocabulário dele — nunca o nome
+	 * nem o valor do aviso: entra na chave da regra aprendida.
+	 */
+	ambiguousDirection?: string;
 }
 
 export interface ForeignAmount {
@@ -386,14 +395,106 @@ const SCHEDULED_DONE_PHRASES = [
 	' foi transferid',
 ];
 
+/** As pistas de dinheiro entrando. A primeira achada nomeia a dúvida (`ambiguousDirection`). */
+const INCOMING_CUES = [
+	'recebeu',
+	'recebido',
+	'recebida',
+	'entrou na sua conta',
+	'entrada de',
+	'creditado',
+	'credito de',
+	'credito em conta',
+	'deposito',
+	'depositado',
+	'caiu na sua conta',
+	'transferencia recebida',
+	'pix recebido',
+	'voce tem um pix',
+];
+
+/** As pistas de dinheiro saindo. Idem. */
+const OUTGOING_CUES = [
+	'compra',
+	'pagamento',
+	'pagou',
+	'enviou',
+	'enviado',
+	'enviada',
+	'transferencia enviada',
+	'pix enviado',
+	'debito',
+	'debitado',
+	'saque',
+	'saida de',
+	'aprovada',
+	'aprovado',
+	'cobranca',
+	'assinatura',
+];
+
+/**
+ * O valor dentro da frase: "R$ 1.500,00" tem ponto, e o ponto do milhar não encerra a frase.
+ * Sem isto, "enviou R$ 1.500,00 para você" parava no "1." e o "para você" ficava de fora.
+ */
+const SAME_SENTENCE = '(?:[^.!?]|\\.(?=\\d))*?';
+
+/**
+ * Entrada sem dúvida, mesmo com "enviou" no texto (SPD-162): quem mandou foi outra pessoa, e
+ * mandou **para você**. "Fulano te enviou um Pix de R$ 291,65 creditado na sua conta" tinha
+ * "recebido" e "enviou", e a dúvida (NOTIF-11) virava saída na revisão. O título "Pix recebido"
+ * ou "Transferência recebida" com "te enviou" no texto cai na primeira.
+ */
+const SURE_INCOMING_PATTERNS = [
+	/\bte (?:enviou|mandou|transferiu)\b/,
+	new RegExp(`\\b(?:enviou|mandou|transferiu)\\b${SAME_SENTENCE}\\bpara voce\\b`),
+	/\bcreditad[oa] (?:na|em) sua conta\b/,
+];
+
+/** Saída sem dúvida: quem enviou foi você ("Você enviou", "Pix enviado"). */
+const SURE_OUTGOING_PATTERNS = [/\bvoce (?:enviou|mandou|transferiu|pagou)\b/, /\b(?:pix|transferencia) enviad[ao]\b/];
+
+/**
+ * Para que lado o texto aponta. Uma certeza de um lado só decide e cala as pistas soltas do
+ * outro ("recebido", "enviou"); certeza dos dois lados, ou de nenhum com pista dos dois, é a
+ * dúvida de verdade, que vai para a revisão (NOTIF-11) com as duas pistas achadas.
+ */
+const directionCues = (text: string): { incoming: boolean; outgoing: boolean; ambiguousDirection?: string } => {
+	const sureIn = SURE_INCOMING_PATTERNS.some((pattern) => pattern.test(text));
+	const sureOut = SURE_OUTGOING_PATTERNS.some((pattern) => pattern.test(text));
+	if (sureIn !== sureOut) return { incoming: sureIn, outgoing: sureOut };
+	const incomingCue = INCOMING_CUES.find((cue) => text.includes(cue));
+	const outgoingCue = OUTGOING_CUES.find((cue) => text.includes(cue));
+	return {
+		incoming: incomingCue !== undefined,
+		outgoing: outgoingCue !== undefined,
+		...(incomingCue && outgoingCue ? { ambiguousDirection: `${incomingCue}/${outgoingCue}` } : {}),
+	};
+};
+
+/**
+ * Fatura fechada, ou que vence, dita sem a palavra "fatura" (AUTO-07, SPD-123): "Seu cartão
+ * fechou: total de R$ 1.100,00 com vencimento em 12/12. Débito automático ativo." O "débito"
+ * do débito automático fazia disso uma compra. Fechou **e** vence no mesmo aviso é aviso de
+ * fatura; compra não fecha nem vence.
+ */
+const isStatementNotice = (text: string): boolean =>
+	has(text, 'fechou', 'fechada', 'fechamento') && has(text, 'vence', 'vencimento', ' venc ');
+
+interface Classified {
+	direction: CaptureDirection;
+	kind: CaptureKind;
+	neutral: boolean;
+	/** Ver `ParsedCapture.ambiguousDirection`. */
+	ambiguousDirection?: string;
+}
+
 /**
  * Decide o que a notificação descreve. A ordem importa: "pagamento da fatura" tem a
  * palavra "pagamento", mas não é uma compra; "estorno de compra" tem "compra", mas é
  * dinheiro voltando.
  */
-const classify = (
-	text: string
-): { direction: CaptureDirection; kind: CaptureKind; neutral: boolean } | null => {
+const classify = (text: string): Classified | null => {
 	if (isDeclined(text)) return null;
 	if (has(text, 'fatura')) {
 		// Aviso sobre a fatura (fechou, vence, está disponível) não é dinheiro saindo.
@@ -418,6 +519,8 @@ const classify = (
 		if (has(text, 'pagamento', 'fechou', 'fechada', 'fechamento', 'vence', 'vencimento', 'disponivel', 'em aberto', 'lembrete')) {
 			return null;
 		}
+	} else if (isStatementNotice(text)) {
+		return null;
 	}
 	// Só o movimento feito, nunca o substantivo solto: "resgate seu dinheiro quando
 	// quiser" é propaganda, "resgate de R$ 300,00 concluído" é dinheiro trocando de bolso.
@@ -454,55 +557,24 @@ const classify = (
 		return { direction: 'in', kind: 'refund', neutral: false };
 	}
 
-	const incoming = has(
-		text,
-		'recebeu',
-		'recebido',
-		'recebida',
-		'entrou na sua conta',
-		'entrada de',
-		'creditado',
-		'credito de',
-		'credito em conta',
-		'deposito',
-		'depositado',
-		'caiu na sua conta',
-		'transferencia recebida',
-		'pix recebido',
-		'voce tem um pix'
-	);
-	const outgoing = has(
-		text,
-		'compra',
-		'pagamento',
-		'pagou',
-		'enviou',
-		'enviado',
-		'enviada',
-		'transferencia enviada',
-		'pix enviado',
-		'debito',
-		'debitado',
-		'saque',
-		'saida de',
-		'aprovada',
-		'aprovado',
-		'cobranca',
-		'assinatura'
-	);
+	const { incoming, outgoing, ambiguousDirection } = directionCues(text);
 
 	if (SCHEDULED_PATTERN.test(text) && !(incoming && !outgoing) && !has(text, ...SCHEDULED_DONE_PHRASES)) {
 		return null;
 	}
 
+	// Pix e transferência com as duas pistas e sem certeza ("Pix recebido — Ana enviou
+	// R$ 20,00"): a saída continua sendo o palpite, mas marcado, para a revisão perguntar
+	// (NOTIF-11). "Ana te enviou" não é mais dúvida: é entrada (SPD-162).
+	const both = ambiguousDirection ? { ambiguousDirection } : {};
 	if (has(text, 'pix')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'pix_in', neutral: false };
-		if (outgoing) return { direction: 'out', kind: 'pix_out', neutral: false };
+		if (outgoing) return { direction: 'out', kind: 'pix_out', neutral: false, ...both };
 		return null;
 	}
 	if (has(text, 'transferencia', 'transferiu', ' ted ', ' doc ')) {
 		if (incoming && !outgoing) return { direction: 'in', kind: 'transfer_in', neutral: false };
-		if (outgoing) return { direction: 'out', kind: 'transfer_out', neutral: false };
+		if (outgoing) return { direction: 'out', kind: 'transfer_out', neutral: false, ...both };
 		return null;
 	}
 	if (has(text, 'saque')) return { direction: 'out', kind: 'withdrawal', neutral: false };
@@ -605,6 +677,17 @@ const COUNTERPARTY_PATTERNS: Array<{ pattern: RegExp; when?: CaptureDirection }>
 		),
 		when: 'out',
 	},
+	// "Fulano de Tal te enviou um Pix" (SPD-164): o nome vem antes do verbo. Começa no início
+	// da frase (depois de ponto, vírgula, dois-pontos ou traço) ou depois da última palavra de
+	// parada, e vai até o "te enviou" / "te mandou" / "te transferiu". Saía sem nome, e o Pix
+	// para si mesmo não virava transferência pelo nome de Ajustes (SPD-115).
+	{
+		pattern: new RegExp(
+			`(?:^|[.!?:;,]\\s+|\\s[-–]\\s+|\\s(?:${NAME_STOP_WORDS})\\s+)((?:(?!\\s(?:${NAME_STOP_WORDS})\\s)[^.!?:;,\\n])+?)\\s+te\\s+(?:enviou|mandou|transferiu)\\b`,
+			'i'
+		),
+		when: 'in',
+	},
 	// "de Fulano de Tal" (recebidos) — pulando o "de R$ 100,00" que vem antes
 	{ pattern: new RegExp(`\\bde\\s+(?!(?:${CURRENCY_TOKEN})\\s?\\d|\\d)${NAME_BODY}${NAME_END}`, 'i'), when: 'in' },
 	// "Compra aprovada: R$ 35,90 - MERCADO XYZ" (alguns bancos separam com traço)
@@ -668,10 +751,26 @@ const textForNames = (raw: RawCapture): string => {
 	return `${title}${/[.!?]$/.test(title) ? '' : '.'} ${text}`.trim();
 };
 
-const extractCardLast4 = (text: string): string | null => {
-	const match = /final\s*(\d{4})\b/i.exec(text) ?? /\*{2,}\s?(\d{4})\b/.exec(text);
-	return match ? match[1] : null;
+/**
+ * O que vem logo antes do final quando ele é da conta, não do cartão (SPD-164): "creditado na
+ * sua conta final ***0000-0", "conta corrente final 1234", "agência/conta 0001/***0000-0".
+ * Virava `cardLast4` e a revisão mostrava "cartão final 0000". A captura não tem onde guardar
+ * o final da conta (seria coluna nova e sync), e o resolvedor acha a conta pelo banco: esse
+ * final só fica de fora.
+ */
+const ACCOUNT_FINAL_PREFIX =
+	/\b(?:ag[eê]ncia\s*\/\s*conta|conta(?:\s+corrente)?)\s*:?\s*(?:final\s*)?(?:\d+\s*\/\s*)?$/i;
+
+/** O primeiro final do padrão que não é o da conta. */
+const firstCardFinal = (text: string, pattern: RegExp): string | null => {
+	for (const match of text.matchAll(pattern)) {
+		if (!ACCOUNT_FINAL_PREFIX.test(text.slice(0, match.index))) return match[1];
+	}
+	return null;
 };
+
+const extractCardLast4 = (text: string): string | null =>
+	firstCardFinal(text, /final\s*(\d{4})\b/gi) ?? firstCardFinal(text, /\*{2,}\s?(\d{4})\b/g);
 
 // ---------------------------------------------------------------------------
 // Entrada principal
@@ -714,7 +813,29 @@ export const parseCapture = (raw: RawCapture): ParsedCapture | null => {
 		...(amount.foreign
 			? { foreign: amount.foreign.inBrl ? amount.foreign : { ...amount.foreign, amountCents: totalCents } }
 			: {}),
+		// Idem: só quando a direção é um palpite (SPD-123).
+		...(classified.ambiguousDirection ? { ambiguousDirection: classified.ambiguousDirection } : {}),
 	};
+};
+
+/**
+ * O tipo de movimento que o texto descreve, sem exigir valor nem olhar propaganda: o que
+ * `parseCapture` diria do mesmo título e texto. Para quem só tem o aviso e precisa saber se
+ * é uma compra (`pickNotificationTarget`): "crédito em conta" não é compra no crédito.
+ */
+export const kindOfNotice = (raw: Pick<RawCapture, 'title' | 'text'>): CaptureKind | null =>
+	classify(` ${normalizeText(`${raw.title} ${raw.text}`.replace(/\s+/g, ' ').trim())} `)?.kind ?? null;
+
+/** O movimento do Pix ou da transferência visto do outro lado: entrada vira saída e vice-versa. */
+export const withDirection = <T extends Pick<ParsedCapture, 'direction' | 'kind'>>(parsed: T, direction: CaptureDirection): T => {
+	if (parsed.direction === direction) return parsed;
+	const flipped: Partial<Record<CaptureKind, CaptureKind>> = {
+		pix_in: 'pix_out',
+		pix_out: 'pix_in',
+		transfer_in: 'transfer_out',
+		transfer_out: 'transfer_in',
+	};
+	return { ...parsed, direction, kind: flipped[parsed.kind] ?? parsed.kind };
 };
 
 /**

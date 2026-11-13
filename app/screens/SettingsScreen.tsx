@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import {
 	ActivityIndicator,
 	Alert,
+	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -20,33 +21,58 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
+import MiraiNameDialog from '../components/mirai/MiraiNameDialog';
+import OwnNameSheet from '../components/OwnNameSheet';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useBills } from '../contexts/BillsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useMirai } from '../contexts/MiraiContext';
 import { usePeriod } from '../contexts/PeriodContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
+import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import { resetDatabase } from '../database/database';
 import { exportDiagnostics } from '../diagnostics/export';
 import { useBiometricAuth } from '../hooks/useBiometricAuth';
+import type { StatementAccountChooser } from '../utils/accountResolver';
+import {
+	type BiometricKind,
+	biometricIcon,
+	biometricKindOf,
+	changeBiometricLock,
+} from '../utils/biometricLock';
 import * as biometricUtils from '../utils/biometricUtils';
+import { eraseAllData } from '../utils/dataWipe';
+import { formatMonthYear } from '../utils/dateUtils';
 import { exportDatabaseData, importDatabaseData } from '../utils/exportUtils';
+import { formatCents } from '../utils/money';
 import * as notificationUtils from '../utils/notificationUtils';
-import { StatementImportError } from '../utils/statementImport';
-import { resetAsyncStorage, STORAGE_KEYS } from '../utils/storageUtils';
+import { getOwnBankName, setOwnBankName } from '../utils/ownNamePreference';
+import {
+	createStatementInstallments,
+	type StatementChoiceAnswer,
+	StatementImportError,
+	type StatementInstallmentOffer,
+	walkStatementChoice,
+	withStatementAccountChooser,
+} from '../utils/statementImport';
 
 const SettingsScreen = () => {
 	const { t } = useTranslation();
 	const { account, isAvailable: isAuthAvailable } = useAuth();
+	// A linha da conta diz o mesmo que a tela da conta, em versão curta (E2E-36): era
+	// "Tudo salvo" fixo, até offline e com alterações presas.
+	const { status: syncStatus, pending: syncPending } = useSync();
+	const syncShort = describeSync(syncStatus, syncPending).short;
 	const { currentCurrency } = useCurrency();
 	const { currentLanguage } = useLanguage();
+	const mirai = useMirai();
 	// O backup não passa mais pelo estado da tela: `exportDatabaseData` lê o banco. A
 	// tela entregava `transactions`/`categories` daqui, e um contexto que ainda não
 	// carregou (ou que falhou) virava um arquivo válido e vazio.
 	const { refreshData } = useTransactions();
-	const { transactions: recurringTransactions, refreshTransactions } = useRecurringTransactions();
 	const { resetToCurrentMonth } = usePeriod();
 	const { rescheduleReminders: rescheduleBillReminders } = useBills();
 	const { authenticate } = useBiometricAuth();
@@ -63,31 +89,109 @@ const SettingsScreen = () => {
 	 * Extrato OFX: nada entra no livro sem revisão. O resumo diz quantas linhas o app
 	 * já conhecia, quantas foram para a caixa de entrada e quantas ficaram de fora.
 	 */
+	/**
+	 * "Este extrato é do cartão Nubank Teste (final 1111)?" (E2E-34): o import pergunta
+	 * quando só o final bate, ou quando há mais de um candidato. Este / outro / criar novo,
+	 * uma conta de cada vez (`walkStatementChoice`).
+	 */
+	const askStatementAccount: StatementAccountChooser = (question) =>
+		walkStatementChoice(
+			question,
+			(candidate, hasMore) =>
+				new Promise<StatementChoiceAnswer>((resolve) => {
+					// Quem bateu pelo final mostra o do extrato (pode ser o de um virtual); os outros, o seu.
+					const last4 = question.candidates.includes(candidate) ? (question.last4 ?? candidate.last4) : candidate.last4;
+					const title =
+						question.isCard && question.last4
+							? t('captures.import.matchTitleCard', { bank: question.bankName, last4: question.last4 })
+							: t('captures.import.matchTitle', { bank: question.bankName });
+					const message = !question.isCard
+						? t('captures.import.matchAccount', { name: candidate.name })
+						: last4
+							? t('captures.import.matchCard', { name: candidate.name, last4 })
+							: t('captures.import.matchCardNoLast4', { name: candidate.name });
+					const other = question.isCard ? t('captures.import.matchOtherCard') : t('captures.import.matchOtherAccount');
+					Alert.alert(
+						title,
+						message,
+						[
+							{ text: t('captures.import.matchNew'), onPress: () => resolve('new') },
+							...(hasMore ? [{ text: other, onPress: () => resolve('other') }] : []),
+							{ text: t('captures.import.matchThis'), onPress: () => resolve('this') },
+						],
+						{ cancelable: false }
+					);
+				})
+		);
+
+	/**
+	 * "PADARIA 3/10 de R$ 50,00 veio no extrato, mas o app não tem as outras parcelas"
+	 * (SPD-117): uma pergunta por compra, depois do resumo. Só cria com o "Criar parcelas".
+	 */
+	const askInstallmentOffer = (offer: StatementInstallmentOffer) =>
+		new Promise<boolean>((resolve) => {
+			const first = offer.parcels[0];
+			const last = offer.parcels[offer.parcels.length - 1];
+			Alert.alert(
+				t('captures.import.installmentsTitle'),
+				t('captures.import.installmentsOffer', {
+					count: offer.parcels.length,
+					name: offer.description,
+					index: offer.index,
+					total: offer.count,
+					amount: formatCents(offer.parcelCents),
+					account: offer.accountName,
+					first: first.index,
+					firstMonth: formatMonthYear(first.date),
+					lastMonth: formatMonthYear(last.date),
+				}),
+				[
+					{ text: t('captures.import.installmentsSkip'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('captures.import.installmentsCreate'), onPress: () => resolve(true) },
+				],
+				{ cancelable: false }
+			);
+		});
+
 	const handleImportStatement = async () => {
 		try {
 			setIsImportingStatement(true);
-			const result = await importStatement();
+			const result = await withStatementAccountChooser(askStatementAccount, importStatement);
 			if (!result) return;
+			// O import terminou: o resumo e as ofertas não são mais "importando".
+			setIsImportingStatement(false);
 
 			const s = result.summary;
 			const toReview = s.pending + s.questions;
-			const body = t('captures.import.summary', {
-				total: s.total,
-				known: s.skippedExisting + s.matchedCaptures + s.matchedTransactions,
-				review: toReview,
-				auto: s.autoConfirmed,
-				ignored: s.ignored + s.transfers,
-			});
-			Alert.alert(
-				t('captures.import.title'),
-				body,
-				toReview > 0
-					? [
-							{ text: t('settings.ok') },
-							{ text: t('captures.import.review'), onPress: () => router.push('/inbox') },
-						]
-					: [{ text: t('settings.ok') }]
+			// Uma linha por número, cada uma no singular ou no plural dele: com uma chave só para
+			// o resumo inteiro, um arquivo de uma linha dizia "1 linhas no arquivo" (E2E-51).
+			const body = [
+				t('captures.import.summaryTotal', { count: s.total }),
+				t('captures.import.summaryKnown', { count: s.skippedExisting + s.matchedCaptures + s.matchedTransactions }),
+				t('captures.import.summaryReview', { count: toReview }),
+				t('captures.import.summaryAuto', { count: s.autoConfirmed }),
+				t('captures.import.summaryIgnored', { count: s.ignored + s.transfers }),
+			].join('\n');
+			// O resumo primeiro; as ofertas de parcelas depois dele, e só então a revisão.
+			const review = await new Promise<boolean>((resolve) =>
+				Alert.alert(
+					t('captures.import.title'),
+					body,
+					toReview > 0
+						? [
+								{ text: t('settings.ok'), onPress: () => resolve(false) },
+								{ text: t('captures.import.review'), onPress: () => resolve(true) },
+							]
+						: [{ text: t('settings.ok'), onPress: () => resolve(false) }],
+					{ cancelable: false }
+				)
 			);
+			let created = 0;
+			for (const offer of result.installmentOffers) {
+				if (await askInstallmentOffer(offer)) created += await createStatementInstallments(offer);
+			}
+			if (created > 0) await refreshData();
+			if (review) router.push('/inbox');
 		} catch (error) {
 			console.error('Error importing statement:', error);
 			const code = error instanceof StatementImportError ? error.code : 'failed';
@@ -101,6 +205,7 @@ const SettingsScreen = () => {
 	const [notifications, setNotifications] = useState(true);
 	const [showCurrencySelector, setShowCurrencySelector] = useState(false);
 	const [showLanguageSelector, setShowLanguageSelector] = useState(false);
+	const [showMiraiName, setShowMiraiName] = useState(false);
 	const [isResetting, setIsResetting] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
@@ -109,7 +214,9 @@ const SettingsScreen = () => {
 
 	const [biometricAvailable, setBiometricAvailable] = useState(false);
 	const [biometricEnabled, setBiometricEnabled] = useState(false);
-	const [biometricType, setBiometricType] = useState('Biometric');
+	const [biometricKind, setBiometricKind] = useState<BiometricKind>('biometric');
+	// O nome do método no meio da frase ("Autentique com biometria..."), no idioma do app.
+	const biometricType = t(`settings.biometricMethod.${biometricKind}`);
 
 	useEffect(() => {
 		const checkBiometrics = async () => {
@@ -117,8 +224,8 @@ const SettingsScreen = () => {
 				const available = await biometricUtils.isBiometricAvailable();
 				setBiometricAvailable(available);
 				if (available) {
-					const type = await biometricUtils.getBiometricType();
-					setBiometricType(type);
+					const types = await biometricUtils.getSupportedAuthTypes();
+					setBiometricKind(biometricKindOf(types, Platform.OS));
 					const enabled = await biometricUtils.isBiometricEnabled();
 					setBiometricEnabled(enabled);
 				}
@@ -141,11 +248,33 @@ const SettingsScreen = () => {
 		checkNotificationSettings();
 	}, []);
 
+	// "Seu nome como aparece no banco" (SPD-115): a captura confere o nome dos avisos de Pix
+	// com ele para juntar sem perguntar a transferência entre contas suas, inclusive de bancos
+	// diferentes. Só aparece com a captura (a linha mora na seção dela).
+	const [ownBankName, setOwnBankNameState] = useState<string | null>(null);
+	const [showOwnNameSheet, setShowOwnNameSheet] = useState(false);
+	// O guia dos Ajustes (SPD-129): abre sem seletor nem folha por cima.
+	useScreenTour('settings', { blocked: showCurrencySelector || showLanguageSelector || showOwnNameSheet });
+	const tourScroll = useTourScroll('settings');
+
+	useEffect(() => {
+		getOwnBankName().then(setOwnBankNameState);
+	}, []);
+
+	const saveOwnBankName = async (name: string) => {
+		try {
+			setOwnBankNameState(await setOwnBankName(name));
+			setShowOwnNameSheet(false);
+		} catch (error) {
+			console.error('Error saving own bank name:', error);
+			Alert.alert(t('settings.error'), t('ownName.saveError'));
+		}
+	};
+
 	const refreshAppData = async () => {
 		try {
 			resetToCurrentMonth();
 			await refreshData();
-			await refreshTransactions();
 		} catch (error) {
 			console.error('Error refreshing app data:', error);
 		}
@@ -157,8 +286,9 @@ const SettingsScreen = () => {
 			const newValue = !notifications;
 			await notificationUtils.setNotificationsEnabled(newValue);
 			if (newValue) {
+				// As recorrências antigas não lembram mais nada (SPD-122): ligar a chave só remarca
+				// as contas a pagar e as faturas, logo abaixo.
 				await notificationUtils.registerForPushNotificationsAsync();
-				await notificationUtils.checkAndScheduleNotifications(recurringTransactions);
 			} else {
 				await notificationUtils.cancelAllNotifications();
 			}
@@ -242,18 +372,8 @@ const SettingsScreen = () => {
 			const result = await importDatabaseData();
 			if (result.success) {
 				await refreshAppData();
-				const summary = t('settings.importSuccessMsg', {
-					transactions: result.stats?.transactions,
-					recurringTransactions: result.stats?.recurringTransactions,
-				});
-				// Uma restauração que deixou algo para trás não pode sair com a mesma cara
-				// de uma que voltou inteira: o aviso vem junto, mesmo em inglês, enquanto
-				// as chaves de tradução não existem (ver o relatório).
-				const warnings = result.warnings ?? [];
-				Alert.alert(
-					t('settings.importSuccess'),
-					warnings.length > 0 ? `${summary}\n\n${warnings.join(' ')}` : summary
-				);
+				// O resumo do que voltou (e do que não voltou) vem pronto e traduzido do import.
+				Alert.alert(t('settings.importSuccess'), result.message);
 			} else {
 				Alert.alert(t('settings.importFailed'), result.message);
 			}
@@ -265,8 +385,16 @@ const SettingsScreen = () => {
 		}
 	};
 
+	/**
+	 * "Apagar todos os dados" (SPD-082, DEC-35): o que sai e o que fica está em
+	 * `utils/dataWipe.ts`. Logado, apaga na conta e em todos os aparelhos — e, se o servidor
+	 * não confirmar, nada sai daqui. A configuração fica, então o destino é a tela inicial,
+	 * não o onboarding.
+	 */
 	const handleResetData = async () => {
-		Alert.alert(t('settings.resetTitle'), t('settings.resetMsg'), [
+		const signedIn = account !== null;
+		const message = t(signedIn ? 'settings.resetMsgAccount' : 'settings.resetMsg');
+		Alert.alert(t('settings.resetTitle'), message, [
 			{ text: t('settings.cancel'), style: 'cancel' },
 			{
 				text: t('settings.reset'),
@@ -277,13 +405,19 @@ const SettingsScreen = () => {
 						async () => {
 							try {
 								setIsResetting(true);
-								await resetDatabase();
-								await resetAsyncStorage(['@spendr_biometric_enabled', STORAGE_KEYS.language]);
-								await refreshAppData();
+								const result = await eraseAllData({ signedIn });
 								setIsResetting(false);
-								Alert.alert(t('settings.resetSuccess'), t('settings.resetSuccessMsg'), [
-									{ onPress: () => { router.push('/onboarding'); } },
-								]);
+								if (!result.ok) {
+									Alert.alert(t('settings.resetFailed'), t('settings.resetServerError'));
+									return;
+								}
+								// As telas releem pelo aviso do `eraseAllData`; o mês volta para o atual.
+								resetToCurrentMonth();
+								Alert.alert(
+									t('settings.resetSuccess'),
+									t(signedIn ? 'settings.resetSuccessMsgAccount' : 'settings.resetSuccessMsg'),
+									[{ text: t('settings.ok'), onPress: () => router.dismissTo('/(tabs)') }]
+								);
 							} catch (error) {
 								console.error('Error resetting data:', error);
 								setIsResetting(false);
@@ -336,29 +470,27 @@ const SettingsScreen = () => {
 		router.push('/screens/PrivacyPolicyScreen');
 	};
 
+	// Ligar e desligar passam pela biometria (E2E-19): desligar era um toque, e quem pegasse
+	// o celular com o app aberto tirava a trava. Falhou ou cancelou, fica como estava.
 	const toggleBiometricAuth = async (value: boolean) => {
-		if (value && biometricAvailable) {
-			const success = await biometricUtils.authenticateWithBiometrics(
-				`Authenticate to ${value ? 'enable' : 'disable'} ${biometricType} authentication`
-			);
-			if (success) {
-				await biometricUtils.setBiometricEnabled(value);
-				setBiometricEnabled(value);
-			} else {
-				setBiometricEnabled(!value);
-			}
-		} else {
-			await biometricUtils.setBiometricEnabled(value);
-			setBiometricEnabled(value);
-		}
+		const next = await changeBiometricLock(value, biometricEnabled, {
+			authenticate: biometricUtils.authenticateWithBiometrics,
+			save: biometricUtils.setBiometricEnabled,
+			reason: (enabling) =>
+				t(enabling ? 'settings.biometricEnablePrompt' : 'settings.biometricDisablePrompt'),
+		});
+		setBiometricEnabled(next);
 	};
 
+	// `tourId`: o passo do guia dos Ajustes que aponta este item (SPD-129).
 	const renderSettingsItem = (
 		icon: string,
 		title: string,
 		onPress: () => void,
-		rightElement?: React.ReactNode
+		rightElement?: React.ReactNode,
+		tourId?: string
 	) => (
+		<TourTarget id={tourId}>
 		<TouchableOpacity style={styles.settingItem} onPress={onPress}>
 			<View style={styles.settingLeft}>
 				{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
@@ -371,6 +503,7 @@ const SettingsScreen = () => {
 				<Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" />
 			)}
 		</TouchableOpacity>
+		</TourTarget>
 	);
 
 	return (
@@ -399,7 +532,7 @@ const SettingsScreen = () => {
 				</Text>
 			</View>
 
-			<ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+			<ScrollView ref={tourScroll} style={styles.content} showsVerticalScrollIndicator={false}>
 				{/* Account. Escondida quando a build não tem API configurada: oferecer uma
 				    tela que falharia em toda tentativa é pior do que não oferecer nada. */}
 				{isAuthAvailable && (
@@ -410,8 +543,9 @@ const SettingsScreen = () => {
 							account ? account.email : t('account.signUpTitle'),
 							() => router.push('/account'),
 							<Text style={styles.accountStatus}>
-								{account ? t('account.statusSynced') : ''}
-							</Text>
+								{account ? t(syncShort.key, { count: syncShort.count }) : ''}
+							</Text>,
+							'settings.account'
 						)}
 					</View>
 				)}
@@ -436,9 +570,9 @@ const SettingsScreen = () => {
 							/>
 						)
 					)}
-					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts'))}
-					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'))}
-					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills'))}
+					{renderSettingsItem('wallet-outline', t('accounts.screenTitle'), () => router.push('/accounts'), undefined, 'settings.accounts')}
+					{renderSettingsItem('card-outline', t('cards.sectionTitle'), () => router.push('/cards'), undefined, 'settings.cards')}
+					{renderSettingsItem('receipt-outline', t('bills.title'), () => router.push('/bills'), undefined, 'settings.bills')}
 					{renderSettingsItem(
 						'cash-outline',
 						t('settings.currency'),
@@ -456,6 +590,36 @@ const SettingsScreen = () => {
 							<Text style={styles.currencyCode}>{currentLanguage.nativeName}</Text>
 						</View>
 					)}
+					{/* O Mirai (SPD-163, D6): só para as contas em que o servidor o ligou. Ligar passa pela
+					    tela de ativação; desligar tira o botão. */}
+					{mirai?.enabled
+						? renderSettingsItem(
+								'sparkles-outline',
+								t('mirai.settingsLabel'),
+								() => mirai.setTurnedOn(mirai.choice !== 'on'),
+								<Switch
+									testID="settings-mirai-switch"
+									value={mirai.choice === 'on'}
+									onValueChange={mirai.setTurnedOn}
+									trackColor={{ false: '#3e3e3e', true: 'rgba(80, 171, 227, 0.3)' }}
+									thumbColor={mirai.choice === 'on' ? '#15E8FE' : '#f4f3f4'}
+									ios_backgroundColor="#3e3e3e"
+								/>
+							)
+						: null}
+					{/* Como o Mirai chama a pessoa (SPD-163e): só no aparelho; vazio é "sem nome". */}
+					{mirai?.enabled && mirai.choice === 'on'
+						? renderSettingsItem(
+								'happy-outline',
+								t('mirai.nameSetting.label'),
+								() => setShowMiraiName(true),
+								<View style={styles.currencyValue}>
+									<Text style={styles.currencyCode} testID="settings-mirai-name">
+										{mirai.name ?? t('mirai.nameSetting.none')}
+									</Text>
+								</View>
+							)
+						: null}
 				</View>
 
 				{/* Security */}
@@ -463,8 +627,8 @@ const SettingsScreen = () => {
 					<Text style={styles.sectionTitle}>{t('settings.security')}</Text>
 					{biometricAvailable
 						? renderSettingsItem(
-								biometricType === 'Face ID' ? 'scan-face' : 'finger-print',
-								t('settings.biometricAuth', { biometricType }),
+								biometricIcon(biometricKind),
+								t(`settings.biometricLock.${biometricKind}`),
 								() => toggleBiometricAuth(!biometricEnabled),
 								<Switch
 									value={biometricEnabled}
@@ -490,7 +654,8 @@ const SettingsScreen = () => {
 						'download-outline',
 						t('settings.exportData'),
 						handleExportData,
-						isExporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+						isExporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined,
+						'settings.backup'
 					)}
 					{renderSettingsItem(
 						'cloud-upload-outline',
@@ -498,11 +663,19 @@ const SettingsScreen = () => {
 						handleImportData,
 						isImporting ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
 					)}
+					{/* O "?" da trilha do extrato (SPD-131c) fica no lugar da seta, ao lado do item. */}
 					{renderSettingsItem(
 						'document-text-outline',
 						t('captures.import.item'),
 						handleImportStatement,
-						isImportingStatement ? <ActivityIndicator size="small" color="#15E8FE" /> : undefined
+						isImportingStatement ? (
+							<ActivityIndicator size="small" color="#15E8FE" />
+						) : (
+							<View style={styles.helpInItem}>
+								<HelpButton trail="ofx" here={{ screen: 'settings' }} />
+							</View>
+						),
+						'settings.ofx'
 					)}
 					{renderSettingsItem(
 						'trash-outline',
@@ -516,14 +689,19 @@ const SettingsScreen = () => {
 				    Ligar é do sistema, não do app — o item leva para a tela do Android. */}
 				{captureSupported && (
 					<View style={styles.section}>
-						<Text style={styles.sectionTitle}>{t('captures.settingsSection')}</Text>
+						{/* O "?" da trilha da captura (SPD-131), ao lado do título da seção. */}
+						<TourTarget id="settings.captureSection" style={styles.sectionTitleRow}>
+							<Text style={[styles.sectionTitle, styles.sectionTitleInRow]}>{t('captures.settingsSection')}</Text>
+							<HelpButton trail="capture" here={{ screen: 'settings' }} />
+						</TourTarget>
 						{renderSettingsItem(
 							'notifications-circle-outline',
 							t('captures.settingsCapture'),
 							openCaptureSettings,
 							<Text style={captureEnabled ? styles.accountStatus : styles.settingUnavailableText}>
 								{captureEnabled ? t('captures.statusOn') : t('captures.statusOff')}
-							</Text>
+							</Text>,
+							'settings.capture'
 						)}
 						{renderSettingsItem(
 							'checkmark-done-outline',
@@ -531,7 +709,20 @@ const SettingsScreen = () => {
 							() => router.push('/inbox'),
 							capturePending > 0 ? (
 								<Text style={styles.accountStatus}>{capturePending}</Text>
-							) : undefined
+							) : undefined,
+							'settings.review'
+						)}
+						{renderSettingsItem(
+							'person-circle-outline',
+							t('ownName.settingsItem'),
+							() => setShowOwnNameSheet(true),
+							<Text
+								style={[ownBankName ? styles.accountStatus : styles.settingUnavailableText, styles.ownNameValue]}
+								numberOfLines={1}
+							>
+								{ownBankName ?? t('ownName.notSet')}
+							</Text>,
+							'settings.ownName'
 						)}
 					</View>
 				)}
@@ -539,6 +730,8 @@ const SettingsScreen = () => {
 				{/* About */}
 				<View style={styles.section}>
 					<Text style={styles.sectionTitle}>{t('settings.about')}</Text>
+					{/* Ajustes › Como usar (SPD-129): os tópicos para ler e o guia de cada tela. */}
+					{renderSettingsItem('help-circle-outline', t('tutorial.howTo.settingsItem'), () => router.push('/howto'))}
 					{renderSettingsItem('information-circle-outline', t('settings.aboutSpendr'), handleAbout)}
 					{renderSettingsItem(
 						'bug-outline',
@@ -557,10 +750,27 @@ const SettingsScreen = () => {
 				isVisible={showCurrencySelector}
 				onClose={() => setShowCurrencySelector(false)}
 			/>
+			{mirai ? (
+				<MiraiNameDialog
+					visible={showMiraiName}
+					current={mirai.name}
+					suggested={mirai.suggestedName}
+					onSave={mirai.saveName}
+					onClose={() => setShowMiraiName(false)}
+				/>
+			) : null}
 			<LanguageSelector
 				isVisible={showLanguageSelector}
 				onClose={() => setShowLanguageSelector(false)}
 			/>
+			{captureSupported && (
+				<OwnNameSheet
+					visible={showOwnNameSheet}
+					value={ownBankName}
+					onClose={() => setShowOwnNameSheet(false)}
+					onSave={saveOwnBankName}
+				/>
+			)}
 		</SafeAreaView>
 	);
 };
@@ -580,8 +790,9 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		gap: 4,
 		paddingHorizontal: 16,
+		// Só o respiro do cabeçalho: a área segura já põe a tela abaixo da barra de status, e
+		// os 60 que estavam aqui dobravam o vão no topo (SPD-121).
 		paddingVertical: 12,
-		paddingTop: 60,
 	},
 	headerTitle: {
 		fontSize: 24,
@@ -599,6 +810,14 @@ const styles = StyleSheet.create({
 	accountStatus: {
 		color: '#8E8E93',
 		fontSize: 12,
+	},
+	sectionTitleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+	},
+	sectionTitleInRow: {
+		marginBottom: 0,
 	},
 	sectionTitle: {
 		fontSize: 14,
@@ -619,6 +838,11 @@ const styles = StyleSheet.create({
 	settingLeft: {
 		flexDirection: 'row',
 		alignItems: 'center',
+	},
+	// O "?" tem 48 de toque; a margem negativa não deixa ele aumentar a linha do item.
+	helpInItem: {
+		marginVertical: -12,
+		marginRight: -12,
 	},
 	settingIcon: {
 		marginRight: 12,
@@ -651,6 +875,13 @@ const styles = StyleSheet.create({
 		fontSize: 14,
 		color: 'rgba(255, 255, 255, 0.4)',
 		fontStyle: 'italic',
+	},
+	// O nome salvo à direita da linha: um nome comprido não empurra o título para fora.
+	ownNameValue: {
+		flexShrink: 1,
+		maxWidth: '45%',
+		marginLeft: 12,
+		textAlign: 'right',
 	},
 });
 

@@ -11,24 +11,35 @@ import {
 import {
 	countPendingCaptures,
 	getIgnoredApps,
+	getLastNotificationPostedAt,
 	getPendingCaptures,
 	getResolvedCaptures,
 	type IgnoredApp,
 	pruneResolvedCaptures,
 } from '../database/captures';
 import type { Capture } from '../database/schema';
+import { useAfterPull } from '../hooks/useAfterPull';
+import { ambiguityOfReason } from '../utils/ambiguityReasons';
+import type { SettledBill } from '../utils/billMatcher';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import {
+	answerCaptureDirection,
 	answerCaptureDuplicate,
 	answerCaptureTransfer,
 	confirmCapture,
 	dismissCapture,
 	ingestRawCaptures,
 	markCaptureTransfer,
+	resolveInvoicePaymentCapture,
 	revertCapture,
 	stopIgnoringApp,
 } from '../utils/captureActions';
+import { captureChoiceStore, getCaptureChoices } from '../utils/captureChoicePreference';
+import { isDirectionGuess } from '../utils/captureChoices';
 import { APP_IGNORE_THRESHOLD } from '../utils/captureMatcher';
+import type { CaptureDirection } from '../utils/captureParser';
+import { ownNamesOf } from '../utils/ownName';
+import { getOwnBankName } from '../utils/ownNamePreference';
 import { pickAndImportOfx, type StatementImportResult } from '../utils/statementImport';
 import { useAccounts } from './AccountsContext';
 import { useAuth } from './AuthContext';
@@ -50,6 +61,11 @@ export interface UndoableAction {
 	/** Os itens a reverter. Uma transferência pode envolver duas pernas. */
 	ids: string[];
 	at: number;
+	/**
+	 * A conta a pagar que a confirmação quitou, para o aviso dizer a conta e o mês (SPD-153):
+	 * o mês é o mais antigo em aberto, que pode não ser o do pagamento.
+	 */
+	bill?: SettledBill | null;
 }
 
 interface CapturesContextType {
@@ -63,16 +79,35 @@ interface CapturesContextType {
 	pendingCount: number;
 	/** Apps que não são banco e que o usuário ensinou a ignorar, com "desfazer" (SPD-022). */
 	ignoredApps: IgnoredApp[];
+	/**
+	 * A notificação mais recente da tabela inteira (ISO), para o aviso de captura parada.
+	 * `resolved` não serve: um extrato grande o enche de linhas `ofx:` (SPD-112).
+	 */
+	lastNotificationAt: string | null;
 	isLoading: boolean;
 	lastAction: UndoableAction | null;
 
 	refresh: () => Promise<void>;
 	openSettings: () => void;
-	confirm: (id: string, categoryId: string) => Promise<void>;
+	/** `accountId`: a conta escolhida na revisão (SPD-111); sem ela, fica a do aviso. */
+	confirm: (id: string, categoryId: string, accountId?: string | null) => Promise<void>;
 	dismiss: (id: string) => Promise<void>;
 	markTransfer: (id: string) => Promise<void>;
 	answerDuplicate: (id: string, same: boolean) => Promise<void>;
 	answerTransfer: (id: string, isTransfer: boolean) => Promise<void>;
+	/** O aviso com pista de entrada e de saída (SPD-123): o usuário diz qual foi. */
+	answerDirection: (id: string, direction: CaptureDirection) => Promise<void>;
+	/**
+	 * Os pendentes que perguntam "entrou ou saiu" e já têm a resposta (SPD-162,
+	 * `isDirectionGuess`). Os outros desses estão com o palpite do parser: a revisão pergunta
+	 * antes de oferecer confirmar ou "minhas contas".
+	 */
+	answeredDirections: ReadonlySet<string>;
+	/**
+	 * "Recebemos o pagamento da fatura" (SPD-123): de qual conta saiu, ou `null` para não
+	 * lançar. `false` quando o item não é mais essa pergunta.
+	 */
+	resolveInvoicePayment: (id: string, fromAccountId: string | null) => Promise<boolean>;
 	revert: (id: string) => Promise<void>;
 	/** Os avisos daquele app voltam para a revisão. */
 	unignoreApp: (packageName: string) => Promise<void>;
@@ -96,8 +131,10 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const [resolved, setResolved] = useState<Capture[]>([]);
 	const [pendingCount, setPendingCount] = useState(0);
 	const [ignoredApps, setIgnoredApps] = useState<IgnoredApp[]>([]);
+	const [lastNotificationAt, setLastNotificationAt] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [lastAction, setLastAction] = useState<UndoableAction | null>(null);
+	const [answeredDirections, setAnsweredDirections] = useState<ReadonlySet<string>>(() => new Set());
 
 	const supported = useMemo(() => isCaptureSupported(), []);
 	const draining = useRef(false);
@@ -109,8 +146,12 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	// caixa de entrada em laço.
 	const categoriesRef = useRef(categories);
 	categoriesRef.current = categories;
-	const ownNamesRef = useRef<string[]>([]);
-	ownNamesRef.current = account?.name ? [account.name] : [];
+	const accountNameRef = useRef<string | null>(null);
+	accountNameRef.current = account?.name ?? null;
+	// Os nomes do usuário: o da conta logada e o "seu nome como aparece no banco" de Ajustes
+	// (SPD-115). Sem login, só o segundo existe. Lido a cada lote: o nome pode ter acabado de
+	// mudar em Ajustes, ou chegado pelo sync. A captura recebe o de Ajustes à parte, para o
+	// diário dizer qual dos dois conferiu; o import de extrato, os dois juntos.
 	const refreshDataRef = useRef(refreshData);
 	refreshDataRef.current = refreshData;
 	// Transferências e âncoras de saldo não passam por `transactions`, então os saldos
@@ -125,16 +166,28 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	const load = useCallback(async () => {
-		const [nextPending, nextResolved, count, nextIgnored] = await Promise.all([
+		const [nextPending, nextResolved, count, nextIgnored, nextLastNotification, choices] = await Promise.all([
 			getPendingCaptures(),
 			getResolvedCaptures(HISTORY_LIMIT),
 			countPendingCaptures(),
 			getIgnoredApps(APP_IGNORE_THRESHOLD),
+			getLastNotificationPostedAt(),
+			// Relidas a cada carga: a resposta acabou de ser gravada, ou chegou pelo sync.
+			getCaptureChoices(),
 		]);
+		setAnsweredDirections(
+			new Set(
+				nextPending
+					.filter((capture) => ambiguityOfReason(capture.reason)?.case === 'pix_direction')
+					.filter((capture) => !isDirectionGuess(capture, choices))
+					.map((capture) => capture.id)
+			)
+		);
 		setPending(nextPending);
 		setResolved(nextResolved);
 		setPendingCount(count);
 		setIgnoredApps(nextIgnored);
+		setLastNotificationAt(nextLastNotification);
 	}, []);
 
 	/**
@@ -156,10 +209,13 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				const raws = drainCaptures();
 				if (raws.length > 0) {
 					const summary = await ingestRawCaptures(raws, {
-						ownNames: ownNamesRef.current,
+						ownNames: ownNamesOf([accountNameRef.current]),
+						bankName: await getOwnBankName(),
 						categories: categoriesRef.current,
 						// Lida a cada lote: a escolha pode ter mudado agora, ou chegado pelo sync.
 						businessFeeds: await getBusinessFeeds(),
+						// As escolhas aprendidas nos avisos ambíguos (SPD-123), idem.
+						captureChoices: await getCaptureChoices(),
 					});
 					// Qualquer item novo muda cartões e contas: a compra pendente já aparece na fatura
 					// como "a revisar", e uma conta ou cartão pode ter nascido agora.
@@ -208,20 +264,26 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		};
 	}, [refresh, drainAndLoad]);
 
+	// O banco mudou por fora — o pull trouxe a caixa de entrada de outro aparelho, ou o
+	// "Apagar todos os dados" a esvaziou: a fila e a contagem da tela inicial releem.
+	useAfterPull(() =>
+		load().catch((error) => console.error('Error reloading captured notifications:', error))
+	);
+
 	// As categorias chegam depois do primeiro esvaziamento na abertura do app.
 	const hasCategories = categories.length > 0;
 	useEffect(() => {
 		if (hasCategories) void drainAndLoad();
 	}, [hasCategories, drainAndLoad]);
 
-	const remember = useCallback((kind: UndoableKind, ids: string[]) => {
-		setLastAction({ kind, ids, at: Date.now() });
+	const remember = useCallback((kind: UndoableKind, ids: string[], bill: SettledBill | null = null) => {
+		setLastAction({ kind, ids, at: Date.now(), bill });
 	}, []);
 
 	const confirm = useCallback(
-		async (id: string, categoryId: string) => {
-			const result = await confirmCapture(id, categoryId, categoriesRef.current);
-			if (result) remember('confirm', [id]);
+		async (id: string, categoryId: string, accountId?: string | null) => {
+			const result = await confirmCapture(id, categoryId, categoriesRef.current, accountId, captureChoiceStore);
+			if (result) remember('confirm', [id], result.settledBill ?? null);
 			await Promise.all([load(), reloadLedger()]);
 		},
 		[load, reloadLedger, remember]
@@ -240,7 +302,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const markTransfer = useCallback(
 		async (id: string) => {
 			const related = pending.find((c) => c.id === id)?.relatedId;
-			await markCaptureTransfer(id);
+			await markCaptureTransfer(id, captureChoiceStore);
 			remember('transfer', related ? [id, related] : [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
@@ -259,11 +321,30 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const answerTransfer = useCallback(
 		async (id: string, isTransfer: boolean) => {
 			const related = pending.find((c) => c.id === id)?.relatedId;
-			await answerCaptureTransfer(id, isTransfer);
+			await answerCaptureTransfer(id, isTransfer, captureChoiceStore);
 			if (isTransfer) remember('transfer', related ? [id, related] : [id]);
 			await Promise.all([load(), reloadLedger()]);
 		},
 		[pending, load, reloadLedger, remember]
+	);
+
+	const answerDirection = useCallback(
+		async (id: string, direction: CaptureDirection) => {
+			await answerCaptureDirection(id, direction, captureChoiceStore);
+			// O item continua na revisão; a direção mexe no provisório da conta.
+			await Promise.all([load(), refreshAccountsRef.current()]);
+		},
+		[load]
+	);
+
+	const resolveInvoicePayment = useCallback(
+		async (id: string, fromAccountId: string | null) => {
+			const done = await resolveInvoicePaymentCapture(id, fromAccountId, captureChoiceStore);
+			if (done) remember(fromAccountId ? 'transfer' : 'dismiss', [id]);
+			await Promise.all([load(), reloadLedger()]);
+			return done;
+		},
+		[load, reloadLedger, remember]
 	);
 
 	const revert = useCallback(
@@ -295,8 +376,11 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 	const importStatement = useCallback(async () => {
 		const result = await pickAndImportOfx({
-			ownNames: ownNamesRef.current,
+			ownNames: ownNamesOf([accountNameRef.current, await getOwnBankName()]),
 			categories: categoriesRef.current,
+			// O aviso "entrou ou saiu?" que o extrato casou: respondido, confirma como os
+			// outros; o extrato pode responder; sem resposta, fica (SPD-164).
+			choiceStore: captureChoiceStore,
 		});
 		if (result) {
 			// O import cria ou ancora contas mesmo sem lançar nada: recarrega sempre.
@@ -313,6 +397,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			resolved,
 			pendingCount,
 			ignoredApps,
+			lastNotificationAt,
 			isLoading,
 			lastAction,
 			refresh,
@@ -322,6 +407,9 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			markTransfer,
 			answerDuplicate,
 			answerTransfer,
+			answerDirection,
+			answeredDirections,
+			resolveInvoicePayment,
 			revert,
 			unignoreApp,
 			undo,
@@ -335,6 +423,7 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			resolved,
 			pendingCount,
 			ignoredApps,
+			lastNotificationAt,
 			isLoading,
 			lastAction,
 			refresh,
@@ -343,6 +432,9 @@ export const CapturesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			markTransfer,
 			answerDuplicate,
 			answerTransfer,
+			answerDirection,
+			answeredDirections,
+			resolveInvoicePayment,
 			revert,
 			unignoreApp,
 			undo,

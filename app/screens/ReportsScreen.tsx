@@ -16,6 +16,7 @@ import RangeChips from '../components/reports/RangeChips';
 import { ACCENT, reportStyles } from '../components/reports/reportStyles';
 import SourceRanking from '../components/reports/SourceRanking';
 import TrendBars from '../components/reports/TrendBars';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
 import { type TrendRange, useReportsData } from '../hooks/useReportsData';
@@ -39,13 +40,17 @@ const ReportsScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
 	const { selectedMonth, selectedYear } = usePeriod();
-	const { currentPeriodTransactions, categories, monthlyData, categoryTotals } = useTransactions();
+	const { currentPeriodTransactions, categories, categoryTotals } = useTransactions();
 	const { goal, save: saveGoal, clear: clearGoal } = useRetirementGoal();
 	const [range, setRange] = useState<TrendRange>(6);
 	const [goalSheetOpen, setGoalSheetOpen] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 
 	const data = useReportsData(range, goal);
+	// O guia dos Relatórios (SPD-129): abre carregado e sem a folha da meta aberta.
+	useScreenTour('reports', { ready: !data.isLoading, blocked: goalSheetOpen });
+	const tourScroll = useTourScroll('reports');
+	const exportTarget = useTourTarget('reports.export');
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
@@ -58,11 +63,11 @@ const ReportsScreen = () => {
 
 	const handleExport = useCallback(async () => {
 		try {
-			await exportFinancialReport(currentPeriodTransactions, categories, monthlyData, categoryTotals, getMonthName(selectedMonth), selectedYear);
+			await exportFinancialReport(currentPeriodTransactions, categories, categoryTotals, getMonthName(selectedMonth), selectedYear);
 		} catch (error) {
 			console.error('Error exporting reports:', error);
 		}
-	}, [currentPeriodTransactions, categories, monthlyData, categoryTotals, selectedMonth, selectedYear]);
+	}, [currentPeriodTransactions, categories, categoryTotals, selectedMonth, selectedYear]);
 
 	const openIncomes = useCallback(() => {
 		router.push({ pathname: '/(tabs)/transactions', params: { kind: 'income' } });
@@ -86,10 +91,13 @@ const ReportsScreen = () => {
 					</Text>
 					<Text style={styles.headerSubtitle}>{t('reports.headerSubtitle')}</Text>
 				</View>
-				<PeriodSelector />
+				<TourTarget id="reports.period">
+					<PeriodSelector />
+				</TourTarget>
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.scrollContent}
 				showsVerticalScrollIndicator={false}
 				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ACCENT} colors={[ACCENT]} />}
@@ -98,27 +106,45 @@ const ReportsScreen = () => {
 					<Text style={styles.loadingText}>{t('reports.loading')}</Text>
 				) : (
 					<>
-						<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} reserveCents={data.reserve.split.reserveCents} />
+						<TourTarget id="reports.freedom">
+							<FreedomHero model={data.retirement} goal={goal} income={data.income} scenario={data.debtScenario} onEditGoal={() => setGoalSheetOpen(true)} reserveCents={data.reserve.split.reserveCents} />
+						</TourTarget>
 
-						<HealthGrid indicators={data.health} />
+						<TourTarget id="reports.health">
+							<HealthGrid indicators={data.health} />
+						</TourTarget>
 
-						<DebtsSection summary={data.debts.summary} items={data.debts.items} />
+						<TourTarget id="reports.debts">
+							<DebtsSection summary={data.debts.summary} items={data.debts.items} />
+						</TourTarget>
 
-						<View style={styles.rangeRow}>
+						<TourTarget id="reports.range" style={styles.rangeRow}>
 							<RangeChips value={range} onChange={setRange} />
-						</View>
-						<TrendBars series={data.series} provisional={data.provisional} />
+						</TourTarget>
+						<TourTarget id="reports.trend">
+							<TrendBars series={data.series} provisional={data.provisional} />
+						</TourTarget>
 
 						{data.retirement && data.retirement.reach.kind !== 'reached' ? (
-							<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} scenario={data.debtScenario?.projection} />
+							<TourTarget id="reports.projection">
+								<ProjectionChart points={data.retirement.projection} goalCents={data.retirement.requiredCapitalCents} scenario={data.debtScenario?.projection} />
+							</TourTarget>
 						) : null}
 
-						<CategoryRanking rows={data.categories} />
-						<SourceRanking rows={data.sources} />
-						<CommittedSection months={data.committed} />
-						<InsightsList insights={data.insights} onPress={openIncomes} />
+						<TourTarget id="reports.categories">
+							<CategoryRanking rows={data.categories} />
+						</TourTarget>
+						<TourTarget id="reports.sources">
+							<SourceRanking rows={data.sources} />
+						</TourTarget>
+						<TourTarget id="reports.committed">
+							<CommittedSection months={data.committed} />
+						</TourTarget>
+						<TourTarget id="reports.insights">
+							<InsightsList insights={data.insights} onPress={openIncomes} />
+						</TourTarget>
 
-						<Pressable style={({ pressed }) => [styles.exportButton, pressed && reportStyles.pressed]} onPress={handleExport} accessibilityRole="button">
+						<Pressable {...exportTarget} style={({ pressed }) => [styles.exportButton, pressed && reportStyles.pressed]} onPress={handleExport} accessibilityRole="button">
 							<Ionicons name="download-outline" size={20} color="#FFFFFF" />
 							<Text style={styles.exportText}>{t('reports.exportReports')}</Text>
 						</Pressable>

@@ -136,11 +136,15 @@ export interface Account extends SyncMeta {
 	network: string | null;
 	/** Dia do mês em que a fatura fecha. Define o ciclo e o nome da fatura. Só cartões. */
 	closingDay: number | null;
-	/** Informativo: dia do mês em que costuma vencer (fechamento + N). O ciclo não usa. */
+	/**
+	 * O dia de vencimento que a fatura mostra, como o dono digitou. Dá o vencimento de cada fatura
+	 * (`cardMath`, SPD-119); sem ele, o vencimento é o fechamento mais `closingDaysBefore`.
+	 */
 	dueDay: number | null;
 	/**
-	 * Dias entre o fechamento e o vencimento (Nubank: 7). O vencimento real é o fechamento
-	 * mais isso, no próximo dia útil. Só cartões.
+	 * Dias entre o fechamento e o vencimento, contados pelo formulário a partir dos dois dias
+	 * que a fatura mostra. Sem `dueDay`, o vencimento é o fechamento mais isso, no próximo dia
+	 * útil; com ele, fica gravado para os aparelhos com versão antiga. Só cartões.
 	 */
 	closingDaysBefore: number | null;
 	creditLimitCents: number | null;
@@ -274,8 +278,17 @@ export const DATABASE_NAME = 'spendr.db';
  *     aparelho. A tabela guarda o `updatedAt`, a lápide e a marca de cada chave; o
  *     AsyncStorage continua sendo o que as telas leem (ver `sync/preferences.ts`). Só
  *     tabela nova: um app v20 abre um banco v21 e ignora a tabela.
+ * 22 — `seen_capture_fingerprints` é criada (SPD-082, DEC-35): o "Apagar todos os dados"
+ *     apaga as capturas de verdade e guarda só a impressão digital de cada aviso, para a
+ *     mesma notificação do banco não virar dinheiro de novo. Local, fora de
+ *     `SYNCED_TABLES`. Só tabela nova: um app v21 abre um banco v22 e ignora a tabela.
+ * 23 — `bill_payments` é criada e entra em `SYNCED_TABLES` (SPD-146): o mês de uma conta
+ *     a pagar que o usuário pulou ("Não vou pagar este mês") ou pagou fora de ordem vira
+ *     registro, e toda baixa grava o mês com o lançamento. `bills.paidThrough` continua
+ *     sendo o trecho contínuo pago — é o que um app antigo lê. Só tabela nova: um app v22
+ *     abre um banco v23 e ignora a tabela.
  */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 23;
 
 /** Tables that take part in the delta sync, in foreign-key-safe order. */
 export const SYNCED_TABLES = [
@@ -291,6 +304,7 @@ export const SYNCED_TABLES = [
 	'captures',
 	'merchant_rules',
 	'bills',
+	'bill_payments',
 	'preferences',
 ] as const;
 
@@ -449,7 +463,11 @@ export const ACCOUNT_V17_COLUMNS: Array<[name: string, sql: string]> = [['reserv
 /** Para que serve o dinheiro de uma conta de reserva. Só `'investment'` existe: nulo é a cascata. */
 export type ReservePurpose = 'investment';
 
-/** O Nubank e a maioria dos bancos fecham a fatura 7 dias antes do vencimento. */
+/**
+ * Prazo entre fechamento e vencimento só para cartão que tem fechamento e nenhum prazo
+ * gravado (dado antigo, ou que chegou sem ele). Não é palpite de banco: o formulário grava o
+ * prazo a partir do dia de vencimento que a fatura mostra e nunca parte deste número.
+ */
 export const DEFAULT_CLOSING_DAYS_BEFORE = 7;
 
 export const CREATE_TRANSFERS_TABLE = `
@@ -638,6 +656,37 @@ export interface Bill extends SyncMeta {
 	sortOrder: number;
 }
 
+/**
+ * O que aconteceu com um mês de uma conta a pagar (SPD-146): `paid` (pago — à mão, pela
+ * baixa automática ou fora de ordem) ou `skipped` ("Não vou pagar este mês": sem lançamento,
+ * sem valor).
+ */
+export type BillPaymentStatus = 'paid' | 'skipped';
+
+/**
+ * Um mês de uma conta a pagar (v23, SPD-146). `bills.paidThrough` guarda só o trecho contínuo
+ * pago; o mês pulado e o pago fora de ordem precisam de linha própria, e toda baixa grava a
+ * sua, com o lançamento, para o desfazer saber exatamente o que reabrir.
+ *
+ * O `id` sai da conta e do mês (`billPaymentId`): dois aparelhos que marcam o mesmo mês caem
+ * na mesma linha, e o último a escrever ganha. Desfazer é lápide (`deletedAt`), não DELETE,
+ * para os outros aparelhos saberem.
+ */
+export interface BillPayment extends SyncMeta {
+	id: string;
+	billId: string;
+	/** O mês da conta, `YYYY-MM`. */
+	month: string;
+	status: BillPaymentStatus;
+	/** O lançamento que pagou o mês. `null` no pulado e no "Só marcar como paga". */
+	transactionId: string | null;
+	/** Quanto foi pago, em centavos. `null` no pulado ou quando não se sabe. */
+	amountCents: number | null;
+}
+
+/** O que se grava de um mês: tudo menos o carimbo do sync. */
+export type BillPaymentDraft = Omit<BillPayment, keyof SyncMeta>;
+
 export type DebtDraft = Omit<Debt, 'id' | keyof SyncMeta>;
 
 export const CREATE_DEBTS_TABLE = `
@@ -683,6 +732,22 @@ export const CREATE_BILLS_TABLE = `
     paidByRef TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     sortOrder INTEGER NOT NULL DEFAULT 0,
+${SYNC_COLUMNS_SQL}
+  );
+`;
+
+/**
+ * Os meses das contas a pagar (v23, SPD-146). `billId` não é chave estrangeira, como nas
+ * outras tabelas sincronizadas: a ordem de chegada do sync não é garantida.
+ */
+export const CREATE_BILL_PAYMENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS bill_payments (
+    id TEXT PRIMARY KEY NOT NULL,
+    billId TEXT NOT NULL,
+    month TEXT NOT NULL,
+    status TEXT NOT NULL,
+    transactionId TEXT,
+    amountCents INTEGER,
 ${SYNC_COLUMNS_SQL}
   );
 `;
@@ -844,6 +909,24 @@ ${SYNC_COLUMNS_SQL}
 `;
 
 /**
+ * As impressões digitais dos avisos que o "Apagar todos os dados" levou embora (v22).
+ *
+ * Só a impressão digital e quando ela entrou aqui: nem texto, nem valor, nem
+ * estabelecimento — o DEC-35 manda apagar de verdade, e a impressão digital é um hash do
+ * aviso, não o aviso. Ela existe pelo mesmo motivo da coluna UNIQUE de `captures`: o
+ * Android reentrega e reposta notificações, e o mesmo aviso do banco não pode virar
+ * dinheiro duas vezes (`hasCaptureFingerprint` consulta as duas tabelas).
+ *
+ * **Local**, fora de `SYNCED_TABLES`: é a memória deste aparelho sobre o que ele já viu.
+ */
+export const CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS seen_capture_fingerprints (
+    fingerprint TEXT PRIMARY KEY NOT NULL,
+    seenAt TEXT NOT NULL
+  );
+`;
+
+/**
  * Queries filter by date range constantly; without these they are full scans.
  * The `dirty` indexes keep the push's "what changed?" scan off the full table.
  */
@@ -867,6 +950,7 @@ export const CREATE_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_captures_dirty ON captures (dirty);
   CREATE INDEX IF NOT EXISTS idx_merchant_rules_dirty ON merchant_rules (dirty);
   CREATE INDEX IF NOT EXISTS idx_bills_dirty ON bills (dirty);
+  CREATE INDEX IF NOT EXISTS idx_bill_payments_dirty ON bill_payments (dirty);
   CREATE INDEX IF NOT EXISTS idx_preferences_dirty ON preferences (dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_period
     ON budgets (year, month) WHERE deletedAt IS NULL;
@@ -1074,7 +1158,9 @@ export default {
 	CREATE_RETIREMENT_GOALS_TABLE,
 	CREATE_DEBTS_TABLE,
 	CREATE_BILLS_TABLE,
+	CREATE_BILL_PAYMENTS_TABLE,
 	CREATE_RESERVE_GOALS_TABLE,
 	CREATE_PREFERENCES_TABLE,
+	CREATE_SEEN_CAPTURE_FINGERPRINTS_TABLE,
 	DEFAULT_CATEGORIES,
 };

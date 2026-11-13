@@ -79,6 +79,7 @@ jest.mock('../../sync/engine', () => ({
 	pullAll: jest.fn(async () => 0),
 	replaceAccountWithDevice: jest.fn(async () => ({ removed: 3, notRemoved: 1 })),
 	resetCursor: jest.fn(async () => undefined),
+	learnAccountWipe: jest.fn(async () => 'none'),
 }));
 
 jest.mock('../../../modules/spendr-captures', () => ({
@@ -98,6 +99,7 @@ jest.mock('../../sync/queue', () => ({
 	schedule: jest.fn(),
 	syncImmediately: jest.fn(),
 	notifyDataChanged: jest.fn(),
+	runExclusive: jest.fn((work: () => Promise<unknown>) => work()),
 }));
 
 import { act, create } from 'react-test-renderer';

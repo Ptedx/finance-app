@@ -226,6 +226,21 @@ export interface WireBill extends WireMeta {
 }
 
 /**
+ * Um mês de uma conta a pagar (v23, SPD-146): pulado (`skipped`) ou pago (`paid`). Mesmos
+ * nomes de `BillPayment` (`database/schema.ts`); a identidade é o `id`, que sai da conta e
+ * do mês, então dois aparelhos que marcam o mesmo mês convergem por `updatedAt`.
+ */
+export interface WireBillPayment extends WireMeta {
+	id: string;
+	billId: string;
+	/** `YYYY-MM`. */
+	month: string;
+	status: 'paid' | 'skipped';
+	transactionId: string | null;
+	amountCents: number | null;
+}
+
+/**
  * Uma preferência (v21): moeda, idioma, taxa do CDI, lembretes ligados. A identidade é a
  * chave do AsyncStorage, que é a mesma em todo aparelho — então duas escolhas da mesma
  * preferência convergem por `updatedAt`, como as regras aprendidas.
@@ -263,6 +278,12 @@ export interface SyncChanges {
 	bills?: WireBill[];
 	/** Coleção do v21 (preferências), idem. */
 	preferences?: WirePreference[];
+	/**
+	 * Coleção do v23 (os meses das contas a pagar, SPD-146), idem. O servidor em produção
+	 * ainda não a conhece: até ele conhecer, as linhas ficam sujas aqui
+	 * (`onlyKnownCollections`), sem perda.
+	 */
+	billPayments?: WireBillPayment[];
 }
 
 /**
@@ -287,6 +308,7 @@ export interface SyncCursor {
 	merchantRules: number;
 	bills: number;
 	preferences: number;
+	billPayments: number;
 }
 
 export const EMPTY_CURSOR: SyncCursor = {
@@ -303,6 +325,7 @@ export const EMPTY_CURSOR: SyncCursor = {
 	merchantRules: 0,
 	bills: 0,
 	preferences: 0,
+	billPayments: 0,
 };
 
 /**
@@ -324,6 +347,7 @@ export const COLLECTION_SINCE_SCHEMA: Record<keyof SyncCursor, number> = {
 	merchantRules: 19,
 	bills: 20,
 	preferences: 21,
+	billPayments: 23,
 };
 
 /**
@@ -356,11 +380,28 @@ export const inheritCursor = (legacy: SyncCursor, legacySchema: number): SyncCur
 	return cursor;
 };
 
+/**
+ * A chave, em `sync_state`, do último "Apagar todos os dados" da conta que este aparelho
+ * conhece (SPD-082, DEC-35): o `dataWipedAt` que o servidor devolveu ao apagar. Mora ao
+ * lado do cursor, e sai com ele quando a conta muda (`beginSessionFor`, `endSyncSession`).
+ *
+ * Vai em todo push como `knownWipeAt` — `null` quando este aparelho nunca apagou. O
+ * servidor recusa (409 `data_wiped`) o push de quem não sabe do último apagar: sem isso,
+ * o celular que ficou sem rede subiria de volta o que o outro acabou de apagar.
+ */
+export const KNOWN_WIPE_AT_KEY = 'knownWipeAt';
+
 export interface PullResponse {
 	serverTime: string;
 	cursor: SyncCursor;
 	hasMore: boolean;
 	changes: SyncChanges;
+	/**
+	 * O último "Apagar todos os dados" da conta, ou `null` se ela nunca apagou. O servidor
+	 * que está em produção ainda não manda: ausente vale como "não se sabe". Quem compara
+	 * com o `knownWipeAt` daqui é `applyWipeMark` (`sync/engine.ts`, SPD-083).
+	 */
+	dataWipedAt?: string | null;
 }
 
 /**
@@ -418,6 +459,8 @@ export interface SyncStatusResponse {
 		merchantRules?: number;
 		bills?: number;
 	};
+	/** Como em `PullResponse`: o último apagar da conta, ausente num servidor anterior. */
+	dataWipedAt?: string | null;
 }
 
 export const EMPTY_CHANGES = (): SyncChanges => ({
@@ -434,6 +477,7 @@ export const EMPTY_CHANGES = (): SyncChanges => ({
 	merchantRules: [],
 	bills: [],
 	preferences: [],
+	billPayments: [],
 });
 
 export const countChanges = (changes: SyncChanges): number =>
@@ -452,7 +496,8 @@ export const countChanges = (changes: SyncChanges): number =>
 	(changes.captures?.length ?? 0) +
 	(changes.merchantRules?.length ?? 0) +
 	(changes.bills?.length ?? 0) +
-	(changes.preferences?.length ?? 0);
+	(changes.preferences?.length ?? 0) +
+	(changes.billPayments?.length ?? 0);
 
 /**
  * Todo arquivo sob app/ e tratado como rota pelo expo-router, e uma rota sem export

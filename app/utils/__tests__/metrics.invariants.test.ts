@@ -12,16 +12,13 @@ import {
 	consecutiveSavingsRateDrops,
 	fixedCostShare,
 	FULL_BASIS_POINTS,
-	monthlyFixedCostCents,
-	monthlyRecurringIncomeCents,
+	monthlyBillsCents,
 	needsWantsSavingsSplit,
-	type RecurringCommitment,
 	runwayMonths,
 	savingsRate,
 	savingsRateDelta,
 	savingsRateTrend,
 } from '../metrics';
-import { monthlyEquivalentCents } from '../recurrence';
 
 const makeRandom = (seed: number) => {
 	let state = seed >>> 0;
@@ -115,39 +112,22 @@ describe('needsWantsSavingsSplit', () => {
 	});
 });
 
-describe('custo fixo, renda recorrente e fôlego', () => {
-	const commitment = (
-		partial: Partial<RecurringCommitment> & Pick<RecurringCommitment, 'amountCents'>
-	): RecurringCommitment => ({
-		recurrenceType: 'monthly',
-		isIncome: false,
-		active: true,
-		...partial,
-	});
-
-	it('somam só as recorrências ativas do lado certo, já normalizadas para o mês', () => {
+describe('custo fixo e fôlego', () => {
+	it('as contas a pagar somam só as ativas, com valor e sem dívida ligada', () => {
 		const random = makeRandom(47);
 		for (let i = 0; i < 2_000; i += 1) {
-			const rules: RecurringCommitment[] = Array.from({ length: randomInt(random, 0, 12) }, () =>
-				commitment({
-					amountCents: randomInt(random, 0, 500_000),
-					recurrenceType: (['weekly', 'monthly', 'yearly'] as const)[randomInt(random, 0, 2)],
-					isIncome: random() < 0.4,
-					active: random() < 0.8,
-				})
-			);
+			const bills = Array.from({ length: randomInt(random, 0, 12) }, () => ({
+				amountCents: random() < 0.2 ? null : randomInt(random, 0, 500_000),
+				active: random() < 0.8,
+				debtId: random() < 0.2 ? 'debt' : null,
+			}));
 
-			let expectedFixed = 0;
-			let expectedIncome = 0;
-			for (const rule of rules) {
-				if (!rule.active) continue;
-				const monthly = monthlyEquivalentCents(rule, rule.amountCents);
-				if (rule.isIncome) expectedIncome += monthly;
-				else expectedFixed += monthly;
+			let expected = 0;
+			for (const bill of bills) {
+				if (bill.active && bill.debtId === null && bill.amountCents !== null) expected += bill.amountCents;
 			}
 
-			expect(monthlyFixedCostCents(rules)).toBe(expectedFixed);
-			expect(monthlyRecurringIncomeCents(rules)).toBe(expectedIncome);
+			expect(monthlyBillsCents(bills)).toBe(expected);
 		}
 	});
 
@@ -250,11 +230,10 @@ describe('computeWealthMetrics / buildInsights — consistência entre camadas',
 		periodTotals: { incomeCents: 800_000, expenseCents: 600_000 },
 		previousPeriodTotals: { incomeCents: 800_000, expenseCents: 700_000 },
 		liquidCents: 1_500_000,
-		recurring: [
-			{ recurrenceType: 'monthly', amountCents: 200_000, isIncome: false, active: true },
-			{ recurrenceType: 'yearly', amountCents: 120_000, isIncome: false, active: true },
-			{ recurrenceType: 'weekly', amountCents: 10_000, isIncome: false, active: false },
-			{ recurrenceType: 'monthly', amountCents: 800_000, isIncome: true, active: true },
+		bills: [
+			{ amountCents: 200_000, active: true, debtId: null },
+			{ amountCents: 10_000, active: true, debtId: null },
+			{ amountCents: 10_000, active: false, debtId: null },
 		],
 		expenseTotalsByNature: { essentialCents: 350_000, discretionaryCents: 250_000 },
 		categoryTotals: [{ categoryId: 'food', totalCents: 350_000 }],
@@ -272,8 +251,7 @@ describe('computeWealthMetrics / buildInsights — consistência entre camadas',
 		expect(metrics.savingsRate.basisPoints).toBe(2_500);
 		expect(metrics.previousSavingsRate?.basisPoints).toBe(1_250);
 		expect(metrics.savingsRateDeltaBasisPoints).toBe(1_250);
-		expect(metrics.monthlyFixedCents).toBe(200_000 + 10_000); // anual/12; a semanal está inativa
-		expect(metrics.monthlyRecurringIncomeCents).toBe(800_000);
+		expect(metrics.monthlyFixedCents).toBe(200_000 + 10_000); // a terceira conta está inativa
 		expect(metrics.fixedCostBasisPoints).toBe(Math.round((210_000 * 10_000) / 800_000));
 		expect(metrics.runwayMonths).toBeCloseTo(1_500_000 / 210_000, 12);
 		expect(metrics.split.baseCents).toBe(800_000);

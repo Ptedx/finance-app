@@ -30,7 +30,7 @@ import { provisionalEntries } from './accountMath';
 import { brandFor, NEUTRAL_CARD_COLOR } from './bankBrands';
 import { buildCardSummary, type CardEntry, type CardMovement } from './cardMath';
 import { parseCardNames } from './cardNames';
-import { isKnownBankPackage } from '../diagnostics/knownBanks';
+import { bankOfPackage, isKnownBankPackage, KNOWN_BANK_APPS } from '../diagnostics/knownBanks';
 import { isSmsPackage, isStatementPackage } from './captureMatcher';
 import { isWalletPackage, type ParsedCapture, type RawCapture } from './captureParser';
 import { bankLabelOf, isCreditCardNotification, isForeignApp, pickNotificationTarget, sameBank } from './notificationTarget';
@@ -58,8 +58,12 @@ const yesterday = (): string => addDays(todayISO(), -1);
  * aparelho mostra — que o usuário ou o fabricante podem trocar. O Mercado Pago é a conta
  * do usuário onde fica a reserva financeira (SPD-022): não pode depender do nome na tela
  * para contar como banco, nem nunca cair nas regras de "app que não é banco".
+ *
+ * Era só o Mercado Pago; desde o SPD-112 é a lista dos apps de banco conhecidos
+ * (`KNOWN_BANK_APPS`): o PicPay que aparece como "Carteira digital" caía como terceiro, e o
+ * aviso dele que não cita o banco ficava "Sem conta".
  */
-export const BANK_PACKAGES: ReadonlyMap<string, string> = new Map([['com.mercadopago.wallet', 'Mercado Pago']]);
+export const BANK_PACKAGES: ReadonlyMap<string, string> = KNOWN_BANK_APPS;
 
 /**
  * O aviso como o resto do resolvedor deve vê-lo: o app de banco conhecido pelo pacote
@@ -67,7 +71,7 @@ export const BANK_PACKAGES: ReadonlyMap<string, string> = new Map([['com.mercado
  * captura guarda o nome original.
  */
 const asBankApp = (raw: RawCapture): RawCapture => {
-	const bank = BANK_PACKAGES.get(raw.packageName);
+	const bank = bankOfPackage(raw.packageName);
 	return bank && !brandFor(raw.appLabel) ? { ...raw, appLabel: bank } : raw;
 };
 
@@ -260,29 +264,151 @@ const last4OfAcctId = (acctId: string): string | null => {
 };
 
 /**
- * A conta de um extrato OFX. Cria na primeira vez, ou adota uma conta do mesmo banco
- * que veio das notificações e ainda não tem chave de extrato. Em contas que não são
- * cartão, o `LEDGERBAL` do arquivo vira a âncora do saldo quando é mais novo que a
- * âncora atual — o banco sabe o saldo melhor que qualquer estimativa.
+ * "Este extrato é do cartão Nubank Teste (final 1111)?" — a pergunta que o import faz
+ * quando não dá para casar sozinho (E2E-34). `candidates` são os que batem pelo final (ou
+ * pelo banco), na ordem em que a tela pergunta; `others` são os outros do mesmo tipo,
+ * sem extrato ainda, para "outro cartão".
  */
-export const resolveAccountForStatement = async (statement: OfxAccount): Promise<Account> => {
+export interface StatementAccountQuestion {
+	isCard: boolean;
+	bankName: string;
+	/** O final do extrato (os 4 últimos dígitos do `ACCTID`), quando há. */
+	last4: string | null;
+	candidates: Account[];
+	others: Account[];
+}
+
+export type StatementAccountChoice = { type: 'existing'; accountId: string } | { type: 'new' };
+
+export type StatementAccountChooser = (question: StatementAccountQuestion) => Promise<StatementAccountChoice>;
+
+/**
+ * Mesmo banco pelo nome ou pela marca: o extrato do cartão diz "NU PAGAMENTOS S.A." e o
+ * cartão cadastrado diz "Nubank". O `ofxParser` já traduz o que conhece; isto cobre o
+ * cartão cadastrado com outro nome da mesma marca.
+ */
+const sameBankOrBrand = (a: string | null, b: string | null): boolean => {
+	if (sameBank(a, b)) return true;
+	const brand = brandFor(a);
+	return brand !== null && brand.id === brandFor(b)?.id;
+};
+
+/** Os finais que a conta declara: o do plástico e os dos virtuais nomeados. */
+const finalsOf = (account: Account): string[] => [
+	...(account.last4 ? [account.last4] : []),
+	...Object.keys(parseCardNames(account.cardNames)),
+];
+
+type StatementMatch = { type: 'adopt'; account: Account } | { type: 'ask'; candidates: Account[] } | { type: 'none' };
+
+/**
+ * Quem o extrato pode adotar, do mais certo ao menos. Só contas ativas, do mesmo tipo e
+ * ainda sem chave de extrato (a que tem chave é de outro arquivo, e roubá-la faria os dois
+ * extratos caírem na mesma conta).
+ *
+ * Cartão: o final do `ACCTID` e o banco batem → adota; mais de um assim, ou só o final
+ * bate (banco diferente ou desconhecido) → pergunta. Sem final de um dos lados, o único
+ * cartão do banco é adotado, como antes (o cartão que as notificações criaram sem final).
+ *
+ * Conta: o banco bate → adota a única; com várias, a que declara o final do `ACCTID`, ou
+ * pergunta. Nenhuma do banco, mas uma com aquele final → pergunta.
+ */
+const matchStatementAccount = (statement: OfxAccount, open: Account[], last4: string | null): StatementMatch => {
+	const ofBank = open.filter((account) => sameBankOrBrand(account.bankName, statement.bankName));
+	const byFinal = (accounts: Account[]) => (last4 ? accounts.filter((account) => finalsOf(account).includes(last4)) : []);
+
+	if (statement.isCard) {
+		const exact = byFinal(ofBank);
+		if (exact.length === 1) return { type: 'adopt', account: exact[0] };
+		if (exact.length > 1) return { type: 'ask', candidates: exact };
+		const finalOnly = byFinal(open);
+		if (finalOnly.length > 0) return { type: 'ask', candidates: finalOnly };
+		const loose = ofBank.filter((account) => last4 === null || finalsOf(account).length === 0);
+		if (loose.length === 1) return { type: 'adopt', account: loose[0] };
+		if (loose.length > 1) return { type: 'ask', candidates: loose };
+		return { type: 'none' };
+	}
+
+	if (ofBank.length === 1) return { type: 'adopt', account: ofBank[0] };
+	if (ofBank.length > 1) {
+		const exact = byFinal(ofBank);
+		return exact.length === 1 ? { type: 'adopt', account: exact[0] } : { type: 'ask', candidates: ofBank };
+	}
+	const finalOnly = byFinal(open);
+	return finalOnly.length > 0 ? { type: 'ask', candidates: finalOnly } : { type: 'none' };
+};
+
+/**
+ * A âncora do cartão que o extrato cria: na véspera da primeira linha, senão as compras
+ * do extrato ficariam antes dela e fora das faturas.
+ *
+ * O valor vem do `LEDGERBAL`, que é o saldo **depois** das linhas: o que o cartão devia
+ * antes do extrato é ele menos o que as linhas moveram. No arquivo do E2E-34, −195,90 menos
+ * (−50 −45,90 −100 +1.234,56) dá −1.234,56: a fatura anterior, que o "Pagamento recebido"
+ * quitou. Com âncora zero o pagamento virava "Crédito no cartão R$ 1.038,66".
+ *
+ * Só o negativo (o devido, como na especificação e no Nubank). Positivo pode ser crédito
+ * de verdade ou o banco que escreve o devido com o sinal trocado; sem saber qual, zero,
+ * como antes.
+ */
+const cardAnchorOf = (
+	statement: OfxAccount
+): Partial<Pick<Account, 'openingBalanceCents' | 'openingBalanceDate'>> => {
+	const firstLine = statement.entries.map((entry) => entry.postedDate).sort()[0];
+	if (!firstLine) return {};
+	const eve = addDays(firstLine, -1);
+	const ledger = statement.ledgerBalanceCents;
+	const asOf = statement.ledgerDate;
+	if (ledger === null || asOf === null || ledger > 0) return { openingBalanceCents: 0, openingBalanceDate: eve };
+
+	const moved = statement.entries
+		.filter((entry) => entry.postedDate <= asOf)
+		.reduce((sum, entry) => sum + (entry.direction === 'in' ? entry.amountCents : -entry.amountCents), 0);
+	return { openingBalanceCents: ledger - moved, openingBalanceDate: eve };
+};
+
+/**
+ * A conta de um extrato OFX. Cria na primeira vez, ou adota a conta que já existe:
+ * pelo final e pelo banco (`matchStatementAccount`), perguntando a `choose` quando não
+ * dá para ter certeza. Adotada, a conta ganha a chave do extrato e os próximos imports a
+ * acham direto. Em contas que não são cartão, o `LEDGERBAL` do arquivo vira a âncora do
+ * saldo quando é mais novo que a âncora atual — o banco sabe o saldo melhor que qualquer
+ * estimativa.
+ *
+ * Sem `choose` (ninguém para perguntar), a dúvida vira conta nova: juntar no chute poria
+ * o extrato no cartão errado, e dois cartões se juntam depois; um misturado não se separa.
+ */
+export const resolveAccountForStatement = async (
+	statement: OfxAccount,
+	choose?: StatementAccountChooser | null
+): Promise<Account> => {
 	const existing = await findAccountByKey(statement.accountKey);
 	if (existing) {
 		return maybeAnchorFromStatement(existing, statement);
 	}
 
-	const last4 = statement.isCard ? last4OfAcctId(statement.acctId) : null;
-	const all = await getAccounts();
-	const twin = all.find((account) =>
-		statement.isCard
-			? account.kind === 'credit_card' &&
-				account.accountKey === null &&
-				sameBank(account.bankName, statement.bankName) &&
-				(last4 === null || account.last4 === null || account.last4 === last4)
-			: account.kind !== 'credit_card' &&
-				account.accountKey === null &&
-				sameBank(account.bankName, statement.bankName)
+	const statementLast4 = last4OfAcctId(statement.acctId);
+	const last4 = statement.isCard ? statementLast4 : null;
+	const open = (await getAccounts()).filter(
+		(account) =>
+			!account.archived &&
+			!account.deletedAt &&
+			account.accountKey === null &&
+			(account.kind === 'credit_card') === statement.isCard
 	);
+
+	const match = matchStatementAccount(statement, open, statementLast4);
+	let twin: Account | null = match.type === 'adopt' ? match.account : null;
+	if (match.type === 'ask' && choose) {
+		const choice = await choose({
+			isCard: statement.isCard,
+			bankName: statement.bankName,
+			last4: statementLast4,
+			candidates: match.candidates,
+			others: open.filter((account) => !match.candidates.includes(account)),
+		});
+		twin = choice.type === 'existing' ? (open.find((account) => account.id === choice.accountId) ?? null) : null;
+	}
 
 	if (twin) {
 		const adopted: Account = { ...twin, accountKey: statement.accountKey, last4: twin.last4 ?? last4 };
@@ -290,16 +416,11 @@ export const resolveAccountForStatement = async (statement: OfxAccount): Promise
 		return maybeAnchorFromStatement(adopted, statement);
 	}
 
-	// Cartão novo por extrato não tem saldo confiável (o sinal varia entre bancos), mas a
-	// âncora precisa ficar antes da primeira linha: com âncora "ontem", todas as compras do
-	// extrato ficariam antes dela e fora das faturas.
-	const firstLine = statement.entries.map((entry) => entry.postedDate).sort()[0];
-	const anchor =
-		!statement.isCard && statement.ledgerBalanceCents !== null && statement.ledgerDate !== null
+	const anchor = statement.isCard
+		? cardAnchorOf(statement)
+		: statement.ledgerBalanceCents !== null && statement.ledgerDate !== null
 			? { openingBalanceCents: statement.ledgerBalanceCents, openingBalanceDate: statement.ledgerDate }
-			: statement.isCard && firstLine
-				? { openingBalanceCents: 0, openingBalanceDate: addDays(firstLine, -1) }
-				: {};
+			: {};
 
 	const id = await addAccount(
 		newAccountDraft({

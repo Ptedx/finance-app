@@ -3,6 +3,7 @@ import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
+import { TourTarget } from '../components/tour/TourContext';
 import { useCaptures } from '../contexts/CapturesContext';
 
 // biome-ignore lint/suspicious/noExplicitAny: external API shape unknown
@@ -20,8 +21,11 @@ export default function TabsLayout() {
 		<Tabs
 			screenOptions={{
 				tabBarStyle: styles.tabBar,
+				// O fundo cobre a barra inteira: é o alvo "as abas" do guia da tela inicial (SPD-129).
 				tabBarBackground: () => (
-					<BlurView intensity={10} tint="dark" style={StyleSheet.absoluteFill} />
+					<TourTarget id="home.tabs" style={StyleSheet.absoluteFill}>
+						<BlurView intensity={10} tint="dark" style={StyleSheet.absoluteFill} />
+					</TourTarget>
 				),
 				tabBarActiveTintColor: '#15E8FE',
 				tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
@@ -56,9 +60,11 @@ export default function TabsLayout() {
 					tabBarLabel: () => null,
 					tabBarIcon: () => (
 						<View style={styles.addButtonContainer}>
-							<View style={styles.addButtonBackground}>
-								<Ionicons name="add" size={30} color="#000000" />
-							</View>
+							<TourTarget id="home.add">
+								<View style={styles.addButtonBackground}>
+									<Ionicons name="add" size={30} color="#000000" />
+								</View>
+							</TourTarget>
 						</View>
 					),
 				}}

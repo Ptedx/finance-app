@@ -4,14 +4,14 @@
  * O livro-caixa responde "quanto sobrou?". Este módulo responde as duas perguntas que
  * de fato movem patrimônio: *que fração da renda vira poupança* e *por quantos meses a
  * reserva sustenta o custo fixo*. São contas simples — o valor está em serem feitas num
- * lugar só, sobre centavos inteiros, com as bordas (renda zero, sem recorrência, mês
+ * lugar só, sobre centavos inteiros, com as bordas (renda zero, sem custo fixo, mês
  * vazio) decididas explicitamente em vez de virarem `NaN` ou `Infinity` na tela.
  *
  * Duas regras atravessam o arquivo:
  *
  *  1. **Funções puras.** Nada de React Native, nada de banco. Todo insumo chega por
  *     argumento — os agregados que `getPeriodSummary`, `getBalanceAsOf` e
- *     `getRecurringTransactions` já produzem. É o que permite testar tudo direto e é o
+ *     `getBills` já produzem. É o que permite testar tudo direto e é o
  *     que vai permitir expor estas funções como ferramentas de leitura do chatbot: o
  *     modelo raciocina sobre números pré-computados e confiáveis, não sobre linhas cruas.
  *
@@ -22,7 +22,6 @@
  */
 
 import { type Cents, sumCents } from './money';
-import { monthlyEquivalentCents, type RecurrenceRule } from './recurrence';
 
 /** Um por cento, em pontos-base. Ter o nome evita `* 100` solto pelo código. */
 export const BASIS_POINTS_PER_PERCENT = 100;
@@ -106,41 +105,83 @@ export const savingsRateDelta = (current: SavingsRate, previous: SavingsRate): n
 // ---------------------------------------------------------------------------
 
 /**
- * Um compromisso recorrente, na forma mínima que o cálculo precisa.
- *
- * Estrutural de propósito: `RecurringTransaction` do banco satisfaz esta interface sem
- * conversão nenhuma, e um teste pode montar o objeto à mão sem arrastar o schema junto.
+ * Uma conta a pagar, na forma mínima que o custo fixo precisa. `Bill` do banco satisfaz.
+ * `debtId` diz que ela é a parcela de uma dívida.
  */
-export interface RecurringCommitment extends RecurrenceRule {
-	amountCents: Cents;
-	isIncome: boolean;
+export interface BillCommitment {
+	amountCents: Cents | null;
 	active: boolean;
+	debtId: string | null;
 }
 
 /**
- * Custo fixo mensal: a soma das recorrências de despesa ativas, normalizadas.
- *
- * A normalização é a parte que importa. Somar os valores crus trataria um seguro anual de
- * R$ 3.000 como R$ 3.000 de custo mensal — `monthlyEquivalentCents` já resolve isso e é
- * de onde a conta vem, para que a Home e esta métrica nunca discordem.
- *
- * Recorrências inativas ficam de fora: elas descrevem um compromisso suspenso, não um que
- * a reserva precise cobrir.
+ * As contas a pagar cadastradas à mão, por mês: as ativas com valor. A conta que "varia"
+ * (sem valor) fica de fora — não há número para somar. A ligada a uma dívida também: a
+ * parcela entra pela dívida (`debtInstallmentsMonthlyCents`), com o valor de hoje.
  */
-export const monthlyFixedCostCents = (recurring: RecurringCommitment[]): Cents =>
+export const monthlyBillsCents = (bills: BillCommitment[]): Cents =>
 	sumCents(
-		recurring
-			.filter((rule) => !rule.isIncome && rule.active)
-			.map((rule) => safeCents(monthlyEquivalentCents(rule, safeCents(rule.amountCents))))
+		bills
+			.filter((bill) => bill.active && bill.debtId === null && bill.amountCents !== null && bill.amountCents > 0)
+			.map((bill) => safeCents(bill.amountCents ?? 0))
 	);
 
-/** Renda recorrente mensal, mesma normalização — o outro lado do mesmo cálculo. */
-export const monthlyRecurringIncomeCents = (recurring: RecurringCommitment[]): Cents =>
-	sumCents(
-		recurring
-			.filter((rule) => rule.isIncome && rule.active)
-			.map((rule) => safeCents(monthlyEquivalentCents(rule, safeCents(rule.amountCents))))
-	);
+/**
+ * Uma compra parcelada no cartão, na forma mínima que o custo fixo precisa. `InstallmentPlan`
+ * de `utils/cardMath.ts` — a lista de "Parcelas em andamento" do cartão — satisfaz.
+ */
+export interface CardInstallmentCommitment {
+	/** O `installmentGroup` da compra: a mesma compra vista duas vezes conta uma. */
+	group: string;
+	/** A próxima parcela. */
+	parcelCents: Cents;
+	/** Parcelas ainda por cair. */
+	remainingCount: number;
+}
+
+/**
+ * As parcelas das compras parceladas no cartão, por mês (SPD-126): a próxima parcela de cada
+ * compra que ainda tem parcela por cair. Quando a última cai, a compra sai da lista de
+ * `buildInstallmentPlans` e, com ela, do custo fixo.
+ *
+ * Não há o que descontar das contas a pagar nem das dívidas: estorno, ajuste e encargo do
+ * cartão nunca viram plano (não são parcela), a dívida não lança parcela no cartão e o app não
+ * tem parcelamento de fatura. O que se protege aqui é a mesma compra em dois resumos.
+ */
+export const cardInstallmentsMonthlyCents = (plans: CardInstallmentCommitment[]): Cents => {
+	const seen = new Set<string>();
+	let total = 0;
+	for (const plan of plans) {
+		if (plan.remainingCount <= 0 || seen.has(plan.group)) continue;
+		seen.add(plan.group);
+		total += Math.max(0, safeCents(plan.parcelCents));
+	}
+	return total;
+};
+
+/**
+ * O custo fixo do mês: as contas a pagar, as parcelas das dívidas e as parcelas das compras
+ * parceladas no cartão (SPD-126) — é onde mora o que vence todo mês desde que a tela de
+ * recorrências saiu (SPD-079). Cada compromisso entra por um caminho só: a conta a pagar
+ * ligada a uma dívida fica de fora (`monthlyBillsCents`), a parcela vem da dívida.
+ *
+ * As recorrências antigas não entram (SPD-122, DEC-37): elas não lançam mais nada desde o
+ * SPD-113 e o usuário não as vê nem edita, então uma regra de R$ 120 esquecida no banco não
+ * pode pesar no custo fixo nem no fôlego. Elas também não descontam mais a conta a pagar ou a
+ * parcela de mesmo valor (o "já no custo fixo" de antes): com a regra fora, isso tiraria o
+ * compromisso de verdade da conta.
+ */
+export const monthlyFixedCommitmentsCents = ({
+	bills,
+	debtInstallmentsCents,
+	cardInstallmentsCents = 0,
+}: {
+	bills: BillCommitment[];
+	/** `debtInstallmentsMonthlyCents`, de `utils/debt.ts`. */
+	debtInstallmentsCents: Cents;
+	/** `cardInstallmentsMonthlyCents`, das parcelas em andamento dos cartões. */
+	cardInstallmentsCents?: Cents;
+}): Cents => monthlyBillsCents(bills) + safeCents(debtInstallmentsCents) + safeCents(cardInstallmentsCents);
 
 export interface RunwayInput {
 	/**
@@ -407,8 +448,9 @@ export default {
 	NEEDS_WANTS_SAVINGS_TARGET,
 	savingsRate,
 	savingsRateDelta,
-	monthlyFixedCostCents,
-	monthlyRecurringIncomeCents,
+	monthlyBillsCents,
+	cardInstallmentsMonthlyCents,
+	monthlyFixedCommitmentsCents,
 	runwayMonths,
 	fixedCostShare,
 	categoryDeltas,

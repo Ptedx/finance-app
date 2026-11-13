@@ -10,6 +10,7 @@ jest.mock('../../database/database', () => ({
 import { addAccount, getAccounts, updateAccount } from '../../database/database';
 import type { Account, Capture } from '../../database/schema';
 import { isNoBankNotice, resolveAccountForNotification } from '../accountResolver';
+import { TARGET_CASES } from '../ambiguityReasons';
 import type { ParsedCapture, RawCapture } from '../captureParser';
 import { bankLabelOf, cardHintOf, pickNotificationTarget, planLedgerRepair } from '../notificationTarget';
 
@@ -70,9 +71,12 @@ describe('pickNotificationTarget — a compra chega na fatura certa', () => {
 		expect(target).toEqual({ type: 'card', account: nubankCard });
 	});
 
-	it('"Compra aprovada" sem a palavra crédito, com final de cartão, também vai para o cartão', () => {
+	// SPD-123 (NOTIF-16): ia para o cartão, mas é o mesmo molde do débito do Inter ("Compra
+	// aprovada no cartão final 0443"). Com a conta do banco no app, os dois são possíveis: a
+	// revisão pergunta, e a escolha vira regra para aquele final.
+	it('"Compra aprovada" sem a palavra crédito, com final desconhecido e a conta do banco: revisão', () => {
 		const target = pickNotificationTarget(accounts, nubank('Compra aprovada', 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 6422.'));
-		expect(target).toEqual({ type: 'card', account: nubankCard });
+		expect(target).toEqual({ type: 'unknown', ambiguity: { case: 'debit_unknown_last4', card: nubankCard } });
 	});
 
 	it('final exato do cartão físico', () => {
@@ -104,11 +108,14 @@ describe('pickNotificationTarget — a compra chega na fatura certa', () => {
 		expect(pickNotificationTarget([archived, nubankPF], nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({ type: 'checking' });
 	});
 
-	it('dois cartões do mesmo banco: só o final exato decide; senão cria (crédito) ou fica na conta', () => {
+	it('dois cartões do mesmo banco: só o final exato decide; senão a revisão pergunta (SPD-123, NOTIF-15)', () => {
 		const second = { ...nubankCard, id: 'nu-card-2', last4: '9999' };
 		const both = [nubankCard, second, nubankPF];
 		expect(pickNotificationTarget(both, nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 9999.'))).toEqual({ type: 'card', account: second });
-		expect(pickNotificationTarget(both, nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({ type: 'checking' });
+		expect(pickNotificationTarget(both, nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({
+			type: 'unknown',
+			ambiguity: { case: 'purchase_no_kind' },
+		});
 	});
 
 	// Achado 7.6: caía em "conta corrente" e R$ 480 saíam do saldo, fora das duas faturas.
@@ -120,14 +127,15 @@ describe('pickNotificationTarget — a compra chega na fatura certa', () => {
 				both,
 				nubank('Compra no crédito aprovada', 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.')
 			)
-		).toEqual({ type: 'unknown' });
-		// Sem a palavra "crédito" nada muda: o débito do Inter não a diz, e vai para a conta.
+		).toEqual({ type: 'unknown', ambiguity: { case: 'credit_unknown_last4' } });
+		// Sem a palavra "crédito" também não dá para responder: pode ser o débito (o do Inter
+		// não a diz) ou um dos dois cartões. Ia para a conta corrente; agora pergunta (SPD-123).
 		expect(
 			pickNotificationTarget(
 				both,
 				nubank('Compra aprovada', 'Compra de R$ 480,00 APROVADA em LOJA para o cartão com final 7777.')
 			)
-		).toEqual({ type: 'checking' });
+		).toEqual({ type: 'unknown', ambiguity: { case: 'purchase_no_kind' } });
 		// Com um cartão só, continua sendo a fatura dele: a dúvida é que muda a resposta.
 		expect(
 			pickNotificationTarget(
@@ -144,7 +152,7 @@ describe('pickNotificationTarget — a compra chega na fatura certa', () => {
 
 	it('cartão cadastrado à mão, sem app, é encontrado pelo nome do banco', () => {
 		const manual = { ...nubankCard, packageName: null };
-		expect(pickNotificationTarget([manual, nubankPF], nubank('Compra aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({ type: 'card', account: manual });
+		expect(pickNotificationTarget([manual, nubankPF], nubank('Compra no crédito aprovada', 'Compra de R$ 1,00 APROVADA em X para o cartão com final 2513.'))).toEqual({ type: 'card', account: manual });
 	});
 });
 
@@ -181,7 +189,9 @@ describe('planLedgerRepair — conserta compras registradas pelas regras antigas
 	const virtual = account({ id: 'nu-2513', name: 'Nubank · final 2513', kind: 'credit_card', role: 'card', bankName: 'Nubank', last4: '2513', packageName: NUBANK });
 
 	it('junta o cartão criado por final virtual no cartão de verdade e move a compra que foi para a conta', () => {
-		const plan = planLedgerRepair([nubankCard, nubankPF, interPF, virtual], [capture({})]);
+		// O final do próprio cartão: sem dúvida de que a compra é dele (SPD-132).
+		const ownFinal = capture({ text: 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 1534.', cardLast4: '1534' });
+		const plan = planLedgerRepair([nubankCard, nubankPF, interPF, virtual], [ownFinal]);
 		expect(plan).toEqual({
 			mergeCards: [{ fromId: 'nu-2513', toId: 'nu-card' }],
 			moveCaptures: [{ captureId: 'c', transactionId: 'tx-ifood', toId: 'nu-card' }],
@@ -200,6 +210,60 @@ describe('planLedgerRepair — conserta compras registradas pelas regras antigas
 	it('é idempotente: depois de aplicado, não acha mais nada', () => {
 		const repaired = planLedgerRepair([nubankCard, nubankPF, { ...virtual, deletedAt: '2026-09-17' }], [capture({ accountId: 'nu-card' })]);
 		expect(repaired).toEqual({ mergeCards: [], moveCaptures: [] });
+	});
+});
+
+/**
+ * SPD-132: o conserto das compras antigas usa o mesmo critério de um aviso novo. Compra que
+ * hoje iria para a revisão (`unknown`, com um dos casos de `ambiguityReasons`) não é chutada
+ * para um cartão: fica onde está, sem mover e sem apagar. Antes, "Compra aprovada" com um
+ * final desconhecido ia para o único cartão do banco mesmo com a conta do banco no app
+ * (NOTIF-16) — o débito do Inter e o virtual do Nubank se escrevem igual.
+ */
+describe('planLedgerRepair — não chuta o destino que hoje seria perguntado (SPD-132)', () => {
+	const nubankCardPJ = account({ id: 'nu-card-pj', name: 'Cartão PJ', kind: 'credit_card', role: 'card', bankName: 'Nubank', last4: '9999', packageName: NUBANK, closingDay: 10 });
+	const virtual = account({ id: 'nu-2513', name: 'Nubank · final 2513', kind: 'credit_card', role: 'card', bankName: 'Nubank', last4: '2513', packageName: NUBANK });
+	const credit = { title: 'Compra no crédito aprovada' };
+
+	/** O classificador do fluxo novo: o que um aviso igual chegando hoje teria como destino. */
+	const ambiguityToday = (accounts: Account[], old: Capture) => {
+		const target = pickNotificationTarget(accounts, { ...old, kind: 'purchase' });
+		return target.type === 'unknown' ? (target.ambiguity?.case ?? null) : null;
+	};
+
+	const cases: Array<[string, Account[], Capture, string]> = [
+		['"Compra aprovada", final desconhecido, um cartão e a conta do banco', [nubankCard, nubankPF], capture({}), 'debit_unknown_last4'],
+		['a mesma, ainda pendente', [nubankCard, nubankPF], capture({ status: 'pending', transactionId: null }), 'debit_unknown_last4'],
+		['"Compra aprovada", final desconhecido, dois cartões do banco', [nubankCard, nubankCardPJ, nubankPF], capture({}), 'purchase_no_kind'],
+		['"crédito", final desconhecido, dois cartões do banco', [nubankCard, nubankCardPJ, nubankPF], capture(credit), 'credit_unknown_last4'],
+	];
+
+	it.each(cases)('%s: fica onde está', (_label, accounts, old, ambiguity) => {
+		expect(ambiguityToday(accounts, old)).toBe(ambiguity);
+		expect(TARGET_CASES).toContain(ambiguity);
+		expect(planLedgerRepair(accounts, [old])).toEqual({ mergeCards: [], moveCaptures: [] });
+	});
+
+	it('o cartão criado por final virtual ainda é juntado; a compra ambígua na conta fica', () => {
+		const plan = planLedgerRepair([nubankCard, nubankPF, virtual], [capture({})]);
+		expect(plan).toEqual({ mergeCards: [{ fromId: 'nu-2513', toId: 'nu-card' }], moveCaptures: [] });
+	});
+
+	it('o que não é ambíguo continua sendo consertado: o final do cartão, ou "crédito" com um cartão só do banco', () => {
+		const ownFinal = capture({ id: 'final', text: 'Compra de R$ 29,38 APROVADA em IFOOD para o cartão com final 1534.', cardLast4: '1534' });
+		const named = capture({ id: 'nomeado' });
+		const creditOne = capture({ id: 'credito', ...credit });
+		const withNamedFinal = { ...nubankCard, cardNames: '{"6422":"iFood"}' };
+		for (const [accounts, old] of [
+			[[nubankCard, nubankPF], ownFinal],
+			[[withNamedFinal, nubankPF], named],
+			[[nubankCard, nubankPF], creditOne],
+		] as Array<[Account[], Capture]>) {
+			expect(ambiguityToday(accounts, old)).toBeNull();
+			expect(planLedgerRepair(accounts, [old]).moveCaptures).toEqual([
+				{ captureId: old.id, transactionId: 'tx-ifood', toId: 'nu-card' },
+			]);
+		}
 	});
 });
 

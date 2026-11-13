@@ -1,20 +1,24 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccountReminderBanner from '../components/AccountReminderBanner';
 import AccountsOverview from '../components/AccountsOverview';
+import ClosedReviewBanner from '../components/accounts/ClosedReviewBanner';
 import BillsMonthCard from '../components/bills/BillsMonthCard';
 import CaptureReviewBanner from '../components/CaptureReviewBanner';
 import CardsSection from '../components/cards/CardsSection';
 import MonthOverviewCard from '../components/MonthOverviewCard';
+import HelpButton from '../components/tour/HelpButton';
+import { TourTarget, useScreenTour, useTourScroll, useTourTarget } from '../components/tour/TourContext';
+import TourNotice from '../components/tour/TourNotice';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useBills } from '../contexts/BillsContext';
-import { useRecurringTransactions } from '../contexts/RecurringTransactionsContext';
 import { useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 
 /**
  * Tela inicial, organizada pela ordem das perguntas de quem abre o app:
@@ -38,23 +42,22 @@ const HomeScreen = () => {
 	const router = useRouter();
 	const { t } = useTranslation();
 	const insets = useSafeAreaInsets();
-	const { refreshData } = useTransactions();
-	const { refresh: refreshAccounts } = useAccounts();
+	const { refreshData, isLoading: transactionsLoading } = useTransactions();
+	const { refresh: refreshAccounts, isLoading: accountsLoading } = useAccounts();
 	const { refresh: refreshBills } = useBills();
-	const { processTransactions } = useRecurringTransactions();
 	const { syncNow } = useSync();
 	const [refreshing, setRefreshing] = useState(false);
+	// O guia da tela inicial (SPD-129): abre depois de carregar; os alvos estão marcados abaixo
+	// e na barra de abas.
+	useScreenTour('home', { ready: !transactionsLoading && !accountsLoading });
+	const tourScroll = useTourScroll('home');
+	const settingsTarget = useTourTarget('home.settings');
 
-	// Recorrências vencidas são lançadas uma vez, ao abrir.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional one-time effect
-	useEffect(() => {
-		processTransactions().catch((error) => console.error('Failed to process recurring transactions:', error));
-	}, []);
-
+	// Abrir ou puxar a Início não lança mais as recorrências antigas (SPD-113): o `[Auto]`
+	// virava gasto dobrado quando a cobrança de verdade chegava.
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
-			await processTransactions();
 			await refreshData();
 			await refreshAccounts();
 			await refreshBills();
@@ -65,17 +68,22 @@ const HomeScreen = () => {
 		} finally {
 			setRefreshing(false);
 		}
-	}, [refreshData, refreshAccounts, refreshBills, processTransactions, syncNow]);
+	}, [refreshData, refreshAccounts, refreshBills, syncNow]);
 
 	return (
 		<View style={styles.container}>
 			<StatusBar barStyle="light-content" />
 
 			<View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-				<Text style={styles.headerTitle} accessibilityRole="header">
-					{t('home.title')}
-				</Text>
+				{/* O "?" da trilha da tela inicial (SPD-131c), ao lado do título. */}
+				<View style={styles.titleRow}>
+					<Text style={styles.headerTitle} accessibilityRole="header">
+						{t('home.title')}
+					</Text>
+					<HelpButton trail="home" here={{ screen: 'home' }} />
+				</View>
 				<Pressable
+					{...settingsTarget}
 					onPress={() => router.push({ pathname: '/settings' })}
 					accessibilityRole="button"
 					accessibilityLabel={t('tabs.settings')}
@@ -86,16 +94,23 @@ const HomeScreen = () => {
 			</View>
 
 			<ScrollView
+				ref={tourScroll}
 				contentContainerStyle={styles.content}
 				showsVerticalScrollIndicator={false}
 				refreshControl={
 					<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#15E8FE" colors={['#15E8FE']} />
 				}
 			>
+				<TourNotice />
 				<AccountReminderBanner />
 				<CaptureReviewBanner />
-				<BillsMonthCard />
-				<MonthOverviewCard />
+				<ClosedReviewBanner />
+				<TourTarget id="home.bills">
+					<BillsMonthCard />
+				</TourTarget>
+				<TourTarget id="home.month">
+					<MonthOverviewCard />
+				</TourTarget>
 				<CardsSection />
 				<AccountsOverview />
 			</ScrollView>
@@ -115,6 +130,11 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 16,
 		paddingBottom: 12,
 	},
+	titleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 4,
+	},
 	headerTitle: {
 		fontSize: 28,
 		fontWeight: 'bold',
@@ -132,7 +152,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 120,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 	},
 });
 

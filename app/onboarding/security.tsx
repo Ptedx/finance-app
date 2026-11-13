@@ -8,6 +8,7 @@ import {
 	FlatList,
 	Image,
 	Modal,
+	Platform,
 	SafeAreaView,
 	StyleSheet,
 	Switch,
@@ -17,6 +18,7 @@ import {
 } from 'react-native';
 import type { Currency } from '../contexts/CurrencyContext';
 import { AVAILABLE_CURRENCIES, useCurrency } from '../contexts/CurrencyContext';
+import { type BiometricKind, biometricKindOf, changeBiometricLock } from '../utils/biometricLock';
 import * as biometricUtils from '../utils/biometricUtils';
 import * as notificationUtils from '../utils/notificationUtils';
 import { setOnboardingCompleted } from '../utils/onboardingUtils';
@@ -27,7 +29,7 @@ export default function SecurityScreen() {
 	const { currentCurrency, setCurrency } = useCurrency();
 	const [biometricAvailable, setBiometricAvailable] = useState(false);
 	const [biometricEnabled, setBiometricEnabled] = useState(false);
-	const [biometricType, setBiometricType] = useState('Biometric');
+	const [biometricKind, setBiometricKind] = useState<BiometricKind>('biometric');
 	const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 	const [isLoading, setIsLoading] = useState(false);
 	const [showCurrencyModal, setShowCurrencyModal] = useState(false);
@@ -39,8 +41,8 @@ export default function SecurityScreen() {
 				setBiometricAvailable(available);
 
 				if (available) {
-					const type = await biometricUtils.getBiometricType();
-					setBiometricType(type);
+					const types = await biometricUtils.getSupportedAuthTypes();
+					setBiometricKind(biometricKindOf(types, Platform.OS));
 
 					const enabled = await biometricUtils.isBiometricEnabled();
 					setBiometricEnabled(enabled);
@@ -59,34 +61,21 @@ export default function SecurityScreen() {
 			console.log('Haptics not supported', error)
 		);
 
-		if (value && biometricAvailable) {
-			// Try to authenticate to make sure it works
-			const success = await biometricUtils.authenticateWithBiometrics(
-				`Authenticate with ${biometricType} to enable authentication`
-			);
+		if (!biometricAvailable) return;
 
-			if (success) {
-				await biometricUtils.setBiometricEnabled(value);
-				setBiometricEnabled(value);
+		// Ligar e desligar passam pela biometria, como em Ajustes (E2E-19): ligar confere que
+		// ela funciona; desligar sem autenticar tirava a trava com um toque.
+		const next = await changeBiometricLock(value, biometricEnabled, {
+			authenticate: biometricUtils.authenticateWithBiometrics,
+			save: biometricUtils.setBiometricEnabled,
+			reason: (enabling) =>
+				t(enabling ? 'settings.biometricEnablePrompt' : 'settings.biometricDisablePrompt'),
+		});
+		setBiometricEnabled(next);
 
-				// Success haptic feedback
-				Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch((error) =>
-					console.log('Haptics not supported', error)
-				);
-			} else {
-				// If authentication fails, keep the switch off
-				setBiometricEnabled(false);
-
-				// Error haptic feedback
-				Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch((error) =>
-					console.log('Haptics not supported', error)
-				);
-			}
-		} else {
-			// When disabling, no need to authenticate first
-			await biometricUtils.setBiometricEnabled(value);
-			setBiometricEnabled(value);
-		}
+		Haptics.notificationAsync(
+			next === value ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error
+		).catch((error) => console.log('Haptics not supported', error));
 	};
 
 	const toggleNotifications = async (value: boolean) => {
@@ -254,8 +243,12 @@ export default function SecurityScreen() {
 					{biometricAvailable ? (
 						<View style={styles.securityOption}>
 							<View style={styles.optionTextContainer}>
-								<Text style={styles.optionTitle}>{t('onboardingSecurity.biometricAuth', { biometricType })}</Text>
-								<Text style={styles.optionDescription}>{t('onboardingSecurity.biometricAuthDesc', { biometricType: biometricType.toLowerCase() })}</Text>
+								<Text style={styles.optionTitle}>{t(`settings.biometricLock.${biometricKind}`)}</Text>
+								<Text style={styles.optionDescription}>
+									{t('onboardingSecurity.biometricLockDesc', {
+										method: t(`settings.biometricMethod.${biometricKind}`),
+									})}
+								</Text>
 							</View>
 							<Switch
 								value={biometricEnabled}
@@ -268,7 +261,7 @@ export default function SecurityScreen() {
 					) : (
 						<View style={styles.securityOption}>
 							<View style={styles.optionTextContainer}>
-								<Text style={styles.optionTitle}>{t('onboardingSecurity.biometricAuth', { biometricType: 'Biometric' })}</Text>
+								<Text style={styles.optionTitle}>{t('settings.biometricLock.biometric')}</Text>
 								<Text style={styles.optionDescription}>{t('onboardingSecurity.biometricUnavailableDesc')}</Text>
 							</View>
 							<Switch
