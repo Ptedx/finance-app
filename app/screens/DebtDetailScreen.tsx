@@ -15,6 +15,7 @@ import { useDebts } from '../contexts/DebtsContext';
 import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { formatDate, formatDayMonth, formatMonthYear, formatShortDate, todayISO } from '../utils/dateUtils';
 import { comparisonYield, debtStateOn, effectiveRateBp, monthlyRateBpOf, termsOf, worthPayingOff } from '../utils/debt';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 import { formatPercentBp } from '../utils/percent';
 import { DEFAULT_EXPECTED_YIELD_BP } from '../utils/retirement';
@@ -250,7 +251,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 60,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 		gap: 16,
 	},
 	missing: {

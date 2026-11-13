@@ -123,6 +123,8 @@ jest.mock('../../contexts/CapturesContext', () => ({
 }));
 jest.mock('../../contexts/DebtsContext', () => ({ DebtsProvider: ({ children }: { children: React.ReactNode }) => children }));
 jest.mock('../../contexts/BillsContext', () => ({ BillsProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../contexts/MiraiProvider', () => ({ MiraiProvider: ({ children }: { children: React.ReactNode }) => children }));
+jest.mock('../../components/mirai/MiraiLayer', () => () => null);
 
 import * as Notifications from 'expo-notifications';
 import type React from 'react';

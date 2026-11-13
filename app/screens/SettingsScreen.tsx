@@ -29,6 +29,7 @@ import { useBills } from '../contexts/BillsContext';
 import { useCaptures } from '../contexts/CapturesContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useMirai } from '../contexts/MiraiContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { describeSync, useSync } from '../contexts/SyncContext';
 import { useTransactions } from '../contexts/TransactionsContext';
@@ -66,6 +67,7 @@ const SettingsScreen = () => {
 	const syncShort = describeSync(syncStatus, syncPending).short;
 	const { currentCurrency } = useCurrency();
 	const { currentLanguage } = useLanguage();
+	const mirai = useMirai();
 	// O backup não passa mais pelo estado da tela: `exportDatabaseData` lê o banco. A
 	// tela entregava `transactions`/`categories` daqui, e um contexto que ainda não
 	// carregou (ou que falhou) virava um arquivo válido e vazio.
@@ -586,6 +588,23 @@ const SettingsScreen = () => {
 							<Text style={styles.currencyCode}>{currentLanguage.nativeName}</Text>
 						</View>
 					)}
+					{/* O Mirai (SPD-163, D6): só para as contas em que o servidor o ligou. Ligar passa pela
+					    tela de ativação; desligar tira o botão. */}
+					{mirai?.enabled
+						? renderSettingsItem(
+								'sparkles-outline',
+								t('mirai.settingsLabel'),
+								() => mirai.setTurnedOn(mirai.choice !== 'on'),
+								<Switch
+									testID="settings-mirai-switch"
+									value={mirai.choice === 'on'}
+									onValueChange={mirai.setTurnedOn}
+									trackColor={{ false: '#3e3e3e', true: 'rgba(80, 171, 227, 0.3)' }}
+									thumbColor={mirai.choice === 'on' ? '#15E8FE' : '#f4f3f4'}
+									ios_backgroundColor="#3e3e3e"
+								/>
+							)
+						: null}
 				</View>
 
 				{/* Security */}

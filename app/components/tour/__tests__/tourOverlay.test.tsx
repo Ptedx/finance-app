@@ -45,7 +45,7 @@ import { STORAGE_KEYS } from '../../../utils/storageUtils';
 import type { PlannedStep, Rect, TourScreen } from '../../../utils/tour';
 import HelpButton from '../HelpButton';
 import { clearTourRegistry, registerTarget } from '../registry';
-import { useScreenTour } from '../TourContext';
+import { useGuideOpen, useScreenTour } from '../TourContext';
 import TourNotice from '../TourNotice';
 import TourOverlay from '../TourOverlay';
 import TourProvider from '../TourProvider';
@@ -366,6 +366,28 @@ describe('o provider do guia', () => {
 
 		expect(stored().seen).toEqual(['cardEdit']);
 		expect(texts()).not.toContain('tutorial.steps.cardEdit.days.title');
+	});
+
+	it('com o guia aberto, useGuideOpen diz que está aberto (o botão do Mirai sai da frente, SPD-163)', async () => {
+		mockOnboarding.done = [false];
+		registerTarget('cardEdit.days', fakeNode(at(300)));
+		const GuideFlag = () => <Text>{useGuideOpen() ? 'guia-aberto' : 'guia-fechado'}</Text>;
+		await act(async () => {
+			renderer = create(
+				<TourProvider>
+					<Screen screen="cardEdit" />
+					<GuideFlag />
+				</TourProvider>
+			);
+		});
+		expect(texts()).toContain('guia-fechado');
+
+		await waitForText('tutorial.steps.cardEdit.days.title');
+		expect(texts()).toContain('guia-aberto');
+
+		await pressLabel('tutorial.done');
+		await waitForText('guia-fechado');
+		expect(texts()).toContain('guia-fechado');
 	});
 
 	it('guia visto não abre de novo sozinho', async () => {

@@ -15,6 +15,7 @@ import { showsBalanceUnset } from '../utils/balanceUnset';
 import { getBusinessFeeds } from '../utils/businessFeedPreference';
 import { mergeRoleBlockedMessage } from '../utils/deletionNotice';
 import { getDistinctAccountPairs, markAccountsDistinct } from '../utils/distinctAccounts';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 
 /**
@@ -289,7 +290,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 120,
+		// O respiro do botão do Mirai (SPD-163): o último item não fica embaixo dele.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 	},
 	totals: {
 		backgroundColor: '#1E1E1E',

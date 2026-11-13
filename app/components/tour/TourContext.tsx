@@ -51,6 +51,15 @@ export const TourContext = createContext<TourContextValue | null>(null);
 
 export const useTour = (): TourContextValue | null => useContext(TourContext);
 
+/**
+ * Um guia ou uma trilha está aberto (o botão do Mirai, SPD-163, sai da frente). Fica num
+ * contexto à parte: no `TourContext` ele mudaria o valor a cada guia aberto, e toda tela com
+ * `useScreenTour` se anunciaria de novo.
+ */
+export const GuideOpenContext = createContext(false);
+
+export const useGuideOpen = (): boolean => useContext(GuideOpenContext);
+
 /** Cada montagem de uma tela com `useScreenTour` ganha um número, em ordem. */
 let lastInstance = 0;
 

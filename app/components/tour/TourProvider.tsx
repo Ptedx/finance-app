@@ -40,6 +40,7 @@ import {
 } from '../../utils/trails';
 import { measureTarget } from './registry';
 import {
+	GuideOpenContext,
 	type ScreenReport,
 	TourContext,
 	type TourContextValue,
@@ -429,7 +430,11 @@ export const TourProvider: React.FC<{
 				style={styles.screens}
 				importantForAccessibility={showing ? 'no-hide-descendants' : 'auto'}
 			>
-				<TrailSampleContext.Provider value={sampleOn}>{children}</TrailSampleContext.Provider>
+				<TrailSampleContext.Provider value={sampleOn}>
+					<GuideOpenContext.Provider value={Boolean(active || trail)}>
+						{children}
+					</GuideOpenContext.Provider>
+				</TrailSampleContext.Provider>
 			</View>
 			{active && !paused ? (
 				<TourOverlay

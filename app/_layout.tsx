@@ -7,6 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import BiometricAuthScreen from './components/BiometricAuthScreen';
+import MiraiLayer from './components/mirai/MiraiLayer';
 import RootStack from './components/RootStack';
 import TourProvider from './components/tour/TourProvider';
 import TrailRecordsSource from './components/tour/TrailRecordsSource';
@@ -18,6 +19,7 @@ import { CapturesProvider } from './contexts/CapturesContext';
 import { CurrencyProvider } from './contexts/CurrencyContext';
 import { DebtsProvider } from './contexts/DebtsContext';
 import { LanguageProvider } from './contexts/LanguageContext';
+import { MiraiProvider } from './contexts/MiraiProvider';
 import { PeriodProvider } from './contexts/PeriodContext';
 import { SyncProvider } from './contexts/SyncContext';
 import { TransactionsProvider } from './contexts/TransactionsContext';
@@ -230,9 +232,14 @@ export default function RootLayout() {
 									<StatusBar style="light" />
 									{/* O guia na tela (SPD-129) desenha por cima da pilha; parado enquanto a trava por biometria está aberta. */}
 									<TourProvider paused={showBiometricAuth}>
-										<RootStack />
-										{/* Os registros que as trilhas (SPD-131) usam para abrir a conta, o cartão, o aviso. */}
-										<TrailRecordsSource />
+										{/* O Mirai (SPD-163): dentro do guia, que o esconde durante uma trilha, e
+										    por cima da pilha, comum ao app todo. */}
+										<MiraiProvider>
+											<RootStack />
+											{/* Os registros que as trilhas (SPD-131) usam para abrir a conta, o cartão, o aviso. */}
+											<TrailRecordsSource />
+											<MiraiLayer locked={showBiometricAuth} />
+										</MiraiProvider>
 									</TourProvider>
 									{showBiometricAuth && <BiometricAuthScreen onSuccess={handleBiometricSuccess} />}
 								</BillsProvider>

@@ -493,7 +493,7 @@ const pendingPix = (overrides: Partial<Capture> = {}): Capture =>
 const memoryStore = (data: CaptureChoices = {}) => {
 	const store = {
 		data,
-		read: jest.fn(async () => store.data),
+		read: jest.fn(async (): Promise<CaptureChoices> => store.data),
 		write: jest.fn(async (next: CaptureChoices) => {
 			store.data = next;
 		}),

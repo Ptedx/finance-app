@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,6 +10,7 @@ import ReserveCard from '../components/wealth/ReserveCard';
 import ReserveSheet from '../components/wealth/ReserveSheet';
 import { useAccounts } from '../contexts/AccountsContext';
 import { useDebts } from '../contexts/DebtsContext';
+import { useMirai } from '../contexts/MiraiContext';
 import type { Debt } from '../database/schema';
 import { useReportsData } from '../hooks/useReportsData';
 import { useReserveGoal } from '../hooks/useReserveGoal';
@@ -17,6 +18,7 @@ import { useRetirementGoal } from '../hooks/useRetirementGoal';
 import { netWorth } from '../utils/accountMath';
 import { comparisonYield, effectiveRateBp, termsOf, worthPayingOff } from '../utils/debt';
 import { todayISO } from '../utils/dateUtils';
+import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 
 /**
  * Patrimônio: o que você tem e o que você deve.
@@ -46,6 +48,13 @@ const WealthScreen = () => {
 	const [refreshing, setRefreshing] = useState(false);
 	// O guia do Patrimônio (SPD-129): abre carregado e sem a folha da reserva aberta.
 	useScreenTour('wealth', { ready: !isLoading, blocked: editingReserve });
+	// O dia da meta do Mirai (SPD-163, §7.1): a reserva que passa a estar completa deixa o botão
+	// comemorando até o fim do dia.
+	const noteReserveReady = useMirai()?.noteReserveReady;
+	const reserveReady = reserve.status === 'ready';
+	useEffect(() => {
+		if (!isLoading) noteReserveReady?.(reserveReady);
+	}, [isLoading, reserveReady, noteReserveReady]);
 	const tourScroll = useTourScroll('wealth');
 
 	const cardsCents = useMemo(() => {
@@ -145,7 +154,8 @@ const styles = StyleSheet.create({
 	},
 	content: {
 		paddingHorizontal: 16,
-		paddingBottom: 120,
+		// O respiro do botão do Mirai (SPD-163), que já passa da barra de abas.
+		paddingBottom: MIRAI_LIST_END_SPACE,
 	},
 });
 
