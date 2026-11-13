@@ -1559,6 +1559,12 @@ account: {
 		uncategorized: 'Senza categoria',
 		noDescription: 'Senza descrizione',
 		openHint: 'Apre il movimento per vederlo o modificarlo',
+		changeCategory: 'Cambia la categoria',
+		changeCategoryTitle: 'Cambia la categoria',
+		categoryChanged: 'Categoria cambiata in {{name}}',
+		categoryRestored: 'Categoria tornata quella di prima',
+		undo: 'Annulla',
+		undoCategoryHint: 'Rimette la categoria di prima',
 	},
 
 	cards: {

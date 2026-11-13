@@ -1558,6 +1558,12 @@ account: {
 		uncategorized: 'Uncategorized',
 		noDescription: 'No description',
 		openHint: 'Opens the transaction to view or edit',
+		changeCategory: 'Change the category',
+		changeCategoryTitle: 'Change the category',
+		categoryChanged: 'Category changed to {{name}}',
+		categoryRestored: 'Category back to the previous one',
+		undo: 'Undo',
+		undoCategoryHint: 'Puts the previous category back',
 	},
 
 	cards: {

@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type React from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTransactions } from '../contexts/TransactionsContext';
 import type { Transaction } from '../database/schema';
 import { formatDate } from '../utils/dateUtils';
@@ -11,9 +11,14 @@ import { formatCents } from '../utils/money';
 interface TransactionItemProps {
 	transaction: Transaction;
 	onPress?: (transaction: Transaction) => void;
+	/**
+	 * Tocar no ícone da categoria (SPD-178): troca a categoria sem abrir o lançamento. Sem isto,
+	 * o ícone faz o mesmo que o resto da linha.
+	 */
+	onCategoryPress?: (transaction: Transaction) => void;
 }
 
-const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress }) => {
+const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress, onCategoryPress }) => {
 	const { t } = useTranslation();
 	const { categories } = useTransactions();
 
@@ -40,11 +45,29 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress 
 			accessibilityRole="button"
 			accessibilityLabel={`${note}, ${category.name}, ${amount}, ${formatDate(transaction.date)}`}
 			accessibilityHint={onPress ? t('transactionsList.openHint') : undefined}
+			// Com leitor de tela a linha é um botão só: a troca da categoria vai como ação dela.
+			accessibilityActions={onCategoryPress ? [{ name: 'changeCategory', label: t('transactionsList.changeCategory') }] : undefined}
+			onAccessibilityAction={(event) => {
+				if (event.nativeEvent.actionName === 'changeCategory') onCategoryPress?.(transaction);
+			}}
 		>
-			<View style={[styles.categoryIcon, { backgroundColor: category.color }]}>
-				{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
-				<Ionicons name={category.icon as any} size={18} color="#000000" />
-			</View>
+			{onCategoryPress ? (
+				<Pressable
+					onPress={() => onCategoryPress(transaction)}
+					hitSlop={8}
+					accessibilityRole="button"
+					accessibilityLabel={t('transactionsList.changeCategory')}
+					style={({ pressed }) => [styles.categoryIcon, { backgroundColor: category.color }, pressed && styles.iconPressed]}
+				>
+					{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
+					<Ionicons name={category.icon as any} size={18} color="#000000" />
+				</Pressable>
+			) : (
+				<View style={[styles.categoryIcon, { backgroundColor: category.color }]}>
+					{/* biome-ignore lint/suspicious/noExplicitAny: external API shape unknown */}
+					<Ionicons name={category.icon as any} size={18} color="#000000" />
+				</View>
+			)}
 
 			<View style={styles.detailsContainer}>
 				<Text style={styles.categoryName} numberOfLines={1}>
@@ -64,6 +87,9 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ transaction, onPress 
 };
 
 const styles = StyleSheet.create({
+	iconPressed: {
+		opacity: 0.6,
+	},
 	container: {
 		flexDirection: 'row',
 		alignItems: 'center',

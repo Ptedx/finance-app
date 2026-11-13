@@ -1,12 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, RefreshControl, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AccessibilityInfo, Pressable, RefreshControl, SectionList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { accountSelectOptions } from '../components/AccountPicker';
 import PeriodSelector from '../components/PeriodSelector';
-import { SelectField } from '../components/SelectField';
+import { categoryChoices, mostUsedSection } from '../components/CategoryPicker';
+import { SelectField, SelectSheet } from '../components/SelectField';
 import TransactionItem from '../components/TransactionItem';
 import TransferItem from '../components/TransferItem';
 import HelpButton from '../components/tour/HelpButton';
@@ -17,7 +18,7 @@ import { useTransactions } from '../contexts/TransactionsContext';
 import type { Account, Transaction, Transfer } from '../database/schema';
 import { capitalizeFirst } from '../utils/capitalize';
 import { addDays, formatFullDate, getMonthName, todayISO } from '../utils/dateUtils';
-import { MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
+import { MIRAI_BUTTON_BOTTOM, MIRAI_BUTTON_RIGHT, MIRAI_BUTTON_SIZE, MIRAI_LIST_END_SPACE } from '../utils/mirai/button';
 import { formatCents } from '../utils/money';
 import { transactionTotals } from '../utils/monthOverview';
 
@@ -64,7 +65,7 @@ interface DaySection {
 const TransactionListScreen = () => {
 	const { t } = useTranslation();
 	const router = useRouter();
-	const { transactions, categories, isLoading, refreshData } = useTransactions();
+	const { transactions, categories, isLoading, refreshData, updateExistingTransaction } = useTransactions();
 	const { accounts, activeAccounts, periodTransfers } = useAccounts();
 	const { startDate, endDate, selectedMonth } = usePeriod();
 
@@ -182,6 +183,57 @@ const TransactionListScreen = () => {
 		(transaction: Transaction) => router.push({ pathname: '/transaction/[id]', params: { id: transaction.id } }),
 		[router]
 	);
+	// Tocar no ícone da categoria troca só a categoria (SPD-178): a lista das categorias, e
+	// depois um aviso curto com "Desfazer" no lugar de uma confirmação.
+	const [recategorizing, setRecategorizing] = useState<Transaction | null>(null);
+	const [changed, setChanged] = useState<{ before: Transaction; name: string } | null>(null);
+	const changedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(
+		() => () => {
+			if (changedTimer.current) clearTimeout(changedTimer.current);
+		},
+		[]
+	);
+	const choices = useMemo(
+		() => (recategorizing ? categoryChoices(categories, recategorizing.isIncome, transactions) : null),
+		[recategorizing, categories, transactions]
+	);
+	const showChanged = useCallback((next: { before: Transaction; name: string } | null) => {
+		if (changedTimer.current) clearTimeout(changedTimer.current);
+		setChanged(next);
+		changedTimer.current = next ? setTimeout(() => setChanged(null), CATEGORY_UNDO_MS) : null;
+	}, []);
+	const changeCategory = useCallback(
+		async (categoryId: string) => {
+			const before = recategorizing;
+			setRecategorizing(null);
+			if (!before || categoryId === before.category) return;
+			try {
+				await updateExistingTransaction({ ...before, category: categoryId });
+			} catch {
+				// O contexto já avisou do erro; a categoria ficou como estava.
+				return;
+			}
+			const name = categories.find((category) => category.id === categoryId)?.name ?? '';
+			showChanged({ before, name });
+			AccessibilityInfo.announceForAccessibility(t('transactionsList.categoryChanged', { name }));
+		},
+		[recategorizing, updateExistingTransaction, categories, showChanged, t]
+	);
+	const undoCategory = useCallback(async () => {
+		if (!changed) return;
+		const { before } = changed;
+		showChanged(null);
+		// O lançamento como está agora, só com a categoria de antes.
+		const current = transactions.find((transaction) => transaction.id === before.id) ?? before;
+		try {
+			await updateExistingTransaction({ ...current, category: before.category });
+		} catch {
+			return;
+		}
+		AccessibilityInfo.announceForAccessibility(t('transactionsList.categoryRestored'));
+	}, [changed, showChanged, transactions, updateExistingTransaction, t]);
+
 	// A transferência não tem tela de detalhe: abre direto a edição, que também exclui (E2E-28).
 	const openTransfer = useCallback(
 		(transfer: Transfer) => router.push({ pathname: '/transaction/edit/[id]', params: { id: transfer.id, kind: 'transfer' } }),
@@ -351,7 +403,7 @@ const TransactionListScreen = () => {
 						// O primeiro do mês é o que a trilha (SPD-131) mostra para "tocar para ver e editar".
 						<TourTarget id={index === 0 && section === sections[0] ? 'transactions.first' : undefined}>
 							{item.type === 'transaction' ? (
-								<TransactionItem transaction={item.transaction} onPress={openTransaction} />
+								<TransactionItem transaction={item.transaction} onPress={openTransaction} onCategoryPress={setRecategorizing} />
 							) : (
 								<TransferItem transfer={item.transfer} accountsById={accountsById} onPress={openTransfer} />
 							)}
@@ -381,11 +433,73 @@ const TransactionListScreen = () => {
 					windowSize={7}
 				/>
 			</TourTarget>
+			<SelectSheet
+				visible={recategorizing !== null}
+				title={t('transactionsList.changeCategoryTitle')}
+				subtitle={recategorizing?.note || undefined}
+				options={choices?.options ?? []}
+				selected={recategorizing?.category ?? null}
+				featured={choices ? mostUsedSection(choices.mostUsed, t) : undefined}
+				onSelect={changeCategory}
+				onClose={() => setRecategorizing(null)}
+				optionTestID="transactions-category-"
+			/>
+			{changed ? (
+				<View style={styles.undoBar} accessibilityLiveRegion="polite">
+					<Text style={styles.undoText} numberOfLines={2}>
+						{t('transactionsList.categoryChanged', { name: changed.name })}
+					</Text>
+					<Pressable
+						onPress={undoCategory}
+						accessibilityRole="button"
+						accessibilityLabel={t('transactionsList.undo')}
+						accessibilityHint={t('transactionsList.undoCategoryHint')}
+						style={({ pressed }) => [styles.undoButton, pressed && styles.pressed]}
+					>
+						<Text style={styles.undoButtonText}>{t('transactionsList.undo')}</Text>
+					</Pressable>
+				</View>
+			) : null}
 		</SafeAreaView>
 	);
 };
 
+/** Quanto tempo o "Desfazer" da troca de categoria fica na tela. */
+const CATEGORY_UNDO_MS = 6000;
+
 const styles = StyleSheet.create({
+	// Acima da barra de abas, ao lado do botão do Mirai, sem cobri-lo.
+	undoBar: {
+		position: 'absolute',
+		left: 16,
+		right: MIRAI_BUTTON_RIGHT + MIRAI_BUTTON_SIZE + 12,
+		bottom: MIRAI_BUTTON_BOTTOM,
+		minHeight: MIRAI_BUTTON_SIZE,
+		flexDirection: 'row',
+		alignItems: 'center',
+		backgroundColor: '#2A2A2A',
+		borderRadius: 12,
+		paddingVertical: 4,
+		paddingLeft: 16,
+		paddingRight: 4,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.15)',
+	},
+	undoText: {
+		flex: 1,
+		fontSize: 14,
+		color: '#FFFFFF',
+	},
+	undoButton: {
+		minHeight: 44,
+		paddingHorizontal: 12,
+		justifyContent: 'center',
+	},
+	undoButtonText: {
+		fontSize: 15,
+		fontWeight: '700',
+		color: ACCENT,
+	},
 	container: {
 		flex: 1,
 		backgroundColor: '#121212',

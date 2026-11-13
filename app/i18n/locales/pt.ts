@@ -1555,6 +1555,12 @@ const pt = {
 		uncategorized: 'Sem categoria',
 		noDescription: 'Sem descrição',
 		openHint: 'Abre o lançamento para ver ou editar',
+		changeCategory: 'Trocar a categoria',
+		changeCategoryTitle: 'Trocar a categoria',
+		categoryChanged: 'Categoria trocada para {{name}}',
+		categoryRestored: 'Categoria de volta à de antes',
+		undo: 'Desfazer',
+		undoCategoryHint: 'Volta a categoria de antes',
 	},
 
 	cards: {
