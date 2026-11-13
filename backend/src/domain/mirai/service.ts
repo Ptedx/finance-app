@@ -175,7 +175,13 @@ export const createMirai = (deps: MiraiDeps) => {
 		const day = miraiDay(now());
 		const request = buildMiraiRequest(
 			{ model: config.model, effort: config.effort, guides },
-			{ messages: input.messages, locale: input.locale, screen: input.screen }
+			{
+				messages: input.messages,
+				locale: input.locale,
+				screen: input.screen,
+				// Sem a data do aparelho (versão antiga do app), vale o dia de Brasília.
+				today: input.today ?? day,
+			}
 		);
 		const [asked, spent] = await Promise.all([
 			questionsToday(db, userId, day),

@@ -80,8 +80,14 @@ export const MIRAI_API_TOOLS: Anthropic.Messages.Tool[] = MIRAI_TOOLS.map((tool)
 }));
 
 /** O texto da mensagem de sistema de contexto. Nenhum dado do usuário entra aqui. */
-export const appContextText = (locale: MiraiLocale, screen: string | null): string =>
-	`Contexto do app (não é pergunta da pessoa): idioma ${locale}; tela ${screen ?? 'não informada'}.`;
+export const appContextText = (
+	locale: MiraiLocale,
+	screen: string | null,
+	today: string | null = null
+): string =>
+	`Contexto do app (não é pergunta da pessoa): idioma ${locale}; tela ${screen ?? 'não informada'}${
+		today ? `; hoje é ${today}` : ''
+	}.`;
 
 const toBlockParam = (block: MiraiInputBlock): Anthropic.Messages.ContentBlockParam => {
 	switch (block.type) {
@@ -125,11 +131,12 @@ const hasQuestionText = (message: MiraiInputMessage): boolean =>
 export const withAppContext = (
 	messages: MiraiInputMessage[],
 	locale: MiraiLocale,
-	screen: string | null
+	screen: string | null,
+	today: string | null = null
 ): Anthropic.Messages.MessageParam[] => {
 	const context: Anthropic.Messages.MessageParam = {
 		role: 'system',
-		content: appContextText(locale, screen),
+		content: appContextText(locale, screen, today),
 	};
 	const result: Anthropic.Messages.MessageParam[] = [];
 	let questionOpen = false;
@@ -171,7 +178,12 @@ export interface MiraiPromptConfig {
  */
 export const buildMiraiRequest = (
 	config: MiraiPromptConfig,
-	input: { messages: MiraiInputMessage[]; locale: MiraiLocale; screen: string | null }
+	input: {
+		messages: MiraiInputMessage[];
+		locale: MiraiLocale;
+		screen: string | null;
+		today?: string | null;
+	}
 ): MiraiRequest => ({
 	model: config.model,
 	max_tokens: MIRAI_MAX_TOKENS,
@@ -188,5 +200,5 @@ export const buildMiraiRequest = (
 		},
 	],
 	cache_control: { type: 'ephemeral' },
-	messages: withAppContext(input.messages, input.locale, input.screen),
+	messages: withAppContext(input.messages, input.locale, input.screen, input.today ?? null),
 });

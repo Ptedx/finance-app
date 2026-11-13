@@ -434,7 +434,7 @@ describe('as recusas', () => {
 	it('teto do mês: conferido antes de chamar, com o custo máximo possível da chamada', async () => {
 		const request = buildMiraiRequest(
 			{ model: 'claude-haiku-5-5', effort: 'low', guides: '## Como usar\n\nGuia inventado.' },
-			{ messages: [question()] as never, locale: 'pt', screen: 'cards' }
+			{ messages: [question()] as never, locale: 'pt', screen: 'cards', today: '2026-11-12' }
 		);
 		const worst = maxCostMicros(request);
 		// O gasto do mês é de todos os usuários juntos: a linha é do Bruno.
@@ -616,9 +616,23 @@ describe('o pedido ao Claude', () => {
 			{ role: 'user', content: SECRET.question },
 			{
 				role: 'system',
-				content: 'Contexto do app (não é pergunta da pessoa): idioma it; tela cards.',
+				// Sem a data do aparelho, vale o dia de Brasília do relógio do servidor.
+				content: 'Contexto do app (não é pergunta da pessoa): idioma it; tela cards; hoje é 2026-11-12.',
 			},
 		]);
+	});
+
+	it('a data de hoje do aparelho vai na mensagem de contexto; data inválida é recusada', async () => {
+		const { claude, requests } = fakeClaude(textReply());
+		const { mirai } = setup({ claude });
+
+		await mirai.turn(ALICE, body({ screen: null, locale: 'pt', today: '2026-11-20' }));
+
+		expect(requests[0]?.['messages']).toContainEqual({
+			role: 'system',
+			content: 'Contexto do app (não é pergunta da pessoa): idioma pt; tela não informada; hoje é 2026-11-20.',
+		});
+		expect(await outcome(mirai.turn(ALICE, body({ today: '2026-13-01' })))).toBe('400 bad_request');
 	});
 
 	it('o histórico vai como veio: thinking com texto e assinatura exatos; campo a mais sai', async () => {

@@ -92,6 +92,10 @@ const turnRequest = z.object({
 	messages: z.array(message).min(1).max(MIRAI_LIMITS.maxMessages),
 	screen: z.string().regex(SCREEN).nullable(),
 	locale: z.enum(['pt', 'en', 'it']),
+	today: z
+		.string()
+		.regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/)
+		.optional(),
 });
 
 export type MiraiInputBlock = z.infer<typeof block>;
@@ -103,6 +107,7 @@ export interface MiraiTurnInput {
 	messages: MiraiInputMessage[];
 	screen: string | null;
 	locale: MiraiLocale;
+	today?: string | undefined;
 }
 
 const USER_BLOCKS = new Set(['text', 'tool_result']);

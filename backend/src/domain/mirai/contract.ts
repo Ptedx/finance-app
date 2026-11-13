@@ -164,6 +164,11 @@ export interface MiraiTurnRequest {
 	/** Nome da tela de onde o botão foi tocado (ex.: "cards"), ou null. */
 	screen: string | null;
 	locale: MiraiLocale;
+	/**
+	 * A data de hoje no aparelho (`YYYY-MM-DD`): o Mirai entende "este mês" e "hoje" a partir dela.
+	 * Opcional para o servidor aceitar versões do app sem o campo; sem ela, vale o dia de Brasília.
+	 */
+	today?: string;
 }
 
 export interface MiraiTurnResponse {
