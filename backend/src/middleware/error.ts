@@ -18,6 +18,7 @@ export const badRequest = (message: string, code = 'bad_request') =>
 	new HttpError(400, message, code);
 export const unauthorized = (message = 'Não autenticado.', code = 'unauthorized') =>
 	new HttpError(401, message, code);
+export const forbidden = (message: string, code = 'forbidden') => new HttpError(403, message, code);
 export const conflict = (message: string, code = 'conflict') => new HttpError(409, message, code);
 
 /**

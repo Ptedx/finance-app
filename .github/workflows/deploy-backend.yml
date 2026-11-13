@@ -27,6 +27,12 @@ env:
   SYNC_PAGE_SIZE: 500
   CORS_ORIGINS: ''
   PUBLIC_URL: https://api-finance.valtre.com.br
+  # Mirai (SPD-163): limites e modelo. A chave vem do secret ANTHROPIC_API_KEY e a lista de
+  # contas liberadas da variavel ASSISTANT_USER_IDS do repositorio; sem elas o Mirai fica desligado.
+  ASSISTANT_MONTHLY_USD: 20
+  ASSISTANT_DAILY_QUESTIONS: 50
+  ASSISTANT_MODEL: claude-haiku-5-5
+  ASSISTANT_EFFORT: low
 
 # Cada step e uma chamada SSH de uma linha so. A logica de verdade mora em
 # backend/scripts/deploy.sh, versionada no repo e executada por um bash de verdade na VM:
@@ -71,11 +77,13 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SSH_KEY }}
           script_stop: true
-          envs: API_PORT,POSTGRES_USER,POSTGRES_DB,ACCESS_TOKEN_TTL,REFRESH_TOKEN_DAYS,SYNC_PAGE_SIZE,CORS_ORIGINS,JWT_SECRET,POSTGRES_PASSWORD
+          envs: API_PORT,POSTGRES_USER,POSTGRES_DB,ACCESS_TOKEN_TTL,REFRESH_TOKEN_DAYS,SYNC_PAGE_SIZE,CORS_ORIGINS,JWT_SECRET,POSTGRES_PASSWORD,ANTHROPIC_API_KEY,ASSISTANT_USER_IDS,ASSISTANT_MONTHLY_USD,ASSISTANT_DAILY_QUESTIONS,ASSISTANT_MODEL,ASSISTANT_EFFORT
           script: cd ~/spendr/backend && bash scripts/deploy.sh write-env
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ASSISTANT_USER_IDS: ${{ vars.ASSISTANT_USER_IDS }}
 
       - name: Build e subir containers
         uses: appleboy/ssh-action@v1.0.3

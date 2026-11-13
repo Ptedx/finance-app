@@ -46,6 +46,10 @@ model User {
   language     String   @default("pt-BR")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  /// Quando o usuário apagou os dados pela última vez ("Apagar todos os dados", DEC-35),
+  /// pelo relógio do servidor. Nulo para quem nunca apagou. O pull e o status a devolvem,
+  /// e o push de um aparelho que não a conhece volta com 409 — ver `domain/dataWipe.ts`.
+  dataWipedAt  DateTime?
 
   refreshTokens         RefreshToken[]
   categories            Category[]
@@ -60,8 +64,10 @@ model User {
   captures              Capture[]
   merchantRules         MerchantRule[]
   bills                 Bill[]
+  billPayments          BillPayment[]
   preferences           Preference[]
   diagnosticEvents      DiagnosticEvent[]
+  assistantUsage        AssistantUsage[]
   assets                Asset[]
   liabilities           Liability[]
   netWorthSnapshots     NetWorthSnapshot[]
@@ -537,6 +543,36 @@ model Bill {
   @@map("bills")
 }
 
+/// Um mês de uma conta a pagar (SPD-146, v23 do app): pago ou pulado ("não vou pagar este
+/// mês"), um registro por conta e mês.
+///
+/// `paidThrough` da conta continua sendo o trecho contínuo já pago — é ele que um app
+/// anterior lê. Aqui fica o que ele não diz: o mês pago fora de ordem (novembro com outubro
+/// em aberto), o mês pulado e o lançamento que quitou cada mês. O `id` sai da conta e do mês
+/// no aparelho, então dois aparelhos que marcam o mesmo mês caem na mesma linha. `billId` e
+/// `transactionId` não são FK nem são verificados, como em `bills`.
+model BillPayment {
+  id            String
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  billId        String
+  /// O mês, `YYYY-MM`. Texto, como `paidThrough`: é mês de calendário, não instante.
+  month         String    @db.VarChar(7)
+  /// `paid` ou `skipped`. Texto, validado no push (`billPaymentSchema`).
+  status        String
+  /// O lançamento que quitou o mês, quando houve um.
+  transactionId String?
+  /// O valor pago. Nulo quando não se sabe (mês pulado, conta que varia sem lançamento).
+  amountCents   BigInt?
+  updatedAt     DateTime
+  deletedAt     DateTime?
+  serverSeq     Int       @unique @default(autoincrement())
+
+  @@id([userId, id])
+  @@index([userId, serverSeq])
+  @@map("bill_payments")
+}
+
 /// Uma preferência do usuário (v21 do app): moeda, idioma, taxa do CDI, lembretes ligados.
 ///
 /// O `id` é a chave do AsyncStorage do app, a mesma em todo aparelho; `value` é o texto
@@ -583,6 +619,31 @@ model DiagnosticEvent {
   @@index([userId, at])
   @@index([at])
   @@map("diagnostic_events")
+}
+
+/// Contadores do Mirai, o assistente (SPD-163): um usuário num dia (de Brasília).
+///
+/// Só números: perguntas, tokens e custo. Pergunta, resultado de ferramenta e resposta não
+/// são gravados em lugar nenhum (D5). Não é coleção de sync, e "apagar todos os dados"
+/// mantém a linha (é o uso da conta, não dado do usuário; ver `domain/dataWipe.ts`).
+///
+/// `day` é `YYYY-MM-DD`, texto pelo mesmo motivo das outras datas de calendário. O custo é
+/// em micro-US$ (US$ 1 = 1.000.000), pelo `usage` de cada resposta; o teto do mês soma a
+/// coluna de todos os usuários (índice em `day`).
+model AssistantUsage {
+  userId           String
+  user             User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day              String @db.VarChar(10)
+  questions        Int    @default(0)
+  inputTokens      Int    @default(0)
+  outputTokens     Int    @default(0)
+  cacheReadTokens  Int    @default(0)
+  cacheWriteTokens Int    @default(0)
+  costMicros       Int    @default(0)
+
+  @@id([userId, day])
+  @@index([day])
+  @@map("assistant_usage")
 }
 
 // ============================================

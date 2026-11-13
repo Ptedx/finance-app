@@ -40,6 +40,9 @@ RUN apk add --no-cache openssl
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+# Os guias do app no prompt do Mirai (SPD-163): o `tsc` não copia o .md, e a API o lê deste
+# caminho, o mesmo do `npm run dev` (ver src/lib/mirai.ts).
+COPY --from=builder /app/src/domain/mirai/guides.pt.md ./src/domain/mirai/guides.pt.md
 COPY --from=builder /app/prisma ./prisma
 # Sem isto, `prisma migrate deploy` no CMD nao encontra a datasource.url e a API entra
 # em crash-loop na subida (Prisma 7 le a URL do config, nao do schema).

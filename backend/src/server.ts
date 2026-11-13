@@ -2,6 +2,7 @@ import cors from 'cors';
 import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
 import { scheduleDiagnosticsRetention } from './domain/diagnostics.js';
+import { MIRAI_BODY_LIMIT } from './domain/mirai/request.js';
 import { env } from './lib/env.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
@@ -24,6 +25,10 @@ app.use(cors(env.corsOrigins.length > 0 ? { origin: env.corsOrigins } : {}));
 // O diário de diagnóstico tem teto próprio, menor. Precisa vir antes do leitor geral: o
 // corpo já lido aqui é pulado por ele, e o contrário deixaria passar 5 MB nesta rota.
 app.use('/api/diagnostics', express.json({ limit: DIAGNOSTIC_BODY_LIMIT }));
+
+// A conversa do Mirai também tem teto próprio: a conversa inteira vai em cada rodada, e o
+// corpo é o teto do custo de uma chamada (ver `maxCostMicros`).
+app.use('/api/assistant', express.json({ limit: MIRAI_BODY_LIMIT }));
 
 // Uma remessa de sync cheia passa bem do 100kb padrão do Express.
 app.use(express.json({ limit: '5mb' }));

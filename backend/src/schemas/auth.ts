@@ -36,5 +36,13 @@ export const updateProfileSchema = z
 		message: 'Informe ao menos um campo para atualizar.',
 	});
 
+/**
+ * A senha atual, para apagar a conta. Mesmo formato do login, e não o mínimo de 8 do
+ * cadastro: o que se confere aqui é o que a pessoa digita para entrar.
+ */
+export const deleteAccountSchema = z.object({
+	password: z.string().min(1).max(200),
+});
+
 export type RegisterBody = z.infer<typeof registerSchema>;
 export type LoginBody = z.infer<typeof loginSchema>;

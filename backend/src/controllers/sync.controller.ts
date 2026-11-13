@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 import type { z } from 'zod';
+import { billPaymentColumns, billPaymentToWire } from '../domain/billPaymentWire.js';
 import { billColumns, billToWire } from '../domain/billWire.js';
 import { resolveBudgetPeriod } from '../domain/budgetConflict.js';
 import {
@@ -9,14 +10,17 @@ import {
 	merchantRuleColumns,
 	merchantRuleToWire,
 } from '../domain/captureWire.js';
+import { pushWipeConflict, type WipeConflict, wipeMarkToWire } from '../domain/dataWipe.js';
 import { DEFAULT_CATEGORIES } from '../domain/defaultCategories.js';
 import { preferenceColumns, preferenceToWire } from '../domain/preferenceWire.js';
 import { syncStatusOf } from '../domain/syncStatus.js';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
+import { unauthorized } from '../middleware/error.js';
 import {
 	accountSchema,
+	billPaymentSchema,
 	billSchema,
 	budgetSchema,
 	captureSchema,
@@ -50,7 +54,8 @@ import {
  * push sem elas é aceito.
  *
  * `bills` (contas a pagar) entrou depois, pela mesma regra, e `preferences` (moeda, idioma,
- * CDI, lembretes; v21 do app) depois dela.
+ * CDI, lembretes; v21 do app) depois dela. `billPayments` (os meses das contas a pagar
+ * pagos fora de ordem ou pulados; v23 do app, SPD-146) veio por último, pela mesma regra.
  */
 
 type Collection =
@@ -66,6 +71,7 @@ type Collection =
 	| 'captures'
 	| 'merchantRules'
 	| 'bills'
+	| 'billPayments'
 	| 'preferences';
 
 const DEFAULT_CATEGORY_IDS = DEFAULT_CATEGORIES.map((category) => category.id);
@@ -124,6 +130,7 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		merchantRules,
 		bills,
 		preferences,
+		billPayments,
 	] = await Promise.all([
 		prisma.category.findMany(page(cursor.categories)),
 		prisma.account.findMany(page(cursor.accounts)),
@@ -138,7 +145,17 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		prisma.merchantRule.findMany(page(cursor.merchantRules)),
 		prisma.bill.findMany(page(cursor.bills)),
 		prisma.preference.findMany(page(cursor.preferences)),
+		prisma.billPayment.findMany(page(cursor.billPayments)),
 	]);
+
+	// A marca do "apagar meus dados" (DEC-35), lida depois das linhas de propósito: se o
+	// apagamento acontecer entre as duas leituras, a marca já sai nesta resposta, junto com
+	// linhas que podem ser de antes dele — e o app sabe que elas não valem mais. Na ordem
+	// inversa, uma página já vazia podia sair sem a marca.
+	const wipe = await prisma.user.findUnique({
+		where: { id: userId },
+		select: { dataWipedAt: true },
+	});
 
 	// `amountCents` é BigInt no Postgres e chega como `bigint`, que o JSON não serializa.
 	// Cabe num `number` sem perda: o teto de MAX_AMOUNT_CENTS fica bem abaixo de 2^53.
@@ -276,6 +293,8 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		bills: bills.map(billToWire),
 		/** Preferências: chave e texto, sem tradução — ver `domain/preferenceWire.ts`. */
 		preferences: preferences.map(preferenceToWire),
+		/** Os meses das contas a pagar (SPD-146): pago ou pulado — ver `domain/billPaymentWire.ts`. */
+		billPayments: billPayments.map(billPaymentToWire),
 	};
 
 	/**
@@ -309,6 +328,9 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 		bills: advance(bills, cursor.bills),
 		// Idem: um app que não vê `preferences` aqui segura as preferências em vez de subi-las.
 		preferences: advance(preferences, cursor.preferences),
+		// Idem (SPD-146): sem esta chave, o app guarda os meses pulados e pagos fora de ordem
+		// em vez de subi-los — é o que acontece com um servidor anterior à coleção.
+		billPayments: advance(billPayments, cursor.billPayments),
 	};
 
 	res.json({
@@ -330,7 +352,10 @@ export const pullData = async (req: AuthenticatedRequest, res: Response): Promis
 			merchantRules,
 			bills,
 			preferences,
+			billPayments,
 		].some((rows) => rows.length === env.syncPageSize),
+		/** Quando os dados foram apagados pela última vez; nulo se nunca. Ver `domain/dataWipe.ts`. */
+		dataWipedAt: wipeMarkToWire(wipe?.dataWipedAt ?? null),
 		changes,
 	});
 };
@@ -432,7 +457,7 @@ const writeRowIsolated = async (
 };
 
 export const pushData = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-	const { changes } = pushBodySchema.parse(req.body);
+	const { changes, knownWipeAt } = pushBodySchema.parse(req.body);
 	const userId = req.userId;
 
 	const rejected: RejectedRow[] = [];
@@ -460,11 +485,34 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 	const merchantRules = partitionRows('merchantRules', changes.merchantRules, merchantRuleSchema, rejected);
 	const bills = partitionRows('bills', changes.bills, billSchema, rejected);
 	const preferences = partitionRows('preferences', changes.preferences, preferenceSchema, rejected);
+	const billPayments = partitionRows('billPayments', changes.billPayments, billPaymentSchema, rejected);
 
 	let applied = 0;
 
-	await prisma.$transaction(
-		async (tx) => {
+	const wipeConflict = await prisma.$transaction(
+		async (tx): Promise<WipeConflict | null> => {
+			// --- Apagamento (DEC-35) ------------------------------------------------
+			// Depois de "apagar todos os dados", um aparelho que ainda não sabe disso
+			// subiria tudo de novo. A remessa inteira volta com 409, sem gravar nada.
+			//
+			// O FOR SHARE na linha do usuário é o que fecha a corrida com o `/me/wipe`, que
+			// grava a marca antes de apagar: um apagamento que começou espera esta remessa
+			// terminar (e apaga o que ela gravou), e uma remessa que chega durante um
+			// apagamento espera ele terminar e enxerga a marca. Dois pushes do mesmo usuário
+			// não se bloqueiam — FOR SHARE não conflita com FOR SHARE.
+			await tx.$queryRaw`SELECT 1 FROM "users" WHERE "id" = ${userId} FOR SHARE`;
+			const user = await tx.user.findUnique({
+				where: { id: userId },
+				select: { dataWipedAt: true },
+			});
+			// A conta foi apagada (`DELETE /me`) depois do `requireAuth`: nada abaixo grava sem
+			// a linha do usuário (FK), e o erro seria um 500 que a fila reenviaria. O mesmo FOR
+			// SHARE faz um apagamento em andamento esperar esta remessa; um que já terminou cai
+			// aqui.
+			if (user === null) throw unauthorized('Conta não encontrada.', 'account_gone');
+			const conflict = pushWipeConflict(user.dataWipedAt, knownWipeAt);
+			if (conflict !== null) return conflict;
+
 			// --- Categorias primeiro ---------------------------------------------
 			// Um lançamento pode vir na mesma remessa que a categoria que ele usa; a
 			// verificação logo abaixo precisa enxergar essa categoria já gravada.
@@ -971,6 +1019,42 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 				applied += 1;
 			}
 
+			// --- Meses das contas a pagar (SPD-146) ----------------------------------
+			// Depois das contas, mas sem depender delas: `billId` e `transactionId` não são
+			// verificados, como os ids das contas a pagar — um mês que chega antes da conta
+			// continua valendo. O `id` sai da conta e do mês no aparelho, então dois aparelhos
+			// que marcam o mesmo mês convergem pelo `updatedAt`, e o desfazer é a lápide.
+			for (const row of billPayments) {
+				const current = await tx.billPayment.findUnique({
+					where: { userId_id: { userId, id: row.id } },
+					select: { updatedAt: true },
+				});
+
+				if (isStale(current, row)) {
+					rejected.push({ collection: 'billPayments', id: row.id, reason: 'stale' });
+					continue;
+				}
+
+				const data = billPaymentColumns(row);
+
+				// SAVEPOINT pelo mesmo motivo das contas: um valor que o banco recuse não pode
+				// derrubar a remessa.
+				const refusal = await writeRowIsolated(tx, async () => {
+					await tx.billPayment.upsert({
+						where: { userId_id: { userId, id: row.id } },
+						create: { id: row.id, userId, ...data },
+						update: data,
+					});
+				});
+
+				if (refusal !== null) {
+					rejected.push({ collection: 'billPayments', id: row.id, reason: 'invalid', message: refusal });
+					continue;
+				}
+
+				applied += 1;
+			}
+
 			// --- Preferências ------------------------------------------------------
 			// O `id` é a chave do AsyncStorage do app, a mesma em todo aparelho: duas
 			// escolhas da mesma preferência convergem pelo `updatedAt`. O valor é texto que
@@ -1005,11 +1089,20 @@ export const pushData = async (req: AuthenticatedRequest, res: Response): Promis
 
 				applied += 1;
 			}
+
+			return null;
 		},
 		// Uma remessa cheia são milhares de idas ao banco; o padrão de 5s do Prisma
 		// estoura num primeiro sync grande.
 		{ timeout: 30_000 }
 	);
+
+	if (wipeConflict !== null) {
+		// Direto, e não pelo `HttpError`: o corpo leva `dataWipedAt`, que o app precisa para
+		// saber de qual apagamento se trata.
+		res.status(409).json(wipeConflict);
+		return;
+	}
 
 	res.json({ serverTime: new Date().toISOString(), applied, rejected });
 };
@@ -1038,6 +1131,7 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 		captures,
 		merchantRules,
 		bills,
+		wipe,
 	] = await Promise.all([
 		prisma.transaction.count(live),
 		prisma.recurringTransaction.count(live),
@@ -1053,10 +1147,11 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 		prisma.capture.count(live),
 		prisma.merchantRule.count(live),
 		prisma.bill.count(live),
+		prisma.user.findUnique({ where: { id: userId }, select: { dataWipedAt: true } }),
 	]);
 
-	res.json(
-		syncStatusOf({
+	res.json({
+		...syncStatusOf({
 			transactions,
 			recurringTransactions,
 			budgets,
@@ -1069,6 +1164,8 @@ export const getSyncStatus = async (req: AuthenticatedRequest, res: Response): P
 			captures,
 			merchantRules,
 			bills,
-		})
-	);
+		}),
+		/** Quando os dados foram apagados pela última vez; nulo se nunca. Ver `domain/dataWipe.ts`. */
+		dataWipedAt: wipeMarkToWire(wipe?.dataWipedAt ?? null),
+	});
 };

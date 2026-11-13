@@ -86,6 +86,13 @@ cmd_write_env() {
     printf 'REFRESH_TOKEN_DAYS=%s\n' "$REFRESH_TOKEN_DAYS"
     printf 'SYNC_PAGE_SIZE=%s\n'     "$SYNC_PAGE_SIZE"
     printf 'CORS_ORIGINS=%s\n'       "$CORS_ORIGINS"
+    # Mirai (SPD-163): opcionais. Vazios, o servico sobe e o Mirai responde 403/503.
+    printf 'ANTHROPIC_API_KEY=%s\n'         "${ANTHROPIC_API_KEY:-}"
+    printf 'ASSISTANT_USER_IDS=%s\n'        "${ASSISTANT_USER_IDS:-}"
+    printf 'ASSISTANT_MONTHLY_USD=%s\n'     "${ASSISTANT_MONTHLY_USD:-20}"
+    printf 'ASSISTANT_DAILY_QUESTIONS=%s\n' "${ASSISTANT_DAILY_QUESTIONS:-50}"
+    printf 'ASSISTANT_MODEL=%s\n'           "${ASSISTANT_MODEL:-claude-haiku-5-5}"
+    printf 'ASSISTANT_EFFORT=%s\n'          "${ASSISTANT_EFFORT:-low}"
   } > .env
   # Explicito alem do umask: cobre o caso de o arquivo ja existir de um deploy anterior.
   chmod 600 .env

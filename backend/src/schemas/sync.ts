@@ -191,6 +191,25 @@ export const billSchema = z.object({
 	...syncMeta,
 });
 
+/**
+ * Um mês de uma conta a pagar (SPD-146, v23 do app): pago (`paid`) ou pulado (`skipped`,
+ * "não vou pagar este mês"). Um registro por conta e mês; o `id` sai dos dois no aparelho.
+ *
+ * `paidThrough` da conta continua sendo o trecho contínuo já pago; aqui fica o mês pago
+ * fora de ordem, o pulado e o lançamento que quitou cada um. `billId` e `transactionId` não
+ * são verificados, como os ids de `billSchema`: o mês que chega antes da conta vale.
+ * `amountCents` nulo é "não se sabe o valor" (o mês pulado não tem pagamento).
+ */
+export const billPaymentSchema = z.object({
+	id: z.string().min(1).max(64),
+	billId: z.string().min(1).max(64),
+	month: calendarMonth,
+	status: z.enum(['paid', 'skipped']),
+	transactionId: z.string().min(1).max(64).nullish(),
+	amountCents: amountCents.min(0).nullish(),
+	...syncMeta,
+});
+
 /** A meta de aposentadoria (v14 do app): uma linha por usuário, de id fixo. */
 export const retirementGoalSchema = z.object({
 	id: z.string().min(1).max(64),
@@ -334,6 +353,8 @@ export const pushBodySchema = z.object({
 			captures: rows(),
 			merchantRules: rows(),
 			bills: rows(),
+			// SPD-146. Um app que não conhece a coleção não a manda, e a remessa vale igual.
+			billPayments: rows(),
 			preferences: rows(),
 		})
 		.default({
@@ -349,8 +370,17 @@ export const pushBodySchema = z.object({
 			captures: [],
 			merchantRules: [],
 			bills: [],
+			billPayments: [],
 			preferences: [],
 		}),
+	/**
+	 * O último `dataWipedAt` que o aparelho viu e aplicou ("Apagar todos os dados", DEC-35).
+	 *
+	 * Opcional: um app anterior ao campo não o manda e, enquanto a conta nunca foi apagada,
+	 * sincroniza como sempre. Depois de um apagamento, a ausência vale como "não sei" e o
+	 * push volta com 409 — ver `pushWipeConflict` em `domain/dataWipe.ts`.
+	 */
+	knownWipeAt: timestamp.nullish(),
 });
 
 /**
@@ -388,6 +418,9 @@ export const cursorSchema = z.object({
 	bills: z.number().int().nonnegative().default(0),
 	// Preferências (v21 do app), idem.
 	preferences: z.number().int().nonnegative().default(0),
+	// Meses das contas a pagar (v23 do app, SPD-146), idem: o cursor de um app que não os
+	// conhece chega sem a chave e continua valendo, e a coleção parte do zero.
+	billPayments: z.number().int().nonnegative().default(0),
 });
 
 const EMPTY_CURSOR = {
@@ -404,6 +437,7 @@ const EMPTY_CURSOR = {
 	merchantRules: 0,
 	bills: 0,
 	preferences: 0,
+	billPayments: 0,
 };
 
 export const pullQuerySchema = z.object({
@@ -436,5 +470,6 @@ export type ReserveGoalPayload = z.infer<typeof reserveGoalSchema>;
 export type CapturePayload = z.infer<typeof captureSchema>;
 export type MerchantRulePayload = z.infer<typeof merchantRuleSchema>;
 export type BillPayload = z.infer<typeof billSchema>;
+export type BillPaymentPayload = z.infer<typeof billPaymentSchema>;
 export type PreferencePayload = z.infer<typeof preferenceSchema>;
 export type PushBody = z.infer<typeof pushBodySchema>;

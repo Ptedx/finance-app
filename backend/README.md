@@ -58,7 +58,8 @@ trigger `BEFORE UPDATE` a avança também nas edições — `@default(autoincrem
 só dispara no INSERT, e uma linha editada sumiria do pull.
 
 Apagar é lápide (`deletedAt`), nunca `DELETE`: a linha precisa sobreviver para que um
-aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova.
+aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova. A única
+exceção é o "apagar meus dados", mais abaixo.
 
 ### Endpoints
 
@@ -69,6 +70,8 @@ aparelho offline saiba que ela se foi, em vez de reenviá-la achando que é nova
 | `POST` | `/api/auth/refresh` | rotaciona o refresh token |
 | `POST` | `/api/auth/logout` | revoga o refresh token |
 | `GET`/`PATCH` | `/api/me` | perfil, moeda e idioma |
+| `POST` | `/api/me/wipe` | apaga os dados do usuário em todos os aparelhos (ver abaixo) |
+| `DELETE` | `/api/me` | apaga a conta e tudo dela; pede a senha (ver abaixo) |
 | `GET` | `/api/sync/status` | se a conta já tem dados (decide o fluxo do primeiro login) |
 | `GET` | `/api/sync/pull?cursor=...` | delta desde o cursor |
 | `POST` | `/api/sync/push` | envia as linhas pendentes |
@@ -81,6 +84,75 @@ Toda coleção é opcional nas duas direções: um app anterior a uma delas não
 lê, e o push sem ela é aceito. As chaves do cursor devolvido no pull são também o anúncio
 de quais coleções este servidor conhece — o app segura o que não aparece ali em vez de
 marcá-lo como enviado.
+
+### Apagar meus dados (`POST /api/me/wipe`)
+
+A única exceção à regra da lápide (DEC-35). "Apagar todos os dados" faz `DELETE` de
+verdade, numa transação só, de toda linha do usuário em lançamentos, recorrências,
+orçamentos, transferências, contas, metas, dívidas, contas a pagar, capturas, diário de
+diagnóstico e nas tabelas antigas do roadmap. A lápide guardaria o conteúdo inteiro, e
+quem pede para apagar não quer o dado guardado em lugar nenhum.
+
+Ficam a conta, as sessões (`refresh_tokens`), as categorias, as regras aprendidas
+(`merchant_rules`) e as preferências de configuração. Das preferências saem só as que
+apontam para contas: `@spendr_distinct_account_pairs` e `@spendr_business_feeds`. O
+destino de cada tabela está em `src/domain/dataWipe.ts`, e um teste falha se uma relação
+nova do `User` não estiver lá.
+
+Responde `200 { "dataWipedAt": "<ISO>" }`, a marca gravada em `users.dataWipedAt` pelo
+relógio do servidor. Limite: 5 pedidos a cada 15 minutos.
+
+O que avisa os outros aparelhos é essa marca:
+
+- `GET /api/sync/status` e `GET /api/sync/pull` devolvem `dataWipedAt` (`null` para quem
+  nunca apagou);
+- `POST /api/sync/push` aceita `knownWipeAt`, o último `dataWipedAt` que o aparelho já
+  aplicou. Se a conta foi apagada e o push não traz `knownWipeAt`, traz `null` ou um
+  instante anterior à marca, a resposta é
+  `409 { "error": "...", "code": "data_wiped", "dataWipedAt": "<ISO>" }` e **nada** da
+  remessa é gravado — senão o aparelho que ainda tinha os dados os subiria de novo. Um app
+  anterior ao campo leva 409 depois de um apagamento; enquanto a conta nunca foi apagada,
+  o push funciona como sempre, com ou sem o campo.
+
+A corrida entre um push e um apagamento é fechada pela linha do usuário: o apagamento
+grava a marca antes de apagar (o UPDATE trava a linha), e o push trava a mesma linha com
+`FOR SHARE` antes de olhar a marca.
+
+### Apagar a conta (`DELETE /api/me`)
+
+Exigência da Google Play: a conta tem de poder ser apagada de dentro do app (DEC-35).
+Corpo `{ "password": "<senha atual>" }`.
+
+| Resposta | Quando |
+|---|---|
+| `204` | senha certa; a conta e tudo dela foram apagados |
+| `403 { "code": "wrong_password" }` | senha errada; nada foi apagado |
+| `400 { "code": "validation_error" }` | sem corpo, ou sem `password` |
+| `401 { "code": "account_gone" }` | a conta já não existe |
+| `429 { "code": "rate_limited" }` | tentativas demais (ver abaixo) |
+
+Senha errada é 403, e não 401, de propósito: o app trata todo 401 que não seja
+`token_expired` como sessão morta e sairia da conta de quem só digitou errado.
+
+Apagar é um `DELETE` só, da linha de `users`. Toda tabela com `userId` tem FK para
+`users` com `ON DELETE CASCADE`, e o Postgres apaga o resto no mesmo comando — sessões,
+categorias, regras, preferências, diário de diagnóstico, tudo. Um teste
+(`__tests__/accountDeletion.test.ts`) lê o schema.prisma e as migrações e falha se uma
+relação do `User` ficar sem cascata.
+
+Limite: as tentativas contam no mesmo contador do login (20 a cada 15 minutos por IP,
+somadas as duas rotas), e esta rota tem ainda o seu, de 5 a cada 15 minutos. Adivinhar a
+senha por aqui não sai mais barato do que pelo login.
+
+**Token de conta apagada.** O access token vale até 15 minutos depois de a conta sumir. Por
+isso o `requireAuth` confere a cada requisição, pela chave primária, que a linha do
+usuário existe: se não existe, **toda** rota autenticada responde
+`401 { "code": "account_gone" }`, e o app apaga os dados da conta e sai. Vale também para o
+token já vencido com a nossa assinatura: ele responde `account_gone` em vez de
+`token_expired`, porque a renovação não teria como funcionar (os refresh tokens saíram em
+cascata) e o aparelho só sairia, com os dados. O push, que trava a linha do
+usuário com `FOR SHARE`, confere de novo dentro da transação; um `DELETE /me` em andamento
+espera a remessa terminar e apaga o que ela gravou.
 
 ### Decisões que não são óbvias
 
