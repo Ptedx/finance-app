@@ -1,4 +1,5 @@
 import { ApiError, apiRequest } from '../../api/client';
+import { todayISO } from '../dateUtils';
 import {
 	isMiraiToolName,
 	MIRAI_MAX_TOOL_ROUNDS,
@@ -185,6 +186,7 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 				messages,
 				screen: input.screen,
 				locale: input.locale,
+				today: todayISO(),
 			});
 		} catch (error) {
 			throw new MiraiError(failureOf(error));

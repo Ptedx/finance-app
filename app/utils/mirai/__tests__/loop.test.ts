@@ -17,6 +17,7 @@ jest.mock('../../../api/client', () => ({
 }));
 
 import { ApiError, apiRequest } from '../../../api/client';
+import { todayISO } from '../../dateUtils';
 import {
 	MIRAI_MAX_TOOL_ROUNDS,
 	type MiraiContentBlock,
@@ -136,6 +137,8 @@ describe('askMirai: o ciclo', () => {
 			messages: [{ role: 'user', content: 'Por que sobrou menos este mês?' }],
 			screen: 'home',
 			locale: 'pt',
+			// A data do aparelho: o Mirai entende "este mês" a partir dela.
+			today: todayISO(),
 		});
 		expect(runTool).toHaveBeenCalledWith('get_month_overview', { month: '2026-11' });
 		expect(requests[1].questionId).toBe('id-1');
