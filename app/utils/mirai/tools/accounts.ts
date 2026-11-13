@@ -85,6 +85,10 @@ export const getCardsTool = (snapshot: AccountsToday) => ({
 				parcelCents: plan.parcelCents,
 				remainingCount: plan.remainingCount,
 				totalCount: plan.totalCount,
+				/** As que já entraram em faturas: sem isso, o Mirai lia a próxima como a primeira (SPD-170). */
+				chargedCount: plan.totalCount - plan.remainingCount,
+				/** O número da parcela de `nextDate` (a 4 de 6); nulo quando não falta nenhuma. */
+				nextNumber: plan.remainingCount > 0 ? plan.totalCount - plan.remainingCount + 1 : null,
 				remainingCents: plan.remainingCents,
 				nextDate: plan.nextDate,
 				lastDate: plan.lastDate,

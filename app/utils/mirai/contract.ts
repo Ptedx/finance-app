@@ -28,7 +28,7 @@ export const MIRAI_TOOLS = [
 	{
 		name: 'get_month_overview',
 		description:
-			'O "Este mês" de um mês: receita, gastos (principal, cartões, envelopes), sobrou, guardado e rendimento, em centavos. Os mesmos números da tela inicial.',
+			'O "Este mês" de um mês: receita, gastos (principal, cartões, envelopes), sobrou, guardado e rendimento, em centavos. Os mesmos números da tela inicial. Sobrou (leftoverCents) é receita menos gastos; guardado (savedCents) é o que foi transferido para a reserva no mês: não é gasto e não sai do que sobrou.',
 		input_schema: {
 			type: 'object',
 			properties: { month: { type: 'string', pattern: MONTH_PATTERN, description: 'Mês YYYY-MM' } },
@@ -44,7 +44,7 @@ export const MIRAI_TOOLS = [
 	{
 		name: 'get_cards',
 		description:
-			'Os cartões de crédito: fatura aberta e fechada, vencimento, limite e parcelas futuras, em centavos.',
+			'Os cartões de crédito: fatura aberta e fechada, vencimento, limite e parcelas futuras, em centavos. Numa compra parcelada, chargedCount parcelas já entraram em faturas e a próxima é a de número nextNumber (de totalCount), em nextDate: ela não é a primeira, diga "a parcela 4/6 cai em 15/12".',
 		input_schema: { type: 'object', properties: {}, required: [], additionalProperties: false },
 	},
 	{

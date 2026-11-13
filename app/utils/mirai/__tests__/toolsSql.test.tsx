@@ -516,7 +516,14 @@ describeSql('ferramentas do Mirai: o mesmo número da tela', () => {
 		expect(card.limitAvailableCents).toBe(summary.limitAvailableCents);
 		expect(card.limitUsedCents).toBe(summary.limitUsedCents);
 		expect(card.installments).toHaveLength(summary.installmentPlans.length);
-		expect(card.installments[0]).toMatchObject({ parcelCents: 100_00, remainingCount: 2, totalCount: 3 });
+		expect(card.installments[0]).toMatchObject({
+			parcelCents: 100_00,
+			remainingCount: 2,
+			totalCount: 3,
+			// O fone em 3 × R$ 100: a 1/3 já entrou; a próxima é a 2/3 (SPD-170).
+			chargedCount: 1,
+			nextNumber: 2,
+		});
 		expect(out.totals).toEqual(accounts.cardsTotals);
 	});
 
