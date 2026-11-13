@@ -1017,6 +1017,111 @@ export const planCardOpening = (
 	return { anchor: { date: yesterday, cents: 0 - (openTypedCents - fromToday) }, adjustmentCents: 0 };
 };
 
+/** A âncora do cartão: o que ele devia no fim de `openingBalanceDate` (negativo = deve). */
+export interface CardAnchor {
+	openingBalanceCents: number;
+	openingBalanceDate: string;
+}
+
+/**
+ * A âncora com o novo dia de fechamento (SPD-179). O "Acertar valor" põe a âncora na véspera
+ * do fechamento, com o valor da fatura fechada que o banco mostrou. Mudar o fechamento sem
+ * movê-la a deixava no ciclo seguinte: fecha 27 com a âncora em 26/10 e, trocado para 26, o
+ * dia 26/10 passa a ser o primeiro da fatura de novembro, que pulava os R$ 8.422,77 de outubro.
+ *
+ * A âncora fica na mesma fatura de antes, com o mesmo valor:
+ *
+ * - na véspera do fechamento antigo, vai para a véspera do novo — a fatura fechada que o banco
+ *   mostrou continua inteira na mesma fatura;
+ * - no meio do ciclo (o cadastro ancora na véspera do dia em que foi feito), só sai do lugar se
+ *   cair fora da fatura com o novo dia, e então vai para a ponta mais perto dela.
+ *
+ * O valor é o que o banco cobra na fatura, com o dia de fechamento certo. Então as compras dos
+ * dias que mudam de lado seguem o ciclo novo: as que ficam depois da âncora nova somam na
+ * fatura seguinte, as que ficam antes já estão no valor (era a fatura do banco que as tinha).
+ * Os pagamentos desses dias não mudam o devido: a âncora desconta o que passa a contar, e
+ * soma o que passa a estar dentro dela. Fora do caso da véspera, nada muda o devido.
+ *
+ * Sem regra antes ou depois, com âncora zero ou com o mesmo dia, a âncora fica como está.
+ */
+export const reanchorForRule = (
+	settings: CardSettings,
+	newRule: CycleRule | null,
+	entries: CardEntry[],
+	movements: CardMovement[]
+): CardAnchor => {
+	const kept: CardAnchor = { openingBalanceCents: settings.openingBalanceCents, openingBalanceDate: settings.openingBalanceDate };
+	const oldRule = cycleRuleOf(settings);
+	if (oldRule === null || newRule === null || settings.openingBalanceCents === 0) return kept;
+	if (oldRule.closingDay === newRule.closingDay) return kept;
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(settings.openingBalanceDate)) return kept;
+	const date = settings.openingBalanceDate;
+	const before = cycleFor(date, oldRule);
+	const [year, month] = before.key.split('-').map(Number);
+	const after = invoiceClosingIn(year, month, newRule);
+	const atClosingEve = date === before.end;
+	let target = date;
+	if (atClosingEve || date > after.end) target = after.end;
+	else if (date < after.start) target = after.start;
+	if (target === date) return kept;
+
+	// O que muda de lado: datado entre as duas âncoras (o intervalo aberto na mais antiga).
+	const from = target < date ? target : date;
+	const until = target < date ? date : target;
+	const between = (day: string) => day > from && day <= until;
+	// Quanto o que muda de lado soma no devido.
+	let moved = 0;
+	for (const movement of movements) {
+		if (between(movement.date)) moved += movement.inbound ? -movement.amountCents : movement.amountCents;
+	}
+	if (!atClosingEve) for (const entry of entries) if (between(entry.date)) moved += signed(entry);
+	// Para trás, o que muda de lado passa a contar depois da âncora: ela desconta. Para a frente,
+	// passa a estar dentro dela: ela soma.
+	const owedAtAnchor = 0 - settings.openingBalanceCents;
+	const owed = target < date ? owedAtAnchor - moved : owedAtAnchor + moved;
+	return { openingBalanceCents: 0 - owed + 0, openingBalanceDate: target };
+};
+
+/** Uma fatura que muda de valor com o novo dia de fechamento. */
+export interface InvoiceChange {
+	/** `YYYY-MM` do mês em que a fatura fecha. */
+	key: string;
+	/** A data de fechamento com o novo dia. */
+	closingDate: string;
+	beforeCents: number;
+	afterCents: number;
+}
+
+/**
+ * As faturas que mudam de valor com o novo dia de fechamento, já com a âncora no lugar
+ * (`reanchorForRule`): a fechada, a aberta e a seguinte, na ordem. É o aviso antes de salvar
+ * (SPD-179): o dono vê em reais o que muda em cada fatura e decide. Vazia quando nada muda.
+ */
+export const invoiceChangesForRule = (
+	before: CardSettings,
+	after: CardSettings,
+	entries: CardEntry[],
+	movements: CardMovement[],
+	today: string
+): InvoiceChange[] => {
+	const oldSummary = buildCardSummary(before, entries, movements, today);
+	const newSummary = buildCardSummary(after, entries, movements, today);
+	if (!oldSummary.configured || !newSummary.configured || newSummary.openCycle === null) return [];
+	const amountsOf = (summary: CardSummary) => new Map(summary.invoices.map((invoice) => [invoice.cycle.key, invoice.amountCents]));
+	const oldAmounts = amountsOf(oldSummary);
+	const newAmounts = amountsOf(newSummary);
+	const rule = cycleRuleOf(after);
+	if (rule === null) return [];
+	const changes: InvoiceChange[] = [];
+	for (const offset of [-1, 0, 1]) {
+		const cycle = shiftCycle(newSummary.openCycle, offset, rule);
+		const beforeCents = oldAmounts.get(cycle.key) ?? 0;
+		const afterCents = newAmounts.get(cycle.key) ?? 0;
+		if (beforeCents !== afterCents) changes.push({ key: cycle.key, closingDate: cycle.closingDate, beforeCents, afterCents });
+	}
+	return changes;
+};
+
 // ---------------------------------------------------------------------------
 // Encargos
 // ---------------------------------------------------------------------------
@@ -1351,6 +1456,8 @@ export default {
 	pickOpenCardPayment,
 	planCardAdjustment,
 	planCardOpening,
+	reanchorForRule,
+	invoiceChangesForRule,
 	cycleRuleOf,
 	cycleFor,
 	invoiceClosingIn,

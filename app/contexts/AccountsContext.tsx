@@ -74,16 +74,21 @@ import {
 	type CardChargeKind,
 	cardChargeNote,
 	cardChargeShown,
+	type CardAnchor,
 	type CardEntry,
 	type CardMovement,
+	type CardSettings,
 	type CardSummary,
 	cycleRuleOf,
 	existingInstallmentDates,
+	type InvoiceChange,
+	invoiceChangesForRule,
 	isSameCardPayment,
 	openInvoiceInformed,
 	pickOpenCardPayment,
 	planCardAdjustment,
 	planCardOpening,
+	reanchorForRule,
 	splitCardCharges,
 } from '../utils/cardMath';
 import { resolveCategoryId } from '../utils/captureActions';
@@ -313,6 +318,16 @@ interface AccountsContextType {
 		options?: { opening?: boolean; asCharge?: boolean }
 	) => Promise<number>;
 	/**
+	 * O dia de fechamento do cartão vai mudar (SPD-179): a âncora com o novo dia
+	 * (`reanchorForRule`), que o salvar grava junto, e as faturas que mudam de valor mesmo assim
+	 * (`invoiceChangesForRule`), para o aviso antes de salvar. Lido do banco na hora, como o
+	 * "Acertar valor". Nulo quando o cartão não existe.
+	 */
+	planCardClosingChange: (
+		cardId: string,
+		cycle: Pick<CardSettings, 'closingDay' | 'closingDaysBefore' | 'dueDay'>
+	) => Promise<{ anchor: CardAnchor; changes: InvoiceChange[] } | null>;
+	/**
 	 * Juros, IOF, anuidade, multa ou tarifa cobrados no cartão: um lançamento "Encargo do
 	 * cartão" na data, que entra na fatura do ciclo dela e não conta como compra.
 	 */
@@ -432,6 +447,34 @@ const linksOf = async (accountId: string): Promise<AccountLinks | null> => {
 		console.error('Error reading account links:', error);
 		return null;
 	}
+};
+
+/**
+ * As compras e os pagamentos de um cartão, lidos do banco na hora: o que o "Acertar valor" e a
+ * troca do dia de fechamento calculam. As compras ainda na caixa de entrada já estão na fatura
+ * do banco, então entram.
+ */
+const loadCardInputs = async (card: Account): Promise<{ entries: CardEntry[]; movements: CardMovement[] }> => {
+	const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
+	const entries: CardEntry[] = cardTransactions.map((tx) => ({
+		id: tx.id,
+		amountCents: tx.amountCents,
+		isIncome: tx.isIncome,
+		date: tx.date,
+		note: tx.note,
+		category: tx.category,
+		installmentGroup: tx.installmentGroup,
+		installmentIndex: tx.installmentIndex,
+		installmentCount: tx.installmentCount,
+		cardLast4: tx.cardLast4,
+	}));
+	for (const capture of await getPendingCaptures()) entries.push(...provisionalEntries(capture, card));
+	const movements: CardMovement[] = cardTransfers.map((transfer) => ({
+		amountCents: transfer.amountCents,
+		date: transfer.date,
+		inbound: transfer.toAccountId === card.id,
+	}));
+	return { entries, movements };
 };
 
 export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -841,30 +884,24 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[refresh, refreshData, categories]
 	);
 
+	const planCardClosingChange = useCallback(
+		async (cardId: string, cycle: Pick<CardSettings, 'closingDay' | 'closingDaysBefore' | 'dueDay'>) => {
+			const card = (await getAccounts()).find((account) => account.id === cardId);
+			if (!card) return null;
+			const { entries, movements } = await loadCardInputs(card);
+			const next = { ...card, ...cycle };
+			const anchor = reanchorForRule(card, cycleRuleOf(next), entries, movements);
+			const changes = invoiceChangesForRule(card, { ...next, ...anchor }, entries, movements, todayISO());
+			return { anchor, changes };
+		},
+		[]
+	);
+
 	const adjustCardInvoices = useCallback(
 		async (cardId: string, openCents: number | null, closedCents: number | null, options?: { opening?: boolean; asCharge?: boolean }) => {
 			const card = (await getAccounts()).find((account) => account.id === cardId);
 			if (!card) return 0;
-			const [cardTransactions, cardTransfers] = await Promise.all([getAccountTransactions(card.id), getAccountTransfers(card.id)]);
-			const entries: CardEntry[] = cardTransactions.map((tx) => ({
-				id: tx.id,
-				amountCents: tx.amountCents,
-				isIncome: tx.isIncome,
-				date: tx.date,
-				note: tx.note,
-				category: tx.category,
-				installmentGroup: tx.installmentGroup,
-				installmentIndex: tx.installmentIndex,
-				installmentCount: tx.installmentCount,
-				cardLast4: tx.cardLast4,
-			}));
-			// Compras ainda na caixa de entrada já estão na fatura do banco: entram na conta.
-			for (const capture of await getPendingCaptures()) entries.push(...provisionalEntries(capture, card));
-			const movements: CardMovement[] = cardTransfers.map((transfer) => ({
-				amountCents: transfer.amountCents,
-				date: transfer.date,
-				inbound: transfer.toAccountId === card.id,
-			}));
+			const { entries, movements } = await loadCardInputs(card);
 
 			const today = todayISO();
 			// A diferença a mais como encargo: comparada com o que a folha mostrou, que é o mesmo
@@ -1413,6 +1450,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			planCardClosingChange,
 			addCardCharge,
 			recordCardPayment,
 			saveTransfer,
@@ -1471,6 +1509,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			dismissRevivalNotices,
 			adjustAccountMonth,
 			adjustCardInvoices,
+			planCardClosingChange,
 			addCardCharge,
 			recordCardPayment,
 			saveTransfer,

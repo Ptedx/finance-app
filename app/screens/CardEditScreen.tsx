@@ -28,7 +28,7 @@ import {
 } from '../utils/bankBrands';
 import { getDismissedCardDuplicates } from '../utils/cardDuplicateDismissals';
 import { findCardDuplicates, summarizeCardDuplicates } from '../utils/cardDuplicates';
-import { cycleFor, cycleRuleOf, daysBetween, invoicesToInform } from '../utils/cardMath';
+import { cycleFor, cycleRuleOf, daysBetween, type InvoiceChange, invoicesToInform } from '../utils/cardMath';
 import { addDays, buildClampedDate, formatDayMonth, formatMonthLong, todayISO } from '../utils/dateUtils';
 import {
 	cardMergeConfirmMessage,
@@ -130,6 +130,7 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId, sampleForm }) =
 		planClose,
 		loadAccountContents,
 		adjustCardInvoices,
+		planCardClosingChange,
 		convertCardToDebit,
 		mergeCards,
 	} = useAccounts();
@@ -265,6 +266,29 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId, sampleForm }) =
 		return cents === null || cents < 0 ? false : cents;
 	};
 
+	/** O aviso da troca do fechamento: as faturas que mudam, de quanto para quanto. Sim é salvar. */
+	const confirmClosingChange = (day: number, changes: InvoiceChange[]): Promise<boolean> =>
+		new Promise((resolve) => {
+			const lines = changes
+				.map((change) =>
+					t('cards.edit.closingChangeLine', {
+						month: formatMonthLong(change.closingDate),
+						before: formatCents(change.beforeCents),
+						after: formatCents(change.afterCents),
+					})
+				)
+				.join('\n');
+			Alert.alert(
+				t('cards.edit.closingChangeTitle'),
+				t('cards.edit.closingChangeMessage', { day, lines }),
+				[
+					{ text: t('cards.cancel'), style: 'cancel', onPress: () => resolve(false) },
+					{ text: t('cards.edit.closingChangeConfirm'), onPress: () => resolve(true) },
+				],
+				{ cancelable: true, onDismiss: () => resolve(false) }
+			);
+		});
+
 	const handleSave = async () => {
 		if (sample) return;
 		const next: Record<string, string | undefined> = {};
@@ -326,6 +350,16 @@ const CardEditScreen: React.FC<CardEditScreenProps> = ({ cardId, sampleForm }) =
 		try {
 			setSaving(true);
 			if (existing) {
+				// Novo dia de fechamento (SPD-179): a fatura que o "Acertar valor" informou fica na
+				// mesma fatura, e o que ainda muda de valor aparece em reais antes de salvar.
+				if (closing && existing.closingDay && closing !== existing.closingDay) {
+					const change = await planCardClosingChange(existing.id, { closingDay: closing, closingDaysBefore: gap, dueDay: due || null });
+					if (change) {
+						draft.openingBalanceCents = change.anchor.openingBalanceCents;
+						draft.openingBalanceDate = change.anchor.openingBalanceDate;
+						if (change.changes.length > 0 && !(await confirmClosingChange(closing, change.changes))) return;
+					}
+				}
 				await saveAccount({ ...draft, id: existing.id });
 				announce(t('cards.edit.saved'));
 				router.back();
