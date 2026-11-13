@@ -141,7 +141,7 @@ describe('o prefixo fixo', () => {
 		);
 	});
 
-	it('o resto do pedido: modelo, raciocínio adaptativo, esforço, max_tokens 2000, tool_choice auto, sem streaming', () => {
+	it('o resto do pedido: modelo, raciocínio adaptativo, esforço, max_tokens 4000, tool_choice auto, sem streaming', () => {
 		const request = buildMiraiRequest(CONFIG, {
 			messages: [question('Oi')],
 			locale: 'pt',
@@ -150,12 +150,12 @@ describe('o prefixo fixo', () => {
 
 		expect(request).toMatchObject({
 			model: 'claude-haiku-5-5',
-			max_tokens: 2000,
+			max_tokens: 4000,
 			thinking: { type: 'adaptive' },
 			output_config: { effort: 'low' },
 			tool_choice: { type: 'auto' },
 		});
-		expect(MIRAI_MAX_TOKENS).toBe(2000);
+		expect(MIRAI_MAX_TOKENS).toBe(4000);
 		expect(request.stream).toBeUndefined();
 	});
 });
@@ -174,6 +174,15 @@ describe('a instrução fixa', () => {
 		expect(MIRAI_INSTRUCTION).toMatch(/quitar ou manter/i);
 		expect(MIRAI_INSTRUCTION).toContain('get_rates');
 		expect(MIRAI_INSTRUCTION).toMatch(/Nunca culpe a pessoa/);
+	});
+
+	it('explica as taxas, as contas a pagar, onde buscar o custo essencial e os juros do cartão (SPD-168)', () => {
+		expect(MIRAI_INSTRUCTION).toContain('181 = 1,81%');
+		expect(MIRAI_INSTRUCTION).toContain('rateMonthBp');
+		expect(MIRAI_INSTRUCTION).toMatch(/mês inteiro em get_bills/);
+		expect(MIRAI_INSTRUCTION).toMatch(/custo essencial do mês.*get_reserve_and_goals/);
+		expect(MIRAI_INSTRUCTION).toMatch(/fatura paga até o vencimento não tem juros/);
+		expect(MIRAI_INSTRUCTION).toMatch(/mexe na Reserva, busque get_reserve_and_goals/);
 	});
 });
 

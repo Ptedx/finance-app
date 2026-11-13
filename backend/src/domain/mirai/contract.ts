@@ -82,7 +82,8 @@ export const MIRAI_TOOLS = [
 	},
 	{
 		name: 'get_bills',
-		description: 'Contas a pagar com vencimento no período: valor, vencimento, pago, pulado ou em atraso.',
+		description:
+			'Contas a pagar com vencimento no período: valor, vencimento, pago, pulado ou em atraso. As em atraso dos meses do período vêm mesmo com vencimento antes de from; overdueBeforeThisMonth soma o atraso dos meses anteriores.',
 		input_schema: {
 			type: 'object',
 			properties: {
