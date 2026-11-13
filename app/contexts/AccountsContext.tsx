@@ -13,18 +13,13 @@ import {
 	foldAccountBalance,
 	getAccountContents,
 	getAccount,
-	getAccountActivity,
 	getAccountBalances,
 	getAccounts,
 	getAccountTransactions,
 	getAccountTransfers,
 	getBills,
-	getCardPurchasesOriginated,
 	getDebts,
 	getTransactions,
-	getUnassignedNet,
-	getUnassignedPeriodSummary,
-	getTransfersByDateRange,
 	mergeCardInto,
 	moveAccountLedger,
 	normalizeAccountDraft,
@@ -46,11 +41,9 @@ import { useAfterPull } from '../hooks/useAfterPull';
 import * as syncQueue from '../sync/queue';
 import {
 	type AccountsOverview,
-	periodSpentCents,
 	provisionalBalanceCents,
 	provisionalEntries,
 	provisionalEntriesByAccount,
-	provisionalFlows,
 	spendingAdjustment,
 	summarizeAccounts,
 	withProvisionalBalances,
@@ -86,7 +79,6 @@ import {
 	type CardSummary,
 	cycleRuleOf,
 	existingInstallmentDates,
-	invoicesClosingBetween,
 	isSameCardPayment,
 	openInvoiceInformed,
 	pickOpenCardPayment,
@@ -104,23 +96,19 @@ import { getDismissedBalanceUnset } from '../utils/balanceUnsetDismissals';
 import { planBusinessFeed } from '../utils/businessFeed';
 import { getBusinessFeeds, setBusinessFeed } from '../utils/businessFeedPreference';
 import { getDistinctAccountPairs } from '../utils/distinctAccounts';
-import {
-	externalTransfersInByMonth,
-	externalTransfersOutByMonth,
-	investmentIncomeRows,
-	lastInvestmentIncomeDateByAccount,
-} from '../utils/reportSeries';
 import { parseCardNames, withCardName } from '../utils/cardNames';
-import { addDays, monthKeyOf, monthKeyRange, shiftMonthKey, todayISO } from '../utils/dateUtils';
-import {
-	type AccountMonthActivity,
-	buildMonthOverview,
-	type MonthOverview,
-	type ProvisionalPart,
-	provisionalPart,
-} from '../utils/monthOverview';
+import { addDays, todayISO } from '../utils/dateUtils';
+import type { MonthOverview, ProvisionalPart } from '../utils/monthOverview';
 import { type CdiRate, loadCachedCdi, refreshCdi } from '../api/cdi';
-import { accruedYieldCents, type YieldFlow } from '../utils/yield';
+import {
+	accruedYield12mByAccount,
+	accruedYieldByAccount,
+	activeAccountsOf,
+	balancesWithAccruedYield,
+	cardsTotalsOf,
+	loadAccountsState,
+	type YieldAccountInput,
+} from '../utils/accountsLoad';
 import { usePeriod } from './PeriodContext';
 import { useTransactions } from './TransactionsContext';
 
@@ -391,33 +379,8 @@ interface AccountsContextType {
 
 const AccountsContext = createContext<AccountsContextType | undefined>(undefined);
 
-/** O que a estimativa de rendimento precisa saber de uma conta que rende. */
-interface YieldAccountInput {
-	anchorCents: number;
-	anchorDate: string;
-	flows: YieldFlow[];
-	percentOfCdiBp: number;
-	/** A data do último rendimento lançado na conta; nula sem nenhum. */
-	lastPostedYieldDate: string | null;
-}
-
-/** Quantos meses a janela do "rendeu nos últimos 12 meses" cobre, contando o de hoje. */
-const YIELD_WINDOW_MONTHS = 12;
-
 /** Nota do lançamento que acerta o saldo de uma conta. */
 const BALANCE_ADJUSTMENT_NOTE = 'Ajuste com o saldo do banco';
-
-const byOrder = (a: Account, b: Account) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-
-/** Soma por conta um mapa `mês|contaId`: aqui só há transferências do período pedido. */
-const sumByAccount = (byKey: Map<string, number>): Map<string, number> => {
-	const byAccount = new Map<string, number>();
-	for (const [key, cents] of byKey) {
-		const accountId = key.slice(key.indexOf('|') + 1);
-		byAccount.set(accountId, (byAccount.get(accountId) ?? 0) + cents);
-	}
-	return byAccount;
-};
 
 /**
  * Aplica o conserto de um cartão do jeito da migração v12 (`migrateCardPurchasesToRealCard`):
@@ -500,172 +463,26 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	const refresh = useCallback(async () => {
 		const mine = ++generation.current;
 		try {
-			const today = todayISO();
-			// Saldo na véspera do período e no fim dele (ou hoje, se ainda está correndo): é o que
-			// diz quanto sobrou do mês anterior e quanto ainda há na conta.
-			const periodEnd = endDate < today ? endDate : today;
-			const [list, ledgerBalances, unassigned, unassignedPeriod, pendingCaptures, ledgerStartBalances, ledgerEndBalances, transfersInPeriod, revived] =
-				await Promise.all([
-				getAccounts(),
-				getAccountBalances(today),
-				getUnassignedNet(today),
-				getUnassignedPeriodSummary(startDate, endDate),
-				getPendingCaptures(),
-				getAccountBalances(addDays(startDate, -1)),
-				getAccountBalances(periodEnd),
-				getTransfersByDateRange(startDate, endDate),
+			// A carga mora em `utils/accountsLoad.ts` (SPD-163b): o Mirai lê dela os mesmos números.
+			const [state, revived] = await Promise.all([
+				loadAccountsState(startDate, endDate, todayISO()),
 				// O aviso da conta que voltou encerrada (SPD-149) é guardado pela carga do banco, que
 				// pode terminar depois da primeira leitura daqui.
 				getRevivalNotices(),
 			]);
 
-			// O que as contas de papel `external` (a PJ) mandaram para contas suas no período, e o
-			// que as suas mandaram para elas: o líquido é receita do mês, e no livro é
-			// transferência. O mapa é por mês e conta, mas aqui só há transferências do período
-			// pedido, então vale somar todos os meses de cada conta.
-			const live = list.filter((account) => !account.deletedAt);
-			const fromExternalByAccount = sumByAccount(externalTransfersInByMonth(transfersInPeriod, live));
-			const toExternalByAccount = sumByAccount(externalTransfersOutByMonth(transfersInPeriod, live));
-
-			// As compras da caixa de entrada sem pergunta em aberto contam como provisórias em
-			// todo lugar — saldo, cartão e mês —, como o cartão já fazia. Uma regra só
-			// (`provisionalEntries`), para o saldo da conta corrente e o "Gastou" não divergirem
-			// do cartão nem dos Relatórios.
-			const provisional = provisionalEntriesByAccount(pendingCaptures, live);
-			const nextBalances = withProvisionalBalances(ledgerBalances, live, provisional, today);
-			const startBalances = withProvisionalBalances(ledgerStartBalances, live, provisional, addDays(startDate, -1));
-			const endBalances = withProvisionalBalances(ledgerEndBalances, live, provisional, periodEnd);
-			const nextProvisionalBalances = new Map<string, number>();
-			for (const [accountId, cents] of nextBalances) {
-				const delta = cents - (ledgerBalances.get(accountId) ?? cents);
-				if (delta !== 0) nextProvisionalBalances.set(accountId, delta);
-			}
-
-			const nextSummaries = new Map<string, CardSummary>();
-			const nextYieldInputs = new Map<string, YieldAccountInput>();
-			const activity: AccountMonthActivity[] = [];
-			// O mesmo mês só com o livro: a diferença é a parte "a revisar" (`provisionalPart`).
-			const ledgerActivity: AccountMonthActivity[] = [];
-
-			for (const account of list) {
-				if (account.deletedAt) continue;
-
-				const period = await getAccountActivity(account.id, startDate, endDate);
-				const isCard = account.kind === 'credit_card';
-				const pending = provisional.get(account.id) ?? [];
-				const pendingFlows = provisionalFlows(pending, startDate, endDate);
-				const purchasesOriginatedCents = isCard ? await getCardPurchasesOriginated(account.id, startDate, endDate) : undefined;
-				// Rendimento é só a receita em categoria de rendimento de investimento. Sem isto,
-				// toda receita que encostasse numa conta de reserva — o Pix de um amigo, um
-				// reembolso — era anunciada como rentabilidade que não houve.
-				const investmentIncomeCents =
-					account.role === 'reserve'
-						? investmentIncomeRows(
-								(await getAccountTransactions(account.id)).filter((tx) => tx.date >= startDate && tx.date <= endDate)
-							).reduce((total, row) => total + row.cents, 0)
-						: 0;
-				const ledgerItem: AccountMonthActivity = {
-					accountId: account.id,
-					name: account.name,
-					kind: account.kind,
-					// O papel de verdade, inclusive de conta arquivada: trocá-lo por `external` aqui
-					// reescrevia o passado — arquivar um cartão apagava as faturas dele dos meses
-					// fechados. Arquivada fica fora dos totais de hoje, nunca de um mês fechado.
-					role: account.role,
-					incomeCents: period.incomeCents,
-					investmentIncomeCents,
-					expenseCents: period.expenseCents,
-					passThroughCents: period.passThroughCents,
-					transfersInCents: period.transfersInCents,
-					transfersInFromExternalCents: fromExternalByAccount.get(account.id) ?? 0,
-					transfersOutCents: period.transfersOutCents,
-					transfersOutToExternalCents: toExternalByAccount.get(account.id) ?? 0,
-					purchasesOriginatedCents,
-					envelopeMonthlyCents: account.envelopeMonthlyCents,
-					startBalanceCents: ledgerStartBalances.get(account.id) ?? 0,
-					endBalanceCents: ledgerEndBalances.get(account.id) ?? 0,
-				};
-				ledgerActivity.push(ledgerItem);
-				activity.push({
-					...ledgerItem,
-					incomeCents: period.incomeCents + pendingFlows.incomeCents,
-					expenseCents: period.expenseCents + pendingFlows.expenseCents,
-					purchasesOriginatedCents: purchasesOriginatedCents === undefined ? undefined : purchasesOriginatedCents + pendingFlows.purchasesCents,
-					startBalanceCents: startBalances.get(account.id) ?? 0,
-					endBalanceCents: endBalances.get(account.id) ?? 0,
-				});
-
-				// Conta que rende: a âncora e o que entrou e saiu depois dela, para estimar o
-				// rendimento até hoje.
-				if (!isCard && (account.yieldCdiBp ?? 0) > 0) {
-					const [ownTransactions, ownTransfers] = await Promise.all([getAccountTransactions(account.id), getAccountTransfers(account.id)]);
-					const flows: YieldFlow[] = [
-						...ownTransactions.map((tx) => ({ date: tx.date, cents: tx.isIncome ? tx.amountCents : -tx.amountCents })),
-						...ownTransfers.map((transfer) => ({
-							date: transfer.date,
-							cents: transfer.toAccountId === account.id ? transfer.amountCents : -transfer.amountCents,
-						})),
-					].filter((flow) => flow.date > account.openingBalanceDate);
-					nextYieldInputs.set(account.id, {
-						anchorCents: account.openingBalanceCents,
-						anchorDate: account.openingBalanceDate,
-						flows,
-						percentOfCdiBp: account.yieldCdiBp ?? 0,
-						// Ou se lança o rendimento, ou se estima — nunca os dois no mesmo período. O
-						// último rendimento lançado cobre tudo até a data dele; antes dela quem vale é
-						// o livro. Sem isto, a receita de rendimento já estava no saldo e continuava
-						// sendo estimada por cima, compondo sobre a duplicata: inflava reserva,
-						// capital, patrimônio e progresso da meta, e podia declarar a reserva cheia
-						// antes da hora.
-						lastPostedYieldDate: lastInvestmentIncomeDateByAccount(ownTransactions).get(account.id) ?? null,
-					});
-				}
-
-				if (!isCard) continue;
-				const cardActivity = activity[activity.length - 1];
-
-				const [cardTransactions, cardTransfers] = await Promise.all([
-					getAccountTransactions(account.id),
-					getAccountTransfers(account.id),
-				]);
-				const ledgerEntries: CardEntry[] = cardTransactions.map((tx) => ({
-					id: tx.id,
-					amountCents: tx.amountCents,
-					isIncome: tx.isIncome,
-					date: tx.date,
-					note: tx.note,
-					category: tx.category,
-					installmentGroup: tx.installmentGroup,
-					installmentIndex: tx.installmentIndex,
-					installmentCount: tx.installmentCount,
-				cardLast4: tx.cardLast4,
-				}));
-				const entries = [...ledgerEntries, ...pending];
-				const movements: CardMovement[] = cardTransfers.map((transfer) => ({
-					amountCents: transfer.amountCents,
-					date: transfer.date,
-					inbound: transfer.toAccountId === account.id,
-				}));
-				nextSummaries.set(account.id, buildCardSummary(account, entries, movements, today));
-				cardActivity.invoiceCents = invoicesClosingBetween(account, entries, startDate, endDate);
-				ledgerActivity[ledgerActivity.length - 1].invoiceCents = invoicesClosingBetween(account, ledgerEntries, startDate, endDate);
-			}
-
 			if (mine !== generation.current) return;
-			const nextMonth = buildMonthOverview({ accounts: activity, unassigned: unassignedPeriod });
-			setAccounts(list);
-			setBalances(nextBalances);
-			setProvisionalBalances(nextProvisionalBalances);
-			setYieldInputs(nextYieldInputs);
-			setCardSummaries(nextSummaries);
-			setUnassignedNetCents(unassigned);
-			setPeriodTransfers(transfersInPeriod);
-			setPeriodSpentByAccount(
-				new Map(activity.map((item) => [item.accountId, periodSpentCents(item, item.role)]))
-			);
-			setMonth(nextMonth);
+			setAccounts(state.list);
+			setBalances(state.balances);
+			setProvisionalBalances(state.provisionalBalances);
+			setYieldInputs(state.yieldInputs);
+			setCardSummaries(state.cardSummaries);
+			setUnassignedNetCents(state.unassignedNetCents);
+			setPeriodTransfers(state.periodTransfers);
+			setPeriodSpentByAccount(state.periodSpentByAccount);
+			setMonth(state.month);
 			setRevivalNotices((current) => (current.length === 0 && revived.length === 0 ? current : revived));
-			setProvisionalMonth(provisionalPart(nextMonth, buildMonthOverview({ accounts: ledgerActivity, unassigned: unassignedPeriod })));
+			setProvisionalMonth(state.provisionalMonth);
 		} catch (error) {
 			console.error('Error loading accounts:', error);
 		} finally {
@@ -696,42 +513,16 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, []);
 
 	/** O rendimento estimado de cada conta que rende, até ontem, no CDI em uso. */
-	const accruedYield = useMemo(() => {
-		const result = new Map<string, number>();
-		if (!cdi) return result;
-		const today = todayISO();
-		for (const [accountId, input] of yieldInputs) {
-			result.set(accountId, accruedYieldCents({ ...input, notBefore: input.lastPostedYieldDate, today, cdiAnnualBp: cdi.annualBp }));
-		}
-		return result;
-	}, [yieldInputs, cdi]);
+	const accruedYield = useMemo(() => accruedYieldByAccount(yieldInputs, cdi?.annualBp ?? null, todayISO()), [yieldInputs, cdi]);
 
 	/**
-	 * O mesmo rendimento estimado, recortado nos últimos 12 meses: é o que o indicador
-	 * "rendeu nos últimos 12 meses" precisa para não afirmar 0% num CDB de 120% do CDI,
-	 * onde o acréscimo é estimado em memória e nada é lançado no livro. O recorte usa a
-	 * data mais recente entre o começo da janela e o último rendimento lançado — o livro
-	 * responde pelo período que ele cobre, a estimativa só pelo resto.
+	 * O mesmo rendimento estimado, recortado nos últimos 12 meses (`accruedYield12mByAccount`):
+	 * é o que o indicador "rendeu nos últimos 12 meses" precisa para não afirmar 0% num CDB de
+	 * 120% do CDI.
 	 */
-	const accruedYield12m = useMemo(() => {
-		const result = new Map<string, number>();
-		if (!cdi) return result;
-		const today = todayISO();
-		const windowStart = monthKeyRange(shiftMonthKey(monthKeyOf(today), -(YIELD_WINDOW_MONTHS - 1))).startDate;
-		const notBeforeWindow = addDays(windowStart, -1);
-		for (const [accountId, input] of yieldInputs) {
-			const notBefore = input.lastPostedYieldDate !== null && input.lastPostedYieldDate > notBeforeWindow ? input.lastPostedYieldDate : notBeforeWindow;
-			result.set(accountId, accruedYieldCents({ ...input, notBefore, today, cdiAnnualBp: cdi.annualBp }));
-		}
-		return result;
-	}, [yieldInputs, cdi]);
+	const accruedYield12m = useMemo(() => accruedYield12mByAccount(yieldInputs, cdi?.annualBp ?? null, todayISO()), [yieldInputs, cdi]);
 
-	const balances = useMemo(() => {
-		if (accruedYield.size === 0) return rawBalances;
-		const next = new Map(rawBalances);
-		for (const [accountId, cents] of accruedYield) next.set(accountId, (next.get(accountId) ?? 0) + cents);
-		return next;
-	}, [rawBalances, accruedYield]);
+	const balances = useMemo(() => balancesWithAccruedYield(rawBalances, accruedYield), [rawBalances, accruedYield]);
 
 	const [cardLedgerRepair, setCardLedgerRepair] = useState<CardLedgerRepairNotice | null>(null);
 	const dismissCardLedgerRepair = useCallback(() => setCardLedgerRepair(null), []);
@@ -1521,7 +1312,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		[]
 	);
 
-	const activeAccounts = useMemo(() => accounts.filter((account) => !account.archived).sort(byOrder), [accounts]);
+	const activeAccounts = useMemo(() => activeAccountsOf(accounts), [accounts]);
 	const bankAccounts = useMemo(() => activeAccounts.filter((account) => account.kind !== 'credit_card'), [activeAccounts]);
 	const creditCards = useMemo(() => activeAccounts.filter((account) => account.kind === 'credit_card'), [activeAccounts]);
 	const overview = useMemo(
@@ -1577,23 +1368,7 @@ export const AccountsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		);
 	}, [bankAccounts, transactions, startDate, endDate]);
 
-	const cardsTotals = useMemo(() => {
-		let toPayCents = 0;
-		let openInvoicesCents = 0;
-		let limitUsedCents = 0;
-		let limitAvailableCents: number | null = null;
-		for (const card of creditCards) {
-			const summary = cardSummaries.get(card.id);
-			if (!summary) continue;
-			toPayCents += summary.toPayCents;
-			openInvoicesCents += Math.max(0, summary.openInvoiceCents);
-			limitUsedCents += summary.limitUsedCents;
-			if (summary.limitAvailableCents !== null) {
-				limitAvailableCents = (limitAvailableCents ?? 0) + summary.limitAvailableCents;
-			}
-		}
-		return { toPayCents, openInvoicesCents, limitAvailableCents, limitUsedCents };
-	}, [creditCards, cardSummaries]);
+	const cardsTotals = useMemo(() => cardsTotalsOf(creditCards, cardSummaries), [creditCards, cardSummaries]);
 
 	const value = useMemo<AccountsContextType>(
 		() => ({

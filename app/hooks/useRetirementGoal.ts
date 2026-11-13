@@ -3,6 +3,7 @@ import { AppState } from 'react-native';
 import { clearRetirementGoal, getRetirementGoal, initDatabase, type RetirementGoalDraft, setRetirementGoal } from '../database/database';
 import * as syncQueue from '../sync/queue';
 import { useAfterPull } from './useAfterPull';
+import { retirementGoalOf } from '../utils/reportsModel';
 import type { RetirementGoal } from '../utils/retirement';
 
 /**
@@ -27,16 +28,7 @@ export const useRetirementGoal = (): RetirementGoalResult => {
 		try {
 			await initDatabase();
 			const row = await getRetirementGoal();
-			setGoal(
-				row
-					? {
-							targetMonthlyCents: row.targetMonthlyCents,
-							reinvestBp: row.reinvestBp,
-							expectedYieldBp: row.expectedYieldBp,
-							outsideCapitalCents: row.outsideCapitalCents,
-						}
-					: null
-			);
+			setGoal(retirementGoalOf(row));
 		} catch (error) {
 			console.error('Error loading the retirement goal:', error);
 		} finally {

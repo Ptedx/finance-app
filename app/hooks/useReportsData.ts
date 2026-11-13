@@ -6,21 +6,7 @@ import { useBudget } from '../contexts/BudgetContext';
 import { useDebts } from '../contexts/DebtsContext';
 import { usePeriod } from '../contexts/PeriodContext';
 import { useTransactions } from '../contexts/TransactionsContext';
-import {
-	getMonthlyAccountActivity,
-	getMonthlyCategoryTotals,
-	getMonthlyTransferActivity,
-	getTransactionsForAccounts,
-	getTransfersByDateRange,
-	initDatabase,
-	type MonthAccountActivityRow,
-	type MonthCategoryTotalRow,
-	type MonthTransferActivityRow,
-} from '../database/database';
-import { getPendingCaptures } from '../database/captures';
-import type { Transfer } from '../database/schema';
-import { provisionalEntriesByAccount } from '../utils/accountMath';
-import type { CardEntry } from '../utils/cardMath';
+import { initDatabase } from '../database/database';
 import { monthKeyOf, monthsBetweenKeys, shiftMonthKey, todayISO } from '../utils/dateUtils';
 import {
 	comparisonYield,
@@ -32,7 +18,7 @@ import {
 	termsOf,
 	worthPayingOff,
 } from '../utils/debt';
-import { buildHealthIndicators, type HealthIndicator, type PaceWindow, spendingPaceWindows } from '../utils/healthScore';
+import type { HealthIndicator } from '../utils/healthScore';
 import {
 	buildCategoryJumpInsights,
 	buildDebtInsights,
@@ -46,10 +32,8 @@ import {
 	SAVINGS_RATE_INSIGHT_IDS,
 	type WealthMetrics,
 } from '../utils/insights';
-import { categoryDeltas, fixedCostShare, FULL_BASIS_POINTS, monthlyBillsCents } from '../utils/metrics';
+import { categoryDeltas, fixedCostShare, monthlyBillsCents } from '../utils/metrics';
 import {
-	averageClosedMonths,
-	averageReserveCapitalCents,
 	type CategoryRankRow,
 	type CommittedMonth,
 	committedMonths,
@@ -60,30 +44,19 @@ import {
 	findDuplicateIncomes,
 	findRecurringDoubleCharges,
 	type IncomeComposition,
-	investmentIncomeRows,
-	type MonthInvestmentIncomeRow,
 	type MonthKey,
 	type MonthPoint,
-	monthElapsedBp,
 	monthIncomeComposition,
-	monthKeysEnding,
-	monthRangeOf,
-	paceSpendToDate,
 	rankCategories,
 	rankSpendSources,
 	savingsRateDropsEnding,
 	separateCardBookkeeping,
 	type SpendSourceRow,
-	toCardEntry,
 	withProvisionalActivity,
-	yield12m,
 } from '../utils/reportSeries';
 import { type ProvisionalPart, provisionalPart } from '../utils/monthOverview';
 import {
-	buildRetirementReadModel,
-	contributionForHorizon,
 	retirementContributionPlan,
-	DEFAULT_EXPECTED_YIELD_BP,
 	monthlyRate,
 	monthsToReachStepped,
 	type ProjectionPoint,
@@ -91,15 +64,22 @@ import {
 	type RetirementGoal,
 	type RetirementReadModel,
 } from '../utils/retirement';
-import {
-	buildReserveReadModel,
-	contributionDelayMonths,
-	essentialMonthlyCostCents,
-	essentialShareBp,
-	type ReserveReadModel,
-	resolveMonthlyCost,
-} from '../utils/emergencyReserve';
+import type { ReserveReadModel } from '../utils/emergencyReserve';
 import { buildPriorities, type PriorityItem } from '../utils/priorities';
+import {
+	averageIncomeOf,
+	averageSavedOf,
+	averageSpendOf,
+	computedReserveCostOf,
+	estimatedYield12mOf,
+	fullSeriesOf,
+	healthOf,
+	loadReportsRaw,
+	paceSpendOf,
+	type ReportsRaw,
+	reserveModelOf,
+	retirementModelOf,
+} from '../utils/reportsModel';
 import { useReserveGoal } from './useReserveGoal';
 import { useWealthMetrics } from './useWealthMetrics';
 
@@ -129,40 +109,6 @@ export const TREND_RANGES: TrendRange[] = [3, 6, 12];
  * aposentadoria sem que nada tivesse mudado no dinheiro — selecionar dezembro bastava.
  */
 export type ReportsAnchor = 'selected' | 'today';
-
-/** 12 meses de tendência mais um anterior, para a variação de categoria do primeiro. */
-const HISTORY_MONTHS = 13;
-
-/** O aporte médio olha meio ano: um mês bom ou ruim não muda a data de chegada. */
-const CONTRIBUTION_WINDOW_MONTHS = 6;
-
-/** Renda e gasto médios olham o trimestre fechado. */
-const AVERAGE_WINDOW_MONTHS = 3;
-
-/** "Quanto da renda a meta pede" é calculado para chegar em 20 anos. */
-const NEEDED_HORIZON_MONTHS = 20 * 12;
-
-interface ReportsRaw {
-	months: MonthKey[];
-	activity: MonthAccountActivityRow[];
-	transfers: MonthTransferActivityRow[];
-	categoryRows: MonthCategoryTotalRow[];
-	cardEntries: Map<string, CardEntry[]>;
-	/** As transferências do histórico, linha a linha: só elas dizem de qual conta o dinheiro veio. */
-	transferLines: Transfer[];
-	/** A parte de rendimento da receita de cada conta de reserva, mês a mês. */
-	investmentIncome: MonthInvestmentIncomeRow[];
-	/**
-	 * As compras da caixa de entrada que já contam como provisórias, por conta — a mesma
-	 * regra da Home (`provisionalEntriesByAccount`). `activity` e `cardEntries` são só o livro.
-	 */
-	provisional: Map<string, CardEntry[]>;
-	/**
-	 * O ritmo de gastos: o mês selecionado e os anteriores, cada um do dia 1 ao mesmo dia D
-	 * (`spendingPaceWindows`), com as somas do livro só até o corte. Nulo em mês futuro.
-	 */
-	pace: { window: PaceWindow; activity: MonthAccountActivityRow[]; transfers: MonthTransferActivityRow[] }[] | null;
-}
 
 /** Uma dívida na seção dos Relatórios. */
 export interface DebtReportItem {
@@ -238,63 +184,17 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	const [raw, setRaw] = useState<ReportsRaw | null>(null);
 
 	// `cardSummaries` está nas dependências como gatilho: é um Map novo a cada recarga do
-	// AccountsContext, que por sua vez roda a cada mudança no livro.
+	// AccountsContext, que por sua vez roda a cada mudança no livro. A carga mora em
+	// `utils/reportsModel.ts` (SPD-163b): o Mirai lê dela os mesmos números.
 	useEffect(() => {
 		let cancelled = false;
-		const months = monthKeysEnding(selectedKey, HISTORY_MONTHS);
-		const { startDate, endDate } = monthRangeOf(months);
-		const live = accounts.filter((account) => !account.deletedAt);
-		const cardIds = live.filter((account) => account.kind === 'credit_card').map((account) => account.id);
-		// As contas de reserva vêm na mesma consulta porque delas o quadro do mês precisa saber
-		// quanto da receita é rendimento de investimento — o que as somas por conta não dizem.
-		const reserveIds = live.filter((account) => account.kind !== 'credit_card' && account.role === 'reserve').map((account) => account.id);
 
 		const load = async () => {
 			try {
 				await initDatabase();
-				const [activity, transfers, categoryRows, ledgerTransactions, transferLines, pendingCaptures] = await Promise.all([
-					getMonthlyAccountActivity(startDate, endDate),
-					getMonthlyTransferActivity(startDate, endDate),
-					getMonthlyCategoryTotals(startDate, endDate, 'expense'),
-					getTransactionsForAccounts([...cardIds, ...reserveIds]),
-					getTransfersByDateRange(startDate, endDate),
-					getPendingCaptures(),
-				]);
-				// Oito consultas pequenas de totais: o mês selecionado e os três anteriores, só até o dia D.
-				const windows = spendingPaceWindows(selectedKey, todayISO());
-				const pace =
-					windows === null
-						? null
-						: await Promise.all(
-								[windows.current, ...windows.previous].map(async (window) => {
-									const [windowActivity, windowTransfers] = await Promise.all([
-										getMonthlyAccountActivity(window.startDate, window.cutoffDate),
-										getMonthlyTransferActivity(window.startDate, window.cutoffDate),
-									]);
-									return { window, activity: windowActivity, transfers: windowTransfers };
-								})
-							);
+				const next = await loadReportsRaw(selectedKey, accounts, todayISO());
 				if (cancelled) return;
-
-				const isCard = new Set(cardIds);
-				const cardEntries = new Map<string, CardEntry[]>();
-				for (const transaction of ledgerTransactions) {
-					if (!transaction.accountId || !isCard.has(transaction.accountId)) continue;
-					const list = cardEntries.get(transaction.accountId) ?? [];
-					list.push(toCardEntry(transaction));
-					cardEntries.set(transaction.accountId, list);
-				}
-				setRaw({
-					months,
-					activity,
-					transfers,
-					categoryRows,
-					cardEntries,
-					transferLines,
-					investmentIncome: investmentIncomeRows(ledgerTransactions),
-					provisional: provisionalEntriesByAccount(pendingCaptures, live),
-					pace,
-				});
+				setRaw(next);
 			} catch (error) {
 				console.error('Error loading the reports history:', error);
 			}
@@ -311,19 +211,7 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// As compras ainda na caixa de entrada entram como na Home: nas linhas de cada conta e
 	// nas faturas. Sem isto o "Gastou" daqui ficava abaixo do da Home pelo que está a revisar.
 	const merged = useMemo(() => (raw ? withProvisionalActivity(raw.activity, raw.cardEntries, raw.provisional, raw.months) : null), [raw]);
-	const fullSeries = useMemo<MonthPoint[]>(() => {
-		if (!raw || !merged) return [];
-		return buildMonthSeries({
-			months: raw.months,
-			accounts: liveAccounts,
-			activity: merged.activity,
-			transfers: raw.transfers,
-			cardEntries: merged.cardEntries,
-			transferLines: raw.transferLines,
-			investmentIncome: raw.investmentIncome,
-			currentMonth: todayKey,
-		});
-	}, [raw, merged, liveAccounts, todayKey]);
+	const fullSeries = useMemo<MonthPoint[]>(() => (raw && merged ? fullSeriesOf(raw, merged, liveAccounts, todayKey) : []), [raw, merged, liveAccounts, todayKey]);
 
 	const series = useMemo(() => fullSeries.slice(-range), [fullSeries, range]);
 	const selected = fullSeries.length > 0 ? fullSeries[fullSeries.length - 1] : null;
@@ -345,27 +233,11 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	}, [raw, selected, liveAccounts, todayKey]);
 
 	// O ritmo de gastos: o mês até hoje contra os anteriores até o mesmo dia (SPD-034).
-	const paceSpend = useMemo(() => {
-		if (!raw?.pace) return null;
-		return paceSpendToDate({
-			windows: raw.pace.map(({ window, activity, transfers }) => ({
-				month: window.month,
-				cutoffDate: window.cutoffDate,
-				activity,
-				transfers,
-				hasData: raw.activity.some((row) => row.month === window.month) || raw.transfers.some((row) => row.month === window.month),
-			})),
-			accounts: liveAccounts,
-			cardEntries: raw.cardEntries,
-			provisional: raw.provisional,
-			transferLines: raw.transferLines,
-			currentMonth: todayKey,
-		});
-	}, [raw, liveAccounts, todayKey]);
+	const paceSpend = useMemo(() => (raw ? paceSpendOf(raw, liveAccounts, todayKey) : null), [raw, liveAccounts, todayKey]);
 
-	const averageSpendCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.totalSpendCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
-	const averageIncomeCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.incomeCents, AVERAGE_WINDOW_MONTHS), [fullSeries]);
-	const averageSavedCents = useMemo(() => averageClosedMonths(fullSeries, (o) => o.savedCents, CONTRIBUTION_WINDOW_MONTHS) ?? 0, [fullSeries]);
+	const averageSpendCents = useMemo(() => averageSpendOf(fullSeries), [fullSeries]);
+	const averageIncomeCents = useMemo(() => averageIncomeOf(fullSeries), [fullSeries]);
+	const averageSavedCents = useMemo(() => averageSavedOf(fullSeries), [fullSeries]);
 
 	// As categorias sem o ajuste com a fatura do banco e com os encargos do cartão numa linha
 	// própria (SPD-092): o ajuste não é gasto de categoria nenhuma, e o encargo diluído em
@@ -375,75 +247,36 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	// Reserva de emergência. O custo essencial sai dos meses fechados; sem nenhum, do
 	// orçamento do mês; o valor à mão vence os dois.
 	const natureById = useMemo(() => new Map(categories.map((category) => [category.id, category.nature])), [categories]);
-	const computedCost = useMemo(() => {
-		const rows = spendCategoryRows;
-		return resolveMonthlyCost({
-			customCents: null,
-			historyCents: essentialMonthlyCostCents(fullSeries, rows, natureById),
-			budgetCents: currentBudgetCents,
-			currentShareBp: essentialShareBp(
-				rows.filter((row) => row.month === todayKey),
-				natureById
-			),
-		});
-	}, [spendCategoryRows, fullSeries, natureById, currentBudgetCents, todayKey]);
+	const computedCost = useMemo(
+		() => computedReserveCostOf(spendCategoryRows, fullSeries, natureById, currentBudgetCents, todayKey),
+		[spendCategoryRows, fullSeries, natureById, currentBudgetCents, todayKey]
+	);
 
-	const reserve = useMemo<ReserveReadModel>(() => {
-		const custom = reserveGoal.customMonthlyCostCents;
-		const cost = custom !== null && custom > 0 ? { cents: custom, source: 'custom' as const } : computedCost;
-		return buildReserveReadModel({
-			accounts: liveAccounts
-				.filter((account) => !account.archived && account.kind !== 'credit_card' && account.role === 'reserve')
-				.map((account) => ({
-					balanceCents: balances.get(account.id) ?? account.openingBalanceCents,
-					purpose: account.reservePurpose === 'investment' ? 'investment' : null,
-				})),
-			targetMonths: reserveGoal.targetMonths,
-			cost,
-			monthlyContributionCents: averageSavedCents,
-			monthlyRate: monthlyRate(goal?.expectedYieldBp ?? DEFAULT_EXPECTED_YIELD_BP),
-		});
-	}, [reserveGoal, computedCost, liveAccounts, balances, averageSavedCents, goal]);
+	const reserve = useMemo<ReserveReadModel>(
+		() => reserveModelOf({ reserveGoal, computedCost, liveAccounts, balances, averageSavedCents, goal }),
+		[reserveGoal, computedCost, liveAccounts, balances, averageSavedCents, goal]
+	);
 
 	/**
-	 * O rendimento que o app **estimou** para as contas de reserva nos últimos 12 meses (o
-	 * acréscimo do CDI, que não é lançado no livro). Entra no "rendeu nos últimos 12 meses"
-	 * ao lado do lançado: sem ele a tela afirmava "rendeu 0% ao ano" num CDB de 120% do CDI.
+	 * O rendimento que o app **estimou** para as contas de reserva nos últimos 12 meses
+	 * (`estimatedYield12mOf`): entra no "rendeu nos últimos 12 meses" ao lado do lançado.
 	 */
-	const estimatedYield12mCents = useMemo(() => {
-		let total = 0;
-		let found = false;
-		for (const account of liveAccounts) {
-			if (account.archived || account.kind === 'credit_card' || account.role !== 'reserve') continue;
-			const cents = accruedYield12m.get(account.id);
-			if (cents === undefined) continue;
-			found = true;
-			total += cents;
-		}
-		return found ? total : null;
-	}, [liveAccounts, accruedYield12m]);
+	const estimatedYield12mCents = useMemo(() => estimatedYield12mOf(liveAccounts, accruedYield12m), [liveAccounts, accruedYield12m]);
 
-	const retirement = useMemo<RetirementReadModel | null>(() => {
-		if (!goal) return null;
-		// O rendimento observado anda para trás a partir do saldo de hoje, então só faz
-		// sentido quando a série termina no mês de hoje.
-		const history = selectedKey === todayKey ? fullSeries.slice(-12) : [];
-		const yielded = yield12m(history, history.length > 0 ? estimatedYield12mCents : null);
-		return buildRetirementReadModel({
-			goal,
-			// A cascata: só o que passa da reserva de emergência é capital da meta, e o aporte
-			// vem para a meta depois que a reserva enche.
-			trackedCapitalCents: reserve.split.investmentCents,
-			monthlyContributionCents: averageSavedCents,
-			// Nulo é "não dá para responder", e é o que vale sem lançamento e sem estimativa:
-			// antes esta linha devolvia centavos (nunca nulo) e a tela afirmava zero.
-			realizedYield12mCents: yielded.cents,
-			realizedYieldBasis: yielded.basis,
-			averageCapital12mCents: averageReserveCapitalCents(history, overview.savedCents),
-			asOfMonth: todayKey,
-			contributionDelayMonths: contributionDelayMonths(reserve),
-		});
-	}, [goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve, estimatedYield12mCents]);
+	const retirement = useMemo<RetirementReadModel | null>(
+		() =>
+			retirementModelOf({
+				goal,
+				fullSeries,
+				savedCents: overview.savedCents,
+				averageSavedCents,
+				todayKey,
+				selectedKey,
+				reserve,
+				estimatedYield12mCents,
+			}),
+		[goal, fullSeries, overview.savedCents, averageSavedCents, todayKey, selectedKey, reserve, estimatedYield12mCents]
+	);
 
 	// A fatia de custo fixo também sai do quadro do mês: a receita crua do período não vê o
 	// que a PJ transferiu para a principal, e o indicador acusava "custo fixo acima de 50% da
@@ -456,42 +289,25 @@ export const useReportsData = (range: TrendRange, goal: RetirementGoal | null, a
 	const monthlyFixedCents = metrics.monthlyFixedCents;
 	const fixedCostBp = fixedCostShare({ monthlyFixedCents, incomeCents: selected ? selected.overview.incomeCents : metrics.savingsRate.incomeCents });
 
-	const health = useMemo<HealthIndicator[]>(() => {
-		let neededSavingsRateBp: number | null = null;
-		if (retirement && goal && averageIncomeCents !== null && averageIncomeCents > 0) {
-			const needed = contributionForHorizon({
-				capitalCents: retirement.capitalCents,
-				requiredCapitalCents: retirement.requiredCapitalCents,
-				monthlyRate: monthlyRate(goal.expectedYieldBp),
-				months: NEEDED_HORIZON_MONTHS,
-				// "Reserva primeiro" também aqui: os primeiros meses vão para a reserva, então a
-				// fatia da renda que a meta pede é maior do que a conta sem atraso dizia.
-				delayMonths: retirement.contributionDelayMonths,
-			});
-			neededSavingsRateBp = needed === null ? null : Math.round((needed * FULL_BASIS_POINTS) / averageIncomeCents);
-		}
-		let limitUsagePercent: number | null = null;
-		for (const summary of cardSummaries.values()) {
-			if (summary.limitUsagePercent !== null) limitUsagePercent = Math.max(limitUsagePercent ?? 0, summary.limitUsagePercent);
-		}
-		return buildHealthIndicators({
-			savingsRateBp: selected?.overview.savingsRateBp ?? null,
-			neededSavingsRateBp,
-			liquidCents: overview.cashCents + overview.savedCents,
-			averageMonthlySpendCents: averageSpendCents,
-			fixedCostBp,
-			cardOwedCents: cardsTotals.toPayCents + cardsTotals.openInvoicesCents,
-			averageMonthlyIncomeCents: averageIncomeCents,
-			limitUsagePercent,
-			currentSpendCents: paceSpend?.currentCents ?? selected?.overview.totalSpendCents ?? 0,
-			elapsedBp: monthElapsedBp(selectedKey, todayISO()),
-			previousSpendToDate: paceSpend?.previous ?? null,
-			reserve:
-				reserve.monthlyCostCents === null
-					? null
-					: { reserveCents: reserve.split.reserveCents, monthlyCostCents: reserve.monthlyCostCents, targetMonths: reserve.targetMonths },
-		});
-	}, [retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve, paceSpend]);
+	const health = useMemo<HealthIndicator[]>(
+		() =>
+			healthOf({
+				retirement,
+				goal,
+				averageIncomeCents,
+				averageSpendCents,
+				cardSummaries,
+				selected,
+				overview,
+				fixedCostBp,
+				cardsTotals,
+				selectedKey,
+				reserve,
+				paceSpend,
+				today: todayISO(),
+			}),
+		[retirement, goal, averageIncomeCents, averageSpendCents, cardSummaries, selected, overview, fixedCostBp, cardsTotals, selectedKey, reserve, paceSpend]
+	);
 
 	const rankingCategories = useMemo(() => [...categories, cardChargesCategory(t('cards.charges.reportLine'))], [categories, t]);
 
