@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { transformJSONSchema } from '@anthropic-ai/sdk/lib/transform-json-schema';
 import { MIRAI_TOOLS, type MiraiLocale } from './contract.js';
-import type { MiraiInputBlock, MiraiInputMessage } from './request.js';
+import type { MiraiInputBlock, MiraiInputContext, MiraiInputMessage } from './request.js';
 
 /**
  * O pedido ao Claude (SPD-163, §5 e §6 da especificação).
@@ -43,6 +43,7 @@ export const MIRAI_INSTRUCTION = [
 	'',
 	'Dados',
 	'- Busque com as ferramentas antes de afirmar qualquer número, e use só o que elas devolverem. Os valores vêm em centavos: escreva-os em dinheiro, na moeda que get_rates informa. As datas vêm em AAAA-MM-DD.',
+	'- A conversa pode durar horas, e a pessoa lança coisas no app nesse meio-tempo. Em cada pergunta nova, busque de novo os números que vai citar, mesmo que já tenham aparecido antes na conversa.',
 	'- Os campos terminados em Bp são taxas em centésimos de ponto percentual: 181 = 1,81% e 2400 = 24%. Use a taxa ao mês (rateMonthBp) e a taxa ao ano (rateYearBp) como vêm, sem converter uma na outra.',
 	'- Contas a pagar: para "quanto falta pagar" de um mês, peça o mês inteiro em get_bills; as em atraso também entram no que falta.',
 	'- Compras parceladas: diga quantas parcelas faltam pagar e o total, separando a que já está na fatura aberta, ainda não paga, das que vão entrar nas próximas faturas.',
@@ -89,11 +90,12 @@ export const MIRAI_API_TOOLS: Anthropic.Messages.Tool[] = MIRAI_TOOLS.map((tool)
 	strict: true,
 }));
 
-/** O texto da mensagem de sistema de contexto. Nenhum dado do usuário entra aqui. */
+/** O texto da mensagem de sistema de contexto. O nome é o apelido que a pessoa escolheu. */
 export const appContextText = (
 	locale: MiraiLocale,
 	screen: string | null,
-	today: string | null = null
+	today: string | null = null,
+	_name: string | null = null
 ): string =>
 	`Contexto do app (não é pergunta da pessoa): idioma ${locale}; tela ${screen ?? 'não informada'}${
 		today ? `; hoje é ${today}` : ''
@@ -126,6 +128,11 @@ const hasQuestionText = (message: MiraiInputMessage): boolean =>
  * As mensagens do aparelho, com a mensagem de sistema de contexto (idioma e tela) depois de
  * cada pergunta.
  *
+ * Com `contexts` (SPD-171), cada sequência usa o contexto da pergunta a que pertence: o de
+ * maior `at` até ela. A conversa dura a sessão do app, e a pessoa pode perguntar de outra tela
+ * ou noutro dia; as mensagens de contexto das perguntas antigas continuam as mesmas. Sem um
+ * contexto que alcance a sequência, valem o idioma, a tela e a data de cima.
+ *
  * "Pergunta" é uma sequência de mensagens do usuário com algum texto — uma sequência só de
  * `tool_result` é resposta de ferramenta, não pergunta. A API aceita a mensagem de sistema
  * depois de uma do usuário, desde que venha a resposta do assistente ou nada depois dela:
@@ -142,11 +149,19 @@ export const withAppContext = (
 	messages: MiraiInputMessage[],
 	locale: MiraiLocale,
 	screen: string | null,
-	today: string | null = null
+	today: string | null = null,
+	contexts: MiraiInputContext[] = []
 ): Anthropic.Messages.MessageParam[] => {
-	const context: Anthropic.Messages.MessageParam = {
+	const fallback: Anthropic.Messages.MessageParam = {
 		role: 'system',
 		content: appContextText(locale, screen, today),
+	};
+	const contextAt = (index: number): Anthropic.Messages.MessageParam => {
+		let found: MiraiInputContext | undefined;
+		for (const context of contexts) if (context.at <= index) found = context;
+		return found
+			? { role: 'system', content: appContextText(found.locale, found.screen, found.today, found.name ?? null) }
+			: fallback;
 	};
 	const result: Anthropic.Messages.MessageParam[] = [];
 	let questionOpen = false;
@@ -161,7 +176,7 @@ export const withAppContext = (
 		if (message.role === 'user' && hasQuestionText(message)) questionOpen = true;
 		const runEnds = message.role === 'user' && messages[index + 1]?.role !== 'user';
 		if (runEnds && questionOpen) {
-			result.push(context);
+			result.push(contextAt(index));
 			questionOpen = false;
 		}
 		if (message.role === 'assistant') questionOpen = false;
@@ -193,6 +208,7 @@ export const buildMiraiRequest = (
 		locale: MiraiLocale;
 		screen: string | null;
 		today?: string | null;
+		contexts?: MiraiInputContext[] | undefined;
 	}
 ): MiraiRequest => ({
 	model: config.model,
@@ -210,5 +226,11 @@ export const buildMiraiRequest = (
 		},
 	],
 	cache_control: { type: 'ephemeral' },
-	messages: withAppContext(input.messages, input.locale, input.screen, input.today ?? null),
+	messages: withAppContext(
+		input.messages,
+		input.locale,
+		input.screen,
+		input.today ?? null,
+		input.contexts ?? []
+	),
 });

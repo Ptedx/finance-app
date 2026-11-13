@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isMiraiToolName, type MiraiLocale } from './contract.js';
+import { isMiraiToolName, MIRAI_NAME_MAX_LENGTH, type MiraiLocale } from './contract.js';
 
 /**
  * O corpo de `POST /api/assistant/turn` (contrato §Rotas), validado.
@@ -13,7 +13,9 @@ import { isMiraiToolName, type MiraiLocale } from './contract.js';
  *  - `tool_use` só com ferramenta da lista, e `tool_result` só para um `tool_use` que veio
  *    antes na conversa;
  *  - a conversa começa e termina com o usuário: o Claude responde à última mensagem;
- *  - `screen` é um nome de tela, não texto livre: ele vai para a mensagem de sistema.
+ *  - `screen` é um nome de tela, não texto livre: ele vai para a mensagem de sistema;
+ *  - `contexts` (SPD-171) traz um contexto por pergunta, com `at` crescente e apontando para
+ *    uma mensagem do usuário; o apelido (SPD-163e) chega sem quebra de linha nem controle.
  *
  * O bloco `redacted_thinking` (do contrato) é o que o Claude pode devolver no lugar de um
  * `thinking`; ele precisa voltar no histórico como veio.
@@ -86,16 +88,43 @@ const message = z.object({
 	]),
 });
 
+const DAY = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+/**
+ * O apelido vai para a mensagem de sistema: sem caractere de controle (quebra de linha
+ * inclusive), aspas nem barra, com os espaços juntados. Vazio depois disso vira ausente.
+ */
+export const cleanName = (value: string): string | undefined => {
+	const clean = value
+		.replace(/[\u0000-\u001f\u007f-\u009f"\\]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, MIRAI_NAME_MAX_LENGTH)
+		.trim();
+	return clean.length > 0 ? clean : undefined;
+};
+
+const questionContext = z.object({
+	at: z.number().int().min(0).max(MIRAI_LIMITS.maxMessages - 1),
+	screen: z.string().regex(SCREEN).nullable(),
+	locale: z.enum(['pt', 'en', 'it']),
+	today: z.string().regex(DAY),
+	// Folga para a limpeza: o teto vale depois dela.
+	name: z
+		.string()
+		.max(MIRAI_NAME_MAX_LENGTH * 4)
+		.optional()
+		.transform((value) => (value === undefined ? undefined : cleanName(value))),
+});
+
 const turnRequest = z.object({
 	conversationId: z.string().regex(UUID),
 	questionId: z.string().regex(UUID),
 	messages: z.array(message).min(1).max(MIRAI_LIMITS.maxMessages),
 	screen: z.string().regex(SCREEN).nullable(),
 	locale: z.enum(['pt', 'en', 'it']),
-	today: z
-		.string()
-		.regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/)
-		.optional(),
+	today: z.string().regex(DAY).optional(),
+	contexts: z.array(questionContext).max(MIRAI_LIMITS.maxMessages).optional(),
 });
 
 export type MiraiInputBlock = z.infer<typeof block>;
@@ -108,7 +137,10 @@ export interface MiraiTurnInput {
 	screen: string | null;
 	locale: MiraiLocale;
 	today?: string | undefined;
+	contexts?: MiraiInputContext[] | undefined;
 }
+
+export type MiraiInputContext = z.infer<typeof questionContext>;
 
 const USER_BLOCKS = new Set(['text', 'tool_result']);
 const ASSISTANT_BLOCKS = new Set(['text', 'tool_use', 'thinking', 'redacted_thinking']);
@@ -138,9 +170,18 @@ const isCoherent = (messages: MiraiInputMessage[]): boolean => {
 	return true;
 };
 
+/** Cada contexto aponta para uma mensagem do usuário, em ordem estritamente crescente. */
+const contextsFit = (contexts: MiraiInputContext[], messages: MiraiInputMessage[]): boolean =>
+	contexts.every(
+		(context, index) =>
+			messages[context.at]?.role === 'user' && (index === 0 || context.at > (contexts[index - 1]?.at ?? -1))
+	);
+
 /** O corpo validado, ou `null` (400 `bad_request`). Nada do corpo vai para a resposta. */
 export const parseTurnRequest = (body: unknown): MiraiTurnInput | null => {
 	const parsed = turnRequest.safeParse(body);
 	if (!parsed.success || !isCoherent(parsed.data.messages)) return null;
+	const { messages, contexts } = parsed.data;
+	if (contexts && !contextsFit(contexts, messages)) return null;
 	return parsed.data;
 };

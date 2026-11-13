@@ -185,6 +185,8 @@ describe('a instrução fixa', () => {
 		expect(MIRAI_INSTRUCTION).toMatch(/mexe na Reserva, busque get_reserve_and_goals/);
 		// SPD-170: a ordem de "Por onde começar" vale em toda recomendação.
 		expect(MIRAI_INSTRUCTION).toMatch(/reserva mínima, dívidas caras, reserva cheia, aposentadoria/);
+		// SPD-171: a conversa dura a sessão; os números de antes podem ter mudado.
+		expect(MIRAI_INSTRUCTION).toMatch(/Em cada pergunta nova, busque de novo os números/);
 	});
 });
 
@@ -296,6 +298,63 @@ describe('a mensagem de contexto (tela e idioma)', () => {
 		expect(appContextText('pt', null)).toBe(
 			'Contexto do app (não é pergunta da pessoa): idioma pt; tela não informada.'
 		);
+	});
+
+	it('com contexts, cada pergunta leva o seu; a pergunta nova de outra tela não muda o que já foi (SPD-171)', () => {
+		const first = { at: 0, screen: 'cards', locale: 'pt' as const, today: '2026-11-13' };
+		const second = { at: 4, screen: 'goals', locale: 'pt' as const, today: '2026-11-14' };
+		const history = [
+			question('Posso pagar a fatura?'),
+			toolUse('toolu_1'),
+			toolResult('toolu_1'),
+			answer('Pode.'),
+		];
+		const before = withAppContext([...history.slice(0, 3)], 'pt', 'cards', '2026-11-13', [first]);
+		const after = withAppContext([...history, question('E a meta?')], 'pt', 'goals', '2026-11-14', [
+			first,
+			second,
+		]);
+
+		expect(after.slice(0, before.length)).toEqual(before);
+		expect(after[1]).toEqual({ role: 'system', content: appContextText('pt', 'cards', '2026-11-13') });
+		expect(after[after.length - 1]).toEqual({
+			role: 'system',
+			content: appContextText('pt', 'goals', '2026-11-14'),
+		});
+	});
+
+	it('com contexts, o pedido da última rodada usa o contexto da pergunta dele', () => {
+		const messages = withAppContext(
+			[
+				question('Quanto tenho?'),
+				toolUse('toolu_1'),
+				toolResult('toolu_1'),
+				{ role: 'user', content: [{ type: 'text', text: 'Responda com o que já tem.' }] },
+			],
+			'en',
+			'home',
+			'2026-11-20',
+			[{ at: 0, screen: 'cards', locale: 'pt', today: '2026-11-13' }]
+		);
+
+		const contexts = messages.filter((message) => message.role === 'system');
+		expect(contexts).toEqual([
+			{ role: 'system', content: appContextText('pt', 'cards', '2026-11-13') },
+			{ role: 'system', content: appContextText('pt', 'cards', '2026-11-13') },
+		]);
+	});
+
+	it('sem contexto que alcance a pergunta, valem o idioma, a tela e a data de cima', () => {
+		const messages = withAppContext(
+			[question('Oi'), answer('Olá.'), question('E agora?')],
+			'it',
+			'home',
+			'2026-11-13',
+			[{ at: 2, screen: 'cards', locale: 'pt', today: '2026-11-14' }]
+		);
+
+		expect(messages[1]).toEqual({ role: 'system', content: appContextText('it', 'home', '2026-11-13') });
+		expect(messages[4]).toEqual({ role: 'system', content: appContextText('pt', 'cards', '2026-11-14') });
 	});
 
 	it('os blocos thinking passam como vieram', () => {

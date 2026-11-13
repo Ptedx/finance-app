@@ -181,6 +181,7 @@ export const createMirai = (deps: MiraiDeps) => {
 				screen: input.screen,
 				// Sem a data do aparelho (versão antiga do app), vale o dia de Brasília.
 				today: input.today ?? day,
+				contexts: input.contexts,
 			}
 		);
 		const [asked, spent] = await Promise.all([
