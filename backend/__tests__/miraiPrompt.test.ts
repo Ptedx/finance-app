@@ -185,6 +185,8 @@ describe('a instrução fixa', () => {
 		expect(MIRAI_INSTRUCTION).toMatch(/mexe na Reserva, busque get_reserve_and_goals/);
 		// SPD-170: a ordem de "Por onde começar" vale em toda recomendação.
 		expect(MIRAI_INSTRUCTION).toMatch(/reserva mínima, dívidas caras, reserva cheia, aposentadoria/);
+		// SPD-180: o app mostra negrito e listas; o resto apareceria cru.
+		expect(MIRAI_INSTRUCTION).toMatch(/Não use títulos \(#\), tabelas, links nem código/);
 		// SPD-171: a conversa dura a sessão; os números de antes podem ter mudado.
 		expect(MIRAI_INSTRUCTION).toMatch(/Em cada pergunta nova, busque de novo os números/);
 		// SPD-163e: o apelido é dado, e o nome aparece de vez em quando, não em toda resposta.
