@@ -158,6 +158,27 @@ export type MiraiMessage = { role: 'user' | 'assistant'; content: string | Mirai
  * ciclo. `conversationId` é um uuid gerado pelo app por conversa; `questionId` muda a cada
  * pergunta nova (é por ele que se contam as perguntas do dia e as rodadas).
  */
+/** Teto do apelido (SPD-163e). O servidor também tira quebra de linha e caractere de controle. */
+export const MIRAI_NAME_MAX_LENGTH = 40;
+
+/**
+ * O contexto de uma pergunta (SPD-171): de onde e quando ela foi feita, em que idioma e como a
+ * pessoa quer ser chamada. A conversa dura a sessão inteira do app, e a pessoa pode perguntar de
+ * outra tela, em outro dia ou depois de trocar o idioma: cada pergunta leva o seu, e o servidor
+ * remonta a mensagem de contexto de cada uma com o dela. Assim o histórico já enviado não muda
+ * (o cache e o raciocínio das respostas anteriores continuam valendo).
+ */
+export interface MiraiQuestionContext {
+	/** O índice, em `messages`, da mensagem com a pergunta. */
+	at: number;
+	screen: string | null;
+	locale: MiraiLocale;
+	/** `YYYY-MM-DD` no aparelho, no momento da pergunta. */
+	today: string;
+	/** Como a pessoa quer ser chamada (SPD-163e), até `MIRAI_NAME_MAX_LENGTH`; ausente se não disse. */
+	name?: string;
+}
+
 export interface MiraiTurnRequest {
 	conversationId: string;
 	questionId: string;
@@ -170,6 +191,11 @@ export interface MiraiTurnRequest {
 	 * Opcional para o servidor aceitar versões do app sem o campo; sem ela, vale o dia de Brasília.
 	 */
 	today?: string;
+	/**
+	 * Um contexto por pergunta, em ordem de `at` (SPD-171). Opcional: sem ele (app 1.2.9), toda
+	 * pergunta usa `screen`, `locale` e `today` de cima.
+	 */
+	contexts?: MiraiQuestionContext[];
 }
 
 export interface MiraiTurnResponse {

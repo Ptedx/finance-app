@@ -21,6 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CurrencySelector from '../components/CurrencySelector';
 import LanguageSelector from '../components/LanguageSelector';
+import MiraiNameDialog from '../components/mirai/MiraiNameDialog';
 import OwnNameSheet from '../components/OwnNameSheet';
 import HelpButton from '../components/tour/HelpButton';
 import { TourTarget, useScreenTour, useTourScroll } from '../components/tour/TourContext';
@@ -204,6 +205,7 @@ const SettingsScreen = () => {
 	const [notifications, setNotifications] = useState(true);
 	const [showCurrencySelector, setShowCurrencySelector] = useState(false);
 	const [showLanguageSelector, setShowLanguageSelector] = useState(false);
+	const [showMiraiName, setShowMiraiName] = useState(false);
 	const [isResetting, setIsResetting] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
@@ -605,6 +607,19 @@ const SettingsScreen = () => {
 								/>
 							)
 						: null}
+					{/* Como o Mirai chama a pessoa (SPD-163e): só no aparelho; vazio é "sem nome". */}
+					{mirai?.enabled && mirai.choice === 'on'
+						? renderSettingsItem(
+								'happy-outline',
+								t('mirai.nameSetting.label'),
+								() => setShowMiraiName(true),
+								<View style={styles.currencyValue}>
+									<Text style={styles.currencyCode} testID="settings-mirai-name">
+										{mirai.name ?? t('mirai.nameSetting.none')}
+									</Text>
+								</View>
+							)
+						: null}
 				</View>
 
 				{/* Security */}
@@ -735,6 +750,15 @@ const SettingsScreen = () => {
 				isVisible={showCurrencySelector}
 				onClose={() => setShowCurrencySelector(false)}
 			/>
+			{mirai ? (
+				<MiraiNameDialog
+					visible={showMiraiName}
+					current={mirai.name}
+					suggested={mirai.suggestedName}
+					onSave={mirai.saveName}
+					onClose={() => setShowMiraiName(false)}
+				/>
+			) : null}
 			<LanguageSelector
 				isVisible={showLanguageSelector}
 				onClose={() => setShowLanguageSelector(false)}

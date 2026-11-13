@@ -13,7 +13,7 @@
 
 const mockStorage = new Map<string, string>();
 const mockPath = { value: '/' };
-const mockAccount: { value: { id: string } | null } = { value: { id: 'usuario-1' } };
+const mockAccount: { value: { id: string; name?: string } | null } = { value: { id: 'usuario-1' } };
 const mockPush = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -86,6 +86,7 @@ import type {
 	MiraiTurnResponse,
 } from '../../../utils/mirai/contract';
 import type { MiraiTransport } from '../../../utils/mirai/loop';
+import { conversationSizeOf, MIRAI_FULL_HISTORY_CHARS } from '../../../contexts/MiraiProvider';
 import { MIRAI_STORAGE_KEYS } from '../../../utils/mirai/preferences';
 import { executeMiraiTool } from '../../../utils/mirai/tools';
 import { GuideOpenContext } from '../../tour/TourContext';
@@ -370,12 +371,16 @@ describe('a ativação (D6)', () => {
 describe('a conversa', () => {
 	beforeEach(() => {
 		mockStorage.set(MIRAI_STORAGE_KEYS.choice, 'on');
+		// A pergunta do nome já foi respondida com "Agora não": os testes do nome ficam abaixo.
+		mockStorage.set(MIRAI_STORAGE_KEYS.name, JSON.stringify({ 'usuario-1': null }));
 	});
 
-	it('vazia: aviso fixo de IA, 3 sugestões e "Limpar conversa"', async () => {
+	it('vazia: aviso fixo de IA, cumprimento, 3 sugestões e "Nova conversa"', async () => {
 		await render(fakeServer(ENABLED).transport);
 		await press('mirai-button');
-		expect(texts()).toEqual(expect.arrayContaining(['mirai.chat.disclaimer', 'mirai.chat.clear']));
+		expect(texts()).toEqual(
+			expect.arrayContaining(['mirai.chat.disclaimer', 'mirai.chat.clear', 'mirai.chat.greeting'])
+		);
 		expect(['1', '2', '3'].every((key) => exists(`mirai-suggestion-${key}`))).toBe(true);
 	});
 
@@ -418,7 +423,9 @@ describe('a conversa', () => {
 		await render(transport);
 		await press('mirai-button');
 		await press('mirai-suggestion-1');
-		expect(requests[0].messages).toEqual([{ role: 'user', content: 'mirai.suggestions.1' }]);
+		expect(requests[0].messages).toEqual([
+			{ role: 'user', content: 'mirai.suggestions.default.1' },
+		]);
 		// Sem marca de tom, a expressão é normal.
 		expect(exists('mirai-entry-avatar-normal')).toBe(true);
 	});
@@ -485,25 +492,242 @@ describe('a conversa', () => {
 		expect(requests[1].conversationId).not.toBe(requests[0].conversationId);
 	});
 
-	it('fechar (o voltar) apaga a conversa', async () => {
-		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi.')], 'end_turn')]);
-		await render(transport);
-		await press('mirai-button');
-		await type('Primeira');
-		await press('mirai-chat-send');
-
+	const closeSheet = async () => {
 		// O voltar do Android chega como o onRequestClose da folha.
 		const sheet = root().findAll(
 			(node) => typeof node.props.onRequestClose === 'function' && node.props.visible === true
 		)[0];
 		await act(async () => sheet.props.onRequestClose());
 		await flush();
+	};
+
+	it('fechar (o voltar) só esconde: ao reabrir, a conversa continua com o histórico (SPD-171)', async () => {
+		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi.')], 'end_turn')]);
+		await render(transport);
+		await press('mirai-button');
+		await type('Primeira');
+		await press('mirai-chat-send');
+
+		await closeSheet();
 		expect(exists('mirai-chat')).toBe(false);
 
 		await press('mirai-button');
-		expect(texts()).not.toContain('Oi.');
+		expect(texts()).toContain('Oi.');
 		await type('De novo');
 		await press('mirai-chat-send');
-		expect(requests[1].messages).toEqual([{ role: 'user', content: 'De novo' }]);
+		expect(requests[1].messages).toEqual([
+			{ role: 'user', content: 'Primeira' },
+			{ role: 'assistant', content: [text('Oi.')] },
+			{ role: 'user', content: 'De novo' },
+		]);
+		expect(requests[1].conversationId).toBe(requests[0].conversationId);
+		expect(requests[1].contexts?.map((context) => context.at)).toEqual([0, 2]);
+	});
+
+	it('a pergunta em andamento continua com a folha fechada, e a resposta aparece ao reabrir', async () => {
+		let answer: (value: MiraiTurnResponse) => void = () => undefined;
+		const { transport } = fakeServer(ENABLED, [
+			() =>
+				new Promise<MiraiTurnResponse>((resolve) => {
+					answer = resolve;
+				}),
+		]);
+		await render(transport);
+		await press('mirai-button');
+		await type('Quanto tenho?');
+		await press('mirai-chat-send');
+		await closeSheet();
+
+		await act(async () => answer(reply([text('R$ 100,00.')], 'end_turn')));
+		await flush();
+		await press('mirai-button');
+		expect(texts()).toContain('R$ 100,00.');
+	});
+
+	it('trocar de conta (ou perder o login) apaga a conversa', async () => {
+		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi.')], 'end_turn')]);
+		await render(transport);
+		await press('mirai-button');
+		await type('Primeira');
+		await press('mirai-chat-send');
+		expect(texts()).toContain('Oi.');
+
+		mockAccount.value = { id: 'usuario-2' };
+		mockStorage.set(
+			MIRAI_STORAGE_KEYS.name,
+			JSON.stringify({ 'usuario-1': null, 'usuario-2': null })
+		);
+		await act(async () => {
+			renderer?.update(
+				<GuideOpenContext.Provider value={false}>
+					<MiraiProvider transport={transport} newId={newId}>
+						<MiraiLayer />
+						<Probe />
+					</MiraiProvider>
+				</GuideOpenContext.Provider>
+			);
+		});
+		await flush();
+		expect(probe.value?.entries).toEqual([]);
+
+		await act(async () => probe.value?.ask('Segunda'));
+		await flush();
+		expect(requests[1].messages).toEqual([{ role: 'user', content: 'Segunda' }]);
+		mockAccount.value = { id: 'usuario-1' };
+	});
+
+	it('"Parar" abandona a pergunta: o texto volta ao campo e a resposta que chega depois não entra (SPD-172)', async () => {
+		let answer: (value: MiraiTurnResponse) => void = () => undefined;
+		const { transport, requests } = fakeServer(ENABLED, [
+			() =>
+				new Promise<MiraiTurnResponse>((resolve) => {
+					answer = resolve;
+				}),
+			reply([text('Agora sim.')], 'end_turn'),
+		]);
+		await render(transport);
+		await press('mirai-button');
+		await type('Quanto tenho?');
+		await press('mirai-chat-send');
+		expect(exists('mirai-chat-stop')).toBe(true);
+
+		await press('mirai-chat-stop');
+		expect(exists('mirai-chat-progress')).toBe(false);
+		expect(exists('mirai-entry-user')).toBe(false);
+		expect(textInput().props.value).toBe('Quanto tenho?');
+
+		await act(async () => answer(reply([text('Atrasada.')], 'end_turn')));
+		await flush();
+		expect(texts()).not.toContain('Atrasada.');
+
+		await press('mirai-chat-send');
+		expect(requests[1].messages).toEqual([{ role: 'user', content: 'Quanto tenho?' }]);
+		expect(texts()).toContain('Agora sim.');
+	});
+
+	it('"Tentar de novo" num erro do servidor manda a mesma pergunta (SPD-172)', async () => {
+		const { transport, requests } = fakeServer(ENABLED, [
+			new ApiError(503, 'Fora.', 'unavailable'),
+			reply([text('Pronto.')], 'end_turn'),
+		]);
+		await render(transport);
+		await press('mirai-button');
+		await type('Dá para pagar a fatura?');
+		await press('mirai-chat-send');
+		expect(exists('mirai-entry-retry')).toBe(true);
+
+		await press('mirai-entry-retry');
+		expect(requests[1].messages).toEqual([{ role: 'user', content: 'Dá para pagar a fatura?' }]);
+		expect(texts()).toContain('Pronto.');
+		expect(exists('mirai-entry-error')).toBe(false);
+	});
+
+	it('o limite do dia não oferece "Tentar de novo"', async () => {
+		await render(fakeServer(ENABLED, [new ApiError(429, 'Fim.', 'daily_limit')]).transport);
+		await press('mirai-button');
+		await type('Oi');
+		await press('mirai-chat-send');
+		expect(exists('mirai-entry-retry')).toBe(false);
+	});
+
+	it('com 3 perguntas ou menos no dia, avisa quantas restam (SPD-174)', async () => {
+		const { transport } = fakeServer({ enabled: true, remainingToday: 5 }, [
+			{ content: [text('Oi.')], stopReason: 'end_turn', remainingToday: 3 },
+		]);
+		await render(transport);
+		await press('mirai-button');
+		expect(exists('mirai-chat-remaining')).toBe(false);
+		await type('Oi');
+		await press('mirai-chat-send');
+		expect(exists('mirai-chat-remaining')).toBe(true);
+		expect(texts()).toContain('mirai.chat.remaining');
+	});
+
+	it('as sugestões mudam com a tela de onde a conversa abriu (SPD-173)', async () => {
+		mockPath.value = '/cards';
+		await render(fakeServer(ENABLED).transport);
+		await press('mirai-button');
+		expect(texts()).toContain('mirai.suggestions.cards.1');
+		mockPath.value = '/';
+	});
+
+	it('resposta cortada pelo teto de saída mostra o aviso e a cara neutra (SPD-169)', async () => {
+		await render(
+			fakeServer(ENABLED, [reply([text('Primeiro, a fatura. Depois')], 'max_tokens')]).transport
+		);
+		await press('mirai-button');
+		await type('Me explica tudo');
+		await press('mirai-chat-send');
+		expect(texts()).toContain('Primeiro, a fatura. Depois');
+		expect(exists('mirai-entry-cut')).toBe(true);
+		expect(exists('mirai-entry-avatar-normal')).toBe(true);
+	});
+
+	it('o tamanho da conversa: longa a partir de 10 perguntas, cheia em 20 ou com o histórico pesado', () => {
+		expect(conversationSizeOf(9, 1000)).toBe('ok');
+		expect(conversationSizeOf(10, 1000)).toBe('long');
+		expect(conversationSizeOf(20, 1000)).toBe('full');
+		expect(conversationSizeOf(3, MIRAI_FULL_HISTORY_CHARS)).toBe('full');
+	});
+});
+
+describe('o nome (SPD-163e)', () => {
+	beforeEach(() => {
+		mockStorage.set(MIRAI_STORAGE_KEYS.choice, 'on');
+		mockAccount.value = { id: 'usuario-1', name: 'Vinicius Costa' };
+	});
+	afterEach(() => {
+		mockAccount.value = { id: 'usuario-1' };
+	});
+
+	it('na primeira conversa o app pergunta, com o primeiro nome da conta no campo, sem chamar a API', async () => {
+		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi, Vini.')], 'end_turn')]);
+		await render(transport);
+		await press('mirai-button');
+		expect(exists('mirai-name-prompt')).toBe(true);
+		expect(exists('mirai-suggestion-1')).toBe(false);
+		const input = byId('mirai-name-input').find((node) => (node.type as unknown) === TextInput);
+		expect(input?.props.value).toBe('Vinicius');
+		expect(requests).toHaveLength(0);
+
+		await act(async () => input?.props.onChangeText('Vini'));
+		await press('mirai-name-save');
+		expect(exists('mirai-name-prompt')).toBe(false);
+		expect(texts()).toContain('mirai.chat.greetingNamed');
+		expect(JSON.parse(mockStorage.get(MIRAI_STORAGE_KEYS.name) ?? '{}')).toEqual({
+			'usuario-1': 'Vini',
+		});
+
+		await press('mirai-suggestion-1');
+		expect(requests[0].contexts?.[0]).toMatchObject({ at: 0, name: 'Vini' });
+	});
+
+	it('"Agora não" grava a resposta: a pergunta não volta e o Mirai fala sem nome', async () => {
+		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi.')], 'end_turn')]);
+		await render(transport);
+		await press('mirai-button');
+		await press('mirai-name-skip');
+		expect(exists('mirai-name-prompt')).toBe(false);
+		expect(texts()).toContain('mirai.chat.greeting');
+		expect(JSON.parse(mockStorage.get(MIRAI_STORAGE_KEYS.name) ?? '{}')).toEqual({
+			'usuario-1': null,
+		});
+
+		await press('mirai-suggestion-1');
+		expect(requests[0].contexts?.[0]).not.toHaveProperty('name');
+	});
+
+	it('o nome salvo de outra vez vale sem perguntar, e é de cada conta', async () => {
+		mockStorage.set(
+			MIRAI_STORAGE_KEYS.name,
+			JSON.stringify({ 'usuario-1': 'Vini', 'usuario-2': 'Ana' })
+		);
+		const { transport, requests } = fakeServer(ENABLED, [reply([text('Oi.')], 'end_turn')]);
+		await render(transport);
+		await press('mirai-button');
+		expect(exists('mirai-name-prompt')).toBe(false);
+		expect(probe.value?.name).toBe('Vini');
+		await press('mirai-suggestion-1');
+		expect(requests[0].contexts?.[0]).toMatchObject({ name: 'Vini' });
 	});
 });

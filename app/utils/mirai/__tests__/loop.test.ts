@@ -139,6 +139,8 @@ describe('askMirai: o ciclo', () => {
 			locale: 'pt',
 			// A data do aparelho: o Mirai entende "este mês" a partir dela.
 			today: todayISO(),
+			// O contexto desta pergunta, guardado com ela (SPD-171).
+			contexts: [{ at: 0, screen: 'home', locale: 'pt', today: todayISO() }],
 		});
 		expect(runTool).toHaveBeenCalledWith('get_month_overview', { month: '2026-11' });
 		expect(requests[1].questionId).toBe('id-1');
@@ -155,6 +157,7 @@ describe('askMirai: o ciclo', () => {
 			expression: 'worried',
 			refused: false,
 			incomplete: false,
+			cut: false,
 		});
 		expect(result.remainingToday).toBe(41);
 		// A resposta final entra no histórico como veio, com a marca: é o que o modelo escreveu.
@@ -293,6 +296,7 @@ describe('askMirai: o ciclo', () => {
 			expression: 'normal',
 			refused: false,
 			incomplete: false,
+			cut: false,
 		});
 		expect(everyToolUseAnswered(result.history)).toBe(true);
 	});
@@ -326,9 +330,83 @@ describe('askMirai: o ciclo', () => {
 			expression: 'normal',
 			refused: true,
 			incomplete: false,
+			cut: false,
 		});
 		expect(result.history).toEqual(history);
 		expect(result.remainingToday).toBe(12);
+	});
+
+	it('cada pergunta leva o seu contexto; a recusada não deixa o dela (SPD-171)', async () => {
+		const { transport, requests } = fakeServer([
+			reply([text('Oi. [tom: neutro]')], 'end_turn'),
+			reply([], 'refusal'),
+			reply([text('Tudo certo. [tom: neutro]')], 'end_turn'),
+		]);
+
+		const first = await askMirai(input(transport, { question: 'Primeira', screen: 'cards' }));
+		const refused = await askMirai(
+			input(transport, {
+				question: 'Compro a ação X?',
+				history: first.history,
+				contexts: first.contexts,
+			})
+		);
+		const third = await askMirai(
+			input(transport, {
+				question: 'Terceira',
+				screen: 'bills',
+				locale: 'en',
+				history: refused.history,
+				contexts: refused.contexts,
+				name: 'Vini',
+			})
+		);
+
+		expect(refused.contexts).toEqual(first.contexts);
+		expect(requests[2].contexts).toEqual([
+			{ at: 0, screen: 'cards', locale: 'pt', today: todayISO() },
+			{ at: 2, screen: 'bills', locale: 'en', today: todayISO(), name: 'Vini' },
+		]);
+		expect(third.contexts).toEqual(requests[2].contexts);
+		expect(requests[2].messages[2]).toEqual({ role: 'user', content: 'Terceira' });
+	});
+
+	it('sem nome, o contexto vai sem o campo', async () => {
+		const { transport, requests } = fakeServer([reply([text('Oi. [tom: neutro]')], 'end_turn')]);
+
+		await askMirai(input(transport, { name: null }));
+
+		expect(requests[0].contexts?.[0]).not.toHaveProperty('name');
+	});
+
+	it('cortada pelo teto de saída: o texto que saiu, sem marca, com o aviso; no histórico só o texto (SPD-169)', async () => {
+		const { transport } = fakeServer([
+			reply(
+				[
+					thinking,
+					text('Primeiro, a fatura: R$ 1.200. Depois, as contas'),
+					toolUse('tu-x', 'get_bills'),
+				],
+				'max_tokens',
+				9
+			),
+		]);
+
+		const result = await askMirai(input(transport));
+
+		expect(result.answer).toEqual({
+			text: 'Primeiro, a fatura: R$ 1.200. Depois, as contas',
+			expression: 'normal',
+			refused: false,
+			incomplete: false,
+			cut: true,
+		});
+		expect(result.history[result.history.length - 1]).toEqual({
+			role: 'assistant',
+			content: [text('Primeiro, a fatura: R$ 1.200. Depois, as contas')],
+		});
+		expect(everyToolUseAnswered(result.history)).toBe(true);
+		expect(result.remainingToday).toBe(9);
 	});
 
 	it('não mexe no histórico de quem chamou', async () => {

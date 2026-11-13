@@ -92,6 +92,7 @@ import {
 	TRANSACTION_V7_COLUMNS,
 } from './schema';
 import { KNOWN_WIPE_AT_KEY, type SyncChanges } from '../sync/types';
+import { MIRAI_STORAGE_KEYS } from '../utils/mirai/preferences';
 
 /**
  * O único handle do banco. Exportado para módulos irmãos (`captures.ts`) que têm suas
@@ -5162,6 +5163,8 @@ const ACCOUNT_TIED_PREFERENCE_KEYS = [
 	STORAGE_KEYS.distinctAccountPairs,
 	STORAGE_KEYS.businessFeeds,
 	STORAGE_KEYS.captureChoices,
+	// Como o Mirai chama a pessoa (SPD-163e): é dado dela, sai com o resto.
+	MIRAI_STORAGE_KEYS.name,
 ];
 
 export interface LocalWipeOptions {

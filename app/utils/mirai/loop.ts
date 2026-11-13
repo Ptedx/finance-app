@@ -8,6 +8,7 @@ import {
 	type MiraiExpression,
 	type MiraiLocale,
 	type MiraiMessage,
+	type MiraiQuestionContext,
 	type MiraiStatusResponse,
 	type MiraiToolName,
 	type MiraiTurnRequest,
@@ -95,6 +96,8 @@ export interface MiraiAnswer {
 	refused: boolean;
 	/** O ciclo bateu no teto e a última resposta ainda pedia ferramenta. */
 	incomplete: boolean;
+	/** A resposta bateu no teto de saída e saiu cortada (SPD-169): a tela avisa no fim. */
+	cut: boolean;
 }
 
 export interface MiraiQuestionInput {
@@ -110,13 +113,22 @@ export interface MiraiQuestionInput {
 	runTool?: (name: MiraiToolName, input: unknown) => Promise<string>;
 	/** Avisa a tela de qual ferramenta está rodando agora ("consultando seus lançamentos…"). */
 	onTool?: (name: MiraiToolName) => void;
-	/** A pergunta foi abandonada (a conversa fechou): para antes do próximo POST. */
+	/** A pergunta foi abandonada ("Parar" ou "Nova conversa"): para antes do próximo POST. */
 	isCancelled?: () => boolean;
+	/**
+	 * Os contextos das perguntas anteriores, como o resultado da última devolveu (SPD-171). O desta
+	 * pergunta entra no fim, com a tela, o idioma, a data de agora e o apelido.
+	 */
+	contexts?: MiraiQuestionContext[];
+	/** Como a pessoa quer ser chamada (SPD-163e), ou nulo. */
+	name?: string | null;
 }
 
 export interface MiraiQuestionResult {
 	/** O histórico novo, com a pergunta, as rodadas e a resposta. */
 	history: MiraiMessage[];
+	/** Os contextos que acompanham `history`: um por pergunta que ficou nele. */
+	contexts: MiraiQuestionContext[];
 	answer: MiraiAnswer;
 	remainingToday: number;
 }
@@ -176,6 +188,16 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 	const runTool = input.runTool ?? executeMiraiTool;
 	const questionId = input.newId();
 	const messages: MiraiMessage[] = [...input.history, { role: 'user', content: input.question }];
+	const previousContexts = input.contexts ?? [];
+	const today = todayISO();
+	const context: MiraiQuestionContext = {
+		at: input.history.length,
+		screen: input.screen,
+		locale: input.locale,
+		today,
+		...(input.name ? { name: input.name } : {}),
+	};
+	const contexts = [...previousContexts, context];
 
 	const post = async (): Promise<MiraiTurnResponse> => {
 		if (input.isCancelled?.()) throw new MiraiError('unknown');
@@ -186,7 +208,8 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 				messages,
 				screen: input.screen,
 				locale: input.locale,
-				today: todayISO(),
+				today,
+				contexts,
 			});
 		} catch (error) {
 			throw new MiraiError(failureOf(error));
@@ -210,7 +233,14 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 			messages.push({ role: 'assistant', content: [{ type: 'text', text: partial || '…' }] });
 			return {
 				history: messages,
-				answer: { text: tone.text, expression: tone.expression, refused: false, incomplete: true },
+				contexts,
+				answer: {
+					text: tone.text,
+					expression: tone.expression,
+					refused: false,
+					incomplete: true,
+					cut: false,
+				},
 				remainingToday: response.remainingToday,
 			};
 		}
@@ -230,7 +260,23 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 		// arrastar o pedido recusado para as próximas chamadas.
 		return {
 			history: [...input.history],
-			answer: { text: '', expression: 'normal', refused: true, incomplete: false },
+			contexts: previousContexts,
+			answer: { text: '', expression: 'normal', refused: true, incomplete: false, cut: false },
+			remainingToday: response.remainingToday,
+		};
+	}
+
+	if (response.stopReason === 'max_tokens') {
+		// Cortada pelo teto de saída (SPD-169): fica só o texto que saiu, sem a marca de tom, que
+		// faltou. Um bloco cortado no meio (um `tool_use` sem resultado) faria a próxima pergunta ser
+		// recusada pela API.
+		messages.pop();
+		const partial = readTone(textOf(response.content)).text;
+		messages.push({ role: 'assistant', content: [{ type: 'text', text: partial || '…' }] });
+		return {
+			history: messages,
+			contexts,
+			answer: { text: partial, expression: 'normal', refused: false, incomplete: false, cut: true },
 			remainingToday: response.remainingToday,
 		};
 	}
@@ -238,7 +284,14 @@ export const askMirai = async (input: MiraiQuestionInput): Promise<MiraiQuestion
 	const tone = readTone(textOf(response.content));
 	return {
 		history: messages,
-		answer: { text: tone.text, expression: tone.expression, refused: false, incomplete: false },
+		contexts,
+		answer: {
+			text: tone.text,
+			expression: tone.expression,
+			refused: false,
+			incomplete: false,
+			cut: false,
+		},
 		remainingToday: response.remainingToday,
 	};
 };
