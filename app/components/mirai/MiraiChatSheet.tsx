@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { type MiraiEntry, useMirai } from '../../contexts/MiraiContext';
 import type { MiraiExpression } from '../../utils/mirai/contract';
+import { miraiSpans } from '../../utils/mirai/format';
 import { MIRAI_NAME_LIMIT } from '../../utils/mirai/preferences';
 import MiraiAvatar from './MiraiAvatar';
 
@@ -178,7 +179,18 @@ const MiraiChatSheet: React.FC = () => {
 					style={[styles.bubble, styles.miraiBubble, entry.role === 'error' && styles.errorBubble]}
 				>
 					<Text style={styles.miraiText} selectable>
-						{entry.role === 'error' ? t(`mirai.errors.${entry.failure}`) : answerText(entry)}
+						{entry.role === 'error'
+							? t(`mirai.errors.${entry.failure}`)
+							: miraiSpans(answerText(entry)).map((span, index) =>
+									span.bold ? (
+										// biome-ignore lint/suspicious/noArrayIndexKey: os trechos não mudam de ordem.
+										<Text key={index} style={styles.bold}>
+											{span.text}
+										</Text>
+									) : (
+										span.text
+									)
+								)}
 					</Text>
 					{entry.role === 'mirai' && entry.kind === 'cut' ? (
 						<Text style={styles.cutNotice} testID="mirai-entry-cut">
@@ -470,6 +482,9 @@ const styles = StyleSheet.create({
 		color: '#FFFFFF',
 		fontSize: 15,
 		lineHeight: 21,
+	},
+	bold: {
+		fontWeight: '700',
 	},
 	cutNotice: {
 		color: 'rgba(255, 255, 255, 0.6)',
