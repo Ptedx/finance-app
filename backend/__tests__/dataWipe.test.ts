@@ -62,12 +62,12 @@ describe('destino de cada tabela do usuário', () => {
 		expect(Object.keys(USER_RELATION_FATE).sort()).toEqual(userRelations().sort());
 	});
 
-	it('fica a conta: sessões, categorias e regras aprendidas', () => {
+	it('fica a conta: sessões, categorias, regras aprendidas e os contadores do Mirai', () => {
 		const kept = Object.entries(USER_RELATION_FATE)
 			.filter(([, fate]) => fate === 'keep')
 			.map(([relation]) => relation)
 			.sort();
-		expect(kept).toEqual(['categories', 'merchantRules', 'refreshTokens']);
+		expect(kept).toEqual(['assistantUsage', 'categories', 'merchantRules', 'refreshTokens']);
 	});
 
 	it('das preferências, só algumas chaves saem', () => {

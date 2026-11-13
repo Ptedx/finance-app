@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { createAssistantController } from '../controllers/assistant.controller.js';
 import { login, logout, refresh, register } from '../controllers/auth.controller.js';
 import { postDiagnostics } from '../controllers/diagnostics.controller.js';
 import { getSyncStatus, pullData, pushData } from '../controllers/sync.controller.js';
 import { deleteMe, getMe, updateMe, wipeMyData } from '../controllers/user.controller.js';
+import { mirai } from '../lib/mirai.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 
@@ -96,5 +98,11 @@ router.post('/sync/push', requireAuth, syncLimiter, asyncHandler(pushData));
 // O teto de 512 KB do corpo desta rota fica no server.ts: o leitor de JSON roda antes do
 // router, e o geral (5 MB) já teria lido o corpo quando a requisição chegasse aqui.
 router.post('/diagnostics', requireAuth, diagnosticsLimiter, asyncHandler(postDiagnostics));
+
+// Mirai, o assistente (SPD-163). Os limites (perguntas do dia, teto do mês, rodadas) são do
+// próprio Mirai e respondem com os códigos do contrato; o teto do corpo fica no server.ts.
+const assistant = createAssistantController(mirai);
+router.get('/assistant/status', requireAuth, asyncHandler(assistant.getStatus));
+router.post('/assistant/turn', requireAuth, asyncHandler(assistant.postTurn));
 
 export default router;

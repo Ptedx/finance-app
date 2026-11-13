@@ -33,6 +33,11 @@ export const USER_RELATION_FATE = {
 	categories: 'keep',
 	/** O que o app aprendeu sobre cada estabelecimento: também configuração (DEC-35). */
 	merchantRules: 'keep',
+	/**
+	 * Os contadores do Mirai (perguntas, tokens, custo por dia; SPD-163): uso da conta, sem
+	 * dado do usuário. Apagar zeraria o limite do dia e tiraria o gasto da soma do teto do mês.
+	 */
+	assistantUsage: 'keep',
 
 	// --- Saem em parte ------------------------------------------------------
 	/**

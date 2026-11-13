@@ -35,6 +35,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET obrigatorio}
       REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
       SYNC_PAGE_SIZE: ${SYNC_PAGE_SIZE:-500}
+      # Mirai, o assistente (SPD-163). Sem a chave a API sobe e o assistente responde 503.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ASSISTANT_USER_IDS: ${ASSISTANT_USER_IDS:-}
+      ASSISTANT_MONTHLY_USD: ${ASSISTANT_MONTHLY_USD:-20}
+      ASSISTANT_DAILY_QUESTIONS: ${ASSISTANT_DAILY_QUESTIONS:-50}
+      ASSISTANT_MODEL: ${ASSISTANT_MODEL:-claude-haiku-5-5}
+      ASSISTANT_EFFORT: ${ASSISTANT_EFFORT:-low}
     depends_on:
       postgres:
         condition: service_healthy
