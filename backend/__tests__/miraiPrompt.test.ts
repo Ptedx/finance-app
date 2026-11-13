@@ -183,10 +183,18 @@ describe('a instrução fixa', () => {
 		expect(MIRAI_INSTRUCTION).toMatch(/custo essencial do mês.*get_reserve_and_goals/);
 		expect(MIRAI_INSTRUCTION).toMatch(/fatura paga até o vencimento não tem juros/);
 		expect(MIRAI_INSTRUCTION).toMatch(/mexe na Reserva, busque get_reserve_and_goals/);
+		// SPD-170: a ordem de "Por onde começar" vale em toda recomendação.
+		expect(MIRAI_INSTRUCTION).toMatch(/reserva mínima, dívidas caras, reserva cheia, aposentadoria/);
 	});
 });
 
 describe('as ferramentas', () => {
+	it('explicam o guardado × o que sobrou e a próxima parcela (SPD-170)', () => {
+		const descriptionOf = (name: string) => MIRAI_TOOLS.find((tool) => tool.name === name)?.description ?? '';
+		expect(descriptionOf('get_month_overview')).toMatch(/não sai do que sobrou/);
+		expect(descriptionOf('get_cards')).toMatch(/a próxima é a de número nextNumber/);
+	});
+
 	it('são as do contrato, na ordem dele, todas com strict', () => {
 		expect(MIRAI_API_TOOLS.map((tool) => tool.name)).toEqual(MIRAI_TOOLS.map((tool) => tool.name));
 		expect(MIRAI_API_TOOLS.every((tool) => tool.strict === true)).toBe(true);
