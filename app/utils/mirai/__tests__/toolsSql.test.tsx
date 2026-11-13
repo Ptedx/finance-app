@@ -607,6 +607,15 @@ describeSql('ferramentas do Mirai: o mesmo número da tela', () => {
 		const firstDays = await call('get_bills', { from: '2026-11-01', to: '2026-11-09' });
 		expect(firstDays.bills.map((row: { name: string }) => row.name)).toEqual(['Internet']);
 		expect(firstDays.bills[0].status).toBe('late');
+		// O atraso não some porque o período começa depois do vencimento (SPD-168): de hoje (11/11)
+		// ao fim do mês ainda vêm a Internet (dia 5) e o Aluguel (dia 10), os dois atrasados.
+		const fromToday = await call('get_bills', { from: '2026-11-11', to: '2026-11-30' });
+		const before = fromToday.bills.filter((row: { dueDate: string }) => row.dueDate < '2026-11-11');
+		expect(before.map((row: { name: string; status: string }) => [row.name, row.status]).sort()).toEqual([
+			['Aluguel', 'late'],
+			['Internet', 'late'],
+		]);
+		expect(fromToday.totals.lateCount).toBe(bills.month.lateCount);
 	});
 
 	it('get_debts é a lista de Dívidas: saldo, parcela, juros ao mês, veredito e o quadro', async () => {

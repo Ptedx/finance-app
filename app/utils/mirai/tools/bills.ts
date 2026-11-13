@@ -13,8 +13,10 @@ export const MAX_BILL_MONTHS = 24;
 /**
  * `get_bills`: as Contas a pagar dos meses do período — cada mês por `billsOfMonth`, a mesma
  * função da tela ao trocar de mês (o mês atual é o `monthBills` do contexto, que é ela com o
- * mês de hoje) — e só as linhas com vencimento dentro de `from`–`to`. O atraso de meses
- * anteriores (`overdueBills`) é o aviso que a tela põe em cima do mês atual.
+ * mês de hoje) — e só as linhas com vencimento dentro de `from`–`to`, mais as em atraso com
+ * vencimento antes de `from` nesses meses: "o que falta de novembro" perguntado no dia 20 ainda
+ * traz a conta do dia 5 que não foi paga (SPD-168). O atraso de meses anteriores
+ * (`overdueBills`) é o aviso que a tela põe em cima do mês atual.
  */
 export const getBillsTool = async (input: { from: string; to: string }, today: string, privacy: PrivacyContext) => {
 	assertPeriod(input.from, input.to);
@@ -31,7 +33,8 @@ export const getBillsTool = async (input: { from: string; to: string }, today: s
 	const totals = { toPayCents: 0, variableToPayCount: 0, lateCount: 0, paidCount: 0, skippedCount: 0 };
 	for (const month of months) {
 		for (const row of billsOfMonth(bills, month, today, payments).rows) {
-			if (row.dueDate < input.from || row.dueDate > input.to) continue;
+			if (row.dueDate > input.to) continue;
+			if (row.dueDate < input.from && row.status !== 'late') continue;
 			const payment = payments.find((item) => !item.deletedAt && item.billId === row.bill.id && item.month === month);
 			rows.push({
 				billId: row.bill.id,
